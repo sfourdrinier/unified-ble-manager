@@ -12,9 +12,13 @@
 // Copyright (c) 2014 The Rust Project Developers
 
 pub mod adapter;
+mod activation_cache;
 pub(crate) mod ble;
+mod callback_gate;
+mod callback_retirement;
 pub(crate) mod gatt_model;
 pub mod manager;
+mod marker_executor;
 pub mod peripheral;
 mod utils;
 

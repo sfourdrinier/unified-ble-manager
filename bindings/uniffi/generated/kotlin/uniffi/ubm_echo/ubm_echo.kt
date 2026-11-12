@@ -650,17 +650,42 @@ internal open class UniffiForeignFutureResultVoid(
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
     fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultVoid.UniffiByValue,)
 }
+internal interface UniffiCallbackInterfaceMobileHostBindingMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`host`: Long,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfaceMobileInvokeCompletionMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`envelope`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceMobilePlatformRadioMethod0 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`request`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+    fun callback(`uniffiHandle`: Long,`version`: Int,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceMobilePlatformRadioMethod1 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`request`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceMobilePlatformRadioMethod2 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`requestId`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceMobileWakeSinkMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`sessionId`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "bind")
+internal open class UniffiVTableCallbackInterfaceMobileHostBinding(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `bind`: UniffiCallbackInterfaceMobileHostBindingMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `bind`: UniffiCallbackInterfaceMobileHostBindingMethod0? = null,
+    ): UniffiVTableCallbackInterfaceMobileHostBinding(`uniffiFree`,`uniffiClone`,`bind`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceMobileHostBinding) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `bind` = other.`bind`
+    }
+
 }
 @Structure.FieldOrder("uniffiFree", "uniffiClone", "complete")
 internal open class UniffiVTableCallbackInterfaceMobileInvokeCompletion(
@@ -681,23 +706,26 @@ internal open class UniffiVTableCallbackInterfaceMobileInvokeCompletion(
     }
 
 }
-@Structure.FieldOrder("uniffiFree", "uniffiClone", "submit", "cancel")
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "orderedAdmissionOwner", "submit", "cancel")
 internal open class UniffiVTableCallbackInterfaceMobilePlatformRadio(
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
     @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-    @JvmField internal var `submit`: UniffiCallbackInterfaceMobilePlatformRadioMethod0? = null,
-    @JvmField internal var `cancel`: UniffiCallbackInterfaceMobilePlatformRadioMethod1? = null,
+    @JvmField internal var `orderedAdmissionOwner`: UniffiCallbackInterfaceMobilePlatformRadioMethod0? = null,
+    @JvmField internal var `submit`: UniffiCallbackInterfaceMobilePlatformRadioMethod1? = null,
+    @JvmField internal var `cancel`: UniffiCallbackInterfaceMobilePlatformRadioMethod2? = null,
 ) : Structure() {
     class UniffiByValue(
         `uniffiFree`: UniffiCallbackInterfaceFree? = null,
         `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-        `submit`: UniffiCallbackInterfaceMobilePlatformRadioMethod0? = null,
-        `cancel`: UniffiCallbackInterfaceMobilePlatformRadioMethod1? = null,
-    ): UniffiVTableCallbackInterfaceMobilePlatformRadio(`uniffiFree`,`uniffiClone`,`submit`,`cancel`,), Structure.ByValue
+        `orderedAdmissionOwner`: UniffiCallbackInterfaceMobilePlatformRadioMethod0? = null,
+        `submit`: UniffiCallbackInterfaceMobilePlatformRadioMethod1? = null,
+        `cancel`: UniffiCallbackInterfaceMobilePlatformRadioMethod2? = null,
+    ): UniffiVTableCallbackInterfaceMobilePlatformRadio(`uniffiFree`,`uniffiClone`,`orderedAdmissionOwner`,`submit`,`cancel`,), Structure.ByValue
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceMobilePlatformRadio) {
         `uniffiFree` = other.`uniffiFree`
         `uniffiClone` = other.`uniffiClone`
+        `orderedAdmissionOwner` = other.`orderedAdmissionOwner`
         `submit` = other.`submit`
         `cancel` = other.`cancel`
     }
@@ -747,15 +775,27 @@ internal object IntegrityCheckingUniffiLib {
     }
     external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_configure_terminal_evidence_maximum_bytes(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_has_pending_cleanup(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install_bound(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_retry_pending_cleanup(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_ordered_recording_version(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_ordered_offline(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision(
     ): Int
@@ -789,9 +829,35 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_v1(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_append_notification_failure_v1(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v1(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v2(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v1(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v2(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration(
     ): Int
@@ -805,19 +871,57 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_page(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_retire(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim_versioned(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_retained_claim_v1(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_read_peer_failure_recovery(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_retire_claim_receipt(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest_notification_failure_v1(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_ingress_version(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_global_v2(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_v1(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_pending_retirements_v4(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_global_v2(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_sequence_v1(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_acknowledge(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list_with_status(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_open_selected(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_read(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json(
     ): Int
@@ -825,11 +929,71 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version_qualified(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_context(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_receipt_control(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_start_ordered_recording(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_stop_ordered_recording(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurecleanupreceipt_retire(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_owners(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_pending_cleanup_receipts(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_acknowledge(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_finalize(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_info(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_read(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_release(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_retire(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_head(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_info(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_member(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_finalize(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_info(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_member(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_release(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_retire(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_token(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilehostbinding_bind(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobileinvokecompletion_complete(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_ordered_admission_owner(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_submit(
     ): Int
@@ -853,6 +1017,7 @@ internal object UniffiLib {
 
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "ubm_echo"))
+        uniffiCallbackInterfaceMobileHostBinding.register(this)
         uniffiCallbackInterfaceMobileInvokeCompletion.register(this)
         uniffiCallbackInterfaceMobilePlatformRadio.register(this)
         uniffiCallbackInterfaceMobileWakeSink.register(this)
@@ -898,9 +1063,35 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_ubm5_uniffi_echo_fn_free_mobilecorehost(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2(`ptr`: Long,`captureOrdinal`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3(`ptr`: Long,`captureOrdinal`: Long,`sourceSequence`: Long,`instance`: RustBuffer.ByValue,`epoch`: Long,`failure`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4(`ptr`: Long,`captureOrdinal`: Long,`sourceSequence`: Long,`instance`: RustBuffer.ByValue,`epoch`: Long,`failure`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_v1(`ptr`: Long,`sequence`: Long,`instance`: RustBuffer.ByValue,`epoch`: Long,`failure`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_append_notification_failure_v1(`ptr`: Long,`sequence`: Long,`instance`: RustBuffer.ByValue,`epoch`: Long,`failure`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete(`ptr`: Long,`requestId`: Long,`completion`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v1(`ptr`: Long,`recordingId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v2(`ptr`: Long,`recordingId`: RustBuffer.ByValue,`maxBytes`: RustBuffer.ByValue,`maxRecords`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4(`ptr`: Long,`captureOrdinal`: Long,`sourceSequence`: Long,`instance`: RustBuffer.ByValue,`epoch`: Long,`failure`: RustBuffer.ByValue,`retirementCapability`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim(`ptr`: Long,`claimToken`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery(`ptr`: Long,`recoveryRecord`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v1(`ptr`: Long,`claimToken`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v2(`ptr`: Long,`claimToken`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_cancel_declaration(`ptr`: Long,`reservationToken`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
@@ -914,19 +1105,57 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute(`ptr`: Long,`peerId`: RustBuffer.ByValue,`declarationJson`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_page(`ptr`: Long,`claimToken`: RustBuffer.ByValue,`afterOrdinal`: Long,`maxItems`: Int,`maxBytes`: Int,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_retire(`ptr`: Long,`claimToken`: RustBuffer.ByValue,`ordinal`: Long,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim(`ptr`: Long,`maxItems`: Int,`maxBytes`: Int,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim_versioned(`ptr`: Long,`version`: Int,`maxItems`: Int,`maxBytes`: Int,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_retained_claim_v1(`ptr`: Long,`maxItems`: Int,`maxBytes`: Int,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_read_peer_failure_recovery(`ptr`: Long,`recoveryRecord`: RustBuffer.ByValue,`offset`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_recording_control(`ptr`: Long,`operation`: RustBuffer.ByValue,`id`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,`maxItems`: Int,`maxBytes`: Int,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve_declaration(`ptr`: Long,`declarationJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_retire_claim_receipt(`ptr`: Long,`claimToken`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_seed_declaration(`ptr`: Long,`declarationJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest(`ptr`: Long,`ingress`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest_notification_failure_v1(`ptr`: Long,`sequence`: Long,`instance`: RustBuffer.ByValue,`epoch`: Long,`failure`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_ingress_version(`ptr`: Long,`offered`: Int,uniffi_out_err: UniffiRustCallStatus,
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_global_v2(`ptr`: Long,`afterCaptureOrdinal`: Long,`maxItems`: Int,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_v1(`ptr`: Long,`instance`: RustBuffer.ByValue,`epoch`: Long,`afterSequence`: Long,`maxItems`: Int,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_pending_retirements_v4(`ptr`: Long,`maxItems`: Int,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_global_v2(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_sequence_v1(`ptr`: Long,`instance`: RustBuffer.ByValue,`epoch`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session(`ptr`: Long,`owner`: RustBuffer.ByValue,`expectedWireRevision`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3(`ptr`: Long,`captureOrdinal`: Long,`sourceSequence`: Long,`instance`: RustBuffer.ByValue,`epoch`: Long,`failure`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_acknowledge(`ptr`: Long,`handle`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list(`ptr`: Long,`leaseId`: RustBuffer.ByValue,`maxItems`: Int,`maxBytes`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list_with_status(`ptr`: Long,`leaseId`: RustBuffer.ByValue,`maxItems`: Int,`maxBytes`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_open_selected(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_read(`ptr`: Long,`handle`: RustBuffer.ByValue,`offset`: RustBuffer.ByValue,`maxBytes`: Int,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilecoresession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Long
@@ -938,8 +1167,90 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke(`ptr`: Long,`op`: RustBuffer.ByValue,`argsJson`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version(`ptr`: Long,`offeredJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version_qualified(`ptr`: Long,`offeredJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_context(`ptr`: Long,`id`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_receipt_control(`ptr`: Long,`operation`: RustBuffer.ByValue,`id`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_start_ordered_recording(`ptr`: Long,`handle`: RustBuffer.ByValue,`recordingId`: RustBuffer.ByValue,`maxBytes`: RustBuffer.ByValue,`maxRecords`: RustBuffer.ByValue,`declarationJson`: RustBuffer.ByValue,`budgetMs`: Long,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_stop_ordered_recording(`ptr`: Long,`id`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilenotificationfailurespoolconfigurationauthority(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilenotificationfailurespoolconfigurationauthority(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1(`ptr`: Long,`recordingId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2(`ptr`: Long,`recordingId`: RustBuffer.ByValue,`maxBytes`: RustBuffer.ByValue,`maxRecords`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurecleanupreceipt(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurecleanupreceipt(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurecleanupreceipt_retire(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecovery(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecovery(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_owners(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_pending_cleanup_receipts(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryconfigurationauthority(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryconfigurationauthority(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1(`ptr`: Long,`recordingId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2(`ptr`: Long,`recordingId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryhead(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryhead(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_acknowledge(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_finalize(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_info(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_read(`ptr`: Long,`offset`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_release(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_retire(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryowner(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryowner(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_head(`ptr`: Long,`memberIndex`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_info(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_member(`ptr`: Long,`index`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_finalize(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_info(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_member(`ptr`: Long,`index`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_release(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_retire(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_token(`ptr`: Long,`index`: Long,`offset`: RustBuffer.ByValue,`maxBytes`: Int,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilehostbinding(`vtable`: UniffiVTableCallbackInterfaceMobileHostBinding,
+    ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileinvokecompletion(`vtable`: UniffiVTableCallbackInterfaceMobileInvokeCompletion,
     ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileplatformradio(`vtable`: UniffiVTableCallbackInterfaceMobilePlatformRadio,
@@ -948,16 +1259,28 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json(uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_configure_terminal_evidence_maximum_bytes(`maximumBytes`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_contract_revision(uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current(uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_has_pending_cleanup(uniffi_out_err: UniffiRustCallStatus,
+    ): Byte
     external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install(`radio`: Long,`wake`: Long,`platform`: RustBuffer.ByValue,`owner`: RustBuffer.ByValue,`adapterLabel`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install_bound(`radio`: Long,`wake`: Long,`binding`: Long,`platform`: RustBuffer.ByValue,`owner`: RustBuffer.ByValue,`adapterLabel`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_retry_pending_cleanup(uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_ordered_recording_version(uniffi_out_err: UniffiRustCallStatus,
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_configure_directory(`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_control(`operation`: RustBuffer.ByValue,`id`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,`maxItems`: Int,`maxBytes`: Int,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_ordered_offline(`operation`: RustBuffer.ByValue,`id`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision(uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
     external fun ffi_ubm5_uniffi_echo_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
@@ -1082,19 +1405,37 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json() and 0xFFFF) != 23485) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_configure_terminal_evidence_maximum_bytes() and 0xFFFF) != 43137) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision() and 0xFFFF) != 25256) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current() and 0xFFFF) != 45739) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_has_pending_cleanup() and 0xFFFF) != 58064) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install() and 0xFFFF) != 16863) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install_bound() and 0xFFFF) != 59688) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_retry_pending_cleanup() and 0xFFFF) != 22997) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_ordered_recording_version() and 0xFFFF) != 19889) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory() and 0xFFFF) != 4705) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control() and 0xFFFF) != 47672) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_ordered_offline() and 0xFFFF) != 26936) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision() and 0xFFFF) != 16069) {
@@ -1145,10 +1486,49 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step() and 0xFFFF) != 36705) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2() and 0xFFFF) != 37394) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3() and 0xFFFF) != 30989) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4() and 0xFFFF) != 37680) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_v1() and 0xFFFF) != 9837) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_append_notification_failure_v1() and 0xFFFF) != 9905) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3() and 0xFFFF) != 24997) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1() and 0xFFFF) != 39577) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete() and 0xFFFF) != 1326) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v1() and 0xFFFF) != 64794) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v2() and 0xFFFF) != 18154) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4() and 0xFFFF) != 5874) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim() and 0xFFFF) != 49070) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery() and 0xFFFF) != 37134) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v1() and 0xFFFF) != 10765) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v2() and 0xFFFF) != 57379) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration() and 0xFFFF) != 47548) {
@@ -1169,7 +1549,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute() and 0xFFFF) != 53239) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_page() and 0xFFFF) != 60134) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_retire() and 0xFFFF) != 61702) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim() and 0xFFFF) != 27863) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim_versioned() and 0xFFFF) != 24695) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_retained_claim_v1() and 0xFFFF) != 1680) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_read_peer_failure_recovery() and 0xFFFF) != 48730) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control() and 0xFFFF) != 50250) {
@@ -1178,16 +1573,58 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration() and 0xFFFF) != 64088) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_retire_claim_receipt() and 0xFFFF) != 3042) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration() and 0xFFFF) != 3468) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest() and 0xFFFF) != 56427) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest_notification_failure_v1() and 0xFFFF) != 61455) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_ingress_version() and 0xFFFF) != 2922) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_global_v2() and 0xFFFF) != 33826) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_v1() and 0xFFFF) != 26831) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_pending_retirements_v4() and 0xFFFF) != 22464) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_global_v2() and 0xFFFF) != 39494) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_sequence_v1() and 0xFFFF) != 35225) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session() and 0xFFFF) != 1864) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3() and 0xFFFF) != 837) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown() and 0xFFFF) != 30988) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_acknowledge() and 0xFFFF) != 30563) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list() and 0xFFFF) != 11532) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list_with_status() and 0xFFFF) != 19706) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_open_selected() and 0xFFFF) != 48296) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_read() and 0xFFFF) != 59315) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json() and 0xFFFF) != 37308) {
@@ -1199,13 +1636,103 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke() and 0xFFFF) != 36422) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version() and 0xFFFF) != 27757) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version_qualified() and 0xFFFF) != 5818) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_context() and 0xFFFF) != 40511) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_receipt_control() and 0xFFFF) != 32329) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id() and 0xFFFF) != 62933) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_start_ordered_recording() and 0xFFFF) != 43192) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_stop_ordered_recording() and 0xFFFF) != 28332) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1() and 0xFFFF) != 52256) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2() and 0xFFFF) != 53944) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurecleanupreceipt_retire() and 0xFFFF) != 15974) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_owners() and 0xFFFF) != 58165) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_pending_cleanup_receipts() and 0xFFFF) != 45019) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1() and 0xFFFF) != 60078) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2() and 0xFFFF) != 30662) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_acknowledge() and 0xFFFF) != 65058) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_finalize() and 0xFFFF) != 27696) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_info() and 0xFFFF) != 19333) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_read() and 0xFFFF) != 60365) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_release() and 0xFFFF) != 32865) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_retire() and 0xFFFF) != 35437) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_head() and 0xFFFF) != 2101) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_info() and 0xFFFF) != 9650) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_member() and 0xFFFF) != 51370) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_finalize() and 0xFFFF) != 4983) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_info() and 0xFFFF) != 5156) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_member() and 0xFFFF) != 48697) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_release() and 0xFFFF) != 38679) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_retire() and 0xFFFF) != 1583) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_token() and 0xFFFF) != 40119) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() and 0xFFFF) != 28077) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilehostbinding_bind() and 0xFFFF) != 50465) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobileinvokecompletion_complete() and 0xFFFF) != 48577) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_ordered_admission_owner() and 0xFFFF) != 60539) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_submit() and 0xFFFF) != 31117) {
@@ -2230,9 +2757,35 @@ public object FfiConverterTypeEchoSession: FfiConverter<EchoSession, Long> {
 
 public interface MobileCoreHostInterface {
 
+    fun `acknowledgeNotificationFailureSpoolGlobalV2`(`captureOrdinal`: kotlin.ULong): kotlin.String
+
+    fun `acknowledgeNotificationFailureSpoolGlobalV3`(`captureOrdinal`: kotlin.ULong, `sourceSequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String
+
+    fun `acknowledgeNotificationFailureSpoolGlobalV4`(`captureOrdinal`: kotlin.ULong, `sourceSequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String
+
+    fun `acknowledgeNotificationFailureSpoolV1`(`sequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String
+
+    fun `appendNotificationFailureV1`(`sequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String
+
+    fun `claimNotificationFailureSpoolConfigurationAuthorityV3`(): MobileNotificationFailureSpoolConfigurationAuthority?
+
+    fun `claimScanFailureRecoveryConfigurationAuthorityV1`(): MobileScanFailureRecoveryConfigurationAuthority?
+
     fun `complete`(`requestId`: kotlin.ULong, `completion`: MobileRadioCompletion): kotlin.String
 
+    fun `configureNotificationFailureSpoolV1`(`recordingId`: kotlin.String): kotlin.String
+
+    fun `configureNotificationFailureSpoolV2`(`recordingId`: kotlin.String, `maxBytes`: kotlin.String, `maxRecords`: kotlin.String): kotlin.String
+
+    fun `confirmNotificationFailureSpoolAcknowledgementRetirementV4`(`captureOrdinal`: kotlin.ULong, `sourceSequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure, `retirementCapability`: kotlin.String): kotlin.String
+
     fun `continuationAcknowledgeClaim`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
+
+    fun `continuationAcknowledgePeerFailureRecovery`(`recoveryRecord`: kotlin.String, `completion`: MobileInvokeCompletion)
+
+    fun `continuationAcknowledgeRetainedClaimV1`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
+
+    fun `continuationAcknowledgeRetainedClaimV2`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
 
     fun `continuationCancelDeclaration`(`reservationToken`: kotlin.String): kotlin.String
 
@@ -2246,19 +2799,57 @@ public interface MobileCoreHostInterface {
 
     fun `continuationExecute`(`peerId`: kotlin.String, `declarationJson`: kotlin.String, `completion`: MobileInvokeCompletion)
 
+    fun `continuationLegacyEvidencePage`(`claimToken`: kotlin.String, `afterOrdinal`: kotlin.ULong, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
+
+    fun `continuationLegacyEvidenceRetire`(`claimToken`: kotlin.String, `ordinal`: kotlin.ULong, `completion`: MobileInvokeCompletion)
+
     fun `continuationPrepareClaim`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
+
+    fun `continuationPrepareClaimVersioned`(`version`: kotlin.UInt, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
+
+    fun `continuationPrepareRetainedClaimV1`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
+
+    fun `continuationReadPeerFailureRecovery`(`recoveryRecord`: kotlin.String, `offset`: kotlin.String, `completion`: MobileInvokeCompletion)
 
     fun `continuationRecordingControl`(`operation`: kotlin.String, `id`: kotlin.String, `token`: kotlin.String, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt): kotlin.String
 
     fun `continuationReserveDeclaration`(`declarationJson`: kotlin.String): kotlin.String
 
+    fun `continuationRetireClaimReceipt`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
+
     fun `continuationSeedDeclaration`(`declarationJson`: kotlin.String): kotlin.String
 
     fun `ingest`(`ingress`: MobileRadioIngress): kotlin.String
 
+    fun `ingestNotificationFailureV1`(`sequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String
+
+    fun `notificationFailureIngressVersion`(`offered`: kotlin.UInt): kotlin.UInt
+
+    fun `notificationFailureSpoolPageGlobalV2`(`afterCaptureOrdinal`: kotlin.ULong, `maxItems`: kotlin.UInt): kotlin.String
+
+    fun `notificationFailureSpoolPageV1`(`instance`: MobileInstance, `epoch`: kotlin.ULong, `afterSequence`: kotlin.ULong, `maxItems`: kotlin.UInt): kotlin.String
+
+    fun `notificationFailureSpoolPendingRetirementsV4`(`maxItems`: kotlin.UInt): kotlin.String
+
+    fun `notificationFailureSpoolResumeGlobalV2`(): kotlin.String
+
+    fun `notificationFailureSpoolResumeSequenceV1`(`instance`: MobileInstance, `epoch`: kotlin.ULong): kotlin.String
+
     fun `openSession`(`owner`: kotlin.String, `expectedWireRevision`: kotlin.String): MobileCoreSession
 
+    fun `retireNotificationFailureSpoolAcknowledgementV3`(`captureOrdinal`: kotlin.ULong, `sourceSequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String
+
     fun `shutdown`(): kotlin.String
+
+    fun `terminalEvidenceRecoveryAcknowledge`(`handle`: kotlin.String): kotlin.String
+
+    fun `terminalEvidenceRecoveryList`(`leaseId`: kotlin.String, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.ULong): kotlin.String
+
+    fun `terminalEvidenceRecoveryListWithStatus`(`leaseId`: kotlin.String, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.ULong): kotlin.String
+
+    fun `terminalEvidenceRecoveryOpenSelected`(): kotlin.String
+
+    fun `terminalEvidenceRecoveryRead`(`handle`: kotlin.String, `offset`: kotlin.String, `maxBytes`: kotlin.UInt): kotlin.String
 
     companion object
 }
@@ -2364,6 +2955,116 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
         }
     }
 
+    override fun `acknowledgeNotificationFailureSpoolGlobalV2`(`captureOrdinal`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2(
+        it,
+
+        FfiConverterULong.lower(`captureOrdinal`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `acknowledgeNotificationFailureSpoolGlobalV3`(`captureOrdinal`: kotlin.ULong, `sourceSequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3(
+        it,
+
+        FfiConverterULong.lower(`captureOrdinal`),
+        FfiConverterULong.lower(`sourceSequence`),
+        FfiConverterTypeMobileInstance.lower(`instance`),
+        FfiConverterULong.lower(`epoch`),
+        FfiConverterTypeMobilePlatformFailure.lower(`failure`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `acknowledgeNotificationFailureSpoolGlobalV4`(`captureOrdinal`: kotlin.ULong, `sourceSequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4(
+        it,
+
+        FfiConverterULong.lower(`captureOrdinal`),
+        FfiConverterULong.lower(`sourceSequence`),
+        FfiConverterTypeMobileInstance.lower(`instance`),
+        FfiConverterULong.lower(`epoch`),
+        FfiConverterTypeMobilePlatformFailure.lower(`failure`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `acknowledgeNotificationFailureSpoolV1`(`sequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_v1(
+        it,
+
+        FfiConverterULong.lower(`sequence`),
+        FfiConverterTypeMobileInstance.lower(`instance`),
+        FfiConverterULong.lower(`epoch`),
+        FfiConverterTypeMobilePlatformFailure.lower(`failure`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `appendNotificationFailureV1`(`sequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_append_notification_failure_v1(
+        it,
+
+        FfiConverterULong.lower(`sequence`),
+        FfiConverterTypeMobileInstance.lower(`instance`),
+        FfiConverterULong.lower(`epoch`),
+        FfiConverterTypeMobilePlatformFailure.lower(`failure`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `claimNotificationFailureSpoolConfigurationAuthorityV3`(): MobileNotificationFailureSpoolConfigurationAuthority? {
+            return FfiConverterOptionalTypeMobileNotificationFailureSpoolConfigurationAuthority.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+    override fun `claimScanFailureRecoveryConfigurationAuthorityV1`(): MobileScanFailureRecoveryConfigurationAuthority? {
+            return FfiConverterOptionalTypeMobileScanFailureRecoveryConfigurationAuthority.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
     override fun `complete`(`requestId`: kotlin.ULong, `completion`: MobileRadioCompletion): kotlin.String {
             return FfiConverterString.lift(
     callWithHandle {
@@ -2379,11 +3080,102 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
     }
 
 
+    override fun `configureNotificationFailureSpoolV1`(`recordingId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v1(
+        it,
+
+        FfiConverterString.lower(`recordingId`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `configureNotificationFailureSpoolV2`(`recordingId`: kotlin.String, `maxBytes`: kotlin.String, `maxRecords`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v2(
+        it,
+
+        FfiConverterString.lower(`recordingId`),
+        FfiConverterString.lower(`maxBytes`),
+        FfiConverterString.lower(`maxRecords`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `confirmNotificationFailureSpoolAcknowledgementRetirementV4`(`captureOrdinal`: kotlin.ULong, `sourceSequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure, `retirementCapability`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4(
+        it,
+
+        FfiConverterULong.lower(`captureOrdinal`),
+        FfiConverterULong.lower(`sourceSequence`),
+        FfiConverterTypeMobileInstance.lower(`instance`),
+        FfiConverterULong.lower(`epoch`),
+        FfiConverterTypeMobilePlatformFailure.lower(`failure`),
+        FfiConverterString.lower(`retirementCapability`),_status)
+}
+    }
+    )
+    }
+
+
     override fun `continuationAcknowledgeClaim`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
         =
     callWithHandle {
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim(
+        it,
+
+        FfiConverterString.lower(`claimToken`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationAcknowledgePeerFailureRecovery`(`recoveryRecord`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery(
+        it,
+
+        FfiConverterString.lower(`recoveryRecord`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationAcknowledgeRetainedClaimV1`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v1(
+        it,
+
+        FfiConverterString.lower(`claimToken`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationAcknowledgeRetainedClaimV2`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v2(
         it,
 
         FfiConverterString.lower(`claimToken`),
@@ -2477,6 +3269,38 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
 
 
 
+    override fun `continuationLegacyEvidencePage`(`claimToken`: kotlin.String, `afterOrdinal`: kotlin.ULong, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_page(
+        it,
+
+        FfiConverterString.lower(`claimToken`),
+        FfiConverterULong.lower(`afterOrdinal`),
+        FfiConverterUInt.lower(`maxItems`),
+        FfiConverterUInt.lower(`maxBytes`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationLegacyEvidenceRetire`(`claimToken`: kotlin.String, `ordinal`: kotlin.ULong, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_retire(
+        it,
+
+        FfiConverterString.lower(`claimToken`),
+        FfiConverterULong.lower(`ordinal`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
     override fun `continuationPrepareClaim`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
         =
     callWithHandle {
@@ -2486,6 +3310,52 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
 
         FfiConverterUInt.lower(`maxItems`),
         FfiConverterUInt.lower(`maxBytes`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationPrepareClaimVersioned`(`version`: kotlin.UInt, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim_versioned(
+        it,
+
+        FfiConverterUInt.lower(`version`),
+        FfiConverterUInt.lower(`maxItems`),
+        FfiConverterUInt.lower(`maxBytes`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationPrepareRetainedClaimV1`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_retained_claim_v1(
+        it,
+
+        FfiConverterUInt.lower(`maxItems`),
+        FfiConverterUInt.lower(`maxBytes`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationReadPeerFailureRecovery`(`recoveryRecord`: kotlin.String, `offset`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_read_peer_failure_recovery(
+        it,
+
+        FfiConverterString.lower(`recoveryRecord`),
+        FfiConverterString.lower(`offset`),
         FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
 }
     }
@@ -2524,6 +3394,20 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
     }
 
 
+    override fun `continuationRetireClaimReceipt`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_retire_claim_receipt(
+        it,
+
+        FfiConverterString.lower(`claimToken`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
     override fun `continuationSeedDeclaration`(`declarationJson`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
     callWithHandle {
@@ -2552,6 +3436,111 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
     }
 
 
+    override fun `ingestNotificationFailureV1`(`sequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest_notification_failure_v1(
+        it,
+
+        FfiConverterULong.lower(`sequence`),
+        FfiConverterTypeMobileInstance.lower(`instance`),
+        FfiConverterULong.lower(`epoch`),
+        FfiConverterTypeMobilePlatformFailure.lower(`failure`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `notificationFailureIngressVersion`(`offered`: kotlin.UInt): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_ingress_version(
+        it,
+
+        FfiConverterUInt.lower(`offered`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `notificationFailureSpoolPageGlobalV2`(`afterCaptureOrdinal`: kotlin.ULong, `maxItems`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_global_v2(
+        it,
+
+        FfiConverterULong.lower(`afterCaptureOrdinal`),
+        FfiConverterUInt.lower(`maxItems`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `notificationFailureSpoolPageV1`(`instance`: MobileInstance, `epoch`: kotlin.ULong, `afterSequence`: kotlin.ULong, `maxItems`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_v1(
+        it,
+
+        FfiConverterTypeMobileInstance.lower(`instance`),
+        FfiConverterULong.lower(`epoch`),
+        FfiConverterULong.lower(`afterSequence`),
+        FfiConverterUInt.lower(`maxItems`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `notificationFailureSpoolPendingRetirementsV4`(`maxItems`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_pending_retirements_v4(
+        it,
+
+        FfiConverterUInt.lower(`maxItems`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `notificationFailureSpoolResumeGlobalV2`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_global_v2(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+    override fun `notificationFailureSpoolResumeSequenceV1`(`instance`: MobileInstance, `epoch`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_sequence_v1(
+        it,
+
+        FfiConverterTypeMobileInstance.lower(`instance`),
+        FfiConverterULong.lower(`epoch`),_status)
+}
+    }
+    )
+    }
+
+
 
     @Throws(MobileCoreException::class)override fun `openSession`(`owner`: kotlin.String, `expectedWireRevision`: kotlin.String): MobileCoreSession {
             return FfiConverterTypeMobileCoreSession.lift(
@@ -2568,6 +3557,24 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
     }
 
 
+    override fun `retireNotificationFailureSpoolAcknowledgementV3`(`captureOrdinal`: kotlin.ULong, `sourceSequence`: kotlin.ULong, `instance`: MobileInstance, `epoch`: kotlin.ULong, `failure`: MobilePlatformFailure): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3(
+        it,
+
+        FfiConverterULong.lower(`captureOrdinal`),
+        FfiConverterULong.lower(`sourceSequence`),
+        FfiConverterTypeMobileInstance.lower(`instance`),
+        FfiConverterULong.lower(`epoch`),
+        FfiConverterTypeMobilePlatformFailure.lower(`failure`),_status)
+}
+    }
+    )
+    }
+
+
     override fun `shutdown`(): kotlin.String {
             return FfiConverterString.lift(
     callWithHandle {
@@ -2575,6 +3582,81 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown(
         it,
         _status)
+}
+    }
+    )
+    }
+
+
+    override fun `terminalEvidenceRecoveryAcknowledge`(`handle`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_acknowledge(
+        it,
+
+        FfiConverterString.lower(`handle`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `terminalEvidenceRecoveryList`(`leaseId`: kotlin.String, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list(
+        it,
+
+        FfiConverterString.lower(`leaseId`),
+        FfiConverterUInt.lower(`maxItems`),
+        FfiConverterULong.lower(`maxBytes`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `terminalEvidenceRecoveryListWithStatus`(`leaseId`: kotlin.String, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list_with_status(
+        it,
+
+        FfiConverterString.lower(`leaseId`),
+        FfiConverterUInt.lower(`maxItems`),
+        FfiConverterULong.lower(`maxBytes`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `terminalEvidenceRecoveryOpenSelected`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_open_selected(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+    override fun `terminalEvidenceRecoveryRead`(`handle`: kotlin.String, `offset`: kotlin.String, `maxBytes`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_read(
+        it,
+
+        FfiConverterString.lower(`handle`),
+        FfiConverterString.lower(`offset`),
+        FfiConverterUInt.lower(`maxBytes`),_status)
 }
     }
     )
@@ -2723,7 +3805,19 @@ public interface MobileCoreSessionInterface {
 
     fun `invoke`(`op`: kotlin.String, `argsJson`: kotlin.String, `completion`: MobileInvokeCompletion)
 
+    fun `negotiateScanEndVersion`(`offeredJson`: kotlin.String): kotlin.String
+
+    fun `negotiateScanEndVersionQualified`(`offeredJson`: kotlin.String): kotlin.String
+
+    fun `orderedRecordingContext`(`id`: kotlin.String, `completion`: MobileInvokeCompletion)
+
+    fun `orderedRecordingReceiptControl`(`operation`: kotlin.String, `id`: kotlin.String, `completion`: MobileInvokeCompletion)
+
     fun `sessionId`(): kotlin.ULong
+
+    fun `startOrderedRecording`(`handle`: kotlin.String, `recordingId`: kotlin.String, `maxBytes`: kotlin.String, `maxRecords`: kotlin.String, `declarationJson`: kotlin.String, `budgetMs`: kotlin.ULong, `completion`: MobileInvokeCompletion)
+
+    fun `stopOrderedRecording`(`id`: kotlin.String, `completion`: MobileInvokeCompletion)
 
     companion object
 }
@@ -2872,6 +3966,65 @@ open class MobileCoreSession: Disposable, AutoCloseable, MobileCoreSessionInterf
 
 
 
+
+    @Throws(MobileCoreException::class)override fun `negotiateScanEndVersion`(`offeredJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version(
+        it,
+
+        FfiConverterString.lower(`offeredJson`),_status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `negotiateScanEndVersionQualified`(`offeredJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version_qualified(
+        it,
+
+        FfiConverterString.lower(`offeredJson`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `orderedRecordingContext`(`id`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_context(
+        it,
+
+        FfiConverterString.lower(`id`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `orderedRecordingReceiptControl`(`operation`: kotlin.String, `id`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_receipt_control(
+        it,
+
+        FfiConverterString.lower(`operation`),
+        FfiConverterString.lower(`id`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
     override fun `sessionId`(): kotlin.ULong {
             return FfiConverterULong.lift(
     callWithHandle {
@@ -2883,6 +4036,39 @@ open class MobileCoreSession: Disposable, AutoCloseable, MobileCoreSessionInterf
     }
     )
     }
+
+
+    override fun `startOrderedRecording`(`handle`: kotlin.String, `recordingId`: kotlin.String, `maxBytes`: kotlin.String, `maxRecords`: kotlin.String, `declarationJson`: kotlin.String, `budgetMs`: kotlin.ULong, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_start_ordered_recording(
+        it,
+
+        FfiConverterString.lower(`handle`),
+        FfiConverterString.lower(`recordingId`),
+        FfiConverterString.lower(`maxBytes`),
+        FfiConverterString.lower(`maxRecords`),
+        FfiConverterString.lower(`declarationJson`),
+        FfiConverterULong.lower(`budgetMs`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `stopOrderedRecording`(`id`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_stop_ordered_recording(
+        it,
+
+        FfiConverterString.lower(`id`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
 
 
 
@@ -2919,6 +4105,1800 @@ public object FfiConverterTypeMobileCoreSession: FfiConverter<MobileCoreSession,
     override fun allocationSize(value: MobileCoreSession) = 8UL
 
     override fun write(value: MobileCoreSession, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface MobileNotificationFailureSpoolConfigurationAuthorityInterface {
+
+    fun `configureV1`(`recordingId`: kotlin.String): kotlin.String
+
+    fun `configureV2`(`recordingId`: kotlin.String, `maxBytes`: kotlin.String, `maxRecords`: kotlin.String): kotlin.String
+
+    companion object
+}
+
+open class MobileNotificationFailureSpoolConfigurationAuthority: Disposable, AutoCloseable, MobileNotificationFailureSpoolConfigurationAuthorityInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilenotificationfailurespoolconfigurationauthority(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilenotificationfailurespoolconfigurationauthority(handle, status)
+        }
+    }
+
+    override fun `configureV1`(`recordingId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1(
+        it,
+
+        FfiConverterString.lower(`recordingId`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `configureV2`(`recordingId`: kotlin.String, `maxBytes`: kotlin.String, `maxRecords`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2(
+        it,
+
+        FfiConverterString.lower(`recordingId`),
+        FfiConverterString.lower(`maxBytes`),
+        FfiConverterString.lower(`maxRecords`),_status)
+}
+    }
+    )
+    }
+
+
+
+
+
+
+
+
+
+    /**
+     * @suppress
+     */
+    companion object
+
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority: FfiConverter<MobileNotificationFailureSpoolConfigurationAuthority, Long> {
+    override fun lower(value: MobileNotificationFailureSpoolConfigurationAuthority): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): MobileNotificationFailureSpoolConfigurationAuthority {
+        return MobileNotificationFailureSpoolConfigurationAuthority(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): MobileNotificationFailureSpoolConfigurationAuthority {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: MobileNotificationFailureSpoolConfigurationAuthority) = 8UL
+
+    override fun write(value: MobileNotificationFailureSpoolConfigurationAuthority, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface MobileScanFailureCleanupReceiptInterface {
+
+    fun `retire`()
+
+    companion object
+}
+
+open class MobileScanFailureCleanupReceipt: Disposable, AutoCloseable, MobileScanFailureCleanupReceiptInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurecleanupreceipt(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurecleanupreceipt(handle, status)
+        }
+    }
+
+
+    @Throws(MobileCoreException::class)override fun `retire`()
+        =
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurecleanupreceipt_retire(
+        it,
+        _status)
+}
+    }
+
+
+
+
+
+
+
+
+
+
+    /**
+     * @suppress
+     */
+    companion object
+
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureCleanupReceipt: FfiConverter<MobileScanFailureCleanupReceipt, Long> {
+    override fun lower(value: MobileScanFailureCleanupReceipt): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): MobileScanFailureCleanupReceipt {
+        return MobileScanFailureCleanupReceipt(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): MobileScanFailureCleanupReceipt {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: MobileScanFailureCleanupReceipt) = 8UL
+
+    override fun write(value: MobileScanFailureCleanupReceipt, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface MobileScanFailureRecoveryInterface {
+
+    fun `owners`(): List<MobileScanFailureRecoveryOwner>
+
+    fun `pendingCleanupReceipts`(): List<MobileScanFailureCleanupReceipt>
+
+    companion object
+}
+
+open class MobileScanFailureRecovery: Disposable, AutoCloseable, MobileScanFailureRecoveryInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecovery(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecovery(handle, status)
+        }
+    }
+
+    override fun `owners`(): List<MobileScanFailureRecoveryOwner> {
+            return FfiConverterSequenceTypeMobileScanFailureRecoveryOwner.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_owners(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `pendingCleanupReceipts`(): List<MobileScanFailureCleanupReceipt> {
+            return FfiConverterSequenceTypeMobileScanFailureCleanupReceipt.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_pending_cleanup_receipts(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+
+
+
+
+
+
+    /**
+     * @suppress
+     */
+    companion object
+
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureRecovery: FfiConverter<MobileScanFailureRecovery, Long> {
+    override fun lower(value: MobileScanFailureRecovery): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): MobileScanFailureRecovery {
+        return MobileScanFailureRecovery(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): MobileScanFailureRecovery {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: MobileScanFailureRecovery) = 8UL
+
+    override fun write(value: MobileScanFailureRecovery, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface MobileScanFailureRecoveryConfigurationAuthorityInterface {
+
+    fun `attachRecordingV1`(`recordingId`: kotlin.String): kotlin.String
+
+    fun `attachRecordingV2`(`recordingId`: kotlin.String): MobileScanFailureRecovery
+
+    companion object
+}
+
+open class MobileScanFailureRecoveryConfigurationAuthority: Disposable, AutoCloseable, MobileScanFailureRecoveryConfigurationAuthorityInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryconfigurationauthority(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryconfigurationauthority(handle, status)
+        }
+    }
+
+    override fun `attachRecordingV1`(`recordingId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1(
+        it,
+
+        FfiConverterString.lower(`recordingId`),_status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `attachRecordingV2`(`recordingId`: kotlin.String): MobileScanFailureRecovery {
+            return FfiConverterTypeMobileScanFailureRecovery.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2(
+        it,
+
+        FfiConverterString.lower(`recordingId`),_status)
+}
+    }
+    )
+    }
+
+
+
+
+
+
+
+
+
+    /**
+     * @suppress
+     */
+    companion object
+
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority: FfiConverter<MobileScanFailureRecoveryConfigurationAuthority, Long> {
+    override fun lower(value: MobileScanFailureRecoveryConfigurationAuthority): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): MobileScanFailureRecoveryConfigurationAuthority {
+        return MobileScanFailureRecoveryConfigurationAuthority(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): MobileScanFailureRecoveryConfigurationAuthority {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: MobileScanFailureRecoveryConfigurationAuthority) = 8UL
+
+    override fun write(value: MobileScanFailureRecoveryConfigurationAuthority, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface MobileScanFailureRecoveryHeadInterface {
+
+    fun `acknowledge`()
+
+    fun `finalize`(): MobileScanFailureCleanupReceipt
+
+    fun `info`(): MobileScanFailureRecoveryHeadInfo
+
+    fun `read`(`offset`: kotlin.String): MobileScanFailureRecoveryPage
+
+    fun `release`()
+
+    fun `retire`()
+
+    companion object
+}
+
+open class MobileScanFailureRecoveryHead: Disposable, AutoCloseable, MobileScanFailureRecoveryHeadInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryhead(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryhead(handle, status)
+        }
+    }
+
+
+    @Throws(MobileCoreException::class)override fun `acknowledge`()
+        =
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_acknowledge(
+        it,
+        _status)
+}
+    }
+
+
+
+
+    @Throws(MobileCoreException::class)override fun `finalize`(): MobileScanFailureCleanupReceipt {
+            return FfiConverterTypeMobileScanFailureCleanupReceipt.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_finalize(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+    override fun `info`(): MobileScanFailureRecoveryHeadInfo {
+            return FfiConverterTypeMobileScanFailureRecoveryHeadInfo.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_info(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `read`(`offset`: kotlin.String): MobileScanFailureRecoveryPage {
+            return FfiConverterTypeMobileScanFailureRecoveryPage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_read(
+        it,
+
+        FfiConverterString.lower(`offset`),_status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `release`()
+        =
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_release(
+        it,
+        _status)
+}
+    }
+
+
+
+
+    @Throws(MobileCoreException::class)override fun `retire`()
+        =
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_retire(
+        it,
+        _status)
+}
+    }
+
+
+
+
+
+
+
+
+
+
+    /**
+     * @suppress
+     */
+    companion object
+
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureRecoveryHead: FfiConverter<MobileScanFailureRecoveryHead, Long> {
+    override fun lower(value: MobileScanFailureRecoveryHead): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): MobileScanFailureRecoveryHead {
+        return MobileScanFailureRecoveryHead(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): MobileScanFailureRecoveryHead {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: MobileScanFailureRecoveryHead) = 8UL
+
+    override fun write(value: MobileScanFailureRecoveryHead, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface MobileScanFailureRecoveryOwnerInterface {
+
+    fun `head`(`memberIndex`: kotlin.ULong): MobileScanFailureRecoveryHead?
+
+    fun `info`(): MobileScanFailureRecoveryOwnerInfo
+
+    fun `member`(`index`: kotlin.ULong): MobileScanFailureMember
+
+    fun `rawFinalize`(): MobileScanFailureCleanupReceipt
+
+    fun `rawInfo`(): MobileScanFailureRawInfo
+
+    fun `rawMember`(`index`: kotlin.ULong): MobileScanFailureMember
+
+    fun `rawRelease`()
+
+    fun `rawRetire`()
+
+    fun `rawToken`(`index`: kotlin.ULong, `offset`: kotlin.String, `maxBytes`: kotlin.UInt): MobileScanFailureRawToken
+
+    companion object
+}
+
+open class MobileScanFailureRecoveryOwner: Disposable, AutoCloseable, MobileScanFailureRecoveryOwnerInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryowner(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryowner(handle, status)
+        }
+    }
+
+
+    @Throws(MobileCoreException::class)override fun `head`(`memberIndex`: kotlin.ULong): MobileScanFailureRecoveryHead? {
+            return FfiConverterOptionalTypeMobileScanFailureRecoveryHead.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_head(
+        it,
+
+        FfiConverterULong.lower(`memberIndex`),_status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `info`(): MobileScanFailureRecoveryOwnerInfo {
+            return FfiConverterTypeMobileScanFailureRecoveryOwnerInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_info(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `member`(`index`: kotlin.ULong): MobileScanFailureMember {
+            return FfiConverterTypeMobileScanFailureMember.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_member(
+        it,
+
+        FfiConverterULong.lower(`index`),_status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `rawFinalize`(): MobileScanFailureCleanupReceipt {
+            return FfiConverterTypeMobileScanFailureCleanupReceipt.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_finalize(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `rawInfo`(): MobileScanFailureRawInfo {
+            return FfiConverterTypeMobileScanFailureRawInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_info(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `rawMember`(`index`: kotlin.ULong): MobileScanFailureMember {
+            return FfiConverterTypeMobileScanFailureMember.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_member(
+        it,
+
+        FfiConverterULong.lower(`index`),_status)
+}
+    }
+    )
+    }
+
+
+
+    @Throws(MobileCoreException::class)override fun `rawRelease`()
+        =
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_release(
+        it,
+        _status)
+}
+    }
+
+
+
+
+    @Throws(MobileCoreException::class)override fun `rawRetire`()
+        =
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_retire(
+        it,
+        _status)
+}
+    }
+
+
+
+
+    @Throws(MobileCoreException::class)override fun `rawToken`(`index`: kotlin.ULong, `offset`: kotlin.String, `maxBytes`: kotlin.UInt): MobileScanFailureRawToken {
+            return FfiConverterTypeMobileScanFailureRawToken.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_token(
+        it,
+
+        FfiConverterULong.lower(`index`),
+        FfiConverterString.lower(`offset`),
+        FfiConverterUInt.lower(`maxBytes`),_status)
+}
+    }
+    )
+    }
+
+
+
+
+
+
+
+
+
+    /**
+     * @suppress
+     */
+    companion object
+
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureRecoveryOwner: FfiConverter<MobileScanFailureRecoveryOwner, Long> {
+    override fun lower(value: MobileScanFailureRecoveryOwner): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): MobileScanFailureRecoveryOwner {
+        return MobileScanFailureRecoveryOwner(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): MobileScanFailureRecoveryOwner {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: MobileScanFailureRecoveryOwner) = 8UL
+
+    override fun write(value: MobileScanFailureRecoveryOwner, buf: ByteBuffer) {
         buf.putLong(lower(value))
     }
 }
@@ -3483,6 +6463,49 @@ public object FfiConverterTypeMobileGattService: FfiConverterRustBuffer<MobileGa
 
 
 
+data class MobileGattSnapshotIdentity (
+    var `owner`: kotlin.String
+    ,
+    var `attachment`: kotlin.ULong
+    ,
+    var `revision`: kotlin.ULong
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileGattSnapshotIdentity: FfiConverterRustBuffer<MobileGattSnapshotIdentity> {
+    override fun read(buf: ByteBuffer): MobileGattSnapshotIdentity {
+        return MobileGattSnapshotIdentity(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileGattSnapshotIdentity) = (
+            FfiConverterString.allocationSize(value.`owner`) +
+            FfiConverterULong.allocationSize(value.`attachment`) +
+            FfiConverterULong.allocationSize(value.`revision`)
+    )
+
+    override fun write(value: MobileGattSnapshotIdentity, buf: ByteBuffer) {
+            FfiConverterString.write(value.`owner`, buf)
+            FfiConverterULong.write(value.`attachment`, buf)
+            FfiConverterULong.write(value.`revision`, buf)
+    }
+}
+
+
+
 data class MobileInstance (
     var `peerId`: kotlin.String
     ,
@@ -3574,6 +6597,415 @@ public object FfiConverterTypeMobileManufacturerData: FfiConverterRustBuffer<Mob
 
 
 
+data class MobileOrderedActivation (
+    var `instance`: MobileInstance
+    ,
+    var `connectionGeneration`: kotlin.String
+    ,
+    var `sourceGeneration`: MobileOrderedGeneration
+    ,
+    var `groupId`: kotlin.ULong
+    ,
+    var `member`: MobileOrderedRegistration
+    ,
+    var `activationEpoch`: kotlin.ULong
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedActivation: FfiConverterRustBuffer<MobileOrderedActivation> {
+    override fun read(buf: ByteBuffer): MobileOrderedActivation {
+        return MobileOrderedActivation(
+            FfiConverterTypeMobileInstance.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeMobileOrderedGeneration.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterTypeMobileOrderedRegistration.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileOrderedActivation) = (
+            FfiConverterTypeMobileInstance.allocationSize(value.`instance`) +
+            FfiConverterString.allocationSize(value.`connectionGeneration`) +
+            FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`sourceGeneration`) +
+            FfiConverterULong.allocationSize(value.`groupId`) +
+            FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`) +
+            FfiConverterULong.allocationSize(value.`activationEpoch`)
+    )
+
+    override fun write(value: MobileOrderedActivation, buf: ByteBuffer) {
+            FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+            FfiConverterString.write(value.`connectionGeneration`, buf)
+            FfiConverterTypeMobileOrderedGeneration.write(value.`sourceGeneration`, buf)
+            FfiConverterULong.write(value.`groupId`, buf)
+            FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+            FfiConverterULong.write(value.`activationEpoch`, buf)
+    }
+}
+
+
+
+data class MobileOrderedFailureV2 (
+    var `kind`: kotlin.String
+    ,
+    var `gattStatus`: kotlin.Int?
+    ,
+    var `nativeDomain`: kotlin.String?
+    ,
+    var `nativeCode`: kotlin.Long?
+    ,
+    var `nativeName`: kotlin.String?
+    ,
+    var `detail`: kotlin.String
+    ,
+    var `dispatched`: kotlin.Boolean
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedFailureV2: FfiConverterRustBuffer<MobileOrderedFailureV2> {
+    override fun read(buf: ByteBuffer): MobileOrderedFailureV2 {
+        return MobileOrderedFailureV2(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalInt.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileOrderedFailureV2) = (
+            FfiConverterString.allocationSize(value.`kind`) +
+            FfiConverterOptionalInt.allocationSize(value.`gattStatus`) +
+            FfiConverterOptionalString.allocationSize(value.`nativeDomain`) +
+            FfiConverterOptionalLong.allocationSize(value.`nativeCode`) +
+            FfiConverterOptionalString.allocationSize(value.`nativeName`) +
+            FfiConverterString.allocationSize(value.`detail`) +
+            FfiConverterBoolean.allocationSize(value.`dispatched`)
+    )
+
+    override fun write(value: MobileOrderedFailureV2, buf: ByteBuffer) {
+            FfiConverterString.write(value.`kind`, buf)
+            FfiConverterOptionalInt.write(value.`gattStatus`, buf)
+            FfiConverterOptionalString.write(value.`nativeDomain`, buf)
+            FfiConverterOptionalLong.write(value.`nativeCode`, buf)
+            FfiConverterOptionalString.write(value.`nativeName`, buf)
+            FfiConverterString.write(value.`detail`, buf)
+            FfiConverterBoolean.write(value.`dispatched`, buf)
+    }
+}
+
+
+
+data class MobileOrderedMarkerWriteStatus (
+    var `admission`: MobileOrderedMarkerAdmission
+    ,
+    var `write`: MobileOrderedMarkerWriteState
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedMarkerWriteStatus: FfiConverterRustBuffer<MobileOrderedMarkerWriteStatus> {
+    override fun read(buf: ByteBuffer): MobileOrderedMarkerWriteStatus {
+        return MobileOrderedMarkerWriteStatus(
+            FfiConverterTypeMobileOrderedMarkerAdmission.read(buf),
+            FfiConverterTypeMobileOrderedMarkerWriteState.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileOrderedMarkerWriteStatus) = (
+            FfiConverterTypeMobileOrderedMarkerAdmission.allocationSize(value.`admission`) +
+            FfiConverterTypeMobileOrderedMarkerWriteState.allocationSize(value.`write`)
+    )
+
+    override fun write(value: MobileOrderedMarkerWriteStatus, buf: ByteBuffer) {
+            FfiConverterTypeMobileOrderedMarkerAdmission.write(value.`admission`, buf)
+            FfiConverterTypeMobileOrderedMarkerWriteState.write(value.`write`, buf)
+    }
+}
+
+
+
+data class MobileOrderedMember (
+    var `memberId`: kotlin.ULong
+    ,
+    var `instance`: MobileInstance
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedMember: FfiConverterRustBuffer<MobileOrderedMember> {
+    override fun read(buf: ByteBuffer): MobileOrderedMember {
+        return MobileOrderedMember(
+            FfiConverterULong.read(buf),
+            FfiConverterTypeMobileInstance.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileOrderedMember) = (
+            FfiConverterULong.allocationSize(value.`memberId`) +
+            FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+    )
+
+    override fun write(value: MobileOrderedMember, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`memberId`, buf)
+            FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+    }
+}
+
+
+
+data class MobileOrderedOpenIdentity (
+    var `version`: kotlin.UInt
+    ,
+    var `ownerIncarnation`: kotlin.String
+    ,
+    var `slot`: kotlin.UInt
+    ,
+    var `slotGeneration`: kotlin.ULong
+    ,
+    var `originalRequestId`: kotlin.ULong
+    ,
+    var `nativeGroupId`: kotlin.ULong
+    ,
+    var `peerId`: kotlin.String
+    ,
+    var `spec`: MobileOrderedOpenSpec
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedOpenIdentity: FfiConverterRustBuffer<MobileOrderedOpenIdentity> {
+    override fun read(buf: ByteBuffer): MobileOrderedOpenIdentity {
+        return MobileOrderedOpenIdentity(
+            FfiConverterUInt.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeMobileOrderedOpenSpec.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileOrderedOpenIdentity) = (
+            FfiConverterUInt.allocationSize(value.`version`) +
+            FfiConverterString.allocationSize(value.`ownerIncarnation`) +
+            FfiConverterUInt.allocationSize(value.`slot`) +
+            FfiConverterULong.allocationSize(value.`slotGeneration`) +
+            FfiConverterULong.allocationSize(value.`originalRequestId`) +
+            FfiConverterULong.allocationSize(value.`nativeGroupId`) +
+            FfiConverterString.allocationSize(value.`peerId`) +
+            FfiConverterTypeMobileOrderedOpenSpec.allocationSize(value.`spec`)
+    )
+
+    override fun write(value: MobileOrderedOpenIdentity, buf: ByteBuffer) {
+            FfiConverterUInt.write(value.`version`, buf)
+            FfiConverterString.write(value.`ownerIncarnation`, buf)
+            FfiConverterUInt.write(value.`slot`, buf)
+            FfiConverterULong.write(value.`slotGeneration`, buf)
+            FfiConverterULong.write(value.`originalRequestId`, buf)
+            FfiConverterULong.write(value.`nativeGroupId`, buf)
+            FfiConverterString.write(value.`peerId`, buf)
+            FfiConverterTypeMobileOrderedOpenSpec.write(value.`spec`, buf)
+    }
+}
+
+
+
+data class MobileOrderedOpenSpec (
+    var `connectionGeneration`: kotlin.String
+    ,
+    var `databaseGeneration`: kotlin.String
+    ,
+    var `snapshotIdentity`: MobileGattSnapshotIdentity
+    ,
+    var `members`: List<MobileOrderedMember>
+    ,
+    var `itemCapacity`: kotlin.UInt
+    ,
+    var `byteCapacity`: kotlin.UInt
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedOpenSpec: FfiConverterRustBuffer<MobileOrderedOpenSpec> {
+    override fun read(buf: ByteBuffer): MobileOrderedOpenSpec {
+        return MobileOrderedOpenSpec(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+            FfiConverterSequenceTypeMobileOrderedMember.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileOrderedOpenSpec) = (
+            FfiConverterString.allocationSize(value.`connectionGeneration`) +
+            FfiConverterString.allocationSize(value.`databaseGeneration`) +
+            FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`) +
+            FfiConverterSequenceTypeMobileOrderedMember.allocationSize(value.`members`) +
+            FfiConverterUInt.allocationSize(value.`itemCapacity`) +
+            FfiConverterUInt.allocationSize(value.`byteCapacity`)
+    )
+
+    override fun write(value: MobileOrderedOpenSpec, buf: ByteBuffer) {
+            FfiConverterString.write(value.`connectionGeneration`, buf)
+            FfiConverterString.write(value.`databaseGeneration`, buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+            FfiConverterSequenceTypeMobileOrderedMember.write(value.`members`, buf)
+            FfiConverterUInt.write(value.`itemCapacity`, buf)
+            FfiConverterUInt.write(value.`byteCapacity`, buf)
+    }
+}
+
+
+
+data class MobileOrderedRegistration (
+    var `memberId`: kotlin.ULong
+    ,
+    var `sourceMember`: kotlin.ULong
+    ,
+    var `epoch`: kotlin.ULong
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedRegistration: FfiConverterRustBuffer<MobileOrderedRegistration> {
+    override fun read(buf: ByteBuffer): MobileOrderedRegistration {
+        return MobileOrderedRegistration(
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileOrderedRegistration) = (
+            FfiConverterULong.allocationSize(value.`memberId`) +
+            FfiConverterULong.allocationSize(value.`sourceMember`) +
+            FfiConverterULong.allocationSize(value.`epoch`)
+    )
+
+    override fun write(value: MobileOrderedRegistration, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`memberId`, buf)
+            FfiConverterULong.write(value.`sourceMember`, buf)
+            FfiConverterULong.write(value.`epoch`, buf)
+    }
+}
+
+
+
+data class MobileOrderedSlotIdentity (
+    var `ownerIncarnation`: kotlin.String
+    ,
+    var `slot`: kotlin.UInt
+    ,
+    var `slotGeneration`: kotlin.ULong
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedSlotIdentity: FfiConverterRustBuffer<MobileOrderedSlotIdentity> {
+    override fun read(buf: ByteBuffer): MobileOrderedSlotIdentity {
+        return MobileOrderedSlotIdentity(
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileOrderedSlotIdentity) = (
+            FfiConverterString.allocationSize(value.`ownerIncarnation`) +
+            FfiConverterUInt.allocationSize(value.`slot`) +
+            FfiConverterULong.allocationSize(value.`slotGeneration`)
+    )
+
+    override fun write(value: MobileOrderedSlotIdentity, buf: ByteBuffer) {
+            FfiConverterString.write(value.`ownerIncarnation`, buf)
+            FfiConverterUInt.write(value.`slot`, buf)
+            FfiConverterULong.write(value.`slotGeneration`, buf)
+    }
+}
+
+
+
 data class MobilePeerName (
     var `peerId`: kotlin.String
     ,
@@ -3607,6 +7039,64 @@ public object FfiConverterTypeMobilePeerName: FfiConverterRustBuffer<MobilePeerN
     override fun write(value: MobilePeerName, buf: ByteBuffer) {
             FfiConverterString.write(value.`peerId`, buf)
             FfiConverterOptionalString.write(value.`name`, buf)
+    }
+}
+
+
+
+data class MobilePlatformFailure (
+    var `kind`: kotlin.String
+    ,
+    var `gattStatus`: kotlin.Int?
+    ,
+    var `nativeDomain`: kotlin.String?
+    ,
+    var `nativeCode`: kotlin.Long?
+    ,
+    var `detail`: kotlin.String
+    ,
+    var `dispatched`: kotlin.Boolean
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobilePlatformFailure: FfiConverterRustBuffer<MobilePlatformFailure> {
+    override fun read(buf: ByteBuffer): MobilePlatformFailure {
+        return MobilePlatformFailure(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalInt.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobilePlatformFailure) = (
+            FfiConverterString.allocationSize(value.`kind`) +
+            FfiConverterOptionalInt.allocationSize(value.`gattStatus`) +
+            FfiConverterOptionalString.allocationSize(value.`nativeDomain`) +
+            FfiConverterOptionalLong.allocationSize(value.`nativeCode`) +
+            FfiConverterString.allocationSize(value.`detail`) +
+            FfiConverterBoolean.allocationSize(value.`dispatched`)
+    )
+
+    override fun write(value: MobilePlatformFailure, buf: ByteBuffer) {
+            FfiConverterString.write(value.`kind`, buf)
+            FfiConverterOptionalInt.write(value.`gattStatus`, buf)
+            FfiConverterOptionalString.write(value.`nativeDomain`, buf)
+            FfiConverterOptionalLong.write(value.`nativeCode`, buf)
+            FfiConverterString.write(value.`detail`, buf)
+            FfiConverterBoolean.write(value.`dispatched`, buf)
     }
 }
 
@@ -3650,6 +7140,309 @@ public object FfiConverterTypeMobileRestoredPeer: FfiConverterRustBuffer<MobileR
             FfiConverterString.write(value.`peerId`, buf)
             FfiConverterOptionalString.write(value.`name`, buf)
             FfiConverterBoolean.write(value.`connected`, buf)
+    }
+}
+
+
+
+data class MobileScanFailureIdentity (
+    var `host`: kotlin.ByteArray
+    ,
+    var `scan`: kotlin.ByteArray
+    ,
+    var `start`: kotlin.ByteArray
+    ,
+    var `sourceGeneration`: kotlin.ByteArray
+    ,
+    var `occurrence`: kotlin.ByteArray
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureIdentity: FfiConverterRustBuffer<MobileScanFailureIdentity> {
+    override fun read(buf: ByteBuffer): MobileScanFailureIdentity {
+        return MobileScanFailureIdentity(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileScanFailureIdentity) = (
+            FfiConverterByteArray.allocationSize(value.`host`) +
+            FfiConverterByteArray.allocationSize(value.`scan`) +
+            FfiConverterByteArray.allocationSize(value.`start`) +
+            FfiConverterByteArray.allocationSize(value.`sourceGeneration`) +
+            FfiConverterByteArray.allocationSize(value.`occurrence`)
+    )
+
+    override fun write(value: MobileScanFailureIdentity, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`host`, buf)
+            FfiConverterByteArray.write(value.`scan`, buf)
+            FfiConverterByteArray.write(value.`start`, buf)
+            FfiConverterByteArray.write(value.`sourceGeneration`, buf)
+            FfiConverterByteArray.write(value.`occurrence`, buf)
+    }
+}
+
+
+
+data class MobileScanFailureMember (
+    var `recipient`: kotlin.ByteArray
+    ,
+    var `delivery`: kotlin.ByteArray
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureMember: FfiConverterRustBuffer<MobileScanFailureMember> {
+    override fun read(buf: ByteBuffer): MobileScanFailureMember {
+        return MobileScanFailureMember(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileScanFailureMember) = (
+            FfiConverterByteArray.allocationSize(value.`recipient`) +
+            FfiConverterByteArray.allocationSize(value.`delivery`)
+    )
+
+    override fun write(value: MobileScanFailureMember, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`recipient`, buf)
+            FfiConverterByteArray.write(value.`delivery`, buf)
+    }
+}
+
+
+
+data class MobileScanFailureRawInfo (
+    var `identity`: MobileScanFailureIdentity
+    ,
+    var `memberCount`: kotlin.ULong
+    ,
+    var `tokenCount`: kotlin.ULong
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureRawInfo: FfiConverterRustBuffer<MobileScanFailureRawInfo> {
+    override fun read(buf: ByteBuffer): MobileScanFailureRawInfo {
+        return MobileScanFailureRawInfo(
+            FfiConverterTypeMobileScanFailureIdentity.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileScanFailureRawInfo) = (
+            FfiConverterTypeMobileScanFailureIdentity.allocationSize(value.`identity`) +
+            FfiConverterULong.allocationSize(value.`memberCount`) +
+            FfiConverterULong.allocationSize(value.`tokenCount`)
+    )
+
+    override fun write(value: MobileScanFailureRawInfo, buf: ByteBuffer) {
+            FfiConverterTypeMobileScanFailureIdentity.write(value.`identity`, buf)
+            FfiConverterULong.write(value.`memberCount`, buf)
+            FfiConverterULong.write(value.`tokenCount`, buf)
+    }
+}
+
+
+
+data class MobileScanFailureRecoveryHeadInfo (
+    var `protocol`: kotlin.UInt
+    ,
+    var `representation`: kotlin.String
+    ,
+    var `identity`: MobileScanFailureIdentity
+    ,
+    var `member`: MobileScanFailureMember
+    ,
+    var `encodedLength`: kotlin.String
+    ,
+    var `chunkBytes`: kotlin.UInt
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureRecoveryHeadInfo: FfiConverterRustBuffer<MobileScanFailureRecoveryHeadInfo> {
+    override fun read(buf: ByteBuffer): MobileScanFailureRecoveryHeadInfo {
+        return MobileScanFailureRecoveryHeadInfo(
+            FfiConverterUInt.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeMobileScanFailureIdentity.read(buf),
+            FfiConverterTypeMobileScanFailureMember.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileScanFailureRecoveryHeadInfo) = (
+            FfiConverterUInt.allocationSize(value.`protocol`) +
+            FfiConverterString.allocationSize(value.`representation`) +
+            FfiConverterTypeMobileScanFailureIdentity.allocationSize(value.`identity`) +
+            FfiConverterTypeMobileScanFailureMember.allocationSize(value.`member`) +
+            FfiConverterString.allocationSize(value.`encodedLength`) +
+            FfiConverterUInt.allocationSize(value.`chunkBytes`)
+    )
+
+    override fun write(value: MobileScanFailureRecoveryHeadInfo, buf: ByteBuffer) {
+            FfiConverterUInt.write(value.`protocol`, buf)
+            FfiConverterString.write(value.`representation`, buf)
+            FfiConverterTypeMobileScanFailureIdentity.write(value.`identity`, buf)
+            FfiConverterTypeMobileScanFailureMember.write(value.`member`, buf)
+            FfiConverterString.write(value.`encodedLength`, buf)
+            FfiConverterUInt.write(value.`chunkBytes`, buf)
+    }
+}
+
+
+
+data class MobileScanFailureRecoveryOwnerInfo (
+    var `ownerId`: kotlin.String
+    ,
+    var `prepared`: kotlin.Boolean
+    ,
+    var `producerFinished`: kotlin.Boolean
+    ,
+    var `rawRetired`: kotlin.Boolean
+    ,
+    var `rawReleased`: kotlin.Boolean
+    ,
+    var `memberCount`: kotlin.ULong
+    ,
+    var `released`: kotlin.Boolean
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureRecoveryOwnerInfo: FfiConverterRustBuffer<MobileScanFailureRecoveryOwnerInfo> {
+    override fun read(buf: ByteBuffer): MobileScanFailureRecoveryOwnerInfo {
+        return MobileScanFailureRecoveryOwnerInfo(
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileScanFailureRecoveryOwnerInfo) = (
+            FfiConverterString.allocationSize(value.`ownerId`) +
+            FfiConverterBoolean.allocationSize(value.`prepared`) +
+            FfiConverterBoolean.allocationSize(value.`producerFinished`) +
+            FfiConverterBoolean.allocationSize(value.`rawRetired`) +
+            FfiConverterBoolean.allocationSize(value.`rawReleased`) +
+            FfiConverterULong.allocationSize(value.`memberCount`) +
+            FfiConverterBoolean.allocationSize(value.`released`)
+    )
+
+    override fun write(value: MobileScanFailureRecoveryOwnerInfo, buf: ByteBuffer) {
+            FfiConverterString.write(value.`ownerId`, buf)
+            FfiConverterBoolean.write(value.`prepared`, buf)
+            FfiConverterBoolean.write(value.`producerFinished`, buf)
+            FfiConverterBoolean.write(value.`rawRetired`, buf)
+            FfiConverterBoolean.write(value.`rawReleased`, buf)
+            FfiConverterULong.write(value.`memberCount`, buf)
+            FfiConverterBoolean.write(value.`released`, buf)
+    }
+}
+
+
+
+data class MobileScanFailureRecoveryPage (
+    var `offset`: kotlin.String
+    ,
+    var `nextOffset`: kotlin.String
+    ,
+    var `bytes`: kotlin.ByteArray
+    ,
+    var `done`: kotlin.Boolean
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureRecoveryPage: FfiConverterRustBuffer<MobileScanFailureRecoveryPage> {
+    override fun read(buf: ByteBuffer): MobileScanFailureRecoveryPage {
+        return MobileScanFailureRecoveryPage(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileScanFailureRecoveryPage) = (
+            FfiConverterString.allocationSize(value.`offset`) +
+            FfiConverterString.allocationSize(value.`nextOffset`) +
+            FfiConverterByteArray.allocationSize(value.`bytes`) +
+            FfiConverterBoolean.allocationSize(value.`done`)
+    )
+
+    override fun write(value: MobileScanFailureRecoveryPage, buf: ByteBuffer) {
+            FfiConverterString.write(value.`offset`, buf)
+            FfiConverterString.write(value.`nextOffset`, buf)
+            FfiConverterByteArray.write(value.`bytes`, buf)
+            FfiConverterBoolean.write(value.`done`, buf)
     }
 }
 
@@ -3823,6 +7616,1918 @@ public object FfiConverterTypeMobileCoreError : FfiConverterRustBuffer<MobileCor
 
 
 
+sealed class MobileGraphAuthorityStatus {
+
+    object Pending : MobileGraphAuthorityStatus()
+
+
+    object NotCreated : MobileGraphAuthorityStatus()
+
+
+    data class Opened(
+        val `authorityId`: kotlin.ULong) : MobileGraphAuthorityStatus()
+
+    {
+
+
+        companion object
+    }
+
+    data class Closed(
+        val `authorityId`: kotlin.ULong) : MobileGraphAuthorityStatus()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileGraphAuthorityStatus : FfiConverterRustBuffer<MobileGraphAuthorityStatus>{
+    override fun read(buf: ByteBuffer): MobileGraphAuthorityStatus {
+        return when(buf.getInt()) {
+            1 -> MobileGraphAuthorityStatus.Pending
+            2 -> MobileGraphAuthorityStatus.NotCreated
+            3 -> MobileGraphAuthorityStatus.Opened(
+                FfiConverterULong.read(buf),
+                )
+            4 -> MobileGraphAuthorityStatus.Closed(
+                FfiConverterULong.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileGraphAuthorityStatus): ULong = when(value) {
+        is MobileGraphAuthorityStatus.Pending -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileGraphAuthorityStatus.NotCreated -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileGraphAuthorityStatus.Opened -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+            )
+        }
+        is MobileGraphAuthorityStatus.Closed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+            )
+        }
+    }
+
+    override fun write(value: MobileGraphAuthorityStatus, buf: ByteBuffer) {
+        when(value) {
+            is MobileGraphAuthorityStatus.Pending -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileGraphAuthorityStatus.NotCreated -> {
+                buf.putInt(2)
+                Unit
+            }
+            is MobileGraphAuthorityStatus.Opened -> {
+                buf.putInt(3)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                Unit
+            }
+            is MobileGraphAuthorityStatus.Closed -> {
+                buf.putInt(4)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+enum class MobileGraphPermitState {
+
+    ACQUIRED,
+    STALE,
+    BUSY,
+    COMMITTED,
+    RELEASED,
+    FORGOTTEN;
+
+
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileGraphPermitState: FfiConverterRustBuffer<MobileGraphPermitState> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileGraphPermitState.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: MobileGraphPermitState) = 4UL
+
+    override fun write(value: MobileGraphPermitState, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+sealed class MobileGraphReserveStatus {
+
+    object Pending : MobileGraphReserveStatus()
+
+
+    object NotCreated : MobileGraphReserveStatus()
+
+
+    data class Issued(
+        val `receiptId`: kotlin.ULong) : MobileGraphReserveStatus()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileGraphReserveStatus : FfiConverterRustBuffer<MobileGraphReserveStatus>{
+    override fun read(buf: ByteBuffer): MobileGraphReserveStatus {
+        return when(buf.getInt()) {
+            1 -> MobileGraphReserveStatus.Pending
+            2 -> MobileGraphReserveStatus.NotCreated
+            3 -> MobileGraphReserveStatus.Issued(
+                FfiConverterULong.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileGraphReserveStatus): ULong = when(value) {
+        is MobileGraphReserveStatus.Pending -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileGraphReserveStatus.NotCreated -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileGraphReserveStatus.Issued -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`receiptId`)
+            )
+        }
+    }
+
+    override fun write(value: MobileGraphReserveStatus, buf: ByteBuffer) {
+        when(value) {
+            is MobileGraphReserveStatus.Pending -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileGraphReserveStatus.NotCreated -> {
+                buf.putInt(2)
+                Unit
+            }
+            is MobileGraphReserveStatus.Issued -> {
+                buf.putInt(3)
+                FfiConverterULong.write(value.`receiptId`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedEnableStatus {
+
+    object Pending : MobileOrderedEnableStatus()
+
+
+    data class Enabled(
+        val `delivery`: kotlin.String) : MobileOrderedEnableStatus()
+
+    {
+
+
+        companion object
+    }
+
+    data class Released(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure?) : MobileOrderedEnableStatus()
+
+    {
+
+
+        companion object
+    }
+
+    data class Uncertain(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure) : MobileOrderedEnableStatus()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedEnableStatus : FfiConverterRustBuffer<MobileOrderedEnableStatus>{
+    override fun read(buf: ByteBuffer): MobileOrderedEnableStatus {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedEnableStatus.Pending
+            2 -> MobileOrderedEnableStatus.Enabled(
+                FfiConverterString.read(buf),
+                )
+            3 -> MobileOrderedEnableStatus.Released(
+                FfiConverterOptionalTypeMobilePlatformFailure.read(buf),
+                )
+            4 -> MobileOrderedEnableStatus.Uncertain(
+                FfiConverterTypeMobilePlatformFailure.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedEnableStatus): ULong = when(value) {
+        is MobileOrderedEnableStatus.Pending -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileOrderedEnableStatus.Enabled -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`delivery`)
+            )
+        }
+        is MobileOrderedEnableStatus.Released -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterOptionalTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+        is MobileOrderedEnableStatus.Uncertain -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedEnableStatus, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedEnableStatus.Pending -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileOrderedEnableStatus.Enabled -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`delivery`, buf)
+                Unit
+            }
+            is MobileOrderedEnableStatus.Released -> {
+                buf.putInt(3)
+                FfiConverterOptionalTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+            is MobileOrderedEnableStatus.Uncertain -> {
+                buf.putInt(4)
+                FfiConverterTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedGeneration {
+
+    data class Counter(
+        val `value`: kotlin.ULong) : MobileOrderedGeneration()
+
+    {
+
+
+        companion object
+    }
+
+    data class Opaque(
+        val `value`: kotlin.String) : MobileOrderedGeneration()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedGeneration : FfiConverterRustBuffer<MobileOrderedGeneration>{
+    override fun read(buf: ByteBuffer): MobileOrderedGeneration {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedGeneration.Counter(
+                FfiConverterULong.read(buf),
+                )
+            2 -> MobileOrderedGeneration.Opaque(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedGeneration): ULong = when(value) {
+        is MobileOrderedGeneration.Counter -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`value`)
+            )
+        }
+        is MobileOrderedGeneration.Opaque -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`value`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedGeneration, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedGeneration.Counter -> {
+                buf.putInt(1)
+                FfiConverterULong.write(value.`value`, buf)
+                Unit
+            }
+            is MobileOrderedGeneration.Opaque -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`value`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedIndeterminateReason {
+
+    data class Failure(
+        val `failure`: uniffi.ubm_echo.MobileOrderedFailureV2) : MobileOrderedIndeterminateReason()
+
+    {
+
+
+        companion object
+    }
+
+    data class Reason(
+        val `reason`: kotlin.String) : MobileOrderedIndeterminateReason()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedIndeterminateReason : FfiConverterRustBuffer<MobileOrderedIndeterminateReason>{
+    override fun read(buf: ByteBuffer): MobileOrderedIndeterminateReason {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedIndeterminateReason.Failure(
+                FfiConverterTypeMobileOrderedFailureV2.read(buf),
+                )
+            2 -> MobileOrderedIndeterminateReason.Reason(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedIndeterminateReason): ULong = when(value) {
+        is MobileOrderedIndeterminateReason.Failure -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedFailureV2.allocationSize(value.`failure`)
+            )
+        }
+        is MobileOrderedIndeterminateReason.Reason -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedIndeterminateReason, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedIndeterminateReason.Failure -> {
+                buf.putInt(1)
+                FfiConverterTypeMobileOrderedFailureV2.write(value.`failure`, buf)
+                Unit
+            }
+            is MobileOrderedIndeterminateReason.Reason -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedMarkerAdmission {
+
+    object Pending : MobileOrderedMarkerAdmission()
+
+
+    object NotAdmitted : MobileOrderedMarkerAdmission()
+
+
+    data class Admitted(
+        val `ordinal`: kotlin.ULong) : MobileOrderedMarkerAdmission()
+
+    {
+
+
+        companion object
+    }
+
+    data class Rejected(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure) : MobileOrderedMarkerAdmission()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedMarkerAdmission : FfiConverterRustBuffer<MobileOrderedMarkerAdmission>{
+    override fun read(buf: ByteBuffer): MobileOrderedMarkerAdmission {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedMarkerAdmission.Pending
+            2 -> MobileOrderedMarkerAdmission.NotAdmitted
+            3 -> MobileOrderedMarkerAdmission.Admitted(
+                FfiConverterULong.read(buf),
+                )
+            4 -> MobileOrderedMarkerAdmission.Rejected(
+                FfiConverterTypeMobilePlatformFailure.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedMarkerAdmission): ULong = when(value) {
+        is MobileOrderedMarkerAdmission.Pending -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileOrderedMarkerAdmission.NotAdmitted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileOrderedMarkerAdmission.Admitted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`ordinal`)
+            )
+        }
+        is MobileOrderedMarkerAdmission.Rejected -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedMarkerAdmission, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedMarkerAdmission.Pending -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileOrderedMarkerAdmission.NotAdmitted -> {
+                buf.putInt(2)
+                Unit
+            }
+            is MobileOrderedMarkerAdmission.Admitted -> {
+                buf.putInt(3)
+                FfiConverterULong.write(value.`ordinal`, buf)
+                Unit
+            }
+            is MobileOrderedMarkerAdmission.Rejected -> {
+                buf.putInt(4)
+                FfiConverterTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedMarkerWriteState {
+
+    object Initiating : MobileOrderedMarkerWriteState()
+
+
+    data class NotStarted(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure?) : MobileOrderedMarkerWriteState()
+
+    {
+
+
+        companion object
+    }
+
+    data class Started(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure?) : MobileOrderedMarkerWriteState()
+
+    {
+
+
+        companion object
+    }
+
+    data class Settled(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure?) : MobileOrderedMarkerWriteState()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedMarkerWriteState : FfiConverterRustBuffer<MobileOrderedMarkerWriteState>{
+    override fun read(buf: ByteBuffer): MobileOrderedMarkerWriteState {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedMarkerWriteState.Initiating
+            2 -> MobileOrderedMarkerWriteState.NotStarted(
+                FfiConverterOptionalTypeMobilePlatformFailure.read(buf),
+                )
+            3 -> MobileOrderedMarkerWriteState.Started(
+                FfiConverterOptionalTypeMobilePlatformFailure.read(buf),
+                )
+            4 -> MobileOrderedMarkerWriteState.Settled(
+                FfiConverterOptionalTypeMobilePlatformFailure.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedMarkerWriteState): ULong = when(value) {
+        is MobileOrderedMarkerWriteState.Initiating -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileOrderedMarkerWriteState.NotStarted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterOptionalTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+        is MobileOrderedMarkerWriteState.Started -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterOptionalTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+        is MobileOrderedMarkerWriteState.Settled -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterOptionalTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedMarkerWriteState, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedMarkerWriteState.Initiating -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileOrderedMarkerWriteState.NotStarted -> {
+                buf.putInt(2)
+                FfiConverterOptionalTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+            is MobileOrderedMarkerWriteState.Started -> {
+                buf.putInt(3)
+                FfiConverterOptionalTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+            is MobileOrderedMarkerWriteState.Settled -> {
+                buf.putInt(4)
+                FfiConverterOptionalTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedOpenCompletion {
+
+    data class Result(
+        val `slotIdentity`: uniffi.ubm_echo.MobileOrderedSlotIdentity,
+        val `outcome`: uniffi.ubm_echo.MobileOrderedOpenOutcome) : MobileOrderedOpenCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class Retired(
+        val `slotIdentity`: uniffi.ubm_echo.MobileOrderedSlotIdentity) : MobileOrderedOpenCompletion()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedOpenCompletion : FfiConverterRustBuffer<MobileOrderedOpenCompletion>{
+    override fun read(buf: ByteBuffer): MobileOrderedOpenCompletion {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedOpenCompletion.Result(
+                FfiConverterTypeMobileOrderedSlotIdentity.read(buf),
+                FfiConverterTypeMobileOrderedOpenOutcome.read(buf),
+                )
+            2 -> MobileOrderedOpenCompletion.Retired(
+                FfiConverterTypeMobileOrderedSlotIdentity.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedOpenCompletion): ULong = when(value) {
+        is MobileOrderedOpenCompletion.Result -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedSlotIdentity.allocationSize(value.`slotIdentity`)
+                + FfiConverterTypeMobileOrderedOpenOutcome.allocationSize(value.`outcome`)
+            )
+        }
+        is MobileOrderedOpenCompletion.Retired -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedSlotIdentity.allocationSize(value.`slotIdentity`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedOpenCompletion, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedOpenCompletion.Result -> {
+                buf.putInt(1)
+                FfiConverterTypeMobileOrderedSlotIdentity.write(value.`slotIdentity`, buf)
+                FfiConverterTypeMobileOrderedOpenOutcome.write(value.`outcome`, buf)
+                Unit
+            }
+            is MobileOrderedOpenCompletion.Retired -> {
+                buf.putInt(2)
+                FfiConverterTypeMobileOrderedSlotIdentity.write(value.`slotIdentity`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedOpenOutcome {
+
+    object Pending : MobileOrderedOpenOutcome()
+
+
+    data class Opened(
+        val `sourceGeneration`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `members`: List<uniffi.ubm_echo.MobileOrderedRegistration>) : MobileOrderedOpenOutcome()
+
+    {
+
+
+        companion object
+    }
+
+    data class Failed(
+        val `originalFailure`: uniffi.ubm_echo.MobileOrderedFailureV2,
+        val `ownership`: uniffi.ubm_echo.MobileOrderedOwnershipV2) : MobileOrderedOpenOutcome()
+
+    {
+
+
+        companion object
+    }
+
+    data class Indeterminate(
+        val `originalFailureOrReason`: uniffi.ubm_echo.MobileOrderedIndeterminateReason) : MobileOrderedOpenOutcome()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedOpenOutcome : FfiConverterRustBuffer<MobileOrderedOpenOutcome>{
+    override fun read(buf: ByteBuffer): MobileOrderedOpenOutcome {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedOpenOutcome.Pending
+            2 -> MobileOrderedOpenOutcome.Opened(
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterSequenceTypeMobileOrderedRegistration.read(buf),
+                )
+            3 -> MobileOrderedOpenOutcome.Failed(
+                FfiConverterTypeMobileOrderedFailureV2.read(buf),
+                FfiConverterTypeMobileOrderedOwnershipV2.read(buf),
+                )
+            4 -> MobileOrderedOpenOutcome.Indeterminate(
+                FfiConverterTypeMobileOrderedIndeterminateReason.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedOpenOutcome): ULong = when(value) {
+        is MobileOrderedOpenOutcome.Pending -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileOrderedOpenOutcome.Opened -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`sourceGeneration`)
+                + FfiConverterSequenceTypeMobileOrderedRegistration.allocationSize(value.`members`)
+            )
+        }
+        is MobileOrderedOpenOutcome.Failed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedFailureV2.allocationSize(value.`originalFailure`)
+                + FfiConverterTypeMobileOrderedOwnershipV2.allocationSize(value.`ownership`)
+            )
+        }
+        is MobileOrderedOpenOutcome.Indeterminate -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedIndeterminateReason.allocationSize(value.`originalFailureOrReason`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedOpenOutcome, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedOpenOutcome.Pending -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileOrderedOpenOutcome.Opened -> {
+                buf.putInt(2)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`sourceGeneration`, buf)
+                FfiConverterSequenceTypeMobileOrderedRegistration.write(value.`members`, buf)
+                Unit
+            }
+            is MobileOrderedOpenOutcome.Failed -> {
+                buf.putInt(3)
+                FfiConverterTypeMobileOrderedFailureV2.write(value.`originalFailure`, buf)
+                FfiConverterTypeMobileOrderedOwnershipV2.write(value.`ownership`, buf)
+                Unit
+            }
+            is MobileOrderedOpenOutcome.Indeterminate -> {
+                buf.putInt(4)
+                FfiConverterTypeMobileOrderedIndeterminateReason.write(value.`originalFailureOrReason`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedOpenOwnership {
+
+    object NotCreated : MobileOrderedOpenOwnership()
+
+
+    data class Created(
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `members`: List<uniffi.ubm_echo.MobileOrderedRegistration>) : MobileOrderedOpenOwnership()
+
+    {
+
+
+        companion object
+    }
+
+    data class Indeterminate(
+        val `recoveryKey`: kotlin.ULong) : MobileOrderedOpenOwnership()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedOpenOwnership : FfiConverterRustBuffer<MobileOrderedOpenOwnership>{
+    override fun read(buf: ByteBuffer): MobileOrderedOpenOwnership {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedOpenOwnership.NotCreated
+            2 -> MobileOrderedOpenOwnership.Created(
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterSequenceTypeMobileOrderedRegistration.read(buf),
+                )
+            3 -> MobileOrderedOpenOwnership.Indeterminate(
+                FfiConverterULong.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedOpenOwnership): ULong = when(value) {
+        is MobileOrderedOpenOwnership.NotCreated -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileOrderedOpenOwnership.Created -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterSequenceTypeMobileOrderedRegistration.allocationSize(value.`members`)
+            )
+        }
+        is MobileOrderedOpenOwnership.Indeterminate -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`recoveryKey`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedOpenOwnership, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedOpenOwnership.NotCreated -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileOrderedOpenOwnership.Created -> {
+                buf.putInt(2)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterSequenceTypeMobileOrderedRegistration.write(value.`members`, buf)
+                Unit
+            }
+            is MobileOrderedOpenOwnership.Indeterminate -> {
+                buf.putInt(3)
+                FfiConverterULong.write(value.`recoveryKey`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedOwnershipV2 {
+
+    object NotCreated : MobileOrderedOwnershipV2()
+
+
+    data class Created(
+        val `sourceGeneration`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `members`: List<uniffi.ubm_echo.MobileOrderedRegistration>) : MobileOrderedOwnershipV2()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedOwnershipV2 : FfiConverterRustBuffer<MobileOrderedOwnershipV2>{
+    override fun read(buf: ByteBuffer): MobileOrderedOwnershipV2 {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedOwnershipV2.NotCreated
+            2 -> MobileOrderedOwnershipV2.Created(
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterSequenceTypeMobileOrderedRegistration.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedOwnershipV2): ULong = when(value) {
+        is MobileOrderedOwnershipV2.NotCreated -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileOrderedOwnershipV2.Created -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`sourceGeneration`)
+                + FfiConverterSequenceTypeMobileOrderedRegistration.allocationSize(value.`members`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedOwnershipV2, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedOwnershipV2.NotCreated -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileOrderedOwnershipV2.Created -> {
+                buf.putInt(2)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`sourceGeneration`, buf)
+                FfiConverterSequenceTypeMobileOrderedRegistration.write(value.`members`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedRecord {
+
+    data class Value(
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration,
+        val `ordinal`: kotlin.ULong,
+        val `value`: kotlin.ByteArray,
+        val `delivery`: kotlin.String,
+        val `provenance`: kotlin.String) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+    data class Loss(
+        val `scope`: kotlin.String,
+        val `memberId`: kotlin.ULong?,
+        val `unit`: kotlin.String,
+        val `count`: kotlin.ULong?,
+        val `byteCount`: kotlin.ULong?) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+    data class Fence(
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration,
+        val `uncertainTail`: kotlin.Boolean) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+    data class Barrier(
+        val `barrierId`: kotlin.ULong,
+        val `uncertainTail`: kotlin.Boolean) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+    data class Marker(
+        val `markerId`: kotlin.ULong,
+        val `ordinal`: kotlin.ULong) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+    data class Terminal(
+        val `reason`: kotlin.String,
+        val `uncertainTail`: kotlin.Boolean,
+        val `nativeDomain`: kotlin.String?,
+        val `nativeCode`: kotlin.String?,
+        val `failureMember`: uniffi.ubm_echo.MobileOrderedRegistration?,
+        val `rejected`: uniffi.ubm_echo.MobileOrderedRejected?) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+    data class BridgeFailure(
+        val `code`: kotlin.String,
+        val `detail`: kotlin.String) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+    data class SourceFailed(
+        val `uncertainTail`: kotlin.Boolean,
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure,
+        val `nativeDomain`: kotlin.String?,
+        val `nativeCode`: kotlin.String?,
+        val `failureMember`: uniffi.ubm_echo.MobileOrderedRegistration?,
+        val `rejected`: uniffi.ubm_echo.MobileOrderedRejected?) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+    data class SubsequentSourceFailure(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+    object FailureObservationsOmitted : MobileOrderedRecord()
+
+
+    data class SubsequentSourceFailureV2(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure,
+        val `instance`: uniffi.ubm_echo.MobileInstance,
+        val `sourceGeneration`: kotlin.String,
+        val `sourceMember`: kotlin.ULong,
+        val `epoch`: kotlin.ULong,
+        val `batchId`: kotlin.ULong,
+        val `recordIndex`: kotlin.UInt) : MobileOrderedRecord()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedRecord : FfiConverterRustBuffer<MobileOrderedRecord>{
+    override fun read(buf: ByteBuffer): MobileOrderedRecord {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedRecord.Value(
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterByteArray.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            2 -> MobileOrderedRecord.Loss(
+                FfiConverterString.read(buf),
+                FfiConverterOptionalULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterOptionalULong.read(buf),
+                FfiConverterOptionalULong.read(buf),
+                )
+            3 -> MobileOrderedRecord.Fence(
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            4 -> MobileOrderedRecord.Barrier(
+                FfiConverterULong.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            5 -> MobileOrderedRecord.Marker(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            6 -> MobileOrderedRecord.Terminal(
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalTypeMobileOrderedRegistration.read(buf),
+                FfiConverterOptionalTypeMobileOrderedRejected.read(buf),
+                )
+            7 -> MobileOrderedRecord.BridgeFailure(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            8 -> MobileOrderedRecord.SourceFailed(
+                FfiConverterBoolean.read(buf),
+                FfiConverterTypeMobilePlatformFailure.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalTypeMobileOrderedRegistration.read(buf),
+                FfiConverterOptionalTypeMobileOrderedRejected.read(buf),
+                )
+            9 -> MobileOrderedRecord.SubsequentSourceFailure(
+                FfiConverterTypeMobilePlatformFailure.read(buf),
+                )
+            10 -> MobileOrderedRecord.FailureObservationsOmitted
+            11 -> MobileOrderedRecord.SubsequentSourceFailureV2(
+                FfiConverterTypeMobilePlatformFailure.read(buf),
+                FfiConverterTypeMobileInstance.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterUInt.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedRecord): ULong = when(value) {
+        is MobileOrderedRecord.Value -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+                + FfiConverterULong.allocationSize(value.`ordinal`)
+                + FfiConverterByteArray.allocationSize(value.`value`)
+                + FfiConverterString.allocationSize(value.`delivery`)
+                + FfiConverterString.allocationSize(value.`provenance`)
+            )
+        }
+        is MobileOrderedRecord.Loss -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`scope`)
+                + FfiConverterOptionalULong.allocationSize(value.`memberId`)
+                + FfiConverterString.allocationSize(value.`unit`)
+                + FfiConverterOptionalULong.allocationSize(value.`count`)
+                + FfiConverterOptionalULong.allocationSize(value.`byteCount`)
+            )
+        }
+        is MobileOrderedRecord.Fence -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+                + FfiConverterBoolean.allocationSize(value.`uncertainTail`)
+            )
+        }
+        is MobileOrderedRecord.Barrier -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`barrierId`)
+                + FfiConverterBoolean.allocationSize(value.`uncertainTail`)
+            )
+        }
+        is MobileOrderedRecord.Marker -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`markerId`)
+                + FfiConverterULong.allocationSize(value.`ordinal`)
+            )
+        }
+        is MobileOrderedRecord.Terminal -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+                + FfiConverterBoolean.allocationSize(value.`uncertainTail`)
+                + FfiConverterOptionalString.allocationSize(value.`nativeDomain`)
+                + FfiConverterOptionalString.allocationSize(value.`nativeCode`)
+                + FfiConverterOptionalTypeMobileOrderedRegistration.allocationSize(value.`failureMember`)
+                + FfiConverterOptionalTypeMobileOrderedRejected.allocationSize(value.`rejected`)
+            )
+        }
+        is MobileOrderedRecord.BridgeFailure -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`code`)
+                + FfiConverterString.allocationSize(value.`detail`)
+            )
+        }
+        is MobileOrderedRecord.SourceFailed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterBoolean.allocationSize(value.`uncertainTail`)
+                + FfiConverterTypeMobilePlatformFailure.allocationSize(value.`failure`)
+                + FfiConverterOptionalString.allocationSize(value.`nativeDomain`)
+                + FfiConverterOptionalString.allocationSize(value.`nativeCode`)
+                + FfiConverterOptionalTypeMobileOrderedRegistration.allocationSize(value.`failureMember`)
+                + FfiConverterOptionalTypeMobileOrderedRejected.allocationSize(value.`rejected`)
+            )
+        }
+        is MobileOrderedRecord.SubsequentSourceFailure -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+        is MobileOrderedRecord.FailureObservationsOmitted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileOrderedRecord.SubsequentSourceFailureV2 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobilePlatformFailure.allocationSize(value.`failure`)
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+                + FfiConverterString.allocationSize(value.`sourceGeneration`)
+                + FfiConverterULong.allocationSize(value.`sourceMember`)
+                + FfiConverterULong.allocationSize(value.`epoch`)
+                + FfiConverterULong.allocationSize(value.`batchId`)
+                + FfiConverterUInt.allocationSize(value.`recordIndex`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedRecord, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedRecord.Value -> {
+                buf.putInt(1)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                FfiConverterULong.write(value.`ordinal`, buf)
+                FfiConverterByteArray.write(value.`value`, buf)
+                FfiConverterString.write(value.`delivery`, buf)
+                FfiConverterString.write(value.`provenance`, buf)
+                Unit
+            }
+            is MobileOrderedRecord.Loss -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`scope`, buf)
+                FfiConverterOptionalULong.write(value.`memberId`, buf)
+                FfiConverterString.write(value.`unit`, buf)
+                FfiConverterOptionalULong.write(value.`count`, buf)
+                FfiConverterOptionalULong.write(value.`byteCount`, buf)
+                Unit
+            }
+            is MobileOrderedRecord.Fence -> {
+                buf.putInt(3)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                FfiConverterBoolean.write(value.`uncertainTail`, buf)
+                Unit
+            }
+            is MobileOrderedRecord.Barrier -> {
+                buf.putInt(4)
+                FfiConverterULong.write(value.`barrierId`, buf)
+                FfiConverterBoolean.write(value.`uncertainTail`, buf)
+                Unit
+            }
+            is MobileOrderedRecord.Marker -> {
+                buf.putInt(5)
+                FfiConverterULong.write(value.`markerId`, buf)
+                FfiConverterULong.write(value.`ordinal`, buf)
+                Unit
+            }
+            is MobileOrderedRecord.Terminal -> {
+                buf.putInt(6)
+                FfiConverterString.write(value.`reason`, buf)
+                FfiConverterBoolean.write(value.`uncertainTail`, buf)
+                FfiConverterOptionalString.write(value.`nativeDomain`, buf)
+                FfiConverterOptionalString.write(value.`nativeCode`, buf)
+                FfiConverterOptionalTypeMobileOrderedRegistration.write(value.`failureMember`, buf)
+                FfiConverterOptionalTypeMobileOrderedRejected.write(value.`rejected`, buf)
+                Unit
+            }
+            is MobileOrderedRecord.BridgeFailure -> {
+                buf.putInt(7)
+                FfiConverterString.write(value.`code`, buf)
+                FfiConverterString.write(value.`detail`, buf)
+                Unit
+            }
+            is MobileOrderedRecord.SourceFailed -> {
+                buf.putInt(8)
+                FfiConverterBoolean.write(value.`uncertainTail`, buf)
+                FfiConverterTypeMobilePlatformFailure.write(value.`failure`, buf)
+                FfiConverterOptionalString.write(value.`nativeDomain`, buf)
+                FfiConverterOptionalString.write(value.`nativeCode`, buf)
+                FfiConverterOptionalTypeMobileOrderedRegistration.write(value.`failureMember`, buf)
+                FfiConverterOptionalTypeMobileOrderedRejected.write(value.`rejected`, buf)
+                Unit
+            }
+            is MobileOrderedRecord.SubsequentSourceFailure -> {
+                buf.putInt(9)
+                FfiConverterTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+            is MobileOrderedRecord.FailureObservationsOmitted -> {
+                buf.putInt(10)
+                Unit
+            }
+            is MobileOrderedRecord.SubsequentSourceFailureV2 -> {
+                buf.putInt(11)
+                FfiConverterTypeMobilePlatformFailure.write(value.`failure`, buf)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                FfiConverterString.write(value.`sourceGeneration`, buf)
+                FfiConverterULong.write(value.`sourceMember`, buf)
+                FfiConverterULong.write(value.`epoch`, buf)
+                FfiConverterULong.write(value.`batchId`, buf)
+                FfiConverterUInt.write(value.`recordIndex`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileOrderedRejected {
+
+    data class Value(
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration,
+        val `byteCount`: kotlin.ULong) : MobileOrderedRejected()
+
+    {
+
+
+        companion object
+    }
+
+    data class Loss(
+        val `scope`: kotlin.String,
+        val `memberId`: kotlin.ULong?,
+        val `unit`: kotlin.String,
+        val `count`: kotlin.ULong?,
+        val `byteCount`: kotlin.ULong?) : MobileOrderedRejected()
+
+    {
+
+
+        companion object
+    }
+
+    data class Fence(
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration) : MobileOrderedRejected()
+
+    {
+
+
+        companion object
+    }
+
+    data class Barrier(
+        val `barrierId`: kotlin.ULong) : MobileOrderedRejected()
+
+    {
+
+
+        companion object
+    }
+
+    data class Marker(
+        val `markerId`: kotlin.ULong) : MobileOrderedRejected()
+
+    {
+
+
+        companion object
+    }
+
+    object Unmapped : MobileOrderedRejected()
+
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOrderedRejected : FfiConverterRustBuffer<MobileOrderedRejected>{
+    override fun read(buf: ByteBuffer): MobileOrderedRejected {
+        return when(buf.getInt()) {
+            1 -> MobileOrderedRejected.Value(
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            2 -> MobileOrderedRejected.Loss(
+                FfiConverterString.read(buf),
+                FfiConverterOptionalULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterOptionalULong.read(buf),
+                FfiConverterOptionalULong.read(buf),
+                )
+            3 -> MobileOrderedRejected.Fence(
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                )
+            4 -> MobileOrderedRejected.Barrier(
+                FfiConverterULong.read(buf),
+                )
+            5 -> MobileOrderedRejected.Marker(
+                FfiConverterULong.read(buf),
+                )
+            6 -> MobileOrderedRejected.Unmapped
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOrderedRejected): ULong = when(value) {
+        is MobileOrderedRejected.Value -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+                + FfiConverterULong.allocationSize(value.`byteCount`)
+            )
+        }
+        is MobileOrderedRejected.Loss -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`scope`)
+                + FfiConverterOptionalULong.allocationSize(value.`memberId`)
+                + FfiConverterString.allocationSize(value.`unit`)
+                + FfiConverterOptionalULong.allocationSize(value.`count`)
+                + FfiConverterOptionalULong.allocationSize(value.`byteCount`)
+            )
+        }
+        is MobileOrderedRejected.Fence -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+            )
+        }
+        is MobileOrderedRejected.Barrier -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`barrierId`)
+            )
+        }
+        is MobileOrderedRejected.Marker -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`markerId`)
+            )
+        }
+        is MobileOrderedRejected.Unmapped -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: MobileOrderedRejected, buf: ByteBuffer) {
+        when(value) {
+            is MobileOrderedRejected.Value -> {
+                buf.putInt(1)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                FfiConverterULong.write(value.`byteCount`, buf)
+                Unit
+            }
+            is MobileOrderedRejected.Loss -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`scope`, buf)
+                FfiConverterOptionalULong.write(value.`memberId`, buf)
+                FfiConverterString.write(value.`unit`, buf)
+                FfiConverterOptionalULong.write(value.`count`, buf)
+                FfiConverterOptionalULong.write(value.`byteCount`, buf)
+                Unit
+            }
+            is MobileOrderedRejected.Fence -> {
+                buf.putInt(3)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                Unit
+            }
+            is MobileOrderedRejected.Barrier -> {
+                buf.putInt(4)
+                FfiConverterULong.write(value.`barrierId`, buf)
+                Unit
+            }
+            is MobileOrderedRejected.Marker -> {
+                buf.putInt(5)
+                FfiConverterULong.write(value.`markerId`, buf)
+                Unit
+            }
+            is MobileOrderedRejected.Unmapped -> {
+                buf.putInt(6)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+enum class MobileOwnerOutstandingClass {
+
+    ATTACHMENTS,
+    RESERVATIONS,
+    NATIVE_WORK,
+    CALLBACKS,
+    CLEANUP;
+
+
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOwnerOutstandingClass: FfiConverterRustBuffer<MobileOwnerOutstandingClass> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileOwnerOutstandingClass.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: MobileOwnerOutstandingClass) = 4UL
+
+    override fun write(value: MobileOwnerOutstandingClass, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class MobileOwnerRejection {
+
+    WRONG_OWNER,
+    CONFLICTING_RETIREMENT,
+    MALFORMED;
+
+
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOwnerRejection: FfiConverterRustBuffer<MobileOwnerRejection> {
+    override fun read(buf: ByteBuffer) = try {
+        MobileOwnerRejection.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: MobileOwnerRejection) = 4UL
+
+    override fun write(value: MobileOwnerRejection, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+sealed class MobileOwnerRetirementState {
+
+    data class FencedPending(
+        val `outstandingClasses`: List<uniffi.ubm_echo.MobileOwnerOutstandingClass>,
+        val `failures`: List<uniffi.ubm_echo.MobileOrderedFailureV2>) : MobileOwnerRetirementState()
+
+    {
+
+
+        companion object
+    }
+
+    object Quiescent : MobileOwnerRetirementState()
+
+
+    data class Rejected(
+        val `reason`: uniffi.ubm_echo.MobileOwnerRejection) : MobileOwnerRetirementState()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileOwnerRetirementState : FfiConverterRustBuffer<MobileOwnerRetirementState>{
+    override fun read(buf: ByteBuffer): MobileOwnerRetirementState {
+        return when(buf.getInt()) {
+            1 -> MobileOwnerRetirementState.FencedPending(
+                FfiConverterSequenceTypeMobileOwnerOutstandingClass.read(buf),
+                FfiConverterSequenceTypeMobileOrderedFailureV2.read(buf),
+                )
+            2 -> MobileOwnerRetirementState.Quiescent
+            3 -> MobileOwnerRetirementState.Rejected(
+                FfiConverterTypeMobileOwnerRejection.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileOwnerRetirementState): ULong = when(value) {
+        is MobileOwnerRetirementState.FencedPending -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterSequenceTypeMobileOwnerOutstandingClass.allocationSize(value.`outstandingClasses`)
+                + FfiConverterSequenceTypeMobileOrderedFailureV2.allocationSize(value.`failures`)
+            )
+        }
+        is MobileOwnerRetirementState.Quiescent -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileOwnerRetirementState.Rejected -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOwnerRejection.allocationSize(value.`reason`)
+            )
+        }
+    }
+
+    override fun write(value: MobileOwnerRetirementState, buf: ByteBuffer) {
+        when(value) {
+            is MobileOwnerRetirementState.FencedPending -> {
+                buf.putInt(1)
+                FfiConverterSequenceTypeMobileOwnerOutstandingClass.write(value.`outstandingClasses`, buf)
+                FfiConverterSequenceTypeMobileOrderedFailureV2.write(value.`failures`, buf)
+                Unit
+            }
+            is MobileOwnerRetirementState.Quiescent -> {
+                buf.putInt(2)
+                Unit
+            }
+            is MobileOwnerRetirementState.Rejected -> {
+                buf.putInt(3)
+                FfiConverterTypeMobileOwnerRejection.write(value.`reason`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
 sealed class MobileRadioCompletion {
 
     object Unit : MobileRadioCompletion()
@@ -3865,8 +9570,190 @@ sealed class MobileRadioCompletion {
         companion object
     }
 
+    data class DiscoveredScoped(
+        val `services`: List<uniffi.ubm_echo.MobileGattService>,
+        val `identity`: uniffi.ubm_echo.MobileGattSnapshotIdentity) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
     data class NotifyEnabled(
         val `delivery`: kotlin.String) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedEnableReleased(
+        val `kind`: kotlin.String,
+        val `gattStatus`: kotlin.Int?,
+        val `nativeDomain`: kotlin.String?,
+        val `nativeCode`: kotlin.Long?,
+        val `detail`: kotlin.String,
+        val `dispatched`: kotlin.Boolean) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedEnableStatus(
+        val `status`: uniffi.ubm_echo.MobileOrderedEnableStatus) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitReserved(
+        val `permitId`: kotlin.ULong) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityReserved(
+        val `receiptId`: kotlin.ULong) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphReserveStatus(
+        val `status`: uniffi.ubm_echo.MobileGraphReserveStatus) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityOpened(
+        val `authorityId`: kotlin.ULong) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityStatus(
+        val `status`: uniffi.ubm_echo.MobileGraphAuthorityStatus) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermit(
+        val `state`: uniffi.ubm_echo.MobileGraphPermitState) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitInvalidated(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitNotAcquired(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedMarkerWriteStatus(
+        val `status`: uniffi.ubm_echo.MobileOrderedMarkerWriteStatus) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedOpenResultV2(
+        val `slotIdentity`: uniffi.ubm_echo.MobileOrderedSlotIdentity,
+        val `outcome`: uniffi.ubm_echo.MobileOrderedOpenOutcome) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedOpenRetiredV2(
+        val `slotIdentity`: uniffi.ubm_echo.MobileOrderedSlotIdentity) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedOpened(
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `members`: List<uniffi.ubm_echo.MobileOrderedRegistration>) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedOpenFailed(
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure,
+        val `ownership`: uniffi.ubm_echo.MobileOrderedOpenOwnership) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedRegistered(
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedClaim(
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedRecords(
+        val `batchId`: kotlin.ULong?,
+        val `records`: List<uniffi.ubm_echo.MobileOrderedRecord>) : MobileRadioCompletion()
 
     {
 
@@ -4030,6 +9917,17 @@ sealed class MobileRadioCompletion {
         companion object
     }
 
+    data class OwnerRetirement(
+        val `ownerIncarnation`: kotlin.String,
+        val `retirementId`: kotlin.String,
+        val `state`: uniffi.ubm_echo.MobileOwnerRetirementState) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
 
 
 
@@ -4060,68 +9958,141 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
             5 -> MobileRadioCompletion.Discovered(
                 FfiConverterSequenceTypeMobileGattService.read(buf),
                 )
-            6 -> MobileRadioCompletion.NotifyEnabled(
+            6 -> MobileRadioCompletion.DiscoveredScoped(
+                FfiConverterSequenceTypeMobileGattService.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                )
+            7 -> MobileRadioCompletion.NotifyEnabled(
                 FfiConverterString.read(buf),
                 )
-            7 -> MobileRadioCompletion.Mtu(
-                FfiConverterOptionalUShort.read(buf),
-                )
-            8 -> MobileRadioCompletion.WriteLimits(
-                FfiConverterUShort.read(buf),
-                FfiConverterUShort.read(buf),
-                )
-            9 -> MobileRadioCompletion.Ready(
-                FfiConverterBoolean.read(buf),
-                )
-            10 -> MobileRadioCompletion.Rssi(
-                FfiConverterShort.read(buf),
-                )
-            11 -> MobileRadioCompletion.Accepted(
-                FfiConverterBoolean.read(buf),
-                )
-            12 -> MobileRadioCompletion.Phy(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            13 -> MobileRadioCompletion.PhyRequest(
-                FfiConverterBoolean.read(buf),
-                FfiConverterOptionalString.read(buf),
-                FfiConverterOptionalString.read(buf),
-                )
-            14 -> MobileRadioCompletion.Security(
-                FfiConverterTypeMobileSecurityState.read(buf),
-                )
-            15 -> MobileRadioCompletion.BondedPeers(
-                FfiConverterSequenceTypeMobilePeerName.read(buf),
-                )
-            16 -> MobileRadioCompletion.ConnectedPeers(
-                FfiConverterSequenceTypeMobilePeerName.read(buf),
-                )
-            17 -> MobileRadioCompletion.ResolvedPeer(
-                FfiConverterOptionalTypeMobilePeerName.read(buf),
-                )
-            18 -> MobileRadioCompletion.Lease(
-                FfiConverterString.read(buf),
-                )
-            19 -> MobileRadioCompletion.Companion(
-                FfiConverterLong.read(buf),
-                FfiConverterOptionalString.read(buf),
-                FfiConverterOptionalString.read(buf),
-                FfiConverterBoolean.read(buf),
-                )
-            20 -> MobileRadioCompletion.CompanionList(
-                FfiConverterSequenceTypeMobileCompanionRecord.read(buf),
-                )
-            21 -> MobileRadioCompletion.Closed(
-                FfiConverterSequenceTypeMobileCloseFailure.read(buf),
-                )
-            22 -> MobileRadioCompletion.Failed(
+            8 -> MobileRadioCompletion.OrderedEnableReleased(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalInt.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalLong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
+                )
+            9 -> MobileRadioCompletion.OrderedEnableStatus(
+                FfiConverterTypeMobileOrderedEnableStatus.read(buf),
+                )
+            10 -> MobileRadioCompletion.OrderedGraphPermitReserved(
+                FfiConverterULong.read(buf),
+                )
+            11 -> MobileRadioCompletion.OrderedGraphAuthorityReserved(
+                FfiConverterULong.read(buf),
+                )
+            12 -> MobileRadioCompletion.OrderedGraphReserveStatus(
+                FfiConverterTypeMobileGraphReserveStatus.read(buf),
+                )
+            13 -> MobileRadioCompletion.OrderedGraphAuthorityOpened(
+                FfiConverterULong.read(buf),
+                )
+            14 -> MobileRadioCompletion.OrderedGraphAuthorityStatus(
+                FfiConverterTypeMobileGraphAuthorityStatus.read(buf),
+                )
+            15 -> MobileRadioCompletion.OrderedGraphPermit(
+                FfiConverterTypeMobileGraphPermitState.read(buf),
+                )
+            16 -> MobileRadioCompletion.OrderedGraphPermitInvalidated(
+                FfiConverterTypeMobilePlatformFailure.read(buf),
+                )
+            17 -> MobileRadioCompletion.OrderedGraphPermitNotAcquired(
+                FfiConverterTypeMobilePlatformFailure.read(buf),
+                )
+            18 -> MobileRadioCompletion.OrderedMarkerWriteStatus(
+                FfiConverterTypeMobileOrderedMarkerWriteStatus.read(buf),
+                )
+            19 -> MobileRadioCompletion.OrderedOpenResultV2(
+                FfiConverterTypeMobileOrderedSlotIdentity.read(buf),
+                FfiConverterTypeMobileOrderedOpenOutcome.read(buf),
+                )
+            20 -> MobileRadioCompletion.OrderedOpenRetiredV2(
+                FfiConverterTypeMobileOrderedSlotIdentity.read(buf),
+                )
+            21 -> MobileRadioCompletion.OrderedOpened(
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterSequenceTypeMobileOrderedRegistration.read(buf),
+                )
+            22 -> MobileRadioCompletion.OrderedOpenFailed(
+                FfiConverterTypeMobilePlatformFailure.read(buf),
+                FfiConverterTypeMobileOrderedOpenOwnership.read(buf),
+                )
+            23 -> MobileRadioCompletion.OrderedRegistered(
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                )
+            24 -> MobileRadioCompletion.OrderedClaim(
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                )
+            25 -> MobileRadioCompletion.OrderedRecords(
+                FfiConverterOptionalULong.read(buf),
+                FfiConverterSequenceTypeMobileOrderedRecord.read(buf),
+                )
+            26 -> MobileRadioCompletion.Mtu(
+                FfiConverterOptionalUShort.read(buf),
+                )
+            27 -> MobileRadioCompletion.WriteLimits(
+                FfiConverterUShort.read(buf),
+                FfiConverterUShort.read(buf),
+                )
+            28 -> MobileRadioCompletion.Ready(
+                FfiConverterBoolean.read(buf),
+                )
+            29 -> MobileRadioCompletion.Rssi(
+                FfiConverterShort.read(buf),
+                )
+            30 -> MobileRadioCompletion.Accepted(
+                FfiConverterBoolean.read(buf),
+                )
+            31 -> MobileRadioCompletion.Phy(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            32 -> MobileRadioCompletion.PhyRequest(
+                FfiConverterBoolean.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            33 -> MobileRadioCompletion.Security(
+                FfiConverterTypeMobileSecurityState.read(buf),
+                )
+            34 -> MobileRadioCompletion.BondedPeers(
+                FfiConverterSequenceTypeMobilePeerName.read(buf),
+                )
+            35 -> MobileRadioCompletion.ConnectedPeers(
+                FfiConverterSequenceTypeMobilePeerName.read(buf),
+                )
+            36 -> MobileRadioCompletion.ResolvedPeer(
+                FfiConverterOptionalTypeMobilePeerName.read(buf),
+                )
+            37 -> MobileRadioCompletion.Lease(
+                FfiConverterString.read(buf),
+                )
+            38 -> MobileRadioCompletion.Companion(
+                FfiConverterLong.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            39 -> MobileRadioCompletion.CompanionList(
+                FfiConverterSequenceTypeMobileCompanionRecord.read(buf),
+                )
+            40 -> MobileRadioCompletion.Closed(
+                FfiConverterSequenceTypeMobileCloseFailure.read(buf),
+                )
+            41 -> MobileRadioCompletion.Failed(
+                FfiConverterString.read(buf),
+                FfiConverterOptionalInt.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalLong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            42 -> MobileRadioCompletion.OwnerRetirement(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileOwnerRetirementState.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
@@ -4163,11 +10134,155 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 + FfiConverterSequenceTypeMobileGattService.allocationSize(value.`services`)
             )
         }
+        is MobileRadioCompletion.DiscoveredScoped -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterSequenceTypeMobileGattService.allocationSize(value.`services`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`identity`)
+            )
+        }
         is MobileRadioCompletion.NotifyEnabled -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`delivery`)
+            )
+        }
+        is MobileRadioCompletion.OrderedEnableReleased -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`kind`)
+                + FfiConverterOptionalInt.allocationSize(value.`gattStatus`)
+                + FfiConverterOptionalString.allocationSize(value.`nativeDomain`)
+                + FfiConverterOptionalLong.allocationSize(value.`nativeCode`)
+                + FfiConverterString.allocationSize(value.`detail`)
+                + FfiConverterBoolean.allocationSize(value.`dispatched`)
+            )
+        }
+        is MobileRadioCompletion.OrderedEnableStatus -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedEnableStatus.allocationSize(value.`status`)
+            )
+        }
+        is MobileRadioCompletion.OrderedGraphPermitReserved -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`permitId`)
+            )
+        }
+        is MobileRadioCompletion.OrderedGraphAuthorityReserved -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`receiptId`)
+            )
+        }
+        is MobileRadioCompletion.OrderedGraphReserveStatus -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileGraphReserveStatus.allocationSize(value.`status`)
+            )
+        }
+        is MobileRadioCompletion.OrderedGraphAuthorityOpened -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+            )
+        }
+        is MobileRadioCompletion.OrderedGraphAuthorityStatus -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileGraphAuthorityStatus.allocationSize(value.`status`)
+            )
+        }
+        is MobileRadioCompletion.OrderedGraphPermit -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileGraphPermitState.allocationSize(value.`state`)
+            )
+        }
+        is MobileRadioCompletion.OrderedGraphPermitInvalidated -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+        is MobileRadioCompletion.OrderedGraphPermitNotAcquired -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+        is MobileRadioCompletion.OrderedMarkerWriteStatus -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedMarkerWriteStatus.allocationSize(value.`status`)
+            )
+        }
+        is MobileRadioCompletion.OrderedOpenResultV2 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedSlotIdentity.allocationSize(value.`slotIdentity`)
+                + FfiConverterTypeMobileOrderedOpenOutcome.allocationSize(value.`outcome`)
+            )
+        }
+        is MobileRadioCompletion.OrderedOpenRetiredV2 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedSlotIdentity.allocationSize(value.`slotIdentity`)
+            )
+        }
+        is MobileRadioCompletion.OrderedOpened -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterSequenceTypeMobileOrderedRegistration.allocationSize(value.`members`)
+            )
+        }
+        is MobileRadioCompletion.OrderedOpenFailed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobilePlatformFailure.allocationSize(value.`failure`)
+                + FfiConverterTypeMobileOrderedOpenOwnership.allocationSize(value.`ownership`)
+            )
+        }
+        is MobileRadioCompletion.OrderedRegistered -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+            )
+        }
+        is MobileRadioCompletion.OrderedClaim -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+            )
+        }
+        is MobileRadioCompletion.OrderedRecords -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterOptionalULong.allocationSize(value.`batchId`)
+                + FfiConverterSequenceTypeMobileOrderedRecord.allocationSize(value.`records`)
             )
         }
         is MobileRadioCompletion.Mtu -> {
@@ -4294,6 +10409,15 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 + FfiConverterBoolean.allocationSize(value.`dispatched`)
             )
         }
+        is MobileRadioCompletion.OwnerRetirement -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`ownerIncarnation`)
+                + FfiConverterString.allocationSize(value.`retirementId`)
+                + FfiConverterTypeMobileOwnerRetirementState.allocationSize(value.`state`)
+            )
+        }
     }
 
     override fun write(value: MobileRadioCompletion, buf: ByteBuffer) {
@@ -4323,77 +10447,183 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 FfiConverterSequenceTypeMobileGattService.write(value.`services`, buf)
                 Unit
             }
-            is MobileRadioCompletion.NotifyEnabled -> {
+            is MobileRadioCompletion.DiscoveredScoped -> {
                 buf.putInt(6)
+                FfiConverterSequenceTypeMobileGattService.write(value.`services`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`identity`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.NotifyEnabled -> {
+                buf.putInt(7)
                 FfiConverterString.write(value.`delivery`, buf)
                 Unit
             }
+            is MobileRadioCompletion.OrderedEnableReleased -> {
+                buf.putInt(8)
+                FfiConverterString.write(value.`kind`, buf)
+                FfiConverterOptionalInt.write(value.`gattStatus`, buf)
+                FfiConverterOptionalString.write(value.`nativeDomain`, buf)
+                FfiConverterOptionalLong.write(value.`nativeCode`, buf)
+                FfiConverterString.write(value.`detail`, buf)
+                FfiConverterBoolean.write(value.`dispatched`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedEnableStatus -> {
+                buf.putInt(9)
+                FfiConverterTypeMobileOrderedEnableStatus.write(value.`status`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedGraphPermitReserved -> {
+                buf.putInt(10)
+                FfiConverterULong.write(value.`permitId`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedGraphAuthorityReserved -> {
+                buf.putInt(11)
+                FfiConverterULong.write(value.`receiptId`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedGraphReserveStatus -> {
+                buf.putInt(12)
+                FfiConverterTypeMobileGraphReserveStatus.write(value.`status`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedGraphAuthorityOpened -> {
+                buf.putInt(13)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedGraphAuthorityStatus -> {
+                buf.putInt(14)
+                FfiConverterTypeMobileGraphAuthorityStatus.write(value.`status`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedGraphPermit -> {
+                buf.putInt(15)
+                FfiConverterTypeMobileGraphPermitState.write(value.`state`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedGraphPermitInvalidated -> {
+                buf.putInt(16)
+                FfiConverterTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedGraphPermitNotAcquired -> {
+                buf.putInt(17)
+                FfiConverterTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedMarkerWriteStatus -> {
+                buf.putInt(18)
+                FfiConverterTypeMobileOrderedMarkerWriteStatus.write(value.`status`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedOpenResultV2 -> {
+                buf.putInt(19)
+                FfiConverterTypeMobileOrderedSlotIdentity.write(value.`slotIdentity`, buf)
+                FfiConverterTypeMobileOrderedOpenOutcome.write(value.`outcome`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedOpenRetiredV2 -> {
+                buf.putInt(20)
+                FfiConverterTypeMobileOrderedSlotIdentity.write(value.`slotIdentity`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedOpened -> {
+                buf.putInt(21)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterSequenceTypeMobileOrderedRegistration.write(value.`members`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedOpenFailed -> {
+                buf.putInt(22)
+                FfiConverterTypeMobilePlatformFailure.write(value.`failure`, buf)
+                FfiConverterTypeMobileOrderedOpenOwnership.write(value.`ownership`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedRegistered -> {
+                buf.putInt(23)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedClaim -> {
+                buf.putInt(24)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OrderedRecords -> {
+                buf.putInt(25)
+                FfiConverterOptionalULong.write(value.`batchId`, buf)
+                FfiConverterSequenceTypeMobileOrderedRecord.write(value.`records`, buf)
+                Unit
+            }
             is MobileRadioCompletion.Mtu -> {
-                buf.putInt(7)
+                buf.putInt(26)
                 FfiConverterOptionalUShort.write(value.`mtu`, buf)
                 Unit
             }
             is MobileRadioCompletion.WriteLimits -> {
-                buf.putInt(8)
+                buf.putInt(27)
                 FfiConverterUShort.write(value.`withResponse`, buf)
                 FfiConverterUShort.write(value.`withoutResponse`, buf)
                 Unit
             }
             is MobileRadioCompletion.Ready -> {
-                buf.putInt(9)
+                buf.putInt(28)
                 FfiConverterBoolean.write(value.`ready`, buf)
                 Unit
             }
             is MobileRadioCompletion.Rssi -> {
-                buf.putInt(10)
+                buf.putInt(29)
                 FfiConverterShort.write(value.`rssi`, buf)
                 Unit
             }
             is MobileRadioCompletion.Accepted -> {
-                buf.putInt(11)
+                buf.putInt(30)
                 FfiConverterBoolean.write(value.`accepted`, buf)
                 Unit
             }
             is MobileRadioCompletion.Phy -> {
-                buf.putInt(12)
+                buf.putInt(31)
                 FfiConverterString.write(value.`tx`, buf)
                 FfiConverterString.write(value.`rx`, buf)
                 Unit
             }
             is MobileRadioCompletion.PhyRequest -> {
-                buf.putInt(13)
+                buf.putInt(32)
                 FfiConverterBoolean.write(value.`accepted`, buf)
                 FfiConverterOptionalString.write(value.`tx`, buf)
                 FfiConverterOptionalString.write(value.`rx`, buf)
                 Unit
             }
             is MobileRadioCompletion.Security -> {
-                buf.putInt(14)
+                buf.putInt(33)
                 FfiConverterTypeMobileSecurityState.write(value.`state`, buf)
                 Unit
             }
             is MobileRadioCompletion.BondedPeers -> {
-                buf.putInt(15)
+                buf.putInt(34)
                 FfiConverterSequenceTypeMobilePeerName.write(value.`peers`, buf)
                 Unit
             }
             is MobileRadioCompletion.ConnectedPeers -> {
-                buf.putInt(16)
+                buf.putInt(35)
                 FfiConverterSequenceTypeMobilePeerName.write(value.`peers`, buf)
                 Unit
             }
             is MobileRadioCompletion.ResolvedPeer -> {
-                buf.putInt(17)
+                buf.putInt(36)
                 FfiConverterOptionalTypeMobilePeerName.write(value.`peer`, buf)
                 Unit
             }
             is MobileRadioCompletion.Lease -> {
-                buf.putInt(18)
+                buf.putInt(37)
                 FfiConverterString.write(value.`leaseId`, buf)
                 Unit
             }
             is MobileRadioCompletion.Companion -> {
-                buf.putInt(19)
+                buf.putInt(38)
                 FfiConverterLong.write(value.`associationId`, buf)
                 FfiConverterOptionalString.write(value.`peerId`, buf)
                 FfiConverterOptionalString.write(value.`displayName`, buf)
@@ -4401,23 +10631,30 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 Unit
             }
             is MobileRadioCompletion.CompanionList -> {
-                buf.putInt(20)
+                buf.putInt(39)
                 FfiConverterSequenceTypeMobileCompanionRecord.write(value.`records`, buf)
                 Unit
             }
             is MobileRadioCompletion.Closed -> {
-                buf.putInt(21)
+                buf.putInt(40)
                 FfiConverterSequenceTypeMobileCloseFailure.write(value.`failures`, buf)
                 Unit
             }
             is MobileRadioCompletion.Failed -> {
-                buf.putInt(22)
+                buf.putInt(41)
                 FfiConverterString.write(value.`kind`, buf)
                 FfiConverterOptionalInt.write(value.`gattStatus`, buf)
                 FfiConverterOptionalString.write(value.`nativeDomain`, buf)
                 FfiConverterOptionalLong.write(value.`nativeCode`, buf)
                 FfiConverterString.write(value.`detail`, buf)
                 FfiConverterBoolean.write(value.`dispatched`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.OwnerRetirement -> {
+                buf.putInt(42)
+                FfiConverterString.write(value.`ownerIncarnation`, buf)
+                FfiConverterString.write(value.`retirementId`, buf)
+                FfiConverterTypeMobileOwnerRetirementState.write(value.`state`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -4475,6 +10712,38 @@ sealed class MobileRadioIngress {
         val `instance`: uniffi.ubm_echo.MobileInstance,
         val `epoch`: kotlin.ULong,
         val `value`: kotlin.ByteArray) : MobileRadioIngress()
+
+    {
+
+
+        companion object
+    }
+
+    data class NotificationSourceFailed(
+        val `version`: kotlin.UInt,
+        val `instance`: uniffi.ubm_echo.MobileInstance,
+        val `epoch`: kotlin.ULong,
+        val `failure`: uniffi.ubm_echo.MobilePlatformFailure) : MobileRadioIngress()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedWake(
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong) : MobileRadioIngress()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedWakeFailure(
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong) : MobileRadioIngress()
 
     {
 
@@ -4577,24 +10846,38 @@ public object FfiConverterTypeMobileRadioIngress : FfiConverterRustBuffer<Mobile
                 FfiConverterULong.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            6 -> MobileRadioIngress.AdapterState(
+            6 -> MobileRadioIngress.NotificationSourceFailed(
+                FfiConverterUInt.read(buf),
+                FfiConverterTypeMobileInstance.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobilePlatformFailure.read(buf),
+                )
+            7 -> MobileRadioIngress.OrderedWake(
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            8 -> MobileRadioIngress.OrderedWakeFailure(
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            9 -> MobileRadioIngress.AdapterState(
                 FfiConverterTypeMobileAdapterSnapshot.read(buf),
                 )
-            7 -> MobileRadioIngress.ScanFailed(
+            10 -> MobileRadioIngress.ScanFailed(
                 FfiConverterString.read(buf),
                 )
-            8 -> MobileRadioIngress.SecurityChanged(
+            11 -> MobileRadioIngress.SecurityChanged(
                 FfiConverterString.read(buf),
                 FfiConverterTypeMobileSecurityState.read(buf),
                 )
-            9 -> MobileRadioIngress.WriteReadiness(
+            12 -> MobileRadioIngress.WriteReadiness(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            10 -> MobileRadioIngress.Restored(
+            13 -> MobileRadioIngress.Restored(
                 FfiConverterSequenceTypeMobileRestoredPeer.read(buf),
                 )
-            11 -> MobileRadioIngress.Dropped(
+            14 -> MobileRadioIngress.Dropped(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
@@ -4643,6 +10926,32 @@ public object FfiConverterTypeMobileRadioIngress : FfiConverterRustBuffer<Mobile
                 + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
                 + FfiConverterULong.allocationSize(value.`epoch`)
                 + FfiConverterByteArray.allocationSize(value.`value`)
+            )
+        }
+        is MobileRadioIngress.NotificationSourceFailed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterUInt.allocationSize(value.`version`)
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+                + FfiConverterULong.allocationSize(value.`epoch`)
+                + FfiConverterTypeMobilePlatformFailure.allocationSize(value.`failure`)
+            )
+        }
+        is MobileRadioIngress.OrderedWake -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+            )
+        }
+        is MobileRadioIngress.OrderedWakeFailure -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
             )
         }
         is MobileRadioIngress.AdapterState -> {
@@ -4726,35 +11035,55 @@ public object FfiConverterTypeMobileRadioIngress : FfiConverterRustBuffer<Mobile
                 FfiConverterByteArray.write(value.`value`, buf)
                 Unit
             }
-            is MobileRadioIngress.AdapterState -> {
+            is MobileRadioIngress.NotificationSourceFailed -> {
                 buf.putInt(6)
+                FfiConverterUInt.write(value.`version`, buf)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                FfiConverterULong.write(value.`epoch`, buf)
+                FfiConverterTypeMobilePlatformFailure.write(value.`failure`, buf)
+                Unit
+            }
+            is MobileRadioIngress.OrderedWake -> {
+                buf.putInt(7)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                Unit
+            }
+            is MobileRadioIngress.OrderedWakeFailure -> {
+                buf.putInt(8)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                Unit
+            }
+            is MobileRadioIngress.AdapterState -> {
+                buf.putInt(9)
                 FfiConverterTypeMobileAdapterSnapshot.write(value.`snapshot`, buf)
                 Unit
             }
             is MobileRadioIngress.ScanFailed -> {
-                buf.putInt(7)
+                buf.putInt(10)
                 FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is MobileRadioIngress.SecurityChanged -> {
-                buf.putInt(8)
+                buf.putInt(11)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterTypeMobileSecurityState.write(value.`state`, buf)
                 Unit
             }
             is MobileRadioIngress.WriteReadiness -> {
-                buf.putInt(9)
+                buf.putInt(12)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterBoolean.write(value.`ready`, buf)
                 Unit
             }
             is MobileRadioIngress.Restored -> {
-                buf.putInt(10)
+                buf.putInt(13)
                 FfiConverterSequenceTypeMobileRestoredPeer.write(value.`peers`, buf)
                 Unit
             }
             is MobileRadioIngress.Dropped -> {
-                buf.putInt(11)
+                buf.putInt(14)
                 FfiConverterString.write(value.`ingressClass`, buf)
                 FfiConverterString.write(value.`detail`, buf)
                 Unit
@@ -4896,9 +11225,515 @@ sealed class MobileRadioRequest {
         companion object
     }
 
+    data class OrderedEnableNotifications(
+        val `id`: kotlin.ULong,
+        val `activation`: uniffi.ubm_echo.MobileOrderedActivation,
+        val `requested`: kotlin.String?,
+        val `preferred`: kotlin.String?) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedDisableNotifications(
+        val `id`: kotlin.ULong,
+        val `activation`: uniffi.ubm_echo.MobileOrderedActivation) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedEnableSettlement(
+        val `id`: kotlin.ULong,
+        val `activation`: uniffi.ubm_echo.MobileOrderedActivation) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedForgetEnableReceipt(
+        val `id`: kotlin.ULong,
+        val `activation`: uniffi.ubm_echo.MobileOrderedActivation) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
     data class DisableNotifications(
         val `id`: kotlin.ULong,
-        val `instance`: uniffi.ubm_echo.MobileInstance) : MobileRadioRequest()
+        val `instance`: uniffi.ubm_echo.MobileInstance,
+        val `epoch`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedOpenV2(
+        val `id`: kotlin.ULong,
+        val `identity`: uniffi.ubm_echo.MobileOrderedOpenIdentity) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedRecoverOpenV2(
+        val `id`: kotlin.ULong,
+        val `identity`: uniffi.ubm_echo.MobileOrderedOpenIdentity) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedAcknowledgeOpenV2(
+        val `id`: kotlin.ULong,
+        val `identity`: uniffi.ubm_echo.MobileOrderedOpenIdentity) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedOpen(
+        val `id`: kotlin.ULong,
+        val `groupId`: kotlin.ULong,
+        val `connectionGeneration`: kotlin.String,
+        val `databaseGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity,
+        val `members`: List<uniffi.ubm_echo.MobileOrderedMember>,
+        val `itemCapacity`: kotlin.UInt,
+        val `byteCapacity`: kotlin.UInt) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedRecoverOpen(
+        val `id`: kotlin.ULong,
+        val `groupId`: kotlin.ULong,
+        val `openRequestId`: kotlin.ULong,
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedAcknowledgeOpen(
+        val `id`: kotlin.ULong,
+        val `version`: kotlin.UInt,
+        val `groupId`: kotlin.ULong,
+        val `openRequestId`: kotlin.ULong,
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedRegister(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedRetire(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedDrain(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedBarrier(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `barrierId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityReserve(
+        val `id`: kotlin.ULong,
+        val `request`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityReserveStatus(
+        val `id`: kotlin.ULong,
+        val `request`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityReserveFence(
+        val `id`: kotlin.ULong,
+        val `request`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityReserveForget(
+        val `id`: kotlin.ULong,
+        val `request`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityOpen(
+        val `id`: kotlin.ULong,
+        val `receiptId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityStatus(
+        val `id`: kotlin.ULong,
+        val `receiptId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityFenceOpen(
+        val `id`: kotlin.ULong,
+        val `receiptId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityForgetOpen(
+        val `id`: kotlin.ULong,
+        val `receiptId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityClose(
+        val `id`: kotlin.ULong,
+        val `authorityId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphAuthorityForget(
+        val `id`: kotlin.ULong,
+        val `authorityId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitReserve(
+        val `id`: kotlin.ULong,
+        val `authorityId`: kotlin.ULong,
+        val `request`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `connectionGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitReserveStatus(
+        val `id`: kotlin.ULong,
+        val `authorityId`: kotlin.ULong,
+        val `request`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `connectionGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitReserveFence(
+        val `id`: kotlin.ULong,
+        val `authorityId`: kotlin.ULong,
+        val `request`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `connectionGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitForgetRequest(
+        val `id`: kotlin.ULong,
+        val `authorityId`: kotlin.ULong,
+        val `request`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `connectionGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitAcquire(
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `connectionGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity,
+        val `authorityId`: kotlin.ULong,
+        val `permitId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitRelease(
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `connectionGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity,
+        val `authorityId`: kotlin.ULong,
+        val `permitId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitCommit(
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `connectionGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity,
+        val `authorityId`: kotlin.ULong,
+        val `permitId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedGraphPermitForget(
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `connectionGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity,
+        val `authorityId`: kotlin.ULong,
+        val `permitId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedMarkerWrite(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `markerId`: kotlin.ULong,
+        val `connectionGeneration`: kotlin.String,
+        val `snapshotIdentity`: uniffi.ubm_echo.MobileGattSnapshotIdentity,
+        val `instance`: uniffi.ubm_echo.MobileInstance,
+        val `value`: kotlin.ByteArray,
+        val `withResponse`: kotlin.Boolean) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedMarkerWriteSettlement(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `markerId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedCancelMarkerWrite(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `markerId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedForgetMarkerWriteReceipt(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `markerId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedAcknowledgeBatch(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `batchId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedClose(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedSeal(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedRetainClaim(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedConfirmCleanup(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `member`: uniffi.ubm_echo.MobileOrderedRegistration) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedRemove(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedForgetRemovalReceipt(
+        val `id`: kotlin.ULong,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong) : MobileRadioRequest()
 
     {
 
@@ -5154,6 +11989,53 @@ sealed class MobileRadioRequest {
         companion object
     }
 
+    data class OwnerFence(
+        val `id`: kotlin.ULong,
+        val `ownerIncarnation`: kotlin.String,
+        val `retirementId`: kotlin.String) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OwnerStatus(
+        val `id`: kotlin.ULong,
+        val `ownerIncarnation`: kotlin.String,
+        val `retirementId`: kotlin.String) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedDrainV2(
+        val `id`: kotlin.ULong,
+        val `version`: kotlin.UInt,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class OrderedAcknowledgeBatchV2(
+        val `id`: kotlin.ULong,
+        val `version`: kotlin.UInt,
+        val `generation`: uniffi.ubm_echo.MobileOrderedGeneration,
+        val `groupId`: kotlin.ULong,
+        val `batchId`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
 
 
 
@@ -5231,112 +12113,383 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            12 -> MobileRadioRequest.DisableNotifications(
+            12 -> MobileRadioRequest.OrderedEnableNotifications(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedActivation.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            13 -> MobileRadioRequest.OrderedDisableNotifications(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedActivation.read(buf),
+                )
+            14 -> MobileRadioRequest.OrderedEnableSettlement(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedActivation.read(buf),
+                )
+            15 -> MobileRadioRequest.OrderedForgetEnableReceipt(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedActivation.read(buf),
+                )
+            16 -> MobileRadioRequest.DisableNotifications(
                 FfiConverterULong.read(buf),
                 FfiConverterTypeMobileInstance.read(buf),
+                FfiConverterULong.read(buf),
                 )
-            13 -> MobileRadioRequest.ReadMtu(
+            17 -> MobileRadioRequest.OrderedOpenV2(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedOpenIdentity.read(buf),
+                )
+            18 -> MobileRadioRequest.OrderedRecoverOpenV2(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedOpenIdentity.read(buf),
+                )
+            19 -> MobileRadioRequest.OrderedAcknowledgeOpenV2(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedOpenIdentity.read(buf),
+                )
+            20 -> MobileRadioRequest.OrderedOpen(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                FfiConverterSequenceTypeMobileOrderedMember.read(buf),
+                FfiConverterUInt.read(buf),
+                FfiConverterUInt.read(buf),
+                )
+            21 -> MobileRadioRequest.OrderedRecoverOpen(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            14 -> MobileRadioRequest.ReadWriteLimits(
+            22 -> MobileRadioRequest.OrderedAcknowledgeOpen(
+                FfiConverterULong.read(buf),
+                FfiConverterUInt.read(buf),
+                FfiConverterULong.read(buf),
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            15 -> MobileRadioRequest.ReadWriteReadiness(
+            23 -> MobileRadioRequest.OrderedRegister(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                )
+            24 -> MobileRadioRequest.OrderedRetire(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                )
+            25 -> MobileRadioRequest.OrderedDrain(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            26 -> MobileRadioRequest.OrderedBarrier(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            27 -> MobileRadioRequest.OrderedGraphAuthorityReserve(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            28 -> MobileRadioRequest.OrderedGraphAuthorityReserveStatus(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            29 -> MobileRadioRequest.OrderedGraphAuthorityReserveFence(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            30 -> MobileRadioRequest.OrderedGraphAuthorityReserveForget(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            31 -> MobileRadioRequest.OrderedGraphAuthorityOpen(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            32 -> MobileRadioRequest.OrderedGraphAuthorityStatus(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            33 -> MobileRadioRequest.OrderedGraphAuthorityFenceOpen(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            34 -> MobileRadioRequest.OrderedGraphAuthorityForgetOpen(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            35 -> MobileRadioRequest.OrderedGraphAuthorityClose(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            36 -> MobileRadioRequest.OrderedGraphAuthorityForget(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            37 -> MobileRadioRequest.OrderedGraphPermitReserve(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                )
+            38 -> MobileRadioRequest.OrderedGraphPermitReserveStatus(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                )
+            39 -> MobileRadioRequest.OrderedGraphPermitReserveFence(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                )
+            40 -> MobileRadioRequest.OrderedGraphPermitForgetRequest(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                )
+            41 -> MobileRadioRequest.OrderedGraphPermitAcquire(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            42 -> MobileRadioRequest.OrderedGraphPermitRelease(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            43 -> MobileRadioRequest.OrderedGraphPermitCommit(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            44 -> MobileRadioRequest.OrderedGraphPermitForget(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            45 -> MobileRadioRequest.OrderedMarkerWrite(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                FfiConverterTypeMobileInstance.read(buf),
+                FfiConverterByteArray.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            46 -> MobileRadioRequest.OrderedMarkerWriteSettlement(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            47 -> MobileRadioRequest.OrderedCancelMarkerWrite(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            48 -> MobileRadioRequest.OrderedForgetMarkerWriteReceipt(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            49 -> MobileRadioRequest.OrderedAcknowledgeBatch(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            50 -> MobileRadioRequest.OrderedClose(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            51 -> MobileRadioRequest.OrderedSeal(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            52 -> MobileRadioRequest.OrderedRetainClaim(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                )
+            53 -> MobileRadioRequest.OrderedConfirmCleanup(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedRegistration.read(buf),
+                )
+            54 -> MobileRadioRequest.OrderedRemove(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            55 -> MobileRadioRequest.OrderedForgetRemovalReceipt(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            56 -> MobileRadioRequest.ReadMtu(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            16 -> MobileRadioRequest.RequestMtu(
+            57 -> MobileRadioRequest.ReadWriteLimits(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            58 -> MobileRadioRequest.ReadWriteReadiness(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            59 -> MobileRadioRequest.RequestMtu(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterUShort.read(buf),
                 )
-            17 -> MobileRadioRequest.ReadRssi(
+            60 -> MobileRadioRequest.ReadRssi(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            18 -> MobileRadioRequest.RequestConnectionPriority(
-                FfiConverterULong.read(buf),
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            19 -> MobileRadioRequest.RequestSubrate(
+            61 -> MobileRadioRequest.RequestConnectionPriority(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            20 -> MobileRadioRequest.ReadPhy(
+            62 -> MobileRadioRequest.RequestSubrate(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            63 -> MobileRadioRequest.ReadPhy(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            21 -> MobileRadioRequest.RequestPhy(
+            64 -> MobileRadioRequest.RequestPhy(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            22 -> MobileRadioRequest.SecurityState(
+            65 -> MobileRadioRequest.SecurityState(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            23 -> MobileRadioRequest.CreateBond(
+            66 -> MobileRadioRequest.CreateBond(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            24 -> MobileRadioRequest.CancelBond(
+            67 -> MobileRadioRequest.CancelBond(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            25 -> MobileRadioRequest.BondedPeers(
+            68 -> MobileRadioRequest.BondedPeers(
                 FfiConverterULong.read(buf),
                 )
-            26 -> MobileRadioRequest.ConnectedPeers(
+            69 -> MobileRadioRequest.ConnectedPeers(
                 FfiConverterULong.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            27 -> MobileRadioRequest.ResolvePeer(
+            70 -> MobileRadioRequest.ResolvePeer(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            28 -> MobileRadioRequest.AcquireBackground(
+            71 -> MobileRadioRequest.AcquireBackground(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            29 -> MobileRadioRequest.ReleaseBackground(
+            72 -> MobileRadioRequest.ReleaseBackground(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            30 -> MobileRadioRequest.UpdateBackgroundNotification(
+            73 -> MobileRadioRequest.UpdateBackgroundNotification(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            31 -> MobileRadioRequest.AssociateCompanion(
+            74 -> MobileRadioRequest.AssociateCompanion(
                 FfiConverterULong.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            32 -> MobileRadioRequest.ListCompanion(
+            75 -> MobileRadioRequest.ListCompanion(
                 FfiConverterULong.read(buf),
                 )
-            33 -> MobileRadioRequest.DisassociateCompanion(
+            76 -> MobileRadioRequest.DisassociateCompanion(
                 FfiConverterULong.read(buf),
                 FfiConverterLong.read(buf),
                 )
-            34 -> MobileRadioRequest.ObservePresence(
+            77 -> MobileRadioRequest.ObservePresence(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            35 -> MobileRadioRequest.StopPresence(
+            78 -> MobileRadioRequest.StopPresence(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            36 -> MobileRadioRequest.Close(
+            79 -> MobileRadioRequest.Close(
+                FfiConverterULong.read(buf),
+                )
+            80 -> MobileRadioRequest.OwnerFence(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            81 -> MobileRadioRequest.OwnerStatus(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            82 -> MobileRadioRequest.OrderedDrainV2(
+                FfiConverterULong.read(buf),
+                FfiConverterUInt.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            83 -> MobileRadioRequest.OrderedAcknowledgeBatchV2(
+                FfiConverterULong.read(buf),
+                FfiConverterUInt.read(buf),
+                FfiConverterTypeMobileOrderedGeneration.read(buf),
+                FfiConverterULong.read(buf),
                 FfiConverterULong.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -5449,12 +12602,432 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 + FfiConverterOptionalString.allocationSize(value.`preferred`)
             )
         }
+        is MobileRadioRequest.OrderedEnableNotifications -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedActivation.allocationSize(value.`activation`)
+                + FfiConverterOptionalString.allocationSize(value.`requested`)
+                + FfiConverterOptionalString.allocationSize(value.`preferred`)
+            )
+        }
+        is MobileRadioRequest.OrderedDisableNotifications -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedActivation.allocationSize(value.`activation`)
+            )
+        }
+        is MobileRadioRequest.OrderedEnableSettlement -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedActivation.allocationSize(value.`activation`)
+            )
+        }
+        is MobileRadioRequest.OrderedForgetEnableReceipt -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedActivation.allocationSize(value.`activation`)
+            )
+        }
         is MobileRadioRequest.DisableNotifications -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
                 + FfiConverterULong.allocationSize(value.`id`)
                 + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+                + FfiConverterULong.allocationSize(value.`epoch`)
+            )
+        }
+        is MobileRadioRequest.OrderedOpenV2 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedOpenIdentity.allocationSize(value.`identity`)
+            )
+        }
+        is MobileRadioRequest.OrderedRecoverOpenV2 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedOpenIdentity.allocationSize(value.`identity`)
+            )
+        }
+        is MobileRadioRequest.OrderedAcknowledgeOpenV2 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedOpenIdentity.allocationSize(value.`identity`)
+            )
+        }
+        is MobileRadioRequest.OrderedOpen -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterString.allocationSize(value.`databaseGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+                + FfiConverterSequenceTypeMobileOrderedMember.allocationSize(value.`members`)
+                + FfiConverterUInt.allocationSize(value.`itemCapacity`)
+                + FfiConverterUInt.allocationSize(value.`byteCapacity`)
+            )
+        }
+        is MobileRadioRequest.OrderedRecoverOpen -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterULong.allocationSize(value.`openRequestId`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.OrderedAcknowledgeOpen -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterUInt.allocationSize(value.`version`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterULong.allocationSize(value.`openRequestId`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.OrderedRegister -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+            )
+        }
+        is MobileRadioRequest.OrderedRetire -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+            )
+        }
+        is MobileRadioRequest.OrderedDrain -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+            )
+        }
+        is MobileRadioRequest.OrderedBarrier -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterULong.allocationSize(value.`barrierId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityReserve -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`request`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityReserveStatus -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`request`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityReserveFence -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`request`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityReserveForget -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`request`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityOpen -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`receiptId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityStatus -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`receiptId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityFenceOpen -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`receiptId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityForgetOpen -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`receiptId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityClose -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphAuthorityForget -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphPermitReserve -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+                + FfiConverterULong.allocationSize(value.`request`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphPermitReserveStatus -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+                + FfiConverterULong.allocationSize(value.`request`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphPermitReserveFence -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+                + FfiConverterULong.allocationSize(value.`request`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphPermitForgetRequest -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+                + FfiConverterULong.allocationSize(value.`request`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphPermitAcquire -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+                + FfiConverterULong.allocationSize(value.`permitId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphPermitRelease -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+                + FfiConverterULong.allocationSize(value.`permitId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphPermitCommit -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+                + FfiConverterULong.allocationSize(value.`permitId`)
+            )
+        }
+        is MobileRadioRequest.OrderedGraphPermitForget -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+                + FfiConverterULong.allocationSize(value.`authorityId`)
+                + FfiConverterULong.allocationSize(value.`permitId`)
+            )
+        }
+        is MobileRadioRequest.OrderedMarkerWrite -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterULong.allocationSize(value.`markerId`)
+                + FfiConverterString.allocationSize(value.`connectionGeneration`)
+                + FfiConverterTypeMobileGattSnapshotIdentity.allocationSize(value.`snapshotIdentity`)
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+                + FfiConverterByteArray.allocationSize(value.`value`)
+                + FfiConverterBoolean.allocationSize(value.`withResponse`)
+            )
+        }
+        is MobileRadioRequest.OrderedMarkerWriteSettlement -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterULong.allocationSize(value.`markerId`)
+            )
+        }
+        is MobileRadioRequest.OrderedCancelMarkerWrite -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterULong.allocationSize(value.`markerId`)
+            )
+        }
+        is MobileRadioRequest.OrderedForgetMarkerWriteReceipt -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterULong.allocationSize(value.`markerId`)
+            )
+        }
+        is MobileRadioRequest.OrderedAcknowledgeBatch -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterULong.allocationSize(value.`batchId`)
+            )
+        }
+        is MobileRadioRequest.OrderedClose -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+            )
+        }
+        is MobileRadioRequest.OrderedSeal -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+            )
+        }
+        is MobileRadioRequest.OrderedRetainClaim -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+            )
+        }
+        is MobileRadioRequest.OrderedConfirmCleanup -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterTypeMobileOrderedRegistration.allocationSize(value.`member`)
+            )
+        }
+        is MobileRadioRequest.OrderedRemove -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+            )
+        }
+        is MobileRadioRequest.OrderedForgetRemovalReceipt -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
             )
         }
         is MobileRadioRequest.ReadMtu -> {
@@ -5657,6 +13230,45 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 + FfiConverterULong.allocationSize(value.`id`)
             )
         }
+        is MobileRadioRequest.OwnerFence -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`ownerIncarnation`)
+                + FfiConverterString.allocationSize(value.`retirementId`)
+            )
+        }
+        is MobileRadioRequest.OwnerStatus -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`ownerIncarnation`)
+                + FfiConverterString.allocationSize(value.`retirementId`)
+            )
+        }
+        is MobileRadioRequest.OrderedDrainV2 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterUInt.allocationSize(value.`version`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+            )
+        }
+        is MobileRadioRequest.OrderedAcknowledgeBatchV2 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterUInt.allocationSize(value.`version`)
+                + FfiConverterTypeMobileOrderedGeneration.allocationSize(value.`generation`)
+                + FfiConverterULong.allocationSize(value.`groupId`)
+                + FfiConverterULong.allocationSize(value.`batchId`)
+            )
+        }
     }
 
     override fun write(value: MobileRadioRequest, buf: ByteBuffer) {
@@ -5744,65 +13356,399 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterOptionalString.write(value.`preferred`, buf)
                 Unit
             }
-            is MobileRadioRequest.DisableNotifications -> {
+            is MobileRadioRequest.OrderedEnableNotifications -> {
                 buf.putInt(12)
                 FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedActivation.write(value.`activation`, buf)
+                FfiConverterOptionalString.write(value.`requested`, buf)
+                FfiConverterOptionalString.write(value.`preferred`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedDisableNotifications -> {
+                buf.putInt(13)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedActivation.write(value.`activation`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedEnableSettlement -> {
+                buf.putInt(14)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedActivation.write(value.`activation`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedForgetEnableReceipt -> {
+                buf.putInt(15)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedActivation.write(value.`activation`, buf)
+                Unit
+            }
+            is MobileRadioRequest.DisableNotifications -> {
+                buf.putInt(16)
+                FfiConverterULong.write(value.`id`, buf)
                 FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                FfiConverterULong.write(value.`epoch`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedOpenV2 -> {
+                buf.putInt(17)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedOpenIdentity.write(value.`identity`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedRecoverOpenV2 -> {
+                buf.putInt(18)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedOpenIdentity.write(value.`identity`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedAcknowledgeOpenV2 -> {
+                buf.putInt(19)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedOpenIdentity.write(value.`identity`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedOpen -> {
+                buf.putInt(20)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterString.write(value.`databaseGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                FfiConverterSequenceTypeMobileOrderedMember.write(value.`members`, buf)
+                FfiConverterUInt.write(value.`itemCapacity`, buf)
+                FfiConverterUInt.write(value.`byteCapacity`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedRecoverOpen -> {
+                buf.putInt(21)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterULong.write(value.`openRequestId`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedAcknowledgeOpen -> {
+                buf.putInt(22)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterUInt.write(value.`version`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterULong.write(value.`openRequestId`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedRegister -> {
+                buf.putInt(23)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedRetire -> {
+                buf.putInt(24)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedDrain -> {
+                buf.putInt(25)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedBarrier -> {
+                buf.putInt(26)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterULong.write(value.`barrierId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityReserve -> {
+                buf.putInt(27)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`request`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityReserveStatus -> {
+                buf.putInt(28)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`request`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityReserveFence -> {
+                buf.putInt(29)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`request`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityReserveForget -> {
+                buf.putInt(30)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`request`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityOpen -> {
+                buf.putInt(31)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`receiptId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityStatus -> {
+                buf.putInt(32)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`receiptId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityFenceOpen -> {
+                buf.putInt(33)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`receiptId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityForgetOpen -> {
+                buf.putInt(34)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`receiptId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityClose -> {
+                buf.putInt(35)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphAuthorityForget -> {
+                buf.putInt(36)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphPermitReserve -> {
+                buf.putInt(37)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                FfiConverterULong.write(value.`request`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphPermitReserveStatus -> {
+                buf.putInt(38)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                FfiConverterULong.write(value.`request`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphPermitReserveFence -> {
+                buf.putInt(39)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                FfiConverterULong.write(value.`request`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphPermitForgetRequest -> {
+                buf.putInt(40)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                FfiConverterULong.write(value.`request`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphPermitAcquire -> {
+                buf.putInt(41)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                FfiConverterULong.write(value.`permitId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphPermitRelease -> {
+                buf.putInt(42)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                FfiConverterULong.write(value.`permitId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphPermitCommit -> {
+                buf.putInt(43)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                FfiConverterULong.write(value.`permitId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedGraphPermitForget -> {
+                buf.putInt(44)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                FfiConverterULong.write(value.`authorityId`, buf)
+                FfiConverterULong.write(value.`permitId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedMarkerWrite -> {
+                buf.putInt(45)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterULong.write(value.`markerId`, buf)
+                FfiConverterString.write(value.`connectionGeneration`, buf)
+                FfiConverterTypeMobileGattSnapshotIdentity.write(value.`snapshotIdentity`, buf)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                FfiConverterByteArray.write(value.`value`, buf)
+                FfiConverterBoolean.write(value.`withResponse`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedMarkerWriteSettlement -> {
+                buf.putInt(46)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterULong.write(value.`markerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedCancelMarkerWrite -> {
+                buf.putInt(47)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterULong.write(value.`markerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedForgetMarkerWriteReceipt -> {
+                buf.putInt(48)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterULong.write(value.`markerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedAcknowledgeBatch -> {
+                buf.putInt(49)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterULong.write(value.`batchId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedClose -> {
+                buf.putInt(50)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedSeal -> {
+                buf.putInt(51)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedRetainClaim -> {
+                buf.putInt(52)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedConfirmCleanup -> {
+                buf.putInt(53)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterTypeMobileOrderedRegistration.write(value.`member`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedRemove -> {
+                buf.putInt(54)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedForgetRemovalReceipt -> {
+                buf.putInt(55)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
                 Unit
             }
             is MobileRadioRequest.ReadMtu -> {
-                buf.putInt(13)
+                buf.putInt(56)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.ReadWriteLimits -> {
-                buf.putInt(14)
+                buf.putInt(57)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.ReadWriteReadiness -> {
-                buf.putInt(15)
+                buf.putInt(58)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.RequestMtu -> {
-                buf.putInt(16)
+                buf.putInt(59)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterUShort.write(value.`mtu`, buf)
                 Unit
             }
             is MobileRadioRequest.ReadRssi -> {
-                buf.putInt(17)
+                buf.putInt(60)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.RequestConnectionPriority -> {
-                buf.putInt(18)
+                buf.putInt(61)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterString.write(value.`priority`, buf)
                 Unit
             }
             is MobileRadioRequest.RequestSubrate -> {
-                buf.putInt(19)
+                buf.putInt(62)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterString.write(value.`mode`, buf)
                 Unit
             }
             is MobileRadioRequest.ReadPhy -> {
-                buf.putInt(20)
+                buf.putInt(63)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.RequestPhy -> {
-                buf.putInt(21)
+                buf.putInt(64)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterOptionalString.write(value.`tx`, buf)
@@ -5810,56 +13756,56 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 Unit
             }
             is MobileRadioRequest.SecurityState -> {
-                buf.putInt(22)
+                buf.putInt(65)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.CreateBond -> {
-                buf.putInt(23)
+                buf.putInt(66)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterString.write(value.`transport`, buf)
                 Unit
             }
             is MobileRadioRequest.CancelBond -> {
-                buf.putInt(24)
+                buf.putInt(67)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.BondedPeers -> {
-                buf.putInt(25)
+                buf.putInt(68)
                 FfiConverterULong.write(value.`id`, buf)
                 Unit
             }
             is MobileRadioRequest.ConnectedPeers -> {
-                buf.putInt(26)
+                buf.putInt(69)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterSequenceString.write(value.`services`, buf)
                 Unit
             }
             is MobileRadioRequest.ResolvePeer -> {
-                buf.putInt(27)
+                buf.putInt(70)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.AcquireBackground -> {
-                buf.putInt(28)
+                buf.putInt(71)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`kind`, buf)
                 FfiConverterString.write(value.`reason`, buf)
                 Unit
             }
             is MobileRadioRequest.ReleaseBackground -> {
-                buf.putInt(29)
+                buf.putInt(72)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`leaseId`, buf)
                 Unit
             }
             is MobileRadioRequest.UpdateBackgroundNotification -> {
-                buf.putInt(30)
+                buf.putInt(73)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`leaseId`, buf)
                 FfiConverterString.write(value.`title`, buf)
@@ -5867,7 +13813,7 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 Unit
             }
             is MobileRadioRequest.AssociateCompanion -> {
-                buf.putInt(31)
+                buf.putInt(74)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterOptionalString.write(value.`name`, buf)
                 FfiConverterOptionalString.write(value.`serviceUuid`, buf)
@@ -5875,31 +13821,62 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 Unit
             }
             is MobileRadioRequest.ListCompanion -> {
-                buf.putInt(32)
+                buf.putInt(75)
                 FfiConverterULong.write(value.`id`, buf)
                 Unit
             }
             is MobileRadioRequest.DisassociateCompanion -> {
-                buf.putInt(33)
+                buf.putInt(76)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterLong.write(value.`associationId`, buf)
                 Unit
             }
             is MobileRadioRequest.ObservePresence -> {
-                buf.putInt(34)
+                buf.putInt(77)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.StopPresence -> {
-                buf.putInt(35)
+                buf.putInt(78)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.Close -> {
-                buf.putInt(36)
+                buf.putInt(79)
                 FfiConverterULong.write(value.`id`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OwnerFence -> {
+                buf.putInt(80)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`ownerIncarnation`, buf)
+                FfiConverterString.write(value.`retirementId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OwnerStatus -> {
+                buf.putInt(81)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`ownerIncarnation`, buf)
+                FfiConverterString.write(value.`retirementId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedDrainV2 -> {
+                buf.putInt(82)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterUInt.write(value.`version`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.OrderedAcknowledgeBatchV2 -> {
+                buf.putInt(83)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterUInt.write(value.`version`, buf)
+                FfiConverterTypeMobileOrderedGeneration.write(value.`generation`, buf)
+                FfiConverterULong.write(value.`groupId`, buf)
+                FfiConverterULong.write(value.`batchId`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -5907,6 +13884,315 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
 }
 
 
+
+
+
+sealed class MobileScanFailureRawToken {
+
+    object Null : MobileScanFailureRawToken()
+
+
+    data class Bool(
+        val `value`: kotlin.Boolean) : MobileScanFailureRawToken()
+
+    {
+
+
+        companion object
+    }
+
+    data class I64(
+        val `value`: kotlin.Long) : MobileScanFailureRawToken()
+
+    {
+
+
+        companion object
+    }
+
+    data class U64(
+        val `value`: kotlin.String) : MobileScanFailureRawToken()
+
+    {
+
+
+        companion object
+    }
+
+    data class F64Bits(
+        val `value`: kotlin.String) : MobileScanFailureRawToken()
+
+    {
+
+
+        companion object
+    }
+
+    data class Text(
+        val `total`: kotlin.String,
+        val `bytes`: kotlin.ByteArray) : MobileScanFailureRawToken()
+
+    {
+
+
+        companion object
+    }
+
+    data class Bytes(
+        val `total`: kotlin.String,
+        val `bytes`: kotlin.ByteArray) : MobileScanFailureRawToken()
+
+    {
+
+
+        companion object
+    }
+
+    data class Map(
+        val `entries`: kotlin.String) : MobileScanFailureRawToken()
+
+    {
+
+
+        companion object
+    }
+
+    data class Array(
+        val `entries`: kotlin.String) : MobileScanFailureRawToken()
+
+    {
+
+
+        companion object
+    }
+
+
+
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileScanFailureRawToken : FfiConverterRustBuffer<MobileScanFailureRawToken>{
+    override fun read(buf: ByteBuffer): MobileScanFailureRawToken {
+        return when(buf.getInt()) {
+            1 -> MobileScanFailureRawToken.Null
+            2 -> MobileScanFailureRawToken.Bool(
+                FfiConverterBoolean.read(buf),
+                )
+            3 -> MobileScanFailureRawToken.I64(
+                FfiConverterLong.read(buf),
+                )
+            4 -> MobileScanFailureRawToken.U64(
+                FfiConverterString.read(buf),
+                )
+            5 -> MobileScanFailureRawToken.F64Bits(
+                FfiConverterString.read(buf),
+                )
+            6 -> MobileScanFailureRawToken.Text(
+                FfiConverterString.read(buf),
+                FfiConverterByteArray.read(buf),
+                )
+            7 -> MobileScanFailureRawToken.Bytes(
+                FfiConverterString.read(buf),
+                FfiConverterByteArray.read(buf),
+                )
+            8 -> MobileScanFailureRawToken.Map(
+                FfiConverterString.read(buf),
+                )
+            9 -> MobileScanFailureRawToken.Array(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileScanFailureRawToken): ULong = when(value) {
+        is MobileScanFailureRawToken.Null -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileScanFailureRawToken.Bool -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterBoolean.allocationSize(value.`value`)
+            )
+        }
+        is MobileScanFailureRawToken.I64 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterLong.allocationSize(value.`value`)
+            )
+        }
+        is MobileScanFailureRawToken.U64 -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`value`)
+            )
+        }
+        is MobileScanFailureRawToken.F64Bits -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`value`)
+            )
+        }
+        is MobileScanFailureRawToken.Text -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`total`)
+                + FfiConverterByteArray.allocationSize(value.`bytes`)
+            )
+        }
+        is MobileScanFailureRawToken.Bytes -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`total`)
+                + FfiConverterByteArray.allocationSize(value.`bytes`)
+            )
+        }
+        is MobileScanFailureRawToken.Map -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`entries`)
+            )
+        }
+        is MobileScanFailureRawToken.Array -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`entries`)
+            )
+        }
+    }
+
+    override fun write(value: MobileScanFailureRawToken, buf: ByteBuffer) {
+        when(value) {
+            is MobileScanFailureRawToken.Null -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileScanFailureRawToken.Bool -> {
+                buf.putInt(2)
+                FfiConverterBoolean.write(value.`value`, buf)
+                Unit
+            }
+            is MobileScanFailureRawToken.I64 -> {
+                buf.putInt(3)
+                FfiConverterLong.write(value.`value`, buf)
+                Unit
+            }
+            is MobileScanFailureRawToken.U64 -> {
+                buf.putInt(4)
+                FfiConverterString.write(value.`value`, buf)
+                Unit
+            }
+            is MobileScanFailureRawToken.F64Bits -> {
+                buf.putInt(5)
+                FfiConverterString.write(value.`value`, buf)
+                Unit
+            }
+            is MobileScanFailureRawToken.Text -> {
+                buf.putInt(6)
+                FfiConverterString.write(value.`total`, buf)
+                FfiConverterByteArray.write(value.`bytes`, buf)
+                Unit
+            }
+            is MobileScanFailureRawToken.Bytes -> {
+                buf.putInt(7)
+                FfiConverterString.write(value.`total`, buf)
+                FfiConverterByteArray.write(value.`bytes`, buf)
+                Unit
+            }
+            is MobileScanFailureRawToken.Map -> {
+                buf.putInt(8)
+                FfiConverterString.write(value.`entries`, buf)
+                Unit
+            }
+            is MobileScanFailureRawToken.Array -> {
+                buf.putInt(9)
+                FfiConverterString.write(value.`entries`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+
+public interface MobileHostBinding {
+
+    fun `bind`(`host`: MobileCoreHost): kotlin.Boolean
+
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceMobileHostBinding {
+    internal object `bind`: UniffiCallbackInterfaceMobileHostBindingMethod0 {
+        override fun callback(`uniffiHandle`: Long,`host`: Long,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeMobileHostBinding.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`bind`(
+                    FfiConverterTypeMobileCoreHost.lift(`host`),
+                )
+            }
+            val writeReturn = { value: kotlin.Boolean -> uniffiOutReturn.setValue(FfiConverterBoolean.lower(value)) }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeMobileHostBinding.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeMobileHostBinding.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceMobileHostBinding.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `bind`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilehostbinding(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeMobileHostBinding: FfiConverterCallbackInterface<MobileHostBinding>()
 
 
 
@@ -5974,6 +14260,8 @@ public object FfiConverterTypeMobileInvokeCompletion: FfiConverterCallbackInterf
 
 public interface MobilePlatformRadio {
 
+    fun `orderedAdmissionOwner`(`version`: kotlin.UInt): kotlin.String
+
     fun `submit`(`request`: MobileRadioRequest)
 
     fun `cancel`(`requestId`: kotlin.ULong)
@@ -5985,7 +14273,19 @@ public interface MobilePlatformRadio {
 
 // Put the implementation in an object so we don't pollute the top-level namespace
 internal object uniffiCallbackInterfaceMobilePlatformRadio {
-    internal object `submit`: UniffiCallbackInterfaceMobilePlatformRadioMethod0 {
+    internal object `orderedAdmissionOwner`: UniffiCallbackInterfaceMobilePlatformRadioMethod0 {
+        override fun callback(`uniffiHandle`: Long,`version`: Int,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeMobilePlatformRadio.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`orderedAdmissionOwner`(
+                    FfiConverterUInt.lift(`version`),
+                )
+            }
+            val writeReturn = { value: kotlin.String -> uniffiOutReturn.setValue(FfiConverterString.lower(value)) }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+    internal object `submit`: UniffiCallbackInterfaceMobilePlatformRadioMethod1 {
         override fun callback(`uniffiHandle`: Long,`request`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
             val uniffiObj = FfiConverterTypeMobilePlatformRadio.handleMap.get(uniffiHandle)
             val makeCall = { ->
@@ -5997,7 +14297,7 @@ internal object uniffiCallbackInterfaceMobilePlatformRadio {
             uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
         }
     }
-    internal object `cancel`: UniffiCallbackInterfaceMobilePlatformRadioMethod1 {
+    internal object `cancel`: UniffiCallbackInterfaceMobilePlatformRadioMethod2 {
         override fun callback(`uniffiHandle`: Long,`requestId`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
             val uniffiObj = FfiConverterTypeMobilePlatformRadio.handleMap.get(uniffiHandle)
             val makeCall = { ->
@@ -6025,6 +14325,7 @@ internal object uniffiCallbackInterfaceMobilePlatformRadio {
     internal var vtable = UniffiVTableCallbackInterfaceMobilePlatformRadio.UniffiByValue(
         uniffiFree,
         uniffiClone,
+        `orderedAdmissionOwner`,
         `submit`,
         `cancel`,
     )
@@ -6237,6 +14538,38 @@ public object FfiConverterOptionalInt: FfiConverterRustBuffer<kotlin.Int?> {
 /**
  * @suppress
  */
+public object FfiConverterOptionalULong: FfiConverterRustBuffer<kotlin.ULong?> {
+    override fun read(buf: ByteBuffer): kotlin.ULong? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterULong.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.ULong?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterULong.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.ULong?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterULong.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalLong: FfiConverterRustBuffer<kotlin.Long?> {
     override fun read(buf: ByteBuffer): kotlin.Long? {
         if (buf.get().toInt() == 0) {
@@ -6365,6 +14698,134 @@ public object FfiConverterOptionalTypeMobileCoreHost: FfiConverterRustBuffer<Mob
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeMobileNotificationFailureSpoolConfigurationAuthority: FfiConverterRustBuffer<MobileNotificationFailureSpoolConfigurationAuthority?> {
+    override fun read(buf: ByteBuffer): MobileNotificationFailureSpoolConfigurationAuthority? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.read(buf)
+    }
+
+    override fun allocationSize(value: MobileNotificationFailureSpoolConfigurationAuthority?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobileNotificationFailureSpoolConfigurationAuthority?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMobileScanFailureRecoveryConfigurationAuthority: FfiConverterRustBuffer<MobileScanFailureRecoveryConfigurationAuthority?> {
+    override fun read(buf: ByteBuffer): MobileScanFailureRecoveryConfigurationAuthority? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.read(buf)
+    }
+
+    override fun allocationSize(value: MobileScanFailureRecoveryConfigurationAuthority?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobileScanFailureRecoveryConfigurationAuthority?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMobileScanFailureRecoveryHead: FfiConverterRustBuffer<MobileScanFailureRecoveryHead?> {
+    override fun read(buf: ByteBuffer): MobileScanFailureRecoveryHead? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobileScanFailureRecoveryHead.read(buf)
+    }
+
+    override fun allocationSize(value: MobileScanFailureRecoveryHead?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobileScanFailureRecoveryHead.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobileScanFailureRecoveryHead?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobileScanFailureRecoveryHead.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMobileOrderedRegistration: FfiConverterRustBuffer<MobileOrderedRegistration?> {
+    override fun read(buf: ByteBuffer): MobileOrderedRegistration? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobileOrderedRegistration.read(buf)
+    }
+
+    override fun allocationSize(value: MobileOrderedRegistration?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobileOrderedRegistration.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobileOrderedRegistration?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobileOrderedRegistration.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeMobilePeerName: FfiConverterRustBuffer<MobilePeerName?> {
     override fun read(buf: ByteBuffer): MobilePeerName? {
         if (buf.get().toInt() == 0) {
@@ -6387,6 +14848,70 @@ public object FfiConverterOptionalTypeMobilePeerName: FfiConverterRustBuffer<Mob
         } else {
             buf.put(1)
             FfiConverterTypeMobilePeerName.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMobilePlatformFailure: FfiConverterRustBuffer<MobilePlatformFailure?> {
+    override fun read(buf: ByteBuffer): MobilePlatformFailure? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobilePlatformFailure.read(buf)
+    }
+
+    override fun allocationSize(value: MobilePlatformFailure?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobilePlatformFailure.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobilePlatformFailure?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobilePlatformFailure.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMobileOrderedRejected: FfiConverterRustBuffer<MobileOrderedRejected?> {
+    override fun read(buf: ByteBuffer): MobileOrderedRejected? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobileOrderedRejected.read(buf)
+    }
+
+    override fun allocationSize(value: MobileOrderedRejected?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobileOrderedRejected.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobileOrderedRejected?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobileOrderedRejected.write(value, buf)
         }
     }
 }
@@ -6479,6 +15004,62 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterString.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileScanFailureCleanupReceipt: FfiConverterRustBuffer<List<MobileScanFailureCleanupReceipt>> {
+    override fun read(buf: ByteBuffer): List<MobileScanFailureCleanupReceipt> {
+        val len = buf.getInt()
+        return List<MobileScanFailureCleanupReceipt>(len) {
+            FfiConverterTypeMobileScanFailureCleanupReceipt.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileScanFailureCleanupReceipt>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileScanFailureCleanupReceipt.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileScanFailureCleanupReceipt>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileScanFailureCleanupReceipt.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileScanFailureRecoveryOwner: FfiConverterRustBuffer<List<MobileScanFailureRecoveryOwner>> {
+    override fun read(buf: ByteBuffer): List<MobileScanFailureRecoveryOwner> {
+        val len = buf.getInt()
+        return List<MobileScanFailureRecoveryOwner>(len) {
+            FfiConverterTypeMobileScanFailureRecoveryOwner.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileScanFailureRecoveryOwner>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileScanFailureRecoveryOwner.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileScanFailureRecoveryOwner>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileScanFailureRecoveryOwner.write(it, buf)
         }
     }
 }
@@ -6657,6 +15238,90 @@ public object FfiConverterSequenceTypeMobileManufacturerData: FfiConverterRustBu
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeMobileOrderedFailureV2: FfiConverterRustBuffer<List<MobileOrderedFailureV2>> {
+    override fun read(buf: ByteBuffer): List<MobileOrderedFailureV2> {
+        val len = buf.getInt()
+        return List<MobileOrderedFailureV2>(len) {
+            FfiConverterTypeMobileOrderedFailureV2.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileOrderedFailureV2>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileOrderedFailureV2.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileOrderedFailureV2>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileOrderedFailureV2.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileOrderedMember: FfiConverterRustBuffer<List<MobileOrderedMember>> {
+    override fun read(buf: ByteBuffer): List<MobileOrderedMember> {
+        val len = buf.getInt()
+        return List<MobileOrderedMember>(len) {
+            FfiConverterTypeMobileOrderedMember.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileOrderedMember>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileOrderedMember.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileOrderedMember>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileOrderedMember.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileOrderedRegistration: FfiConverterRustBuffer<List<MobileOrderedRegistration>> {
+    override fun read(buf: ByteBuffer): List<MobileOrderedRegistration> {
+        val len = buf.getInt()
+        return List<MobileOrderedRegistration>(len) {
+            FfiConverterTypeMobileOrderedRegistration.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileOrderedRegistration>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileOrderedRegistration.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileOrderedRegistration>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileOrderedRegistration.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeMobilePeerName: FfiConverterRustBuffer<List<MobilePeerName>> {
     override fun read(buf: ByteBuffer): List<MobilePeerName> {
         val len = buf.getInt()
@@ -6733,6 +15398,62 @@ public object FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBuffer<
             FfiConverterTypeMobileServiceData.write(it, buf)
         }
     }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileOrderedRecord: FfiConverterRustBuffer<List<MobileOrderedRecord>> {
+    override fun read(buf: ByteBuffer): List<MobileOrderedRecord> {
+        val len = buf.getInt()
+        return List<MobileOrderedRecord>(len) {
+            FfiConverterTypeMobileOrderedRecord.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileOrderedRecord>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileOrderedRecord.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileOrderedRecord>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileOrderedRecord.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileOwnerOutstandingClass: FfiConverterRustBuffer<List<MobileOwnerOutstandingClass>> {
+    override fun read(buf: ByteBuffer): List<MobileOwnerOutstandingClass> {
+        val len = buf.getInt()
+        return List<MobileOwnerOutstandingClass>(len) {
+            FfiConverterTypeMobileOwnerOutstandingClass.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileOwnerOutstandingClass>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileOwnerOutstandingClass.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileOwnerOutstandingClass>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileOwnerOutstandingClass.write(it, buf)
+        }
+    }
 } fun `mobileBuildIdentityJson`(): kotlin.String {
             return FfiConverterString.lift(
     uniffiRustCall() { _status ->
@@ -6742,6 +15463,17 @@ public object FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBuffer<
 }
     )
     }
+
+
+    @Throws(MobileCoreException::class) fun `mobileConfigureTerminalEvidenceMaximumBytes`(`maximumBytes`: kotlin.ULong)
+        =
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_configure_terminal_evidence_maximum_bytes(
+
+
+        FfiConverterULong.lower(`maximumBytes`),_status)
+}
+
 
  fun `mobileContractRevision`(): kotlin.String {
             return FfiConverterString.lift(
@@ -6763,6 +15495,16 @@ public object FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBuffer<
     )
     }
 
+ fun `mobileHostHasPendingCleanup`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_has_pending_cleanup(
+
+        _status)
+}
+    )
+    }
+
 
     @Throws(MobileCoreException::class) fun `mobileHostInstall`(`radio`: MobilePlatformRadio, `wake`: MobileWakeSink, `platform`: kotlin.String, `owner`: kotlin.String, `adapterLabel`: kotlin.String): MobileCoreHost {
             return FfiConverterTypeMobileCoreHost.lift(
@@ -6775,6 +15517,43 @@ public object FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBuffer<
         FfiConverterString.lower(`platform`),
         FfiConverterString.lower(`owner`),
         FfiConverterString.lower(`adapterLabel`),_status)
+}
+    )
+    }
+
+
+    @Throws(MobileCoreException::class) fun `mobileHostInstallBound`(`radio`: MobilePlatformRadio, `wake`: MobileWakeSink, `binding`: MobileHostBinding, `platform`: kotlin.String, `owner`: kotlin.String, `adapterLabel`: kotlin.String): MobileCoreHost {
+            return FfiConverterTypeMobileCoreHost.lift(
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install_bound(
+
+
+        FfiConverterTypeMobilePlatformRadio.lower(`radio`),
+        FfiConverterTypeMobileWakeSink.lower(`wake`),
+        FfiConverterTypeMobileHostBinding.lower(`binding`),
+        FfiConverterString.lower(`platform`),
+        FfiConverterString.lower(`owner`),
+        FfiConverterString.lower(`adapterLabel`),_status)
+}
+    )
+    }
+
+ fun `mobileHostRetryPendingCleanup`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_retry_pending_cleanup(
+
+        _status)
+}
+    )
+    }
+
+ fun `mobileOrderedRecordingVersion`(): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_ordered_recording_version(
+
+        _status)
 }
     )
     }
@@ -6804,6 +15583,18 @@ public object FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBuffer<
 }
     )
     }
+
+ fun `mobileRecordingOrderedOffline`(`operation`: kotlin.String, `id`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_ordered_offline(
+
+
+        FfiConverterString.lower(`operation`),
+        FfiConverterString.lower(`id`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+
 
  fun `mobileWireRevision`(): kotlin.String {
             return FfiConverterString.lift(

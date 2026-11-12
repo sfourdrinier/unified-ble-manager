@@ -156,6 +156,7 @@ test.each(['remove', 'destroy'])(
       source: 'notification-ingress',
       lostRecords: resourceCount(1)
     })
+    expect(stream.sourceLossNotices()).toMatchObject([{ kind: 'source-loss', lostRecords: 1 }])
     expect(stream.retainedPayloadBytes()).toBe(3)
     expect(Number(manager.localResourceCounters().retainedByteBuffers)).toBe(3)
     await driveVirtualClock(
@@ -166,8 +167,9 @@ test.each(['remove', 'destroy'])(
     expect(stream.retainedPayloadBytes()).toBe(0)
     expect(Number(manager.localResourceCounters().retainedByteBuffers)).toBe(0)
     const iterator = stream[Symbol.asyncIterator]()
-    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 1 })
-    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
+    // Source loss is retained on the explicit provenance projection. The
+    // stable iterator exposes its normal terminal after cleanup.
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal' })
     expect((await iterator.next()).done).toBe(true)
     if (action === 'remove') await driveVirtualClock(fixture.controller.clock, manager.destroy(), 'destroy')
   }

@@ -20,16 +20,21 @@ interface BackgroundPort {
 class ForegroundServiceBackgroundPort(
   private val leases: ConnectedDeviceForegroundServiceLeaseRegistry
 ) : BackgroundPort {
+  private val owner = Any()
   override fun acquire(kind: String, reason: String): String {
     if (kind != "connected-device") {
       throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "background lease kind '$kind' is not supported on Android")
     }
-    return leases.acquire(reason)
+    return leases.acquireOwned(owner, reason)
   }
 
-  override fun release(leaseId: String) = leases.release(leaseId)
+  override fun release(leaseId: String) = leases.releaseOwned(owner, leaseId)
 
-  override fun update(leaseId: String, title: String, body: String?) = leases.update(leaseId, title, body)
+  override fun update(leaseId: String, title: String, body: String?) = leases.updateOwned(owner, leaseId, title, body)
+
+  internal fun fence(retirement: String) = leases.fenceOwner(owner, retirement)
+  internal fun snapshot() = leases.snapshotOwner(owner)
+  internal fun retry(retirement: String) = leases.retryOwner(owner, retirement)
 }
 
 /**

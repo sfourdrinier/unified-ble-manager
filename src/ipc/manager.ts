@@ -1,4 +1,28 @@
+import { parseOrderedRecordingFailure } from '../core/ordered-recording'
 // src/ipc/manager.ts
+import { isCanonicalIngressOrdinal } from '../core/ordered-notification-contract'
+import { accountOrderedDiscard } from '../core/ordered-notification-stream'
+import { parseOrderedRecordingStartResult } from '../core/ordered-recording-start'
+import {
+  createOrderedRecordingReclaimReservations,
+  type OrderedRecordingRecoveryHandle,
+  type OrderedRecordingReclaimReceipt
+} from '../core/ordered-recording-reclaim'
+import { decodeOrderedMarkerWriteStatus } from '../core/ordered-marker-wire'
+import {
+  decodeOrderedCleanup,
+  decodeOrderedItem,
+  decodeTauriOrderedStatus,
+  decodeSourceGeneration,
+  decodePublicMarkerWriteStatus
+} from './ordered-codec'
+import { decodeDesktopOrderedItem } from '../backends/desktop/desktop-ordered-group'
+import type {
+  OrderedNotificationCleanup,
+  OrderedNotificationItem,
+  OrderedNotificationSetup,
+  OrderedNotificationStream
+} from '../core/ordered-notification-contract'
 
 import { isNotificationReceipt } from '../backend-contract/gatt'
 import {
@@ -32,6 +56,14 @@ import {
   type SerializableValue
 } from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
+import { CoreTraceRecorder } from '../core/trace-recorder'
+import {
+  snapshotPublicTraceDocument,
+  snapshotResourceCounters,
+  type BleDiagnostics,
+  type BleDiagnosticWarning
+} from '../public/diagnostics'
+import { toPublicPlatformErrorDetail } from '../public/cleanup'
 import {
   createGattCharacteristicProperties,
   type CharacteristicProperties,
@@ -49,6 +81,7 @@ import type {
   PortableOperationOptions,
   PortableReadReceipt,
   PortableSubscriptionOptions,
+  PortableRecordedSubscriptionOptions,
   PortableWritePolicy
 } from '../manager/consumer-handles'
 import { isReadProvenance } from '../backend-contract/operations'
@@ -66,13 +99,19 @@ import type { ScanPlan } from '../backend-contract/scan-planning'
 import { normalizeScanQuery } from '../public/scan-query'
 import { BleCleanupError, collectCleanupPhases } from '../public/error-bridge'
 import type { CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
-import { IpcBleClient } from './client'
+import { IpcBleClient, OrderedAdmissionCancellationError } from './client'
 import { aggregateEventLossError } from './aggregate-event-loss'
 import { waitForChildCleanup } from './cleanup-drain'
 import { IPC_ATTACHMENT_STREAM_ID, IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport, IpcEventTransportHealthNotice } from './protocol'
 import { decodeIpcScanQuery, encodeIpcScanQuery } from './scan-planning'
 import type { NormalizedScanQuery } from '../backend-contract/scan-query'
+import type { TerminalEvidenceCommit } from '../backend-contract/terminal-evidence'
+import type {
+  TerminalEvidenceReservation,
+  TerminalEvidenceReservationRequest
+} from '../backend-contract/terminal-evidence'
+import { hydrateTerminalEvidence } from '../core/terminal-evidence-codec'
 
 export {
   advertisementPassesViewFilter,
@@ -85,6 +124,10 @@ const REMOTE_STREAM_LIMITS = Object.freeze({
   byteCapacity: capacity(64 * 1024),
   reservedControlCapacity: capacity(1)
 })
+const ipcRecordingRecovery = new WeakMap<
+  OrderedRecordingRecoveryHandle,
+  { readonly token: string; readonly recordingId: string }
+>()
 
 /**
  * Safety bounds on the renderer-side buffer that holds stream items which
@@ -112,6 +155,8 @@ const MAX_PENDING_TOMBSTONE_AGE_MS = 5_000
 
 export interface IpcBleManagerCreateOptions {
   readonly now?: () => number
+  readonly traceMaximumRecords?: number
+  readonly traceMaximumBytes?: number
 }
 
 export interface IpcPendingStreamAccounting {
@@ -221,6 +266,11 @@ interface UnresolvedProvisional {
 }
 
 export interface IpcManagerOperationOptions {
+  readonly terminalEvidenceScope?: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  }
   readonly intent?: import('../backend-contract/backend').ConnectionOptions['intent']
   readonly transport?: 'le' | 'auto'
   readonly preferredPhy?: import('../backend-contract/backend').ConnectionOptions['preferredPhy']
@@ -238,6 +288,11 @@ export interface IpcManagerOperationOptions {
 }
 
 export interface IpcScanOptions extends IpcManagerOperationOptions {
+  readonly terminalEvidenceScope?: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  }
   readonly platform?: import('../public/ble-manager').ScanPlatformOptions
   readonly query?: NormalizedScanQuery
   readonly serviceUuids?: readonly string[]
@@ -277,6 +332,9 @@ export interface IpcAdvertisement {
 export type IpcScanObservation = IpcAdvertisement | AdvertisementObservation<string>
 
 export interface IpcNotificationValue {
+  readonly sourceGeneration?: string
+  readonly sourceOrdinal?: string
+  readonly provenance?: import('../backend-contract/gatt').NotificationProvenance
   readonly value: Uint8Array
   readonly delivery: 'notification' | 'indication' | 'unknown'
   readonly observedAtMonotonicMs: number
@@ -356,6 +414,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private aggregatePendingBytes = 0
   private aggregatePendingTerminals = 0
   private readonly eventPump: Promise<void>
+  nextOrderedHandle = 1
   private nextConnectionEventHandle = 1
   private nextWriteReadinessHandle = 1
   private nextParameterEventsHandle = 1
@@ -368,13 +427,18 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private pumpTerminal: { reason: StreamTerminalNotice['reason']; error: NormalizedBleError | null } | null = null
   private readonly unsubscribeEventHealth: () => void
   private readonly unresolvedProvisionals: UnresolvedProvisional[] = []
+  private readonly trace: CoreTraceRecorder
+  private readonly warnings: BleDiagnosticWarning[] = []
 
   private constructor(
     private readonly client: IpcBleClient<Attachment, Client>,
     readonly capabilities: BleCapabilities,
     private readonly now: () => number,
-    transport: IpcClientTransport<Attachment, Client>
+    transport: IpcClientTransport<Attachment, Client>,
+    traceMaximumRecords: number,
+    traceMaximumBytes: number
   ) {
+    this.trace = new CoreTraceRecorder(traceMaximumRecords, traceMaximumBytes)
     this.eventPump = this.pumpEvents()
     this.eventPump.then(
       () => undefined,
@@ -402,12 +466,45 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         true
       ),
       options.now ?? (() => Date.now()),
-      transport
+      transport,
+      options.traceMaximumRecords ?? 256,
+      options.traceMaximumBytes ?? 512 * 1024
     )
   }
 
   get bootstrap() {
     return this.client.bootstrap
+  }
+
+  diagnostics(): BleDiagnostics {
+    return Object.freeze({
+      snapshot: () =>
+        Object.freeze({
+          trace: snapshotPublicTraceDocument(this.trace.snapshotDocument()),
+          resourceCounters: snapshotResourceCounters(this.diagnosticResourceCounters())
+        }),
+      resourceCounters: () => snapshotResourceCounters(this.diagnosticResourceCounters()),
+      startTrace: () => ({ stop: async () => snapshotPublicTraceDocument(this.trace.snapshotDocument()) }),
+      warnings: () => Object.freeze(this.warnings.map(warning => Object.freeze({ ...warning })))
+    })
+  }
+
+  private diagnosticResourceCounters(): Record<string, number> {
+    return Object.freeze({
+      activeScanControllers: 0,
+      scanConsumers: 0,
+      chooserSessions: 0,
+      connectionLeases: 0,
+      physicalLinks: 0,
+      databaseSnapshots: 0,
+      physicalCccdEnablements: 0,
+      subscriptionConsumers: 0,
+      queuedOperations: 0,
+      dispatchedOperations: 0,
+      retainedByteBuffers: this.aggregatePendingBytes,
+      restorationRecords: 0,
+      orphanedIpcOwners: this.unresolvedProvisionals.length
+    })
   }
 
   async adapterState(options: IpcManagerOperationOptions = {}): Promise<SerializableRecord> {
@@ -435,6 +532,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         serviceUuids: Object.freeze([...(options.serviceUuids ?? [])]),
         manufacturerData: Object.freeze(manufacturerData),
         localNamePrefix: options.localNamePrefix ?? null,
+        ...(options.terminalEvidenceScope === undefined
+          ? {}
+          : { terminalEvidenceScope: options.terminalEvidenceScope }),
         deadline: operationDeadline(options),
         ...(options.stream === undefined
           ? {}
@@ -500,6 +600,55 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     )
     session = new IpcScanSession(this, handle, observations, plan)
     return session
+  }
+
+  async reserveTerminalEvidence(request: TerminalEvidenceReservationRequest): Promise<TerminalEvidenceReservation> {
+    if (this.bootstrap.versions.ipcProtocol.selected.value < 11)
+      throw contractError('capability.unsupported', 'stream', 'ipc-manager.terminal-evidence.ipc-v11')
+    const payload = await this.route('terminalEvidence.reserve', Object.freeze({ version: 1, ...request }))
+    if (payload.kind === 'refused')
+      throw contractError('capability.unsupported', 'stream', 'ipc-manager.terminal-evidence.refused')
+    const reservationId = requiredString(payload, 'reservationId', 'ipc-manager.terminal-evidence.reserve')
+    const maximumBytes = requiredNumber(payload, 'maximumBytes', 'ipc-manager.terminal-evidence.reserve')
+    let released = false
+    return Object.freeze({
+      maximumBytes,
+      commit: async () => {
+        throw contractError('lifecycle.invalid-state', 'stream', 'ipc-manager.terminal-evidence.host-commit')
+      },
+      release: async () => {
+        if (!released) {
+          await this.route('terminalEvidence.release', Object.freeze({ version: 1, reservationId }))
+          released = true
+        }
+      }
+    })
+  }
+
+  async readTerminalEvidence(
+    ref: string,
+    maximumBytes: number
+  ): Promise<
+    | { readonly kind: 'committed'; readonly canonicalBytes: Readonly<Uint8Array>; readonly digest: string }
+    | { readonly kind: 'missing' | 'unresolved' }
+  > {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1)
+      throw contractError('argument.invalid', 'stream', 'ipc-manager.terminal-evidence.maximum-bytes')
+    const payload = await this.route('terminalEvidence.read', Object.freeze({ version: 1, ref }))
+    if (payload.kind === 'missing' || payload.kind === 'unresolved') return Object.freeze({ kind: payload.kind })
+    if (
+      payload.kind !== 'committed' ||
+      !(payload.canonicalBytes instanceof Uint8Array) ||
+      typeof payload.digest !== 'string'
+    )
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.terminal-evidence.read')
+    if (payload.canonicalBytes.byteLength > maximumBytes)
+      throw contractError('protocol.violation', 'stream', 'ipc-manager.terminal-evidence.read-bound')
+    return Object.freeze({
+      kind: 'committed',
+      canonicalBytes: new Uint8Array(payload.canonicalBytes),
+      digest: payload.digest
+    })
   }
 
   /**
@@ -806,7 +955,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         source.observeSourceLoss(notice)
         if (source.isTerminal()) {
           this.streams.delete(handle)
-          this.captureOwnerCleanup(() => onTerminal?.('overflow'), cleanupScope)
+          this.captureOwnerCleanup(
+            () => onTerminal?.(source.terminalReason() === 'source-failed' ? 'source-failed' : 'overflow'),
+            cleanupScope
+          )
         }
         return
       }
@@ -815,7 +967,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         upstreamLoss = cumulativeStreamLoss(upstreamLoss, item, true)
         reportKnownLoss('drop-oldest')
         const error = requiredTerminalError(item.error, 'ipc-manager.event')
-        source.finishWithReason(reason, error)
+        source.finishWithReason(reason, error, requiredTerminalEvidence(item.evidence, 'ipc-manager.event'))
         this.streams.delete(streamId)
         this.discardPendingStream(streamId)
         this.captureOwnerCleanup(
@@ -1037,10 +1189,6 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     try {
       for await (const event of this.client.events) {
         if (this.pumpDead) break
-        if (event.kind === 'source-loss') {
-          cause = 'overflow'
-          break
-        }
         if (event.kind === 'overflow') {
           // This is aggregate ingress loss. Its dropped counts cannot be
           // attributed to individual child streams, so fail all children with
@@ -1061,8 +1209,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           const eventValue = event.value
           const streamId = requiredString(eventValue, 'streamId', 'ipc-manager.event')
           const item = requiredRecord(eventValue, 'item', 'ipc-manager.event')
-          // The client adopted the host's attachment rebind itself (protocol 4).
-          if (streamId === IPC_ATTACHMENT_STREAM_ID) continue
+          // Attachment rebinds are adopted by the transport. Protocol 10 also
+          // carries graph-less native-source diagnostics here; retain them in
+          // the public manager trace rather than buffering an unowned stream
+          // item or pretending they identify a connection.
+          if (streamId === IPC_ATTACHMENT_STREAM_ID) {
+            this.recordAttachmentDiagnostic(item)
+            continue
+          }
           const sink = this.streams.get(streamId)
           if (sink === undefined) {
             this.bufferPendingStreamItem(streamId, item)
@@ -1085,6 +1239,44 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     } finally {
       this.terminalizeEventPump(cause, terminalError)
     }
+  }
+
+  private recordAttachmentDiagnostic(item: SerializableRecord): void {
+    const value = requiredRecord(item, 'value', 'ipc-manager.attachment-event')
+    if (value.kind === 'backend-restarted') return
+    if (value.kind !== 'diagnostic-warning' || value.schemaVersion !== 1) {
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.attachment-event')
+    }
+    const code = requiredString(value, 'code', 'ipc-manager.attachment-diagnostic')
+    if (
+      code !== 'gatt.source-uncertain' &&
+      code !== 'gatt.source-uncertain-lagged' &&
+      code !== 'gatt.source-uncertain-retention-lagged' &&
+      code !== 'gatt.peer-failure-recovery-available'
+    ) {
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.attachment-diagnostic')
+    }
+    const error = value.error === undefined ? null : requiredRecord(value, 'error', 'ipc-manager.attachment-diagnostic')
+    const normalized = error === null ? null : requiredTerminalError(error, 'ipc-manager.attachment-diagnostic')
+    const cause = normalized?.code ?? null
+    this.warnings.push(
+      Object.freeze({
+        code,
+        cause,
+        platform: normalized === null ? null : toPublicPlatformErrorDetail(normalized.platform)
+      })
+    )
+    if (this.warnings.length > 256) this.warnings.shift()
+    this.trace.record({
+      timestamp: this.now(),
+      resource: 'manager',
+      transition: `diagnostic-warning:${code}`,
+      operation: null,
+      cause,
+      queuedOperations: 0,
+      dispatchedOperations: 0,
+      quarantinedOperations: 0
+    })
   }
 
   private eventFailureError(error: unknown): NormalizedBleError {
@@ -1243,8 +1435,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
     if (existing === undefined) this.pendingStreams.set(streamId, pending)
     if (pending.terminal) return
-    if (item.kind === 'source-loss') {
-      const notice = readSourceLoss(item)
+    if (item.kind === 'source-loss' && item.scope === 'host-global') {
+      const notice = readHostSourceLoss(item)
       pending.sourceLoss[notice.source] += Number(notice.lostRecords)
       resourceCount(pending.sourceLoss[notice.source])
       return
@@ -1258,7 +1450,12 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const itemBytes = estimateByteLength(item)
     let droppedItems = 0
     let droppedBytes = 0
-    if (itemBytes > byteCapacity && item.kind === 'terminal') {
+    if (
+      itemBytes > byteCapacity &&
+      (item.kind === 'terminal' ||
+        item.kind === 'source-loss' ||
+        pending.items.some(retained => retained.kind === 'source-loss'))
+    ) {
       this.evictPendingStream(streamId, 'source-failed')
       return
     }
@@ -1296,6 +1493,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       item.kind !== 'terminal' &&
       (pending.items.length >= itemCapacity || (pending.items.length > 0 && pending.bytes + itemBytes > byteCapacity))
     ) {
+      if (pending.items[0]?.kind === 'source-loss') {
+        this.evictPendingStream(streamId, 'source-failed')
+        return
+      }
       const removed = pending.items.shift()
       if (removed === undefined) break
       const removedBytes = estimateByteLength(removed)
@@ -2487,12 +2688,13 @@ export class IpcConnection {
 }
 
 export class IpcGattDatabase {
+  private readonly committedRecordingReclaims = new Map<string, string>()
   readonly characteristics: readonly IpcCharacteristic[]
   readonly descriptors: readonly IpcDescriptor[]
   private valid = true
   private invalidation: Promise<CleanupRecord> | null = null
   private readonly changedStream = new CoreBoundedStream<GattDatabaseChangedEvent>(REMOTE_STREAM_LIMITS, 'drop-oldest')
-  private readonly subscriptions = new Set<IpcSubscription | IpcAcquiredWriter>()
+  private readonly subscriptions = new Set<IpcSubscription | IpcAcquiredWriter | IpcOrderedGroup>()
 
   private constructor(
     readonly manager: IpcBleManager,
@@ -2547,7 +2749,17 @@ export class IpcGattDatabase {
     binaryPayload: Uint8Array | null,
     signal?: AbortSignal
   ): Promise<SerializableRecord> {
-    if (command !== 'gatt.unsubscribe' && command !== 'gatt.acquired-write.close') this.assertCurrent()
+    if (
+      command !== 'gatt.unsubscribe' &&
+      command !== 'gatt.acquired-write.close' &&
+      command !== 'gatt.ordered.next' &&
+      command !== 'gatt.ordered.close' &&
+      command !== 'gatt.ordered.forget' &&
+      command !== 'gatt.ordered.retire' &&
+      command !== 'gatt.ordered-recording.status' &&
+      command !== 'gatt.ordered-recording.retire'
+    )
+      this.assertCurrent()
     return this.manager
       .route(
         command,
@@ -2669,12 +2881,12 @@ export class IpcGattDatabase {
     this.manager.closeStream(handle, reason)
   }
 
-  registerSubscription(subscription: IpcSubscription | IpcAcquiredWriter): void {
+  registerSubscription(subscription: IpcSubscription | IpcAcquiredWriter | IpcOrderedGroup): void {
     this.assertCurrent()
     this.subscriptions.add(subscription)
   }
 
-  forgetSubscription(subscription: IpcSubscription | IpcAcquiredWriter): void {
+  forgetSubscription(subscription: IpcSubscription | IpcAcquiredWriter | IpcOrderedGroup): void {
     this.subscriptions.delete(subscription)
   }
 
@@ -2806,6 +3018,619 @@ export class IpcGattDatabase {
     const subscription = await this.characteristicForPath(path).subscribe(toIpcOptions(options), true)
     subscription.path = path
     return subscription
+  }
+
+  reserveOrderedRecordingStart() {
+    this.assertCurrent()
+    const token = `${this.manager.bootstrap.rendererLease.leaseId}-recording-${this.manager.nextOrderedHandle++}`
+    let handle: string | null = null
+    let reservation: Promise<string> | null = null
+    let retired = false
+    let retiring = false
+    let reserveIssued = false
+    let request: { id: string; count: number; fingerprint: string } | null = null
+    let recoveryHandle: OrderedRecordingRecoveryHandle | null = null
+    let recoveryUnsupported = false
+    const ensureReservation = async (): Promise<string> => {
+      if (handle !== null) return handle
+      if (retired) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.ordered-recording.retired')
+      if (reservation === null) {
+        reserveIssued = true
+        const pending = this.manager
+          .route('gatt.ordered-recording.reserve', { reservationToken: token })
+          .then(value => {
+            if (!isCanonicalIngressOrdinal(value.startHandle))
+              throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reserve')
+            handle = value.startHandle
+            return value.startHandle
+          })
+        reservation = pending
+        pending.then(
+          () => {
+            if (reservation === pending) reservation = null
+          },
+          () => {
+            if (reservation === pending) reservation = null
+          }
+        )
+      }
+      return reservation
+    }
+    const captureRecovery = async (
+      result: ReturnType<typeof parseOrderedRecordingStartResult>,
+      recordingId: string
+    ) => {
+      if (result.kind !== 'started' || result.receipt.state !== 'active' || recoveryHandle !== null) return result
+      const startHandle = await ensureReservation()
+      let recovery: SerializableRecord
+      try {
+        recovery = await this.manager.route('gatt.ordered-recording.recovery', { startHandle })
+      } catch (error) {
+        if (error instanceof BackendContractError && error.normalized.code === 'capability.unsupported') {
+          recoveryUnsupported = true
+          return result
+        }
+        throw error
+      }
+      if (typeof recovery.recoveryToken !== 'string' || recovery.recoveryToken.length === 0)
+        throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.recovery')
+      const opaque: OrderedRecordingRecoveryHandle = Object.freeze({ kind: 'ordered-recording-recovery' })
+      ipcRecordingRecovery.set(opaque, { token: recovery.recoveryToken, recordingId })
+      recoveryHandle = opaque
+      return result
+    }
+    return {
+      start: async (
+        members: readonly {
+          readonly memberId: string
+          readonly path: PortableCurrentCharacteristicPath
+          readonly deliveryMode: NonNullable<PortableSubscriptionOptions['deliveryMode']>
+        }[],
+        options: PortableRecordedSubscriptionOptions
+      ) => {
+        if (retired || retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.ordered-recording.retired')
+        const controls = toIpcOptions(options)
+        const selected = members.map(member => ({
+          memberId: member.memberId,
+          characteristicHandle: this.characteristicForPath(member.path).handle,
+          deliveryMode: member.deliveryMode
+        }))
+        const fingerprint = JSON.stringify({ selected, recording: options.recording, delivery: options.delivery })
+        if (request !== null && request.fingerprint !== fingerprint)
+          throw contractError('argument.invalid', 'gatt', 'ipc.ordered-recording.retry')
+        request = { id: options.recording.id, count: members.length, fingerprint }
+        const startHandle = await ensureReservation()
+        if (retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.ordered-recording.retired')
+        if (controls.signal?.aborted) throw contractError('operation.aborted', 'gatt', 'ipc.ordered-recording.start')
+        const result = await this.route(
+          'gatt.ordered-recording.start',
+          {
+            startHandle,
+            members: selected,
+            recording: {
+              id: options.recording.id,
+              maxBytes: options.recording.maxBytes,
+              maxRecords: options.recording.maxRecords
+            },
+            deadline: operationDeadline(controls),
+            streamItemCapacity: options.delivery.itemCapacity,
+            streamByteCapacity: options.delivery.byteCapacity,
+            streamReservedControlCapacity: options.delivery.reservedControlCapacity
+          },
+          null,
+          controls.signal
+        )
+        return captureRecovery(
+          parseOrderedRecordingStartResult(
+            result,
+            options.recording.id,
+            members.length,
+            // IPC v9 introduced the ordered failure-observation receipt.
+            // The Electron router rejects ordered routes below v9, while a
+            // retained pre-v9 host legitimately emits the v1 receipt.
+            this.manager.bootstrap.versions.ipcProtocol.selected.value >= 9 ? 2 : 1
+          ),
+          options.recording.id
+        )
+      },
+      status: async () => {
+        if (retired) return { state: 'retired' as const }
+        if (handle === null && reserveIssued) await ensureReservation()
+        if (handle === null) return { state: 'unknown' as const }
+        const status = await this.manager.route('gatt.ordered-recording.status', { startHandle: handle })
+        if (status.state === 'pending') return { state: 'pending' as const }
+        if (status.state === 'unknown') return { state: 'unknown' as const }
+        if (status.state === 'failed') return { state: 'failed' as const }
+        if (status.state === 'retired') return { state: 'retired' as const }
+        if (status.state !== 'result' || request === null)
+          throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.status')
+        return {
+          state: 'result' as const,
+          result: await captureRecovery(
+            parseOrderedRecordingStartResult(
+              status.result,
+              request.id,
+              request.count,
+              this.manager.bootstrap.versions.ipcProtocol.selected.value >= 9 ? 2 : 1
+            ),
+            request.id
+          )
+        }
+      },
+      recoveryHandle: () => {
+        if (recoveryUnsupported) throw contractError('capability.unsupported', 'gatt', 'ipc.ordered-recording.recovery')
+        if (recoveryHandle === null) throw contractError('ownership.denied', 'gatt', 'ipc.ordered-recording.recovery')
+        return recoveryHandle
+      },
+      reserveMarkerWrite: () =>
+        this.reserveMarkerWrite('gatt.ordered-recording.marker', async () => ({
+          startHandle: await ensureReservation()
+        })),
+      retire: async () => {
+        if (retired) return
+        if (retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.ordered-recording.retiring')
+        retiring = true
+        try {
+          if (reservation !== null) await reservation
+          else if (handle === null && reserveIssued) await ensureReservation()
+          if (handle !== null) await this.manager.route('gatt.ordered-recording.retire', { startHandle: handle })
+          retired = true
+        } finally {
+          retiring = false
+        }
+      }
+    }
+  }
+
+  reserveOrderedRecordingMarker(recordingId: string) {
+    this.assertCurrent()
+    if (!recordingId) throw contractError('argument.invalid', 'gatt', 'ipc.ordered-recording.marker-owner')
+    let owner: Promise<SerializableRecord> | null = null
+    return this.reserveMarkerWrite('gatt.ordered-recording.marker', () => {
+      if (owner === null) {
+        const reclaimHandle = this.committedRecordingReclaims.get(recordingId)
+        if (reclaimHandle === undefined)
+          throw contractError('ownership.denied', 'gatt', 'ipc.ordered-recording.marker-owner')
+        const pending = this.route('gatt.ordered-recording.marker-owner', { recordingId, reclaimHandle }, null).then(
+          result => {
+            if (!isCanonicalIngressOrdinal(result.startHandle))
+              throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.marker-owner')
+            return { startHandle: result.startHandle, reclaimHandle }
+          }
+        )
+        owner = pending
+        pending.then(
+          () => undefined,
+          () => {
+            if (owner === pending) owner = null
+          }
+        )
+      }
+      return owner
+    })
+  }
+
+  reserveOrderedRecordingReclaim(handle: OrderedRecordingRecoveryHandle) {
+    this.assertCurrent()
+    const recovery = ipcRecordingRecovery.get(handle)
+    if (!recovery) throw contractError('ownership.denied', 'gatt', 'ipc.ordered-recording.reclaim')
+    let nativeForgotten = false
+    const invoke = async (action: string, reclaimHandle: string) =>
+      this.manager.route(`gatt.ordered-recording.reclaim.${action}`, { reclaimHandle })
+    const receipt = decodeReclaimReceipt
+    const statusReceipt = (value: unknown) => {
+      if (isSerializableRecord(value) && value.state === 'not-reserved') {
+        const error = requiredTerminalError(value.error, 'ipc.ordered-recording.reclaim')
+        if (error === null) throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reclaim-status')
+        return { state: 'not-reserved' as const, error }
+      }
+      return receipt(value)
+    }
+    const rememberCommitted = (id: string, result: OrderedRecordingReclaimReceipt) => {
+      if (result.mappingCommitted) this.committedRecordingReclaims.set(recovery.recordingId, id)
+      return result
+    }
+    const make = createOrderedRecordingReclaimReservations<OrderedRecordingReclaimReceipt>(
+      {
+        next: async callerKey => {
+          const result = await this.route(
+            'gatt.ordered-recording.reclaim.reserve',
+            { recoveryToken: recovery.token, callerKey },
+            null
+          )
+          if (!isCanonicalIngressOrdinal(result.reclaimHandle))
+            throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reclaim-reserve')
+          return result.reclaimHandle
+        },
+        reserve: async () => undefined,
+        start: async id => {
+          const result = statusReceipt((await invoke('start', id)).status)
+          return result.state === 'not-reserved' ? result : rememberCommitted(id, result)
+        },
+        status: async id => {
+          const result = statusReceipt((await invoke('status', id)).status)
+          return result.state === 'not-reserved' ? result : rememberCommitted(id, result)
+        },
+        commit: async id => {
+          const result = receipt((await invoke('commit', id)).status)
+          return rememberCommitted(id, result)
+        },
+        cancel: async id => receipt((await invoke('cancel', id)).status),
+        release: async id => rememberCommitted(id, receipt((await invoke('release', id)).status)),
+        retire: async id => {
+          if ((await invoke('retire', id)).retired !== true)
+            throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reclaim-retire')
+        },
+        acknowledgeRetirement: async id => {
+          if ((await invoke('ack-retirement', id)).acknowledged !== true)
+            throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reclaim-ack')
+        },
+        forgetRetirement: async id => {
+          if (!nativeForgotten) {
+            if ((await invoke('forget-retirement', id)).forgotten !== true)
+              throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reclaim-forget')
+            nativeForgotten = true
+          }
+          if ((await invoke('confirm-forgotten', id)).confirmed !== true)
+            throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reclaim-confirm')
+        }
+      },
+      () => `${this.manager.bootstrap.rendererLease.leaseId}-reclaim-${this.manager.nextOrderedHandle++}`
+    )
+    return make()
+  }
+
+  reserveMarkerWrite(prefix: string, owner: () => Promise<SerializableRecord>) {
+    const token = `${this.manager.bootstrap.rendererLease.leaseId}-marker-${this.manager.nextOrderedHandle++}`
+    let handle: string | null = null
+    let reservation: Promise<string> | null = null
+    let issued = false
+    let retired = false
+    let retiring = false
+    let cancelledBeforeStart = false
+    let cancellationRequested = false
+    const reserve = async (): Promise<string> => {
+      if (retired) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.marker.retired')
+      if (handle !== null) return handle
+      if (reservation === null) {
+        issued = true
+        const pending = owner()
+          .then(fields => this.manager.route(`${prefix}.reserve`, { ...fields, reservationToken: token }))
+          .then(value => {
+            if (!isCanonicalIngressOrdinal(value.markerHandle))
+              throw contractError('protocol.malformed', 'ipc', 'ipc.marker.reserve')
+            handle = value.markerHandle
+            return value.markerHandle
+          })
+        reservation = pending
+        pending.then(
+          () => {
+            if (reservation === pending) reservation = null
+          },
+          () => {
+            if (reservation === pending) reservation = null
+          }
+        )
+      }
+      return reservation
+    }
+    const decode = (value: SerializableRecord) => {
+      if (value.statusFormat === 'native') return decodeOrderedMarkerWriteStatus(value.status)
+      if (value.statusFormat === 'public') return decodePublicMarkerWriteStatus(value.status)
+      throw contractError('protocol.malformed', 'ipc', 'ipc.marker.status')
+    }
+    const query = async (action: 'status' | 'cancel') => {
+      if (retired) return { state: 'retired' as const }
+      if (action === 'cancel') cancellationRequested = true
+      if (!issued) {
+        if (action === 'cancel') cancelledBeforeStart = true
+        return cancelledBeforeStart ? { state: 'not-admitted' as const, error: null } : { state: 'idle' as const }
+      }
+      const markerHandle = await reserve()
+      return decode(await this.manager.route(`${prefix}.${action}`, { ...(await owner()), markerHandle }))
+    }
+    return {
+      start: async (
+        target: PortableCurrentCharacteristicPath,
+        value: Readonly<Uint8Array>,
+        mode: 'with-response' | 'without-response',
+        options: import('../backend-contract/operations').PublicOperationOptions
+      ) => {
+        if (retired || retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.marker.retired')
+        if (cancelledBeforeStart) return { state: 'not-admitted' as const, error: null }
+        if (options.signal?.aborted) throw contractError('operation.aborted', 'gatt', 'ipc.marker.start')
+        const characteristicHandle = this.characteristicForPath(target).handle
+        const bytes = ownBytes(value, byteLimit(value.byteLength))
+        const markerHandle = await reserve()
+        if (retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.marker.retired')
+        if (cancellationRequested) {
+          const status = decode(await this.manager.route(`${prefix}.cancel`, { ...(await owner()), markerHandle }))
+          if (status.state === 'idle' || status.state === 'retired')
+            throw contractError('protocol.malformed', 'ipc', 'ipc.marker.cancel-status')
+          return status
+        }
+        if (options.signal?.aborted) {
+          await this.manager.route(`${prefix}.cancel`, { ...(await owner()), markerHandle })
+          throw contractError('operation.aborted', 'gatt', 'ipc.marker.start')
+        }
+        const result = await this.route(
+          `${prefix}.start`,
+          {
+            ...(await owner()),
+            markerHandle,
+            characteristicHandle,
+            withResponse: mode === 'with-response',
+            deadline: options.deadline
+          },
+          bytes,
+          options.signal ?? undefined
+        )
+        const status = decode(result)
+        if (status.state === 'idle' || status.state === 'retired')
+          throw contractError('protocol.malformed', 'ipc', 'ipc.marker.start-status')
+        return status
+      },
+      status: () => query('status'),
+      cancel: () => query('cancel'),
+      forget: async () => {
+        if (retired) return
+        if (retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.marker.retiring')
+        retiring = true
+        try {
+          if (issued) {
+            const markerHandle = await reserve()
+            await this.manager.route(`${prefix}.forget`, { ...(await owner()), markerHandle })
+          }
+          retired = true
+        } finally {
+          retiring = false
+        }
+      }
+    }
+  }
+
+  async subscribeOrdered(
+    members: readonly {
+      readonly memberId: string
+      readonly path: PortableCurrentCharacteristicPath
+      readonly deliveryMode: NonNullable<PortableSubscriptionOptions['deliveryMode']>
+    }[],
+    options: PortableSubscriptionOptions
+  ): Promise<OrderedNotificationSetup> {
+    const controls = toIpcOptions(options)
+    const handle = `${this.manager.bootstrap.rendererLease.leaseId}-ordered-${this.manager.nextOrderedHandle++}`
+    const openPayload: SerializableRecord = {
+      orderedHandle: handle,
+      members: members.map(member => ({
+        memberId: member.memberId,
+        characteristicHandle: this.characteristicForPath(member.path).handle,
+        deliveryMode: member.deliveryMode
+      })),
+      deadline: operationDeadline(controls),
+      ...(controls.stream === undefined
+        ? {}
+        : {
+            streamItemCapacity: controls.stream.itemCapacity,
+            streamByteCapacity: controls.stream.byteCapacity,
+            streamReservedControlCapacity: controls.stream.reservedControlCapacity,
+            streamOverflowPolicy: controls.stream.overflowPolicy
+          })
+    }
+    let result: SerializableRecord
+    try {
+      result = await this.route('gatt.ordered.open', openPayload, null, controls.signal)
+    } catch (error) {
+      if (error instanceof OrderedAdmissionCancellationError) {
+        const group = new IpcOrderedGroup(
+          this,
+          handle,
+          toRemoteStreamLimits(controls.stream),
+          false,
+          members.map(member => member.memberId)
+        )
+        this.registerSubscription(group)
+        return this.manager.compensateAdmittedRoute(
+          () => group.closeFromDatabase('connection-lost'),
+          error,
+          'IPC ordered admission cancellation is uncertain'
+        )
+      }
+      for (;;) {
+        let status: SerializableRecord
+        try {
+          status = await this.route('gatt.ordered.status', { orderedHandle: handle }, null)
+        } catch (statusError) {
+          const group = new IpcOrderedGroup(
+            this,
+            handle,
+            toRemoteStreamLimits(controls.stream),
+            false,
+            members.map(member => member.memberId)
+          )
+          this.registerSubscription(group)
+          return this.manager.compensateAdmittedRoute(
+            () => group.closeFromDatabase('connection-lost'),
+            new AggregateError([error, statusError], 'Ordered admission status unavailable'),
+            'IPC ordered admission cleanup failed'
+          )
+        }
+        if (status.state === 'pending') {
+          await new Promise(resolve => setTimeout(resolve, 10))
+          continue
+        }
+        if (status.state === 'unknown') throw error
+        if (status.state !== 'result' || !isSerializableRecord(status.result))
+          throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.status')
+        result = status.result
+        break
+      }
+    }
+    let admittedGroup: IpcOrderedGroup | null = null
+    try {
+      if (result.handle !== handle) throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.open')
+      if (result.state === 'native') {
+        if (
+          typeof result.nativeStatus !== 'string' ||
+          !isCanonicalIngressOrdinal(result.collectionId) ||
+          result.connectionGeneration !== this.connection.connectionGeneration ||
+          result.databaseGeneration !== this.databaseGeneration ||
+          !Array.isArray(result.observations) ||
+          typeof result.uncertainTail !== 'boolean'
+        )
+          throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.native-open')
+        const ids = members.map(member => member.memberId)
+        const status = decodeTauriOrderedStatus(result.nativeStatus, ids)
+        const context: NativeOrderedContext = {
+          collectionId: result.collectionId,
+          connectionGeneration: result.connectionGeneration,
+          databaseGeneration: result.databaseGeneration,
+          members: ids,
+          sourceGeneration: status.sourceGeneration,
+          byteCapacity: Number(toRemoteStreamLimits(controls.stream).byteCapacity),
+          lastOrdinal: null
+        }
+        const group = new IpcOrderedGroup(this, handle, toRemoteStreamLimits(controls.stream), false, ids, context)
+        this.registerSubscription(group)
+        admittedGroup = group
+        if (status.setupError === null) {
+          if (status.members.some(member => member.acquisition !== 'acquired'))
+            throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.native-members')
+          return {
+            state: 'ready',
+            sourceGeneration: status.sourceGeneration,
+            members: members.map((member, index) => {
+              const statusMember = status.members[index]
+              if (statusMember === undefined)
+                throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.native-members')
+              return {
+                memberId: member.memberId,
+                path: member.path,
+                requestedDelivery: member.deliveryMode,
+                effectiveDelivery: statusMember.effectiveDelivery
+              }
+            }),
+            stream: group
+          }
+        }
+        const observations = result.observations.map(record => {
+          const item = group.decodeNative(record)
+          if (item.kind === 'terminal')
+            throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.native-observation')
+          return item
+        })
+        return {
+          state: 'failed',
+          sourceGeneration: status.sourceGeneration,
+          error: status.setupError,
+          members: status.members.map(member => ({ memberId: member.memberId, acquisition: member.acquisition })),
+          observations,
+          uncertainTail: result.uncertainTail,
+          cleanup: nativeOrderedCleanup(result.nativeStatus, result.cleanupState, ids),
+          stream: group,
+          close: () => group.close()
+        }
+      }
+      if (!Array.isArray(result.members)) throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.open')
+      const group = new IpcOrderedGroup(
+        this,
+        handle,
+        toRemoteStreamLimits(controls.stream),
+        false,
+        members.map(member => member.memberId)
+      )
+      group.setSourceGeneration(
+        result.sourceGeneration === undefined ? null : decodeSourceGeneration(result.sourceGeneration)
+      )
+      this.registerSubscription(group)
+      admittedGroup = group
+      if (result.state === 'ready') {
+        if (result.members.length !== members.length)
+          throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.members')
+        const selected = result.members.map(
+          (record, index): import('../core/ordered-notification-contract').OrderedNotificationMember => {
+            if (!isSerializableRecord(record)) throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.member')
+            const member = members[index]
+            if (
+              member === undefined ||
+              record.memberId !== member.memberId ||
+              record.requestedDelivery !== member.deliveryMode ||
+              (record.effectiveDelivery !== 'notification' &&
+                record.effectiveDelivery !== 'indication' &&
+                record.effectiveDelivery !== 'unknown')
+            )
+              throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.member')
+            return {
+              memberId: member.memberId,
+              path: member.path,
+              requestedDelivery: member.deliveryMode,
+              effectiveDelivery: record.effectiveDelivery
+            }
+          }
+        )
+        return {
+          state: 'ready',
+          sourceGeneration:
+            result.sourceGeneration === undefined ? null : decodeSourceGeneration(result.sourceGeneration),
+          members: selected,
+          stream: group
+        }
+      }
+      if (result.state !== 'failed' || typeof result.uncertainTail !== 'boolean' || !Array.isArray(result.observations))
+        throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.failed')
+      const error = requiredTerminalError(result.error, 'ipc.ordered.setup')
+      if (error === null) throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.error')
+      const failedMembers = result.members.map((record): OrderedNotificationSetupFailureMember => {
+        if (
+          !isSerializableRecord(record) ||
+          typeof record.memberId !== 'string' ||
+          (record.acquisition !== 'not-started' &&
+            record.acquisition !== 'acquired' &&
+            record.acquisition !== 'indeterminate')
+        )
+          throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.member')
+        return { memberId: record.memberId, acquisition: record.acquisition }
+      })
+      const observations = result.observations.map(record => {
+        const item = group.decodePublic(record)
+        if (item.kind === 'terminal') throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.observation')
+        return item
+      })
+      return {
+        state: 'failed',
+        sourceGeneration:
+          result.sourceGeneration === undefined ? null : decodeSourceGeneration(result.sourceGeneration),
+        error,
+        members: failedMembers,
+        observations,
+        uncertainTail: result.uncertainTail,
+        cleanup: decodeOrderedCleanup(result.cleanup),
+        stream: group,
+        close: () => group.close()
+      }
+    } catch (error) {
+      const group =
+        admittedGroup ??
+        new IpcOrderedGroup(
+          this,
+          handle,
+          toRemoteStreamLimits(controls.stream),
+          false,
+          members.map(member => member.memberId)
+        )
+      let admissionError: unknown = error
+      if (admittedGroup === null) {
+        try {
+          this.registerSubscription(group)
+        } catch (registrationError) {
+          admissionError = new AggregateError([error, registrationError], 'Ordered admission registration failed')
+        }
+      }
+      return this.manager.compensateAdmittedRoute(
+        () => group.closeFromDatabase('connection-lost'),
+        admissionError,
+        'IPC ordered admission cleanup failed'
+      )
+    }
   }
 
   async subscribe(
@@ -3006,6 +3831,9 @@ export class IpcCharacteristic {
         characteristicHandle: this.handle,
         deadline: operationDeadline(options),
         ...(options.deliveryMode === undefined ? {} : { deliveryMode: options.deliveryMode }),
+        ...(options.terminalEvidenceScope === undefined
+          ? {}
+          : { terminalEvidenceScope: options.terminalEvidenceScope }),
         ...(options.stream === undefined
           ? {}
           : {
@@ -3081,6 +3909,20 @@ export class IpcCharacteristic {
         },
         'lease-owned',
         stream => {
+          if (
+            options.terminalEvidenceScope !== undefined &&
+            'setTerminalEvidenceHydrator' in stream &&
+            typeof stream.setTerminalEvidenceHydrator === 'function'
+          ) {
+            stream.setTerminalEvidenceHydrator((notice: StreamTerminalNotice) => {
+              const evidence = notice.evidence
+              if (evidence === undefined || !Number.isSafeInteger(evidence.byteLength) || evidence.byteLength < 1)
+                return Promise.reject(
+                  contractError('protocol.malformed', 'ipc', 'ipc-manager.terminal-evidence.receipt')
+                )
+              return hydrateTerminalEvidence(this.database.manager, notice, evidence.byteLength)
+            })
+          }
           const subscription = new IpcSubscription(
             this.database,
             handle,
@@ -3153,6 +3995,342 @@ function acquiredMtu(payload: SerializableRecord): number {
   if (!Number.isSafeInteger(mtuBytes) || mtuBytes < 23 || mtuBytes > 517)
     throw contractError('protocol.violation', 'gatt', 'ipc.acquired-gatt.mtu')
   return mtuBytes
+}
+
+interface NativeOrderedContext {
+  readonly collectionId: string
+  readonly connectionGeneration: string
+  readonly databaseGeneration: string
+  readonly members: readonly string[]
+  readonly byteCapacity: number
+  sourceGeneration: import('../core/ordered-notification-contract').OrderedSourceGeneration | null
+  lastOrdinal: string | null
+}
+
+function nativeOrderedCleanup(
+  statusWire: unknown,
+  state: unknown,
+  members: readonly string[]
+): OrderedNotificationCleanup {
+  if (
+    typeof statusWire !== 'string' ||
+    (state !== 'released' && state !== 'pending-source' && state !== 'pending-drain')
+  )
+    throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.native-cleanup')
+  const status = decodeTauriOrderedStatus(statusWire, members)
+  const group: CleanupRecord =
+    state === 'released'
+      ? { state: 'released', failures: [] }
+      : {
+          state: 'release-failed',
+          failures: [
+            {
+              resourceKind: 'ordered-group',
+              error:
+                status.fenceError ??
+                contractError('lifecycle.invalid-state', 'cleanup', `ipc.ordered.${state}`).normalized
+            }
+          ]
+        }
+  return {
+    group,
+    members: status.members.map(member => ({
+      memberId: member.memberId,
+      cleanup: member.cleanupReleased
+        ? { state: 'released', failures: [] }
+        : {
+            state: 'release-failed',
+            failures: [
+              {
+                resourceKind: 'ordered-member',
+                error:
+                  member.cleanupError === null
+                    ? contractError('lifecycle.invalid-state', 'cleanup', 'ipc.ordered.member-pending').normalized
+                    : member.cleanupError
+              }
+            ]
+          }
+    }))
+  }
+}
+
+type OrderedNotificationSetupFailureMember = Extract<OrderedNotificationSetup, { state: 'failed' }>['members'][number]
+
+class IpcOrderedGroup implements OrderedNotificationStream {
+  private acknowledged: string | undefined
+  private claimed = false
+  private drained = false
+  private cleanupReleased = false
+  private forgotten = false
+  private retirementInFlight: Promise<void> | null = null
+  private lastOrdinal: string | null = null
+  private collectionId: string | null = null
+  private sourceGeneration: import('../core/ordered-notification-contract').OrderedSourceGeneration | null = null
+  private releasedCleanup: OrderedNotificationCleanup | null = null
+  private discardReceipt: NonNullable<OrderedNotificationCleanup['discarded']> | null = null
+  private nativeCloseState: 'released' | 'pending-source' | 'pending-drain' | null = null
+  private discardInFlight: Promise<OrderedNotificationCleanup> | null = null
+  private readonly discardStaging: OrderedNotificationItem[] = []
+  private discardStagingBytes = 0
+  private serial: Promise<void> = Promise.resolve()
+  constructor(
+    private readonly database: IpcGattDatabase,
+    readonly handle: string,
+    readonly limits: StreamLimits,
+    initiallyDrained: boolean,
+    private readonly memberIds: readonly string[],
+    private readonly nativeContext: NativeOrderedContext | null = null
+  ) {
+    this.drained = initiallyDrained
+  }
+
+  reserveMarkerWrite() {
+    return this.database.reserveMarkerWrite('gatt.ordered.marker', async () => ({ orderedHandle: this.handle }))
+  }
+
+  async close(): Promise<OrderedNotificationCleanup> {
+    if (this.releasedCleanup !== null) {
+      await this.forgetIfComplete()
+      return this.withDiscardReceipt(this.releasedCleanup)
+    }
+    const response = await this.database.route('gatt.ordered.close', { orderedHandle: this.handle }, null)
+    if (
+      response.cleanupState === 'released' ||
+      response.cleanupState === 'pending-source' ||
+      response.cleanupState === 'pending-drain'
+    )
+      this.nativeCloseState = response.cleanupState
+    const result =
+      response.cleanup !== undefined
+        ? decodeOrderedCleanup(response.cleanup)
+        : nativeOrderedCleanup(response.nativeStatus, response.cleanupState, this.memberIds)
+    this.cleanupReleased =
+      result.group.state === 'released' && result.members.every(member => member.cleanup.state === 'released')
+    if (this.cleanupReleased) this.releasedCleanup = result
+    await this.forgetIfComplete()
+    return this.withDiscardReceipt(result)
+  }
+
+  private withDiscardReceipt(cleanup: OrderedNotificationCleanup): OrderedNotificationCleanup {
+    return this.discardReceipt === null ? cleanup : { ...cleanup, discarded: this.discardReceipt }
+  }
+
+  discard(): Promise<OrderedNotificationCleanup> {
+    if (this.discardInFlight !== null) return this.discardInFlight
+    const work = this.discardOnce().finally(() => {
+      this.discardInFlight = null
+    })
+    this.discardInFlight = work
+    return work
+  }
+
+  private async discardOnce(): Promise<OrderedNotificationCleanup> {
+    let cleanup = await this.close()
+    if (this.drained && this.discardReceipt !== null) return this.withDiscardReceipt(cleanup)
+    if (
+      (cleanup.group.state !== 'released' || cleanup.members.some(member => member.cleanup.state !== 'released')) &&
+      this.nativeCloseState !== 'pending-drain'
+    ) {
+      return {
+        ...cleanup,
+        discarded: { values: '0', bytes: '0', controls: '0', uncertainTail: true, terminal: null, losses: [] }
+      }
+    }
+    for (;;) {
+      const record = await this.serializedPoll()
+      if (record.state === 'empty') {
+        const pending = contractError('lifecycle.invalid-state', 'cleanup', 'ipc.ordered.discard-pending').normalized
+        return {
+          ...cleanup,
+          group: {
+            state: 'release-failed',
+            failures: [...cleanup.group.failures, { resourceKind: 'ordered-group-uncertain-tail', error: pending }]
+          },
+          discarded: { values: '0', bytes: '0', controls: '0', uncertainTail: true, terminal: null, losses: [] }
+        }
+      }
+      if (record.state === 'closed') break
+      this.discardStaging.push(record.item)
+      if (record.item.kind === 'value') this.discardStagingBytes += record.item.value.byteLength
+      if (
+        this.discardStaging.length > this.limits.itemCapacity + this.limits.reservedControlCapacity + 2 ||
+        this.discardStagingBytes > this.limits.byteCapacity
+      )
+        throw contractError('stream.quota', 'ipc', 'ipc.ordered.discard-staging')
+    }
+    this.discardReceipt = accountOrderedDiscard(this.discardStaging)
+    this.discardStaging.length = 0
+    this.discardStagingBytes = 0
+    if (!this.cleanupReleased) cleanup = await this.close()
+    return this.withDiscardReceipt(cleanup)
+  }
+
+  private async forgetIfComplete(): Promise<void> {
+    if (!this.cleanupReleased || !this.drained) return
+    if (this.retirementInFlight !== null) return this.retirementInFlight
+    const work = this.retireGroup().finally(() => {
+      if (this.retirementInFlight === work) this.retirementInFlight = null
+    })
+    this.retirementInFlight = work
+    return work
+  }
+
+  private async retireGroup(): Promise<void> {
+    if (!this.forgotten) {
+      const result = await this.database.route('gatt.ordered.forget', { orderedHandle: this.handle }, null)
+      if (result.state !== 'forgotten') throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.forget')
+      this.forgotten = true
+    }
+    const retired = await this.database.route('gatt.ordered.retire', { orderedHandle: this.handle }, null)
+    if (retired.state !== 'retired') throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.retire')
+    this.database.forgetSubscription(this)
+  }
+
+  async closeFromDatabase(_reason: 'connection-lost' | 'service-changed'): Promise<CleanupRecord> {
+    const result = await this.close()
+    if (result.group.state === 'release-failed') return result.group
+    if (!this.drained)
+      return {
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'ordered-group-uncertain-tail',
+            error: contractError('lifecycle.invalid-state', 'cleanup', 'ipc.ordered.undrained').normalized
+          }
+        ]
+      }
+    return result.group
+  }
+
+  confirmParentRelease(): void {
+    this.drained = true
+    this.database.forgetSubscription(this)
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<OrderedNotificationItem, undefined, undefined> {
+    if (this.claimed) throw contractError('lifecycle.invalid-state', 'stream', 'ipc.ordered.iterator')
+    this.claimed = true
+    return {
+      next: () => this.next(),
+      return: async () => {
+        const cleanup = await this.discard()
+        if (cleanup.group.state === 'release-failed') throw new BleCleanupError(cleanup.group)
+        return { done: true, value: undefined }
+      }
+    }
+  }
+
+  setSourceGeneration(value: import('../core/ordered-notification-contract').OrderedSourceGeneration | null): void {
+    this.sourceGeneration = value
+  }
+
+  decodePublic(input: unknown): OrderedNotificationItem {
+    const item = decodeOrderedItem(input)
+    if (item.kind === 'value' || item.kind === 'marker') {
+      if (
+        (item.kind === 'value' && !this.memberIds.includes(item.memberId)) ||
+        item.connectionGeneration !== this.database.connection.connectionGeneration ||
+        item.databaseGeneration !== this.database.databaseGeneration ||
+        (this.collectionId !== null && this.collectionId !== item.collectionId) ||
+        (this.lastOrdinal !== null &&
+          (item.ordinal.length < this.lastOrdinal.length ||
+            (item.ordinal.length === this.lastOrdinal.length && item.ordinal <= this.lastOrdinal)))
+      )
+        throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.identity')
+      if (
+        (item.kind === 'value' && item.value.byteLength > this.limits.byteCapacity) ||
+        (item.sourceGeneration != null &&
+          this.sourceGeneration !== null &&
+          (item.sourceGeneration.kind !== this.sourceGeneration.kind ||
+            item.sourceGeneration.value !== this.sourceGeneration.value))
+      )
+        throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.source-generation')
+      if (item.sourceGeneration != null) this.sourceGeneration = item.sourceGeneration
+      this.collectionId = item.collectionId
+      this.lastOrdinal = item.ordinal
+    } else if (item.kind === 'loss' && item.scope.kind === 'member' && !this.memberIds.includes(item.scope.memberId)) {
+      throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.member')
+    }
+    return item
+  }
+
+  decodeNative(input: unknown): OrderedNotificationItem {
+    if (this.nativeContext === null) throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.native-context')
+    const item = decodeDesktopOrderedItem(input, this.nativeContext)
+    if (item.kind === 'value' || item.kind === 'marker') this.nativeContext.lastOrdinal = item.ordinal
+    return item
+  }
+
+  private serializedPoll(): Promise<
+    | { readonly state: 'empty' }
+    | { readonly state: 'closed' }
+    | { readonly state: 'item'; readonly item: OrderedNotificationItem }
+  > {
+    const work = this.serial.then(() => this.pollFromHost())
+    this.serial = work.then(
+      () => undefined,
+      () => undefined
+    )
+    return work
+  }
+
+  private async pollFromHost(): Promise<
+    | { readonly state: 'empty' }
+    | { readonly state: 'closed' }
+    | { readonly state: 'item'; readonly item: OrderedNotificationItem }
+  > {
+    if (this.drained) {
+      await this.forgetIfComplete()
+      return { state: 'closed' }
+    }
+    const payload = await this.database.route(
+      'gatt.ordered.next',
+      {
+        orderedHandle: this.handle,
+        ...(this.acknowledged === undefined ? {} : { ackDeliveryId: this.acknowledged })
+      },
+      null
+    )
+    if (payload.state === 'closed') {
+      this.drained = true
+      await this.forgetIfComplete()
+      return { state: 'closed' }
+    }
+    if (payload.state === 'empty') {
+      return { state: 'empty' }
+    }
+    if (payload.state !== 'item' || typeof payload.deliveryId !== 'string' || payload.deliveryId.length === 0)
+      throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.next')
+    let fenceError: NormalizedBleError | null = null
+    if (this.nativeContext !== null && payload.nativeStatus !== undefined) {
+      if (typeof payload.nativeStatus !== 'string')
+        throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.native-status')
+      const status = decodeTauriOrderedStatus(payload.nativeStatus, this.nativeContext.members)
+      const before = this.nativeContext.sourceGeneration
+      const after = status.sourceGeneration
+      if (before !== null && after !== null && (before.kind !== after.kind || before.value !== after.value))
+        throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.source-generation')
+      if (after !== null) this.nativeContext.sourceGeneration = after
+      fenceError = status.fenceError
+    }
+    let item = this.nativeContext === null ? this.decodePublic(payload.item) : this.decodeNative(payload.nativeWire)
+    if (this.nativeContext !== null && item.kind === 'terminal') {
+      if (typeof payload.nativeStatus !== 'string')
+        throw contractError('protocol.malformed', 'ipc', 'ipc.ordered.terminal-status')
+      if (fenceError !== null) item = { ...item, fenceError, uncertainTail: true }
+    }
+    this.acknowledged = payload.deliveryId
+    return { state: 'item', item }
+  }
+
+  private async next(): Promise<IteratorResult<OrderedNotificationItem, undefined>> {
+    for (;;) {
+      const record = await this.serializedPoll()
+      if (record.state === 'closed') return { done: true, value: undefined }
+      if (record.state === 'item') return { done: false, value: record.item }
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
 }
 
 export class IpcAcquiredWriter {
@@ -3293,6 +4471,7 @@ function toIpcOptions(options: PortableOperationOptions | PortableSubscriptionOp
     signal: options.signal ?? undefined,
     deadline: typeof options.deadline === 'number' ? options.deadline : undefined,
     deliveryMode: subscriptionOptions?.deliveryMode,
+    terminalEvidenceScope: subscriptionOptions?.terminalEvidenceScope,
     stream:
       delivery === undefined
         ? undefined
@@ -3517,6 +4696,67 @@ function requiredTerminalReason(
   throw contractError('protocol.malformed', 'ipc', operation)
 }
 
+function requiredTerminalEvidence(value: unknown, operation: string): TerminalEvidenceCommit | undefined {
+  if (value === undefined) return undefined
+  if (!isSerializableRecord(value)) throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence`)
+  const byteLength = value.byteLength
+  if (
+    value.durability !== 'committed' ||
+    value.formatVersion !== 1 ||
+    (value.producer !== 'scan' && value.producer !== 'subscription') ||
+    typeof value.ref !== 'string' ||
+    typeof byteLength !== 'number' ||
+    !Number.isSafeInteger(byteLength) ||
+    byteLength < 1 ||
+    typeof value.digest !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(value.digest) ||
+    !isSerializableRecord(value.scope) ||
+    typeof value.scope.managerId !== 'string' ||
+    typeof value.scope.operationId !== 'string' ||
+    typeof value.scope.incarnation !== 'string'
+  )
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence`)
+  return Object.freeze({
+    ref: value.ref,
+    byteLength,
+    digest: value.digest,
+    formatVersion: 1,
+    durability: 'committed',
+    producer: value.producer,
+    scope: Object.freeze({
+      managerId: value.scope.managerId,
+      operationId: value.scope.operationId,
+      incarnation: value.scope.incarnation
+    })
+  })
+}
+
+export function decodeReclaimReceipt(value: unknown): OrderedRecordingReclaimReceipt {
+  if (!isSerializableRecord(value) || typeof value.mappingCommitted !== 'boolean')
+    throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reclaim-status')
+  const state = value.state
+  if (
+    state !== 'reserved' &&
+    state !== 'pending' &&
+    state !== 'ready' &&
+    state !== 'committed' &&
+    state !== 'releasing' &&
+    state !== 'release-failed' &&
+    state !== 'released' &&
+    state !== 'failed' &&
+    state !== 'retired'
+  )
+    throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reclaim-status')
+  const error = requiredTerminalError(value.error, 'ipc.ordered-recording.reclaim')
+  if (
+    (state === 'failed' || state === 'release-failed') !== (error !== null) ||
+    (state === 'committed' && !value.mappingCommitted) ||
+    (['reserved', 'pending', 'ready', 'failed'].includes(state) && value.mappingCommitted)
+  )
+    throw contractError('protocol.malformed', 'ipc', 'ipc.ordered-recording.reclaim-status')
+  return { state, error, mappingCommitted: value.mappingCommitted }
+}
+
 export function requiredTerminalError(value: unknown, operation: string): NormalizedBleError | null {
   if (value === undefined || value === null) return null
   if (!isSerializableRecord(value)) throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error`)
@@ -3534,33 +4774,42 @@ export function requiredTerminalError(value: unknown, operation: string): Normal
     throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error`)
   }
   const commit = requiredTerminalCommit(value, operation)
+  if (Object.hasOwn(value, 'orderedFailure') && Object.hasOwn(value, 'orderedFailureJson'))
+    throw contractError('protocol.malformed', 'ipc', `${operation}.ordered-failure`)
+  let rawOrderedFailure: unknown = value.orderedFailure
+  if (Object.hasOwn(value, 'orderedFailureJson')) {
+    if (typeof value.orderedFailureJson !== 'string' || value.orderedFailureJson.length > 1048576)
+      throw contractError('protocol.malformed', 'ipc', `${operation}.ordered-failure`)
+    try {
+      rawOrderedFailure = JSON.parse(value.orderedFailureJson)
+    } catch {
+      throw contractError('protocol.malformed', 'ipc', `${operation}.ordered-failure`)
+    }
+  }
+  const orderedFailure =
+    Object.hasOwn(value, 'orderedFailure') || Object.hasOwn(value, 'orderedFailureJson')
+      ? parseOrderedRecordingFailure(rawOrderedFailure, 2)
+      : undefined
+  if (
+    orderedFailure !== undefined &&
+    (orderedFailure.code !== code || orderedFailure.domain !== domain || orderedFailure.operation !== value.operation)
+  )
+    throw contractError('protocol.malformed', 'ipc', `${operation}.ordered-failure`)
+  const ordered = orderedFailure === undefined ? {} : { orderedFailure }
   const platform = value.platform
   if (platform === null) {
-    return { code, domain, operation: value.operation, platform: null, retryability, ...commit }
+    return { code, domain, operation: value.operation, platform: null, retryability, ...commit, ...ordered }
   }
-  if (!isSerializableRecord(platform)) {
-    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error-platform`)
-  }
-  if (
-    typeof platform.domain !== 'string' ||
-    typeof platform.code !== 'string' ||
-    typeof platform.safeMessage !== 'string' ||
-    !isSerializableRecord(platform.metadata)
-  ) {
-    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error-platform`)
-  }
+  const detail = optionalPlatformErrorDetail(platform, `${operation}.terminal-error-platform`)
+  if (detail === undefined) throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error-platform`)
   return {
     code,
     domain,
     operation: value.operation,
-    platform: {
-      domain: platform.domain,
-      code: platform.code,
-      safeMessage: platform.safeMessage,
-      metadata: platform.metadata
-    },
+    platform: detail,
     retryability,
-    ...commit
+    ...commit,
+    ...ordered
   }
 }
 
@@ -3860,6 +5109,9 @@ function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
   const observedAtMonotonicMs: unknown = Reflect.get(value, 'observedAtMonotonicMs')
   const sequence: unknown = Reflect.get(value, 'sequence')
   const receipt: unknown = Reflect.get(value, 'receipt')
+  const provenance: unknown = Reflect.get(value, 'provenance')
+  const sourceGeneration: unknown = Reflect.get(value, 'sourceGeneration')
+  const sourceOrdinal: unknown = Reflect.get(value, 'sourceOrdinal')
   return (
     rawValue instanceof Uint8Array &&
     (delivery === 'notification' || delivery === 'indication' || delivery === 'unknown') &&
@@ -3869,7 +5121,13 @@ function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
     typeof sequence === 'number' &&
     Number.isSafeInteger(sequence) &&
     sequence > 0 &&
-    (receipt === undefined || isNotificationReceipt(receipt))
+    (receipt === undefined || isNotificationReceipt(receipt)) &&
+    (provenance === undefined ||
+      provenance === 'notification' ||
+      provenance === 'read-or-notification' ||
+      provenance === 'unknown') &&
+    ((sourceGeneration === undefined && sourceOrdinal === undefined) ||
+      (isCanonicalIngressOrdinal(sourceGeneration) && isCanonicalIngressOrdinal(sourceOrdinal)))
   )
 }
 
@@ -4296,7 +5554,35 @@ function requiredDescriptorRecords(records: readonly SerializableRecord[]): read
   return Object.freeze(validated)
 }
 
-function readSourceLoss(item: SerializableRecord): import('../backend-contract/streams').StreamSourceLossNotice {
+function readSourceLoss(
+  item: SerializableRecord
+):
+  | import('../backend-contract/streams').StreamSourceLossNotice
+  | import('../backend-contract/streams').StreamPeerSourceLossNotice {
+  if (item.scope === 'peer') {
+    if (
+      typeof item.peerId !== 'string' ||
+      item.peerId.length === 0 ||
+      !isPeerLossU64(item.generation) ||
+      (item.skippedRecords !== null && !isPeerLossU64(item.skippedRecords))
+    )
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.peer-source-loss')
+    return {
+      kind: 'source-loss',
+      scope: 'peer',
+      peerId: item.peerId,
+      generation: item.generation,
+      skippedRecords: item.skippedRecords
+    }
+  }
+  return readHostSourceLoss(item)
+}
+
+function isPeerLossU64(value: unknown): value is string {
+  return typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) && BigInt(value) <= 18446744073709551615n
+}
+
+function readHostSourceLoss(item: SerializableRecord): import('../backend-contract/streams').StreamSourceLossNotice {
   if (
     item.scope !== 'host-global' ||
     (item.source !== 'notification-ingress' && item.source !== 'advertisement-ingress') ||

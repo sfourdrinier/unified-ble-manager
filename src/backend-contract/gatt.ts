@@ -269,6 +269,46 @@ export interface GattDatabaseSnapshot<Attachment extends string, Connection exte
 }
 export interface GattDatabase<Attachment extends string, Connection extends string, Database extends string> {
   readonly path: DatabasePath<Attachment, Connection, Database>
+  subscribeOrdered?(
+    members: readonly {
+      readonly memberId: string
+      readonly path: CharacteristicPath<Attachment, Connection, Database, string, string, 'current'>
+      readonly deliveryMode: NonNullable<SubscriptionOptions['deliveryMode']>
+    }[],
+    options: SubscriptionOptions
+  ): Promise<import('../core/ordered-notification-contract').OrderedNotificationSetup>
+  reserveOrderedRecordingStart?(): {
+    start(
+      members: readonly {
+        readonly memberId: string
+        readonly path: CharacteristicPath<Attachment, Connection, Database, string, string, 'current'>
+        readonly deliveryMode: NonNullable<SubscriptionOptions['deliveryMode']>
+      }[],
+      options: RecordedSubscriptionOptions
+    ): Promise<import('../core/ordered-recording-start').OrderedRecordingStartResult>
+    status(): Promise<
+      | { readonly state: 'pending' | 'unknown' | 'failed' | 'retired' }
+      | {
+          readonly state: 'result'
+          readonly result: import('../core/ordered-recording-start').OrderedRecordingStartResult
+        }
+    >
+    retire(): Promise<void>
+    recoveryHandle?(): import('../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle
+    reserveMarkerWrite?(): import('../core/ordered-marker-wire').OrderedMarkerWriteHandle<
+      CharacteristicPath<Attachment, Connection, Database, string, string, 'current'>
+    >
+  }
+  reserveOrderedRecordingReclaim?(
+    handle: import('../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle
+  ): import('../core/ordered-recording-reclaim').OrderedRecordingReclaimHandle<
+    import('../core/ordered-recording-reclaim').OrderedRecordingReclaimReceipt
+  >
+  reserveOrderedRecordingMarker?(
+    recordingId: string
+  ): import('../core/ordered-marker-wire').OrderedMarkerWriteHandle<
+    CharacteristicPath<Attachment, Connection, Database, string, string, 'current'>
+  >
   snapshot(): Promise<GattDatabaseSnapshot<Attachment, Connection, Database>>
   acquireWrite?<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
@@ -384,9 +424,18 @@ export const NOTIFICATION_DELIVERIES: readonly NotificationDelivery[] = Object.f
   'unknown'
 ])
 
+export type NotificationProvenance = 'notification' | 'read-or-notification' | 'unknown'
+
+export function isNotificationProvenance(value: unknown): value is NotificationProvenance {
+  return value === 'notification' || value === 'read-or-notification' || value === 'unknown'
+}
+
 export interface NotificationValue {
+  readonly sourceGeneration?: string
+  readonly sourceOrdinal?: string
   readonly value: OwnedBytes
   readonly delivery: NotificationDelivery
+  readonly provenance?: NotificationProvenance
   readonly receipt?: NotificationReceipt
 }
 export interface RecordedSubscription<

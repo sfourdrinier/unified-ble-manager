@@ -18,7 +18,7 @@ test('5.x podspec selects the Rust core beside the Owned radio', () => {
 })
 
 test.each(['prebuilt', 'source'])(
-  'evaluated %s podspec preserves existing Swift consumer flags and selects the staged FFI map',
+  'evaluated %s podspec keeps the FFI map private to the BlePlx pod target',
   mode => {
     const output = execFileSync('ruby', [path.join(root, 'scripts/ci/podspec-stub-eval.rb'), '--dir', root], {
       encoding: 'utf8',
@@ -27,13 +27,7 @@ test.each(['prebuilt', 'source'])(
     const evaluated = JSON.parse(output)
     expect(evaluated.ios.weak_frameworks).toBe('AccessorySetupKit')
     expect(evaluated.tvos?.weak_frameworks).toBeUndefined()
-    const consumer = evaluated.user_target_xcconfig
-    expect(Object.keys(consumer)).toEqual(['OTHER_SWIFT_FLAGS'])
-    expect(consumer.OTHER_SWIFT_FLAGS).toContain('$(inherited) -DCONSUMER_EXISTING_FLAG')
-    expect(consumer.OTHER_SWIFT_FLAGS).toContain(
-      '-Xcc "-fmodule-map-file=$(PODS_XCFRAMEWORKS_BUILD_DIR)/unified-ble-manager/Headers/ubm_echoFFI.modulemap"'
-    )
-    expect(consumer.OTHER_SWIFT_FLAGS).not.toContain('PODS_TARGET_SRCROOT')
+    expect(evaluated.user_target_xcconfig).toEqual({ OTHER_SWIFT_FLAGS: '-DCONSUMER_EXISTING_FLAG' })
   }
 )
 
@@ -121,6 +115,20 @@ test('Apple core producer retains physical iOS/tvOS and builds only arm64 simula
   expect(builder).toContain('MATRIX_TVOS_DEVICE="aarch64-apple-tvos"')
   expect(builder).toContain('MATRIX_TVOS_SIM="aarch64-apple-tvos-sim"')
   expect(builder).not.toContain('x86_64-apple-ios')
+})
+
+test('Apple core producer stages a conventional module map for every XCFramework slice', () => {
+  const builder = fs.readFileSync(path.join(root, 'ios', 'build-rust-core.sh'), 'utf8')
+  expect(builder).toContain('stage_consumer_module_maps')
+  expect(builder).toContain('cp "$HEADERS/ubm_echoFFI.modulemap" "$slice/Headers/module.modulemap"')
+  expect(builder).toContain('stage_consumer_module_maps "$FRAMEWORK_DIR"')
+})
+
+test('Apple core producer does not wrap a single simulator ar archive in lipo', () => {
+  const builder = fs.readFileSync(path.join(root, 'ios', 'build-rust-core.sh'), 'utf8')
+  expect(builder).toContain('if [ $# -eq 1 ]; then')
+  expect(builder).toContain('cp "$1" "$FAT_LIB"')
+  expect(builder).toContain('else\n    lipo -create "$@" -output "$FAT_LIB"')
 })
 
 test('generated UniFFI Swift surface references every attested core symbol', () => {

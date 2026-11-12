@@ -6,14 +6,36 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::continuation_journal::{ContinuationJournal, JournalQuota, JournalRegistry};
-use crate::continuation_outbox::{Observation, RecordMatcher, decode_base64, encode_base64};
+use crate::continuation_outbox::{
+    CONTROL_RECORD_CAP, DATA_RECORD_CAP, DrainClaim, DrainClaimError, LegacyEvidenceBudget,
+    LegacyEvidenceError, LegacyEvidenceOwner, Observation, RESERVED_CONTROL_CAP, RecordMatcher,
+    decode_base64, encode_base64,
+};
+use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use tokio::sync::Mutex;
 
 pub type Result<T> = std::result::Result<T, Value>;
 pub type ContinuationFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 
+/// Retained-prefix handoff with exact acknowledgement and receipt retirement.
+/// Strict projected records plus separately page-able original evidence.
+pub const CONTINUATION_HANDOFF_V1: u32 = 1;
+/// Full current continuation vocabulary, including source-failure descriptors.
+pub const CONTINUATION_HANDOFF_V2: u32 = 2;
+/// Latest explicitly negotiated handoff protocol.  Callers must still name a
+/// version; this constant is not a silent fallback for an older decoder.
+pub const CONTINUATION_HANDOFF_VERSION: u32 = CONTINUATION_HANDOFF_V2;
+
 pub trait ContinuationSession: Send + Sync {
+    /// A legacy drain is allowed only when the source guarantees that every
+    /// current and future record is representable by the strict 5.2.1 codec.
+    /// The default is conservative because refusing later would strand a
+    /// destructively drained record or erase provenance.
+    fn legacy_claim_compatible(&self) -> bool {
+        false
+    }
     fn seal_collection(&self) -> Result<()> {
         Err(failure(
             "capability.unsupported",
@@ -36,7 +58,35 @@ pub trait ContinuationSession: Send + Sync {
         ))
     }
     fn call<'a>(&'a self, op: &'a str, args: &'a str) -> ContinuationFuture<'a>;
-    fn drain(&self, max_items: u32, max_bytes: u32) -> ContinuationFuture<'_>;
+    /// Preserve 5.2.1 data-byte accounting and first-record behavior. A host
+    /// returns None without side effects when it does not implement this seam;
+    /// an error must likewise leave the source unchanged. Successful drains
+    /// are synchronously staged by the continuation owner before it yields.
+    /// Atomically project a strict 5.2.1 batch while transferring every
+    /// original to `evidence`. Implementations return `None` only when they
+    /// do not own an outbox and have made no source-side change.
+    fn legacy_drain(&self, _: &LegacyEvidenceOwner, _: u32, _: u32) -> Option<Result<Value>> {
+        None
+    }
+    /// Claim a strict V1 view while retaining the exact raw prefix through
+    /// acknowledgement.  Implementations return `None` only if they do not
+    /// own an atomic projected-claim primitive.
+    fn claim_drain_v1(
+        &self,
+        _: &LegacyEvidenceOwner,
+        _: u32,
+        _: u32,
+    ) -> Option<Result<Option<DrainClaim>>> {
+        None
+    }
+    fn claim_drain(&self, max_items: u32, max_bytes: u32) -> Result<Option<DrainClaim>>;
+    fn has_retained_tail(&self) -> Result<bool> {
+        Err(failure(
+            "capability.unsupported",
+            "session cannot inspect retained continuation tail",
+        ))
+    }
+    fn acknowledge_drain(&self, id: u64) -> Result<()>;
     fn observe(&self, _: &str, _: RecordMatcher) -> Result<Observation> {
         Err(failure(
             "capability.unsupported",
@@ -83,6 +133,13 @@ fn busy() -> Value {
 }
 
 const MAX_SETUP_FAILURE_PEERS: usize = 4096;
+const MAX_CLAIM_RECEIPTS: usize = 4096;
+const MAX_CLAIM_WIRE_BYTES: usize = 1_048_576;
+/// Complete originals retained while a 5.2.1 client receives a strict
+/// projection. Exhaustion is a safe refusal: the source outbox is untouched.
+const LEGACY_EVIDENCE_MAX_ITEMS: usize =
+    DATA_RECORD_CAP + CONTROL_RECORD_CAP + RESERVED_CONTROL_CAP;
+const LEGACY_EVIDENCE_MAX_BYTES: usize = 64 << 20;
 
 #[derive(Default)]
 struct SetupFailures {
@@ -132,7 +189,19 @@ pub(crate) struct State {
     consumers: Vec<ActiveConsumer>,
     admission: u64,
     token: u64,
+    generation: u64,
+    executor_identity: Option<String>,
+    receipt_token_key: Option<[u8; 32]>,
     prepared: Option<Prepared>,
+    receipts: std::collections::HashMap<String, (ClaimMode, Value)>,
+    claim_mode: Option<ClaimMode>,
+    legacy_stage: Option<LegacyStage>,
+    legacy_evidence: std::collections::HashMap<String, Arc<LegacyEvidenceOwner>>,
+    /// Aggregate reservation across every exact strict-V1 evidence owner.
+    /// Per-token bounds alone would allow an unbounded sequence of claims to
+    /// retain process memory after their source prefixes were acknowledged.
+    legacy_evidence_budget: Option<Arc<LegacyEvidenceBudget>>,
+    cleanup_receipt: Option<Value>,
     sealed: bool,
     execution_declaration: Option<Value>,
     setup_generation: Option<Value>,
@@ -143,6 +212,115 @@ pub(crate) struct State {
     link_failure: Option<Value>,
     recording: Option<String>,
     recording_attached: bool,
+}
+
+impl State {
+    fn reclaim_empty_legacy_evidence(&mut self, token: &str) {
+        if self
+            .legacy_evidence
+            .get(token)
+            .is_some_and(|evidence| evidence.is_empty())
+        {
+            self.legacy_evidence.remove(token);
+        }
+    }
+
+    fn archive_prepared_receipt(&mut self) {
+        if let Some(prepared) = self.prepared.take() {
+            let token = prepared.claim["claimToken"].as_str().expect("own token");
+            if prepared.mode == ClaimMode::Legacy {
+                let superseded = self
+                    .receipts
+                    .iter()
+                    .filter_map(|(token, (mode, _))| {
+                        (*mode == ClaimMode::Legacy).then(|| token.clone())
+                    })
+                    .collect::<Vec<_>>();
+                self.receipts
+                    .retain(|_, (mode, _)| *mode != ClaimMode::Legacy);
+                for token in superseded {
+                    self.reclaim_empty_legacy_evidence(&token);
+                }
+            }
+            self.receipts.insert(
+                token.to_owned(),
+                (prepared.mode, prepared.receipt.expect("completed receipt")),
+            );
+        }
+    }
+
+    /// A retired retained-claim token is self-authenticating.  It lets the
+    /// owner reclaim an empty evidence map entry without keeping an unbounded
+    /// tombstone map solely to answer a delayed page reply.  This authorizes
+    /// only an empty result; it never reconstructs or exposes evidence.
+    fn authenticated_claim_token(&self, token: &str, required_mode: Option<ClaimMode>) -> bool {
+        let (Some(identity), Some(key)) = (&self.executor_identity, &self.receipt_token_key) else {
+            return false;
+        };
+        let prefix = format!("continuation-{identity}-");
+        let Some(rest) = token.strip_prefix(&prefix) else {
+            return false;
+        };
+        let mut parts = rest.split('-');
+        let (Some(generation), Some(sequence), Some(mode), Some(tag), None) = (
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ) else {
+            return false;
+        };
+        let Some(token_mode) = ClaimMode::from_token_label(mode) else {
+            return false;
+        };
+        if required_mode.is_some_and(|expected| expected != token_mode) {
+            return false;
+        }
+        let (Ok(generation), Ok(sequence)) = (generation.parse::<u64>(), sequence.parse::<u64>())
+        else {
+            return false;
+        };
+        // `token` advances only after the source claim has completed and the
+        // token is about to be published (below in `prepare_claim_mode`).
+        // Thus a valid MAC plus this bounded issued sequence cannot name a
+        // made-up V1 token; an active V1 still has an evidence-map entry and
+        // never reaches this fallback.
+        if generation == 0
+            || generation > self.generation
+            || sequence == 0
+            || sequence > self.token
+            || self
+                .receipts
+                .get(token)
+                .is_some_and(|(receipt_mode, _)| *receipt_mode != token_mode)
+            || self
+                .prepared
+                .as_ref()
+                .is_some_and(|prepared| prepared.claim["claimToken"] == token)
+        {
+            return false;
+        }
+        let body = format!("{prefix}{generation}-{sequence}-{mode}");
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC key");
+        mac.update(body.as_bytes());
+        let expected: String = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        tag == expected && token == format!("{body}-{expected}")
+    }
+
+    fn retired_v1_claim_token(&self, token: &str) -> bool {
+        self.authenticated_claim_token(token, Some(ClaimMode::RetainedV1))
+    }
+
+    fn retired_retained_claim_token(&self, token: &str) -> bool {
+        self.authenticated_claim_token(token, Some(ClaimMode::RetainedV1))
+            || self.authenticated_claim_token(token, Some(ClaimMode::RetainedV2))
+    }
 }
 
 #[derive(Default)]
@@ -162,11 +340,187 @@ struct ActiveConsumer {
     consumer: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClaimMode {
+    Legacy,
+    RetainedV1,
+    RetainedV2,
+}
+
+impl ClaimMode {
+    fn token_label(self) -> Option<&'static str> {
+        match self {
+            Self::Legacy => None,
+            Self::RetainedV1 => Some("v1"),
+            Self::RetainedV2 => Some("v2"),
+        }
+    }
+
+    fn from_token_label(label: &str) -> Option<Self> {
+        match label {
+            "v1" => Some(Self::RetainedV1),
+            "v2" => Some(Self::RetainedV2),
+            _ => None,
+        }
+    }
+}
+
+struct LegacyStage {
+    batches: Vec<String>,
+    pending: Option<(DrainClaim, bool)>,
+    evidence: Arc<LegacyEvidenceOwner>,
+    loss: Value,
+    max_items: u32,
+    max_bytes: u32,
+}
+
+#[doc(hidden)]
+pub fn project_521_record(record: &Value) -> std::result::Result<Option<Value>, ()> {
+    let ordinal = record.get("ordinal").and_then(Value::as_u64).ok_or(())?;
+    let select = |keys: &[&str]| -> Option<Value> {
+        let source = record.as_object()?;
+        let mut projected = serde_json::Map::new();
+        for key in keys {
+            projected.insert((*key).to_owned(), source.get(*key)?.clone());
+        }
+        Some(Value::Object(projected))
+    };
+    let projected = match record.get("t").and_then(Value::as_str) {
+        Some("value") => select(&["t", "ordinal", "consumer", "valueB64", "delivery"]),
+        Some("stream-end")
+            if matches!(
+                record.get("reason").and_then(Value::as_str),
+                Some("overflow" | "invalidated" | "closed")
+            ) && record.get("error").is_none() =>
+        {
+            select(&[
+                "t",
+                "ordinal",
+                "consumer",
+                "reason",
+                "droppedItems",
+                "droppedBytes",
+            ])
+        }
+        Some("recording-changed") => select(&["t", "ordinal", "consumer", "recordingId"]),
+        Some("adapter") => select(&["t", "ordinal", "state"]),
+        Some("link")
+            if matches!(
+                record.get("reason").and_then(Value::as_str),
+                Some("local" | "peer" | "adapter")
+            ) && record.get("platform").is_none() =>
+        {
+            select(&[
+                "t",
+                "ordinal",
+                "peerId",
+                "connectionGeneration",
+                "databaseGeneration",
+                "reason",
+            ])
+        }
+        Some("db-changed") => select(&[
+            "t",
+            "ordinal",
+            "peerId",
+            "connectionGeneration",
+            "databaseGeneration",
+        ]),
+        Some("ingress-drop") => select(&["t", "ordinal", "class", "count"]),
+        Some("security") => select(&["t", "ordinal", "peerId", "state"]),
+        Some("security-failed") => select(&["t", "ordinal", "peerId", "error"]),
+        Some("readiness") => select(&["t", "ordinal", "peerId", "connectionGeneration", "ready"]),
+        Some("restored") => select(&["t", "ordinal", "peers"]),
+        Some("scan-end") => select(&["t", "ordinal", "operationId", "reason"]),
+        Some("adv") => select(&[
+            "t",
+            "ordinal",
+            "operationId",
+            "startOperationId",
+            "peerId",
+            "localName",
+            "rssi",
+            "txPower",
+            "serviceUuids",
+            "manufacturerData",
+            "serviceData",
+            "connectable",
+            "solicitedServiceUuids",
+            "overflowServiceUuids",
+            "appearance",
+            "rawRecordB64",
+            "observedAtMs",
+            "sourceTimestampMs",
+        ]),
+        // New vocabulary (including peer-source-loss) must never be forged
+        // into a different old fact. It remains available via evidence paging.
+        _ => None,
+    };
+    Ok(projected.filter(|value| value.get("ordinal").and_then(Value::as_u64) == Some(ordinal)))
+}
+
+#[doc(hidden)]
+pub fn legacy_evidence_error(error: LegacyEvidenceError) -> Value {
+    match error {
+        LegacyEvidenceError::RecordTooLarge { required_bytes } => {
+            let mut value = failure(
+                "argument.invalid",
+                "legacy evidence record exceeds page byte bound",
+            );
+            value["requiredBytes"] = json!(required_bytes);
+            value
+        }
+        LegacyEvidenceError::Capacity => failure(
+            "lifecycle.invalid-state",
+            "legacy evidence capacity exhausted; source remains retained",
+        ),
+        LegacyEvidenceError::ModeConflict => failure(
+            "lifecycle.invalid-state",
+            "legacy evidence source has another drain owner",
+        ),
+        LegacyEvidenceError::OwnerMismatch => failure(
+            "lifecycle.invalid-state",
+            "legacy evidence source ownership mismatch",
+        ),
+        LegacyEvidenceError::InvalidProjection => failure(
+            "platform.failure",
+            "legacy evidence projection rejected an invalid record",
+        ),
+        LegacyEvidenceError::OrdinalExhausted => failure(
+            "lifecycle.invalid-state",
+            "legacy evidence ordinals exhausted",
+        ),
+    }
+}
+
 struct Prepared {
+    mode: ClaimMode,
     claim: Value,
     complete: bool,
     acknowledged: bool,
     receipt: Option<Value>,
+    source_claim: Option<u64>,
+}
+
+pub fn continuation_drain_error(error: DrainClaimError) -> Value {
+    match error {
+        DrainClaimError::RecordTooLarge { required_bytes } => {
+            let mut error = failure(
+                "argument.invalid",
+                "continuation record exceeds claim byte bound",
+            );
+            error["requiredBytes"] = json!(required_bytes);
+            error
+        }
+        DrainClaimError::IdentityExhausted => failure(
+            "lifecycle.invalid-state",
+            "continuation claim identities exhausted",
+        ),
+        DrainClaimError::ModeConflict => failure(
+            "lifecycle.invalid-state",
+            "continuation outbox already has a different drain owner",
+        ),
+    }
 }
 
 /// One bounded native standing order per process. Public operations fail promptly
@@ -187,11 +541,6 @@ pub struct NativeContinuation {
     declarations: Arc<std::sync::Mutex<DeclarationAuthority>>,
     recovery_runtime: Arc<std::sync::OnceLock<tokio::runtime::Handle>>,
     recordings: Arc<JournalRegistry>,
-    recording_sessions: Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, std::sync::Weak<dyn ContinuationSession>>,
-        >,
-    >,
 }
 
 impl NativeContinuation {
@@ -233,6 +582,61 @@ impl NativeContinuation {
             .and_then(|journal| journal.status())
             .map_err(recording_failure)
     }
+    /// Read exact bytes of the retained original collection summary. Callers
+    /// must coordinate summary updates for the duration of a multi-page read.
+    pub fn recording_diagnostic_summary_page(
+        &self,
+        id: &str,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<Value> {
+        let page = self
+            .recordings
+            .get(id)
+            .and_then(|journal| journal.diagnostic_summary_page(offset, max_bytes))
+            .map_err(recording_failure)?;
+        Ok(json!({"bytes":page.bytes,"totalBytes":page.total_bytes}))
+    }
+    /// Discover bounded occurrence identities. Separate calls do not pin a
+    /// snapshot; coordinate writers and retirement for a complete traversal.
+    pub fn recording_diagnostic_occurrences_page(
+        &self,
+        id: &str,
+        after: Option<[u8; 40]>,
+        limit: usize,
+    ) -> Result<Vec<[u8; 40]>> {
+        self.recordings
+            .get(id)
+            .and_then(|journal| journal.diagnostic_occurrences_page(after, limit))
+            .map_err(recording_failure)
+    }
+
+    /// Read exact occurrence bytes without acknowledging the evidence.
+    pub fn recording_diagnostic_occurrence_page(
+        &self,
+        id: &str,
+        occurrence: [u8; 40],
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<crate::continuation_journal::DiagnosticPage> {
+        self.recordings
+            .get(id)
+            .and_then(|journal| journal.diagnostic_occurrence_page(occurrence, offset, max_bytes))
+            .map_err(recording_failure)
+    }
+
+    /// Retry a retained process-owned loss occurrence using its original identity.
+    pub fn recording_retry_diagnostic_occurrence(
+        &self,
+        id: &str,
+        occurrence: [u8; 40],
+    ) -> Result<()> {
+        self.recordings
+            .get(id)
+            .and_then(|journal| journal.retry_production_loss(occurrence))
+            .map_err(recording_failure)
+    }
+
     pub fn recording_prepare(&self, id: &str, max_items: u32, max_bytes: u32) -> Result<Value> {
         self.recordings
             .get(id)
@@ -246,18 +650,8 @@ impl NativeContinuation {
             .map_err(recording_failure)
     }
     pub fn recording_stop(&self, id: &str) -> Result<Value> {
-        let sessions = self
-            .recording_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let journal = self.recordings.get(id).map_err(recording_failure)?;
-        if let Some(session) = sessions.get(id).and_then(std::sync::Weak::upgrade) {
-            session.seal_collection()?;
-            self.stop_recovery();
-        }
-        let mut receipt = journal.stop().map_err(recording_failure)?;
-        receipt["radioRelease"] = json!("not-requested");
-        Ok(receipt)
+        crate::continuation_journal::stop_legacy_recording(&journal)
     }
     pub fn recording_clear(&self, id: &str) -> Result<Value> {
         self.recordings
@@ -290,7 +684,6 @@ impl NativeContinuation {
             declarations: Arc::default(),
             recovery_runtime: Arc::default(),
             recordings,
-            recording_sessions: Arc::default(),
         }
     }
 
@@ -571,9 +964,21 @@ impl NativeContinuation {
         let mut current_database = false;
         let setup = identity["setup"].as_array().cloned().unwrap_or_default();
         if state.session.is_none() {
+            let generation = state.generation.checked_add(1).ok_or_else(|| {
+                failure(
+                    "lifecycle.invalid-state",
+                    "continuation generations exhausted",
+                )
+            })?;
+            if state.prepared.is_some() {
+                state.archive_prepared_receipt();
+            }
             state.session = Some(self.host.open_session()?);
+            state.generation = generation;
             self.session_owned.store(true, Ordering::SeqCst);
-            state.prepared = None;
+            state.cleanup_receipt = None;
+            state.claim_mode = None;
+            state.legacy_stage = None;
             state.sealed = false;
             self.recovery_stopped.store(false, Ordering::SeqCst);
             state.peer = Some(peer.to_owned());
@@ -645,20 +1050,13 @@ impl NativeContinuation {
                         },
                     )
                     .map_err(recording_failure)?;
-                let mut sessions = executor
-                    .recording_sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if journal.status().map_err(recording_failure)?["accepting"] != true {
-                    return Err(failure(
-                        "lifecycle.invalid-state",
-                        "recording is not accepting native collection",
-                    ));
-                }
-                session.attach_journal(journal, json!({"peerId":peer}))?;
-                sessions.retain(|_, session| session.strong_count() > 0);
-                sessions.insert(id, std::sync::Arc::downgrade(&session));
-                Ok(())
+                crate::continuation_journal::attach_legacy_recording_owner(
+                    &journal,
+                    &session,
+                    &executor.recovery_stopped,
+                    &executor.recovery_wake,
+                    json!({"peerId":peer}),
+                )
             })
             .await?;
             state.recording_attached = true;
@@ -874,19 +1272,63 @@ impl NativeContinuation {
         }
     }
 
+    /// Reject an incompatible caller before sealing or claiming the source.
+    pub async fn prepare_claim_versioned(
+        &self,
+        version: u32,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Result<Value> {
+        let mode = match version {
+            CONTINUATION_HANDOFF_V1 => ClaimMode::RetainedV1,
+            CONTINUATION_HANDOFF_V2 => ClaimMode::RetainedV2,
+            _ => {
+                return Err(failure(
+                    "capability.unsupported",
+                    "unsupported continuation handoff version",
+                ));
+            }
+        };
+        self.prepare_claim_mode(mode, max_items, max_bytes).await
+    }
+
     pub async fn prepare_claim(&self, max_items: u32, max_bytes: u32) -> Result<Value> {
+        self.prepare_claim_mode(ClaimMode::Legacy, max_items, max_bytes)
+            .await
+    }
+
+    async fn prepare_claim_mode(
+        &self,
+        mode: ClaimMode,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Result<Value> {
         if max_items == 0 || max_bytes == 0 {
             return Err(invalid("claim bounds must be positive"));
         }
         let mut state = self.observe_state().await?;
+        if state.claim_mode.is_some_and(|selected| selected != mode) {
+            return Err(failure(
+                "lifecycle.invalid-state",
+                "continuation handoff protocol conflict",
+            ));
+        }
         if let Some(prepared) = &state.prepared {
-            let mut claim = prepared.claim.clone();
-            if prepared.acknowledged {
-                claim["batches"] = json!([]);
+            // An unacknowledged claim, or an acknowledged one whose cleanup
+            // receipt is still pending, must replay exactly. Once the receipt
+            // exists the source prefix is settled and the next prepare owns a
+            // new prefix; retaining a completed claim here would permanently
+            // reuse its token and strand every later V1 prefix.
+            if !prepared.acknowledged || prepared.receipt.is_none() {
+                let mut claim = prepared.claim.clone();
+                if prepared.acknowledged {
+                    claim["batches"] = json!([]);
+                }
+                drop(state);
+                self.await_stopped_recovery().await;
+                return Ok(claim);
             }
-            drop(state);
-            self.await_stopped_recovery().await;
-            return Ok(claim);
+            state.archive_prepared_receipt();
         }
         if state.session.is_none() {
             return Ok(
@@ -894,64 +1336,290 @@ impl NativeContinuation {
                 "afterCutoffLoss":{"items":0,"bytes":0},"selectors":[]}),
             );
         }
-        let cutoff = invoke(&state, "session.quiesce", json!({})).await?;
-        if cutoff["state"] != "sealed" {
-            return Err(failure("platform.failure", "quiesce did not seal"));
+        if mode == ClaimMode::Legacy
+            && state.claim_mode.is_none()
+            && !state
+                .session
+                .as_ref()
+                .expect("session retained")
+                .legacy_claim_compatible()
+        {
+            return Err(failure(
+                "protocol.incompatible",
+                "legacy continuation cannot represent this source; a versioned handoff is required",
+            ));
         }
+        if state.receipts.len() >= MAX_CLAIM_RECEIPTS {
+            return Err(failure(
+                "lifecycle.invalid-state",
+                "continuation receipt capacity exhausted; retire acknowledged ownership first",
+            ));
+        }
+        let next_token = state.token.checked_add(1).ok_or_else(|| {
+            failure(
+                "lifecycle.invalid-state",
+                "continuation claim identities exhausted",
+            )
+        })?;
+        if state.executor_identity.is_none() {
+            let mut bytes = [0u8; 16];
+            getrandom::fill(&mut bytes).map_err(|_| {
+                failure(
+                    "platform.failure",
+                    "continuation identity entropy unavailable",
+                )
+            })?;
+            state.executor_identity =
+                Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect());
+        }
+        if matches!(mode, ClaimMode::RetainedV1 | ClaimMode::RetainedV2)
+            && state.receipt_token_key.is_none()
+        {
+            let mut key = [0u8; 32];
+            getrandom::fill(&mut key).map_err(|_| {
+                failure(
+                    "platform.failure",
+                    "continuation receipt entropy unavailable",
+                )
+            })?;
+            state.receipt_token_key = Some(key);
+        }
+        // Both the inner batch and its enclosing native envelope are bounded.
+        // Budget for repeated JSON escaping as well as selector/framing bytes
+        // before asking the source to select a replayable prefix.
+        let max_bytes = if matches!(mode, ClaimMode::RetainedV1 | ClaimMode::RetainedV2) {
+            let frame = json!({"ok":true,"value":{"consumerCount":state.history.len(),"batches":[],
+                "disposed":false,"disposeFailure":null,"afterCutoffLoss":{"items":u64::MAX,"bytes":u64::MAX},
+                "selectors":state.history,"recording":state.recording,"claimToken":"x".repeat(128)}}).to_string().len();
+            let budget = MAX_CLAIM_WIRE_BYTES
+                .checked_sub(frame.saturating_add(1024))
+                .map(|remaining| remaining / 4)
+                .filter(|remaining| *remaining >= 2)
+                .ok_or_else(|| {
+                    failure(
+                        "bytes.too-large",
+                        "continuation claim metadata exceeds wire limit",
+                    )
+                })?;
+            max_bytes.min(u32::try_from(budget).unwrap_or(u32::MAX))
+        } else {
+            max_bytes
+        };
+        state.claim_mode = Some(mode);
+        let loss = if let Some(stage) = &state.legacy_stage {
+            stage.loss.clone()
+        } else if let Some(receipt) = &state.cleanup_receipt {
+            receipt["afterCutoffLoss"].clone()
+        } else {
+            let cutoff = invoke(&state, "session.quiesce", json!({})).await?;
+            if cutoff["state"] != "sealed" {
+                return Err(failure("platform.failure", "quiesce did not seal"));
+            }
+            cutoff_loss(&cutoff)?
+        };
         state.sealed = true;
         self.recovery_stopped.store(true, Ordering::SeqCst);
         self.recovery_wake.notify_one();
-        let loss = cutoff_loss(&cutoff)?;
-        let mut batches = Vec::new();
-        let mut complete = false;
-        let mut drain_failure = None;
-        for _ in 0..32 {
+        let (batches, source_claim, complete, drain_failure, legacy_evidence) = if mode
+            == ClaimMode::Legacy
+        {
+            if state.legacy_stage.is_none() {
+                let budget = state
+                    .legacy_evidence_budget
+                    .get_or_insert_with(|| {
+                        Arc::new(LegacyEvidenceBudget::new(
+                            LEGACY_EVIDENCE_MAX_ITEMS,
+                            LEGACY_EVIDENCE_MAX_BYTES,
+                        ))
+                    })
+                    .clone();
+                state.legacy_stage = Some(LegacyStage {
+                    batches: Vec::new(),
+                    pending: None,
+                    evidence: Arc::new(LegacyEvidenceOwner::with_budget(
+                        LEGACY_EVIDENCE_MAX_ITEMS,
+                        LEGACY_EVIDENCE_MAX_BYTES,
+                        budget,
+                    )),
+                    loss: loss.clone(),
+                    max_items,
+                    max_bytes,
+                });
+            }
             let session = state.session.as_ref().expect("session retained").clone();
-            let batch = if state.recording.is_some() {
-                let runtime = tokio::runtime::Handle::current();
-                crate::continuation_journal::run_blocking_result(move || {
-                    Ok(runtime.block_on(session.drain(max_items, max_bytes)))
-                })
-                .await?
-            } else {
-                session.drain(max_items, max_bytes).await
-            };
-            let record: Value = match serde_json::from_str(&batch) {
-                Ok(record) => record,
-                Err(error) => {
-                    drain_failure = Some(format!("invalid continuation drain: {error}"));
+            let stage = state.legacy_stage.as_mut().expect("stage retained");
+            if stage.max_items == 0 {
+                stage.max_items = max_items;
+                stage.max_bytes = max_bytes;
+            }
+            let mut complete = stage.batches.last().is_some_and(|batch| {
+                serde_json::from_str::<Value>(batch).is_ok_and(|value| value["more"] == false)
+            });
+            let mut drain_failure = None;
+            while !complete && stage.batches.len() < 32 {
+                if let Some(result) =
+                    session.legacy_drain(&stage.evidence, stage.max_items, stage.max_bytes)
+                {
+                    let batch = match result {
+                        Ok(batch) => batch,
+                        Err(error) if !stage.batches.is_empty() => {
+                            drain_failure =
+                                Some(format!("continuation drain remains retained: {error}"));
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    if !batch["records"].is_array()
+                        || !batch["more"].is_boolean()
+                        || !batch["controlLost"].is_u64()
+                    {
+                        return Err(failure("platform.failure", "invalid legacy drain shape"));
+                    }
+                    complete = batch["more"] == false;
+                    stage.batches.push(batch.to_string());
+                    continue;
+                }
+                if stage.pending.is_none() {
+                    let source = match session.claim_drain(stage.max_items, stage.max_bytes) {
+                        Err(error) if error["requiredBytes"].as_u64().is_some() => {
+                            let required = error["requiredBytes"]
+                                .as_u64()
+                                .and_then(|n| u32::try_from(n).ok())
+                                .ok_or(error)?;
+                            session.claim_drain(1, required)
+                        }
+                        result => result,
+                    };
+                    match source {
+                        Ok(Some(claim)) => stage.pending = Some((claim, false)),
+                        Ok(None) => {
+                            if stage.batches.is_empty() {
+                                stage.batches.push(
+                                    json!({"records":[],"more":false,"controlLost":0}).to_string(),
+                                );
+                            }
+                            complete = true;
+                            break;
+                        }
+                        Err(error) if !stage.batches.is_empty() => {
+                            drain_failure =
+                                Some(format!("continuation drain remains retained: {error}"));
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                // Stage the source identity and payload before ACK. If an ACK
+                // reply is lost, retry the same identity without losing data.
+                let (pending, acknowledged) = stage.pending.as_mut().expect("claim staged");
+                if !*acknowledged {
+                    session.acknowledge_drain(pending.id)?;
+                    *acknowledged = true;
+                }
+                let more = session.has_retained_tail()?;
+                let (claim, _) = stage.pending.take().expect("claim staged");
+                stage.batches.push(
+                    json!({"records":claim.records,"more":more,"controlLost":claim.control_lost})
+                        .to_string(),
+                );
+                if !more {
+                    complete = true;
                     break;
                 }
+            }
+            let stage = state.legacy_stage.take().expect("stage retained");
+            (
+                stage.batches,
+                None,
+                complete,
+                drain_failure,
+                Some(stage.evidence),
+            )
+        } else {
+            let session = state.session.as_ref().expect("session retained").clone();
+            let evidence = if mode == ClaimMode::RetainedV1 {
+                let budget = state
+                    .legacy_evidence_budget
+                    .get_or_insert_with(|| {
+                        Arc::new(LegacyEvidenceBudget::new(
+                            LEGACY_EVIDENCE_MAX_ITEMS,
+                            LEGACY_EVIDENCE_MAX_BYTES,
+                        ))
+                    })
+                    .clone();
+                Some(Arc::new(LegacyEvidenceOwner::with_budget(
+                    LEGACY_EVIDENCE_MAX_ITEMS,
+                    LEGACY_EVIDENCE_MAX_BYTES,
+                    budget,
+                )))
+            } else {
+                None
             };
-            let valid = record.as_object().is_some_and(|object| {
-                object
-                    .keys()
-                    .all(|key| matches!(key.as_str(), "more" | "records" | "controlLost"))
-            }) && record["records"].is_array()
-                && record["controlLost"].as_u64().is_some();
-            let Some(more) = record["more"].as_bool().filter(|_| valid) else {
-                drain_failure =
-                    Some("invalid continuation drain shape; session retained".to_owned());
-                break;
-            };
-            complete = !more;
-            batches.push(batch);
-            if complete {
-                break;
+            let source = if let Some(evidence) = &evidence {
+                session
+                    .claim_drain_v1(evidence, max_items, max_bytes)
+                    .ok_or_else(|| failure("capability.unsupported", "session cannot atomically project continuation V1"))?
+            } else {
+                session.claim_drain(max_items, max_bytes)
+            }
+                .map_err(|error| {
+                    if error["requiredBytes"].as_u64().is_some() {
+                        failure("bytes.too-large", "continuation record exceeds the requested or wire byte limit; the source remains retained")
+                    } else {
+                        error
+                    }
+                })?;
+            let source_claim = source.as_ref().map(|claim| claim.id);
+            let batches = source.map(|source| vec![
+                json!({"records":source.records,"more":true,"controlLost":source.control_lost}).to_string()
+            ]).unwrap_or_default();
+            (
+                batches,
+                source_claim,
+                source_claim.is_none(),
+                None,
+                evidence,
+            )
+        };
+        state.token = next_token;
+        let mut token = format!(
+            "continuation-{}-{}-{}",
+            state
+                .executor_identity
+                .as_deref()
+                .expect("identity assigned"),
+            state.generation,
+            state.token
+        );
+        if let Some(label) = mode.token_label() {
+            token.push('-');
+            token.push_str(label);
+            let mut mac = Hmac::<Sha256>::new_from_slice(
+                state.receipt_token_key.as_ref().expect("key assigned"),
+            )
+            .expect("HMAC key");
+            mac.update(token.as_bytes());
+            token.push('-');
+            for byte in mac.finalize().into_bytes() {
+                token.push_str(&format!("{byte:02x}"));
             }
         }
-        state.token += 1;
         let mut claim = json!({"consumerCount":state.history.len(),"batches":batches,"disposed":false,
-            "disposeFailure":if complete {None} else {Some(drain_failure.unwrap_or_else(|| "continuation claim has a retained unread tail".to_owned()))},
-            "afterCutoffLoss":loss,"selectors":state.history,"claimToken":format!("continuation-{}",state.token)});
+            "disposeFailure":if complete || matches!(mode, ClaimMode::RetainedV1 | ClaimMode::RetainedV2) {None} else {Some(drain_failure.unwrap_or_else(|| "continuation claim has a retained unread tail".to_owned()))},"afterCutoffLoss":loss,"selectors":state.history,
+            "claimToken":token});
         if let Some(id) = &state.recording {
             claim["recording"] = json!({"id":id});
         }
+        if let Some(evidence) = legacy_evidence {
+            state.legacy_evidence.insert(token.clone(), evidence);
+        }
         state.prepared = Some(Prepared {
+            mode,
             claim: claim.clone(),
             complete,
             acknowledged: false,
             receipt: None,
+            source_claim,
         });
         drop(state);
         self.await_stopped_recovery().await;
@@ -959,44 +1627,312 @@ impl NativeContinuation {
     }
 
     pub async fn acknowledge_claim(&self, token: &str) -> Result<Value> {
+        self.acknowledge_claim_mode(ClaimMode::Legacy, token).await
+    }
+
+    pub async fn acknowledge_claim_v1(&self, token: &str) -> Result<Value> {
+        self.acknowledge_claim_mode(ClaimMode::RetainedV1, token)
+            .await
+    }
+
+    /// Acknowledge an explicitly negotiated V2 prefix.  V2 has a distinct
+    /// mode so an older V1 handle can never ACK a richer claim by accident.
+    pub async fn acknowledge_claim_v2(&self, token: &str) -> Result<Value> {
+        self.acknowledge_claim_mode(ClaimMode::RetainedV2, token)
+            .await
+    }
+
+    async fn acknowledge_claim_mode(&self, mode: ClaimMode, token: &str) -> Result<Value> {
+        // The operation owns its state until completion even if the caller
+        // drops the reply future while native cleanup is in flight.
+        let owner = self.clone();
+        let token = token.to_owned();
+        tokio::spawn(async move { owner.acknowledge_claim_owned(mode, &token).await })
+            .await
+            .map_err(|_| {
+                failure(
+                    "platform.failure",
+                    "continuation acknowledgement worker failed",
+                )
+            })?
+    }
+
+    /// Explicitly release recovery ownership of one acknowledged retained
+    /// receipt. Legacy receipts remain replayable until superseded by the
+    /// next Legacy handoff, preserving the released 5.2.1 lost-reply contract.
+    pub async fn retire_claim_receipt(&self, token: &str) -> Result<()> {
+        self.retire_claim_receipt_mode(None, token).await
+    }
+
+    /// Retire an acknowledged V1 retained-prefix receipt only. A V1 bridge
+    /// must not be able to release recovery ownership held by a V2 receipt.
+    pub async fn retire_claim_receipt_v1(&self, token: &str) -> Result<()> {
+        self.retire_claim_receipt_mode(Some(ClaimMode::RetainedV1), token)
+            .await
+    }
+
+    async fn retire_claim_receipt_mode(
+        &self,
+        required_mode: Option<ClaimMode>,
+        token: &str,
+    ) -> Result<()> {
         let mut state = self.state.try_lock().map_err(|_| busy())?;
+        if let Some((mode, _)) = state.receipts.get(token) {
+            if *mode == ClaimMode::Legacy {
+                return Err(invalid("Legacy claim receipts cannot be retired"));
+            }
+            if required_mode.is_some_and(|expected| expected != *mode) {
+                return Err(invalid("claim receipt mode does not match this operation"));
+            }
+            state.receipts.remove(token);
+            state.reclaim_empty_legacy_evidence(token);
+            return Ok(());
+        }
+        if state.prepared.as_ref().is_some_and(|prepared| {
+            prepared.claim["claimToken"] == token
+                && prepared.receipt.is_some()
+                && matches!(prepared.mode, ClaimMode::RetainedV1 | ClaimMode::RetainedV2)
+                && required_mode.is_none_or(|expected| expected == prepared.mode)
+        }) {
+            state.prepared = None;
+            state.reclaim_empty_legacy_evidence(token);
+            return Ok(());
+        }
+        // A later issued sequence proves that all earlier prepared claims
+        // were acknowledged. An authenticated token allows idempotent retry
+        // of retirement without keeping an unbounded tombstone ledger.
+        if required_mode.is_some_and(|expected| expected == ClaimMode::RetainedV1) {
+            if state.retired_v1_claim_token(token) {
+                return Ok(());
+            }
+        } else if state.retired_retained_claim_token(token) {
+            return Ok(());
+        }
+        Err(invalid("no acknowledged receipt for claim token"))
+    }
+
+    /// Page exact originals retained for a strict 5.2.1 projection. The
+    /// claim token identifies the same process-owned evidence even after the
+    /// radio session has been released. This is deliberately additive: the
+    /// legacy claim's wire shape remains unchanged for 5.2.1 callers.
+    pub async fn legacy_evidence_page(
+        &self,
+        token: &str,
+        after_ordinal: u64,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Result<Value> {
+        if max_items == 0 || max_bytes == 0 {
+            return Err(invalid("legacy evidence page bounds must be positive"));
+        }
+        let state = self.state.try_lock().map_err(|_| busy())?;
+        let Some(evidence) = state.legacy_evidence.get(token) else {
+            if state.retired_v1_claim_token(token) {
+                return Ok(json!({"records":[],"more":false}));
+            }
+            return Err(invalid("no legacy evidence for claim token"));
+        };
+        let (records, more) = evidence
+            .page(after_ordinal, max_items as usize, max_bytes as usize)
+            .map_err(legacy_evidence_error)?;
+        Ok(json!({"records":records,"more":more}))
+    }
+
+    /// Retire one exact original only after its recovery consumer has
+    /// durably accepted it. Retiring an absent or another claim's ordinal is
+    /// a visible error, never an idempotent success that could hide loss.
+    pub async fn legacy_evidence_retire(&self, token: &str, ordinal: u64) -> Result<()> {
+        let mut state = self.state.try_lock().map_err(|_| busy())?;
+        let Some(evidence) = state.legacy_evidence.get(token).cloned() else {
+            return Err(invalid("no legacy evidence for claim token"));
+        };
+        if !evidence.retire(ordinal) {
+            return Err(invalid("legacy evidence ordinal is not retained"));
+        }
+        // The owner has released every exact byte. Keep no empty per-token
+        // object: `retired_v1_claim_token` provides the authenticated empty-page
+        // response needed for a delayed page retry.
+        if evidence.is_empty() {
+            state.legacy_evidence.remove(token);
+        }
+        Ok(())
+    }
+
+    async fn acknowledge_claim_owned(&self, mode: ClaimMode, token: &str) -> Result<Value> {
+        let mut state = self.state.try_lock().map_err(|_| busy())?;
+        if let Some((receipt_mode, receipt)) = state.receipts.get(token) {
+            return if *receipt_mode == mode {
+                Ok(receipt.clone())
+            } else {
+                Err(invalid("claim protocol mismatch"))
+            };
+        }
         let prepared = state
             .prepared
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| invalid("no prepared claim"))?;
+        if prepared.mode != mode {
+            return Err(invalid("claim protocol mismatch"));
+        }
         if prepared.claim["claimToken"] != token {
             return Err(invalid("claim token mismatch"));
         }
         if let Some(receipt) = &prepared.receipt {
             return Ok(receipt.clone());
         }
-        prepared.acknowledged = true;
-        if !prepared.complete {
-            let result = json!({"disposed":false,"afterCutoffLoss":prepared.claim["afterCutoffLoss"],"disposeFailure":prepared.claim["disposeFailure"]});
-            state.prepared = None;
-            return Ok(result);
-        }
-        let disposal = invoke(&state, "session.continuation-dispose", json!({})).await?;
-        let released = disposal["state"] == "released";
-        let receipt = json!({"disposed":released,"afterCutoffLoss":cutoff_loss(&disposal)?,
-            "disposeFailure":if released {None} else {Some(format!("continuation disposal remains owned: {disposal}"))}});
-        if released {
-            state.session = None;
-            self.session_owned.store(false, Ordering::SeqCst);
-            // The registry retains the durable journal independently. Only
-            // this released radio generation's recording attachment is retired.
-            state.recording = None;
-            state.recording_attached = false;
-            state.peer = None;
-            state.selectors.clear();
-            state.history.clear();
-            state.consumers.clear();
+        if !prepared.acknowledged {
+            let source_claim = prepared.source_claim;
+            if let Some(id) = source_claim {
+                state
+                    .session
+                    .as_ref()
+                    .ok_or_else(|| {
+                        failure(
+                            "lifecycle.invalid-state",
+                            "continuation source owner is unavailable",
+                        )
+                    })?
+                    .acknowledge_drain(id)?;
+            }
+            // No suspension between source ACK and recording its transfer receipt.
             state
                 .prepared
                 .as_mut()
                 .expect("prepared handoff retained")
-                .receipt = Some(receipt.clone());
+                .acknowledged = true;
         }
+        if mode == ClaimMode::Legacy
+            && !state
+                .prepared
+                .as_ref()
+                .expect("prepared handoff retained")
+                .complete
+        {
+            let prepared = state.prepared.as_mut().expect("prepared handoff retained");
+            let receipt = json!({"disposed":false,"afterCutoffLoss":prepared.claim["afterCutoffLoss"],"disposeFailure":prepared.claim["disposeFailure"]});
+            prepared.receipt = Some(receipt.clone());
+            return Ok(receipt);
+        }
+        if !state
+            .prepared
+            .as_ref()
+            .expect("prepared handoff retained")
+            .complete
+        {
+            let tail = state
+                .session
+                .as_ref()
+                .ok_or_else(|| {
+                    failure(
+                        "lifecycle.invalid-state",
+                        "continuation source owner is unavailable",
+                    )
+                })?
+                .has_retained_tail();
+            match tail {
+                Ok(false) => {
+                    state
+                        .prepared
+                        .as_mut()
+                        .expect("prepared handoff retained")
+                        .complete = true
+                }
+                result => {
+                    let detail = match result {
+                        Ok(true) => "continuation claim has a retained unread tail".to_owned(),
+                        Err(error) => format!("continuation tail remains retained: {error}"),
+                        Ok(false) => unreachable!(),
+                    };
+                    let prepared = state.prepared.as_mut().expect("prepared handoff retained");
+                    let receipt = json!({"disposed":false,"afterCutoffLoss":prepared.claim["afterCutoffLoss"],"disposeFailure":detail});
+                    prepared.receipt = Some(receipt.clone());
+                    return Ok(receipt);
+                }
+            }
+        }
+        let receipt = if let Some(receipt) = &state.cleanup_receipt {
+            receipt.clone()
+        } else {
+            let disposal = invoke(&state, "session.continuation-dispose", json!({})).await?;
+            let released = disposal["state"] == "released";
+            let receipt = json!({"disposed":released,"afterCutoffLoss":cutoff_loss(&disposal)?,
+                "disposeFailure":if released {None} else {Some(format!("continuation disposal remains owned: {disposal}"))}});
+            if !released {
+                return Ok(receipt);
+            }
+            state.cleanup_receipt = Some(receipt.clone());
+            receipt
+        };
+        // Cleanup may emit terminal controls after the earlier empty check.
+        // Keep the exact source alive until those records are handed off too.
+        let session = state
+            .session
+            .as_ref()
+            .expect("source owner retained")
+            .clone();
+        let tail = if mode == ClaimMode::Legacy {
+            let token = state
+                .prepared
+                .as_ref()
+                .expect("prepared handoff retained")
+                .claim["claimToken"]
+                .as_str()
+                .expect("own token");
+            let evidence = state.legacy_evidence.get(token).cloned().ok_or_else(|| {
+                failure(
+                    "lifecycle.invalid-state",
+                    "legacy evidence owner is unavailable",
+                )
+            })?;
+            match session.legacy_drain(&evidence, 1, 1) {
+                Some(Ok(batch))
+                    if batch["records"]
+                        .as_array()
+                        .is_some_and(|records| !records.is_empty()) =>
+                {
+                    state.legacy_stage = Some(LegacyStage {
+                        batches: vec![batch.to_string()],
+                        pending: None,
+                        evidence,
+                        loss: receipt["afterCutoffLoss"].clone(),
+                        max_items: 0,
+                        max_bytes: 0,
+                    });
+                    Ok(true)
+                }
+                Some(Ok(batch)) if batch["records"].is_array() && batch["more"] == false => {
+                    Ok(false)
+                }
+                Some(Ok(_)) => Err(failure("platform.failure", "invalid legacy cleanup drain")),
+                Some(Err(error)) => Err(error),
+                None => session.has_retained_tail(),
+            }
+        } else {
+            session.has_retained_tail()
+        };
+        if !matches!(tail, Ok(false)) {
+            let prepared = state.prepared.as_mut().expect("prepared handoff retained");
+            prepared.complete = false;
+            let pending = json!({"disposed":false,"afterCutoffLoss":receipt["afterCutoffLoss"],
+                "disposeFailure":match tail { Err(error) => format!("continuation cleanup tail remains retained: {error}"), _ => "continuation cleanup has a retained unread tail".to_owned() }});
+            prepared.receipt = Some(pending.clone());
+            return Ok(pending);
+        }
+        state.session = None;
+        self.session_owned.store(false, Ordering::SeqCst);
+        // The registry retains the durable journal independently. Only
+        // this released radio generation's recording attachment is retired.
+        state.recording = None;
+        state.recording_attached = false;
+        state.peer = None;
+        state.selectors.clear();
+        state.history.clear();
+        state.consumers.clear();
+        state
+            .prepared
+            .as_mut()
+            .expect("prepared handoff retained")
+            .receipt = Some(receipt.clone());
         Ok(receipt)
     }
 }
@@ -1620,6 +2556,9 @@ mod idle_recovery_tests {
         }
     }
     impl ContinuationSession for Session {
+        fn legacy_claim_compatible(&self) -> bool {
+            true
+        }
         fn call<'a>(&'a self, op: &'a str, _: &'a str) -> ContinuationFuture<'a> {
             Box::pin(async move {
                 if op == "connection.connect" && self.hold_connect.load(Ordering::SeqCst) {
@@ -1639,8 +2578,220 @@ mod idle_recovery_tests {
                 }))
             })
         }
-        fn drain(&self, _: u32, _: u32) -> ContinuationFuture<'_> {
-            Box::pin(async { json!({"records":[],"more":false,"controlLost":0}).to_string() })
+        fn claim_drain(&self, _: u32, _: u32) -> Result<Option<DrainClaim>> {
+            Ok(None)
+        }
+        fn has_retained_tail(&self) -> Result<bool> {
+            Ok(false)
+        }
+        fn acknowledge_drain(&self, _: u64) -> Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn full_receipt_ledger_refuses_before_sealing_and_preserves_receipts() {
+        let engine = NativeContinuation::new(Arc::new(Host::default()));
+        engine
+            .execute("peer", r#"{"onAppearance":"native"}"#)
+            .await
+            .unwrap();
+        {
+            let mut state = engine.state.lock().await;
+            for index in 0..MAX_CLAIM_RECEIPTS {
+                state.receipts.insert(
+                    format!("receipt-{index}"),
+                    (ClaimMode::RetainedV1, json!({"index":index})),
+                );
+            }
+        }
+        assert_eq!(
+            engine.prepare_claim(1, 1024).await.unwrap_err()["code"],
+            "lifecycle.invalid-state"
+        );
+        assert!(!engine.state.lock().await.sealed);
+        assert_eq!(
+            engine.acknowledge_claim_v1("receipt-0").await.unwrap(),
+            json!({"index":0})
+        );
+        engine.retire_claim_receipt("receipt-0").await.unwrap();
+        assert!(engine.prepare_claim(1, 1024).await.is_ok());
+    }
+
+    #[test]
+    fn superseding_a_legacy_receipt_reclaims_only_its_empty_evidence_owner() {
+        let mut state = State::default();
+        let prior = "legacy-prior".to_owned();
+        let current = "legacy-current".to_owned();
+        state
+            .legacy_evidence
+            .insert(prior.clone(), Arc::new(LegacyEvidenceOwner::new(1, 1024)));
+        state
+            .receipts
+            .insert(prior.clone(), (ClaimMode::Legacy, json!({"disposed":true})));
+        state
+            .legacy_evidence
+            .insert(current.clone(), Arc::new(LegacyEvidenceOwner::new(1, 1024)));
+        state.prepared = Some(Prepared {
+            mode: ClaimMode::Legacy,
+            claim: json!({"claimToken":current}),
+            complete: true,
+            acknowledged: true,
+            receipt: Some(json!({"disposed":true})),
+            source_claim: None,
+        });
+
+        state.archive_prepared_receipt();
+
+        assert!(
+            !state.legacy_evidence.contains_key(&prior),
+            "a superseded empty Legacy receipt cannot keep an owner forever"
+        );
+        assert!(
+            state.legacy_evidence.contains_key(&current),
+            "the current receipt still needs its empty-page owner until it is superseded"
+        );
+    }
+
+    #[tokio::test]
+    async fn retiring_an_empty_v1_receipt_reclaims_its_evidence_owner() {
+        let engine = NativeContinuation::new(Arc::new(Host::default()));
+        let token = "continuation-test-1-1-v1-deadbeef".to_owned();
+        {
+            let mut state = engine.state.lock().await;
+            state
+                .legacy_evidence
+                .insert(token.clone(), Arc::new(LegacyEvidenceOwner::new(1, 1024)));
+            state.prepared = Some(Prepared {
+                mode: ClaimMode::RetainedV1,
+                claim: json!({"claimToken":token}),
+                complete: true,
+                acknowledged: true,
+                receipt: Some(json!({"disposed":true})),
+                source_claim: None,
+            });
+        }
+
+        engine.retire_claim_receipt(&token).await.unwrap();
+
+        assert!(
+            !engine
+                .state
+                .lock()
+                .await
+                .legacy_evidence
+                .contains_key(&token),
+            "an empty V1 owner has no ordinal that could otherwise release it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_released_empty_legacy_receipt_is_reclaimed_only_when_superseded() {
+        let engine = NativeContinuation::new(Arc::new(Host::default()));
+        let token = "legacy-empty-current".to_owned();
+        {
+            let mut state = engine.state.lock().await;
+            state
+                .legacy_evidence
+                .insert(token.clone(), Arc::new(LegacyEvidenceOwner::new(1, 1024)));
+            state.prepared = Some(Prepared {
+                mode: ClaimMode::Legacy,
+                claim: json!({"claimToken":token}),
+                complete: true,
+                acknowledged: true,
+                receipt: Some(json!({"disposed":true})),
+                source_claim: None,
+            });
+        }
+
+        assert!(engine.retire_claim_receipt(&token).await.is_err());
+
+        assert!(
+            engine
+                .state
+                .lock()
+                .await
+                .legacy_evidence
+                .contains_key(&token),
+            "the current Legacy receipt remains replayable until superseded"
+        );
+
+        {
+            let mut state = engine.state.lock().await;
+            // Production preparation archives the completed current handoff
+            // before it installs a successor.  Do the same here: replacing
+            // `prepared` directly would lose the supersession transition this
+            // regression is meant to exercise.
+            state.archive_prepared_receipt();
+            state.prepared = Some(Prepared {
+                mode: ClaimMode::Legacy,
+                claim: json!({"claimToken":"legacy-empty-successor"}),
+                complete: true,
+                acknowledged: true,
+                receipt: Some(json!({"disposed":true})),
+                source_claim: None,
+            });
+            state.archive_prepared_receipt();
+        }
+        assert!(
+            !engine
+                .state
+                .lock()
+                .await
+                .legacy_evidence
+                .contains_key(&token),
+            "supersession releases the old empty Legacy owner without discarding its current receipt early"
+        );
+    }
+
+    #[test]
+    fn empty_legacy_receipt_supersession_stays_bounded_across_many_generations() {
+        let mut state = State::default();
+        for sequence in 1..=MAX_CLAIM_RECEIPTS + 4 {
+            let token = format!("legacy-empty-{sequence}");
+            state
+                .legacy_evidence
+                .insert(token.clone(), Arc::new(LegacyEvidenceOwner::new(1, 1024)));
+            state.prepared = Some(Prepared {
+                mode: ClaimMode::Legacy,
+                claim: json!({"claimToken":token}),
+                complete: true,
+                acknowledged: true,
+                receipt: Some(json!({"disposed":true})),
+                source_claim: None,
+            });
+            state.archive_prepared_receipt();
+            assert!(
+                state.legacy_evidence.len() <= 1,
+                "a Legacy empty owner must be reclaimed as soon as its receipt is superseded"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_v1_receipt_retirement_stays_bounded_across_many_generations() {
+        let engine = NativeContinuation::new(Arc::new(Host::default()));
+        for sequence in 1..=MAX_CLAIM_RECEIPTS + 4 {
+            let token = format!("continuation-test-1-{sequence}-v1-deadbeef");
+            {
+                let mut state = engine.state.lock().await;
+                state
+                    .legacy_evidence
+                    .insert(token.clone(), Arc::new(LegacyEvidenceOwner::new(1, 1024)));
+                state.prepared = Some(Prepared {
+                    mode: ClaimMode::RetainedV1,
+                    claim: json!({"claimToken":token}),
+                    complete: true,
+                    acknowledged: true,
+                    receipt: Some(json!({"disposed":true})),
+                    source_claim: None,
+                });
+            }
+            engine.retire_claim_receipt(&token).await.unwrap();
+            assert!(
+                engine.state.lock().await.legacy_evidence.is_empty(),
+                "an empty V1 owner must not accumulate after receipt retirement"
+            );
         }
     }
 

@@ -16,6 +16,12 @@ use serde_json::Value;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tokio::sync::Notify;
 use ubm_core::contracts::{BleErrorCode, CommitState};
+use ubm_desktop::central::{
+    DurablePeerFailureProducerAck, DurablePeerFailureRecoveryOccurrence,
+    DurablePeerFailureRecoveryRecipient, PeerFailureRecoveryLedger,
+};
+use ubm_desktop::continuation_journal::{JournalError, JournalQuota, ScanRecoveryStorageProtector};
+use ubm_desktop::continuation_outbox::{Outbox, WakeSink};
 use ubm_desktop::{
     AdapterAuthorization, AdapterPowerState, AdapterResetEvent, AdmissionPolicy, CentralProfile,
     CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, DesktopCentral, DesktopError,
@@ -27,10 +33,12 @@ use ubm_desktop::{
 use super::{
     attachment_identity_matches, attachment_record, caller_key, into_object, object,
     required_value, string, Attachment, AuthorityOpener, BtleplugDispatcher, CallerState,
-    DispatchError, IpcEventSink, IpcValue, OrphanResource, ReleasePhase, StreamEnd,
+    DispatchError, IpcEventSink, IpcValue, OrphanResource, ReleasePhase,
+    RendererPeerFailureRecoveryHandle, RendererScanFailureRecoveryHandle, StreamEnd,
+    MAX_PENDING_EVENTS,
 };
-use crate::desktop_core::CoreAuthority;
-use crate::AuthenticatedCaller;
+use crate::desktop_core::{CoreAuthority, CoreSelector};
+use crate::{AuthenticatedCaller, IpcDispatcher};
 
 #[path = "../../../crates/test-support/recording_fixture.rs"]
 mod recording_fixture;
@@ -45,6 +53,1540 @@ const CONTROL_POINT: &str = "00002a39-0000-1000-8000-00805f9b34fb";
 const LEASE_ID: &str = "lease-1";
 const LEASE_GENERATION: &str = "generation-1";
 const WAIT: Duration = Duration::from_secs(5);
+
+struct ScanRecoveryTestWake;
+
+impl WakeSink for ScanRecoveryTestWake {
+    fn wake(&self, _session_id: u64) {}
+}
+
+/// The dispatcher accepts only a host-supplied storage protector. This test
+/// provider is deliberately inert because the fixture's private directory is
+/// created by the test process; it still exercises the real trusted-host API
+/// rather than the ordinary unprotected recording configuration.
+struct ScanRecoveryTestProtector;
+
+impl ScanRecoveryStorageProtector for ScanRecoveryTestProtector {
+    fn provision(&self, _path: &std::path::Path) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    fn validate(&self, _path: &std::path::Path) -> Result<(), JournalError> {
+        Ok(())
+    }
+}
+
+fn scan_recovery_test_directory(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "ubm-tauri-scan-recovery-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ))
+}
+
+fn scan_recovery_test_limits() -> ubm_core::oversized_evidence::ScanFailureLimits {
+    ubm_core::oversized_evidence::ScanFailureLimits {
+        evidence: ubm_core::oversized_evidence::EvidenceLimits {
+            max_depth: 8,
+            max_tokens: 8,
+            max_encoded_bytes: 4096,
+            max_chunks: 8,
+            chunk_bytes: 64,
+        },
+        max_recipients: 1,
+        max_bookkeeping_bytes: 4096,
+    }
+}
+
+/// Create a v2 sidecar only through the public outbox lifecycle. The simulated
+/// renderer receives only a recording ID, never a capability or sidecar key.
+fn record_prepared_scan_recovery(harness: &Harness, recording_id: &str, generation: u64) {
+    use ubm_core::oversized_evidence::{
+        EvidenceSource, EvidenceToken, ScanFailureIdentity, ScanFailureMember,
+        ScanFailureOccurrence,
+    };
+
+    let journal = harness
+        .dispatcher
+        .recordings
+        .open(
+            recording_id,
+            &serde_json::json!({}),
+            JournalQuota {
+                max_bytes: 1 << 20,
+                max_records: 8,
+            },
+        )
+        .expect("recording journal");
+    let outbox = Outbox::new(generation + 1, Arc::new(ScanRecoveryTestWake));
+    outbox
+        .attach_journal(Arc::clone(&journal), serde_json::json!({}))
+        .expect("durable outbox");
+    outbox
+        .configure_scan_failure_recovery_authority([0xA5; 32])
+        .expect("recovery authority before capture");
+    let byte = u8::try_from(generation % 251).expect("bounded test generation");
+    let mut reservation = outbox
+        .reserve_scan_failure(scan_recovery_test_limits())
+        .expect("reserve scan failure");
+    let mut source = Some(ScanFailureOccurrence::new(
+        ScanFailureIdentity {
+            host: [byte; 16],
+            scan: [byte.wrapping_add(1); 16],
+            start: [byte.wrapping_add(2); 16],
+            source_generation: [byte.wrapping_add(3); 16],
+            occurrence: [byte.wrapping_add(4); 16],
+        },
+        vec![ScanFailureMember {
+            recipient: [byte.wrapping_add(5); 16],
+            delivery: [byte.wrapping_add(6); 16],
+        }],
+        Arc::new(EvidenceSource::new(vec![
+            EvidenceToken::Array(3),
+            EvidenceToken::Text(format!("durable-scan-recovery-{generation}")),
+            EvidenceToken::Null,
+            EvidenceToken::Null,
+        ])),
+    ));
+    outbox
+        .commit_scan_failure(&mut reservation, &mut source)
+        .expect("capture and prepare durable scan source");
+    assert!(source.is_none(), "durable capture consumes its source");
+    outbox
+        .finish_scan_failure_producer(&mut reservation)
+        .expect("finish scan failure producer");
+}
+
+async fn complete_scan_recovery_through_tauri_routes(
+    harness: &Harness,
+    recording_id: &str,
+    correlation_prefix: &str,
+) {
+    harness
+        .dispatcher
+        .enable_scan_failure_recovery_for(harness.caller.clone(), recording_id)
+        .await
+        .expect("trusted host grants recording recovery");
+    let recovery = harness
+        .route(
+            "scanFailureRecovery.list",
+            &format!("{correlation_prefix}-list"),
+            vec![],
+            None,
+        )
+        .await
+        .expect("renderer lists granted recovery");
+    let IpcValue::Array(recoveries) = field(&recovery, "recoveries") else {
+        panic!("recovery aliases")
+    };
+    let recovery_id = text(&recoveries[0], "handleId");
+    let owners = harness
+        .route(
+            "scanFailureRecovery.owners",
+            &format!("{correlation_prefix}-owners"),
+            vec![("recoveryId", string(recovery_id.clone()))],
+            None,
+        )
+        .await
+        .expect("renderer lists recovered owner");
+    let IpcValue::Array(owners) = field(&owners, "owners") else {
+        panic!("owner aliases")
+    };
+    let owner_id = text(&owners[0], "handleId");
+    let head = harness
+        .route(
+            "scanFailureRecovery.head",
+            &format!("{correlation_prefix}-head"),
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(owner_id)),
+                ("index", number(0)),
+            ],
+            None,
+        )
+        .await
+        .expect("renderer opens recovered head");
+    let head_id = text(field(&head, "head"), "handleId");
+    let page = harness
+        .route(
+            "scanFailureRecovery.read",
+            &format!("{correlation_prefix}-read"),
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(head_id.clone())),
+                ("offset", string("0")),
+            ],
+            None,
+        )
+        .await
+        .expect("renderer reads durable recovered bytes");
+    assert!(matches!(field(&page, "bytes"), IpcValue::Bytes(bytes) if !bytes.is_empty()));
+    for command in [
+        "scanFailureRecovery.ack",
+        "scanFailureRecovery.retire",
+        "scanFailureRecovery.release",
+    ] {
+        harness
+            .route(
+                command,
+                &format!("{correlation_prefix}-{command}"),
+                vec![
+                    ("recoveryId", string(recovery_id.clone())),
+                    ("handleId", string(head_id.clone())),
+                ],
+                None,
+            )
+            .await
+            .expect("durable lifecycle transition");
+    }
+    let finalized = harness
+        .route(
+            "scanFailureRecovery.finalize",
+            &format!("{correlation_prefix}-finalize"),
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(head_id)),
+            ],
+            None,
+        )
+        .await
+        .expect("renderer finalizes released recovery");
+    let cleanup_id = text(&finalized, "cleanupReceiptId");
+    harness
+        .route(
+            "scanFailureRecovery.cleanup.retire",
+            &format!("{correlation_prefix}-cleanup"),
+            vec![
+                ("recoveryId", string(recovery_id)),
+                ("handleId", string(cleanup_id)),
+            ],
+            None,
+        )
+        .await
+        .expect("renderer retires exact cleanup receipt");
+}
+
+fn test_recovery_handle(owner_generation: u64) -> RendererPeerFailureRecoveryHandle {
+    RendererPeerFailureRecoveryHandle {
+        owner_generation,
+        descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [1; 16],
+                peer: [2; 16],
+                source_generation: [3; 16],
+                native_group: [4; 16],
+                transfer: [5; 16],
+                recovery: [6; 16],
+            },
+            encoded_length: 1,
+            chunk_bytes: 1,
+        },
+        peer_id: "peer".into(),
+        selector: CoreSelector {
+            service_uuid: HRM_SERVICE.into(),
+            service_occurrence: Some(0),
+            characteristic_uuid: Some(NOTIFY_ONLY.into()),
+            characteristic_occurrence: Some(0),
+            descriptor_uuid: None,
+            descriptor_occurrence: None,
+        },
+        consumer: "consumer".into(),
+        recipient_lease: "lease".into(),
+        contiguous_read: 0,
+        acknowledged: false,
+        producer_ack: "not-started",
+    }
+}
+
+/// Exercise scan-failure recovery through the same protocol-10 dispatcher
+/// route that a Tauri webview uses. The durable owner is created through the
+/// public outbox lifecycle and the trusted registry's v2 sidecar boundary;
+/// the test never manufactures a recovery owner or capability.
+#[tokio::test]
+async fn scan_failure_recovery_routes_use_real_v2_sidecar_and_revoke_forged_or_stale_handles() {
+    use ubm_core::oversized_evidence::{
+        EvidenceLimits, EvidenceSource, EvidenceToken, ScanFailureIdentity, ScanFailureMember,
+        ScanFailureOccurrence,
+    };
+
+    let harness = Harness::new().await;
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-tauri-scan-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("private fixture directory");
+    let recording_id = "tauri-scan-recovery";
+    let quota = JournalQuota {
+        max_bytes: 1 << 20,
+        max_records: 8,
+    };
+    harness
+        .dispatcher
+        .recordings
+        .configure_directory_with_scan_recovery_storage(
+            &directory,
+            Arc::new(ScanRecoveryTestProtector),
+        )
+        .expect("trusted registry configuration");
+    let journal = harness
+        .dispatcher
+        .recordings
+        .open(recording_id, &serde_json::json!({}), quota)
+        .expect("recording journal");
+    let outbox = Outbox::new(41, Arc::new(ScanRecoveryTestWake));
+    outbox
+        .attach_journal(Arc::clone(&journal), serde_json::json!({}))
+        .expect("durable outbox");
+    outbox
+        .configure_scan_failure_recovery_authority([0xA5; 32])
+        .expect("recovery authority before capture");
+    let limits = ubm_core::oversized_evidence::ScanFailureLimits {
+        evidence: EvidenceLimits {
+            max_depth: 8,
+            max_tokens: 8,
+            max_encoded_bytes: 4096,
+            max_chunks: 8,
+            chunk_bytes: 64,
+        },
+        max_recipients: 1,
+        max_bookkeeping_bytes: 4096,
+    };
+    // Keep the unresolved raw cut first in source order. Raw inspection is
+    // intentionally head-only, so a later prepared occurrence must not let a
+    // renderer skip the captured failure that blocked the scan producer.
+    let mut raw_reservation = outbox
+        .reserve_scan_failure(limits)
+        .expect("reserve unresolved raw source");
+    let mut raw_source = Some(ScanFailureOccurrence::new(
+        ScanFailureIdentity {
+            host: [11; 16],
+            scan: [12; 16],
+            start: [13; 16],
+            source_generation: [14; 16],
+            occurrence: [15; 16],
+        },
+        vec![ScanFailureMember {
+            recipient: [16; 16],
+            delivery: [17; 16],
+        }],
+        Arc::new(EvidenceSource::new(vec![EvidenceToken::Text(
+            "unresolved-raw-source".to_owned(),
+        )])),
+    ));
+    assert!(
+        outbox
+            .commit_scan_failure(&mut raw_reservation, &mut raw_source)
+            .is_err(),
+        "an unresolved source stays recoverable as raw evidence"
+    );
+    assert!(
+        raw_source.is_none(),
+        "the raw cut is durable before preparation fails"
+    );
+    outbox
+        .finish_scan_failure_producer(&mut raw_reservation)
+        .expect("finish unresolved producer");
+    drop(raw_reservation);
+    let mut reservation = outbox
+        .reserve_scan_failure(limits)
+        .expect("reserve scan failure");
+    let mut source = Some(ScanFailureOccurrence::new(
+        ScanFailureIdentity {
+            host: [1; 16],
+            scan: [2; 16],
+            start: [3; 16],
+            source_generation: [4; 16],
+            occurrence: [5; 16],
+        },
+        vec![ScanFailureMember {
+            recipient: [6; 16],
+            delivery: [7; 16],
+        }],
+        Arc::new(EvidenceSource::new(vec![
+            EvidenceToken::Array(3),
+            EvidenceToken::Text("raw-scan-failure".to_owned()),
+            EvidenceToken::Null,
+            EvidenceToken::Null,
+        ])),
+    ));
+    outbox
+        .commit_scan_failure(&mut reservation, &mut source)
+        .expect("capture and prepare durable scan source");
+    assert!(
+        source.is_none(),
+        "capture takes the exact source only after durable write"
+    );
+    outbox
+        .finish_scan_failure_producer(&mut reservation)
+        .expect("producer hands durable source to recovery");
+    drop(reservation);
+    drop(outbox);
+    drop(journal);
+
+    let other = harness.other_caller().await;
+    let denied = other
+        .route("scanFailureRecovery.list", "scan-denied", vec![], None)
+        .await
+        .expect_err("a non-granted caller cannot enumerate recovery");
+    assert_eq!(denied.code, BleErrorCode::OwnershipDenied);
+
+    harness
+        .dispatcher
+        .enable_scan_failure_recovery_for(harness.caller.clone(), recording_id)
+        .await
+        .expect("trusted host grants one protocol-10 caller");
+    let listed = harness
+        .route("scanFailureRecovery.list", "scan-list", vec![], None)
+        .await
+        .expect("granted caller lists opaque recovery aliases");
+    let IpcValue::Array(recoveries) = field(&listed, "recoveries") else {
+        panic!("recovery list")
+    };
+    assert_eq!(recoveries.len(), 1);
+    let recovery_id = text(&recoveries[0], "handleId");
+
+    let forged = harness
+        .route(
+            "scanFailureRecovery.owners",
+            "scan-forged",
+            vec![("recoveryId", string("forged"))],
+            None,
+        )
+        .await
+        .expect_err("opaque aliases are caller-bound and unguessable");
+    assert_eq!(forged.code, BleErrorCode::OwnershipDenied);
+
+    let owners = harness
+        .route(
+            "scanFailureRecovery.owners",
+            "scan-owners",
+            vec![("recoveryId", string(recovery_id.clone()))],
+            None,
+        )
+        .await
+        .expect("owner inventory");
+    let IpcValue::Array(owners) = field(&owners, "owners") else {
+        panic!("owner inventory")
+    };
+    assert_eq!(owners.len(), 2);
+    let prepared_owner = owners
+        .iter()
+        .find(|owner| field(owner, "prepared") == &IpcValue::Bool(true))
+        .expect("prepared owner");
+    let raw_owner = owners
+        .iter()
+        .find(|owner| field(owner, "prepared") == &IpcValue::Bool(false))
+        .expect("unresolved raw owner");
+    let owner_id = text(prepared_owner, "handleId");
+    let raw_owner_id = text(raw_owner, "handleId");
+    assert_eq!(field(prepared_owner, "memberCount"), &number(1));
+
+    // Inventory is observational. Repeating it must preserve live opaque
+    // aliases instead of retaining an unbounded new set for the same durable
+    // owners.
+    let owners_again = harness
+        .route(
+            "scanFailureRecovery.owners",
+            "scan-owners-again",
+            vec![("recoveryId", string(recovery_id.clone()))],
+            None,
+        )
+        .await
+        .expect("repeated owner inventory");
+    let IpcValue::Array(owners_again) = field(&owners_again, "owners") else {
+        panic!("repeated owner inventory")
+    };
+    assert_eq!(
+        owners
+            .iter()
+            .map(|owner| text(owner, "handleId"))
+            .collect::<Vec<_>>(),
+        owners_again
+            .iter()
+            .map(|owner| text(owner, "handleId"))
+            .collect::<Vec<_>>(),
+        "repeated inventory reuses the same live aliases"
+    );
+
+    let raw_info = harness
+        .route(
+            "scanFailureRecovery.raw.info",
+            "scan-raw-info",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(raw_owner_id.clone())),
+            ],
+            None,
+        )
+        .await
+        .expect("raw owner inventory stays behind the trusted grant");
+    let raw_identity = field(field(&raw_info, "info"), "identity");
+    assert_eq!(text(raw_identity, "host"), "0b".repeat(16));
+
+    for max_bytes in [0, 65_537] {
+        let error = harness
+            .route(
+                "scanFailureRecovery.raw.token",
+                &format!("scan-raw-token-bounded-{max_bytes}"),
+                vec![
+                    ("recoveryId", string(recovery_id.clone())),
+                    ("handleId", string(raw_owner_id.clone())),
+                    ("index", number(0)),
+                    ("offset", number(0)),
+                    ("maxBytes", number(max_bytes)),
+                ],
+                None,
+            )
+            .await
+            .expect_err("native route rejects an invalid raw token window before core access");
+        assert_eq!(
+            error.identity().0,
+            "argument.invalid",
+            "maxBytes={max_bytes}, identity={:?}",
+            error.identity()
+        );
+    }
+
+    let member = harness
+        .route(
+            "scanFailureRecovery.member",
+            "scan-member",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(raw_owner_id.clone())),
+                ("index", number(0)),
+            ],
+            None,
+        )
+        .await
+        .expect("member projection");
+    assert_eq!(text(field(&member, "member"), "recipient"), "10".repeat(16));
+
+    let raw_token = harness
+        .route(
+            "scanFailureRecovery.raw.token",
+            "scan-raw-token",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(raw_owner_id.clone())),
+                ("index", number(0)),
+                ("offset", number(0)),
+                ("maxBytes", number(64)),
+            ],
+            None,
+        )
+        .await
+        .expect("raw token projection");
+    assert_eq!(text(field(&raw_token, "token"), "kind"), "text");
+
+    // The raw cut is the current source fence. Retire and finalize it before
+    // asking for the next prepared owner, proving a renderer cannot jump the
+    // unresolved prefix while still allowing an authenticated cleanup.
+    let raw_retired = harness
+        .route(
+            "scanFailureRecovery.raw.retire",
+            "scan-raw-retire",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(raw_owner_id.clone())),
+            ],
+            None,
+        )
+        .await
+        .expect("retire unresolved raw cut");
+    assert_eq!(field(&raw_retired, "completed"), &IpcValue::Bool(true));
+    let raw_released = harness
+        .route(
+            "scanFailureRecovery.raw.release",
+            "scan-raw-release",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(raw_owner_id.clone())),
+            ],
+            None,
+        )
+        .await
+        .expect("release unresolved raw cut");
+    assert_eq!(field(&raw_released, "completed"), &IpcValue::Bool(true));
+
+    // Fill the renderer alias table after the owner has been retired and
+    // released. Finalization must refuse before creating a durable cleanup
+    // receipt; after freeing capacity, the same handle finalizes successfully.
+    let recovery_key = harness.key();
+    let recovery_generation = harness
+        .dispatcher
+        .scan_failure_recovery_admission
+        .lock()
+        .expect("scan recovery admission")
+        .get(&recovery_key)
+        .expect("scan recovery grant")
+        .generation;
+    {
+        let mut aliases = harness
+            .dispatcher
+            .scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery aliases");
+        let handles = aliases.entry(recovery_key.clone()).or_default();
+        while handles.len() < MAX_PENDING_EVENTS {
+            let id = format!("capacity-{}", handles.len());
+            handles.insert(
+                id,
+                (
+                    recovery_generation,
+                    RendererScanFailureRecoveryHandle::ReservedCleanup,
+                ),
+            );
+        }
+    }
+    let saturated = harness
+        .route(
+            "scanFailureRecovery.raw.finalize",
+            "scan-raw-finalize-saturated",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(raw_owner_id.clone())),
+            ],
+            None,
+        )
+        .await
+        .expect_err("capacity is admitted before raw durable finalization");
+    assert_eq!(saturated.identity().0, "stream.quota");
+    harness
+        .dispatcher
+        .scan_failure_recovery_handles
+        .lock()
+        .expect("scan recovery aliases")
+        .get_mut(&recovery_key)
+        .expect("scan recovery aliases remain")
+        .retain(|id, _| !id.starts_with("capacity-"));
+    let cleanup_before_finalization = harness
+        .route(
+            "scanFailureRecovery.cleanup.list",
+            "scan-cleanup-list-before-raw-finalize",
+            vec![("recoveryId", string(recovery_id.clone()))],
+            None,
+        )
+        .await
+        .expect("failed finalization leaves no cleanup receipt");
+    assert!(
+        matches!(field(&cleanup_before_finalization, "cleanupReceiptIds"), IpcValue::Array(values) if values.is_empty())
+    );
+
+    let raw_finalized = harness
+        .route(
+            "scanFailureRecovery.raw.finalize",
+            "scan-raw-finalize",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(raw_owner_id)),
+            ],
+            None,
+        )
+        .await
+        .expect("finalize unresolved raw cut");
+    let raw_cleanup_id = text(&raw_finalized, "cleanupReceiptId");
+    let raw_cleanup_retired = harness
+        .route(
+            "scanFailureRecovery.cleanup.retire",
+            "scan-raw-cleanup-retire",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(raw_cleanup_id)),
+            ],
+            None,
+        )
+        .await
+        .expect("retire raw cleanup receipt before advancing source fence");
+    assert_eq!(
+        field(&raw_cleanup_retired, "completed"),
+        &IpcValue::Bool(true)
+    );
+
+    let head = harness
+        .route(
+            "scanFailureRecovery.head",
+            "scan-head",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(owner_id.clone())),
+                ("index", number(0)),
+            ],
+            None,
+        )
+        .await
+        .expect("head projection");
+    let head = field(&head, "head");
+    let head_id = text(head, "handleId");
+    assert_eq!(field(head, "contiguousRead"), &string("0"));
+    assert_eq!(field(head, "acknowledged"), &IpcValue::Bool(false));
+
+    let page = harness
+        .route(
+            "scanFailureRecovery.read",
+            "scan-read",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(head_id.clone())),
+                ("offset", string("0")),
+            ],
+            None,
+        )
+        .await
+        .expect("read durable evidence through opaque head");
+    assert!(matches!(field(&page, "bytes"), IpcValue::Bytes(bytes) if !bytes.is_empty()));
+    assert_eq!(field(&page, "done"), &IpcValue::Bool(true));
+
+    harness
+        .route(
+            "scanFailureRecovery.ack",
+            "scan-ack",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(head_id.clone())),
+            ],
+            None,
+        )
+        .await
+        .expect("acknowledge exact recovered evidence");
+    let retired = harness
+        .route(
+            "scanFailureRecovery.retire",
+            "scan-retire",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(head_id.clone())),
+            ],
+            None,
+        )
+        .await
+        .expect("retire exact recovered evidence");
+    assert_eq!(field(&retired, "completed"), &IpcValue::Bool(true));
+    let released = harness
+        .route(
+            "scanFailureRecovery.release",
+            "scan-release",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(head_id.clone())),
+            ],
+            None,
+        )
+        .await
+        .expect("release after explicit producer finish");
+    assert_eq!(field(&released, "completed"), &IpcValue::Bool(true));
+
+    {
+        let mut aliases = harness
+            .dispatcher
+            .scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery aliases");
+        let handles = aliases.entry(recovery_key.clone()).or_default();
+        while handles.len() < MAX_PENDING_EVENTS {
+            let id = format!("head-capacity-{}", handles.len());
+            handles.insert(
+                id,
+                (
+                    recovery_generation,
+                    RendererScanFailureRecoveryHandle::ReservedCleanup,
+                ),
+            );
+        }
+    }
+    let saturated_head = harness
+        .route(
+            "scanFailureRecovery.finalize",
+            "scan-finalize-saturated",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(head_id.clone())),
+            ],
+            None,
+        )
+        .await
+        .expect_err("capacity is admitted before head durable finalization");
+    assert_eq!(saturated_head.identity().0, "stream.quota");
+    harness
+        .dispatcher
+        .scan_failure_recovery_handles
+        .lock()
+        .expect("scan recovery aliases")
+        .get_mut(&recovery_key)
+        .expect("scan recovery aliases remain")
+        .retain(|id, _| !id.starts_with("head-capacity-"));
+
+    let finalized = harness
+        .route(
+            "scanFailureRecovery.finalize",
+            "scan-finalize",
+            vec![
+                ("recoveryId", string(recovery_id.clone())),
+                ("handleId", string(head_id.clone())),
+            ],
+            None,
+        )
+        .await
+        .expect("finalize produces an opaque cleanup alias");
+    assert!(
+        !text(&finalized, "cleanupReceiptId").is_empty(),
+        "finalization returns an opaque cleanup alias"
+    );
+    let cleanup = harness
+        .route(
+            "scanFailureRecovery.cleanup.list",
+            "scan-cleanup-list",
+            vec![("recoveryId", string(recovery_id.clone()))],
+            None,
+        )
+        .await
+        .expect("cleanup receipts remain explicitly inspectable");
+    let IpcValue::Array(cleanups) = field(&cleanup, "cleanupReceiptIds") else {
+        panic!("cleanup receipt aliases")
+    };
+    let cleanup_again = harness
+        .route(
+            "scanFailureRecovery.cleanup.list",
+            "scan-cleanup-list-again",
+            vec![("recoveryId", string(recovery_id.clone()))],
+            None,
+        )
+        .await
+        .expect("repeated cleanup inventory");
+    assert_eq!(
+        field(&cleanup, "cleanupReceiptIds"),
+        field(&cleanup_again, "cleanupReceiptIds"),
+        "repeated cleanup inventory reuses the same live aliases"
+    );
+    // The durable cleanup receipt remains opaque to the renderer.
+    let cleanup_id = cleanups
+        .iter()
+        .find_map(|value| match value {
+            IpcValue::String(value) => Some(value.clone()),
+            _ => None,
+        })
+        .expect("opaque cleanup alias");
+    let cleanup_retired = harness
+        .route(
+            "scanFailureRecovery.cleanup.retire",
+            "scan-cleanup-retire",
+            vec![
+                ("recoveryId", string(recovery_id)),
+                ("handleId", string(cleanup_id)),
+            ],
+            None,
+        )
+        .await
+        .expect("authenticated cleanup retirement");
+    assert_eq!(field(&cleanup_retired, "completed"), &IpcValue::Bool(true));
+
+    // Ordinary IPC release revokes recovery before attempting unrelated radio
+    // cleanup. A failed disconnect leaves normal cleanup debt behind, but it
+    // must not leave the old recovery grant or its opaque aliases usable.
+    let _retained_link = harness.connect("scan-release-failure").await;
+    harness
+        .radio()
+        .fail_next(FaultOp::Disconnect, "retain caller cleanup debt");
+    let ordinary_release = harness
+        .dispatcher
+        .release_request(
+            harness.caller.clone(),
+            BTreeMap::from([(
+                "rendererLease".to_owned(),
+                object([
+                    ("leaseId", string(LEASE_ID)),
+                    ("generation", string(LEASE_GENERATION)),
+                ]),
+            )]),
+        )
+        .await
+        .expect("ordinary release returns its cleanup outcome");
+    assert!(
+        !super::is_released(field(&ordinary_release, "cleanup")),
+        "the injected disconnect failure retains normal cleanup debt"
+    );
+    let stale = harness
+        .route("scanFailureRecovery.list", "scan-stale", vec![], None)
+        .await
+        .expect_err("ordinary release revokes recovery before retained cleanup can be retried");
+    assert_eq!(stale.code, BleErrorCode::OwnershipDenied);
+    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+}
+
+#[tokio::test]
+async fn scan_failure_recovery_reclaims_alias_capacity_after_256_completed_durable_lifecycles() {
+    let harness = Harness::new().await;
+    let directory = scan_recovery_test_directory("alias-capacity");
+    std::fs::create_dir(&directory).expect("private fixture directory");
+    harness
+        .dispatcher
+        .recordings
+        .configure_directory_with_scan_recovery_storage(
+            &directory,
+            Arc::new(ScanRecoveryTestProtector),
+        )
+        .expect("trusted registry configuration");
+
+    // One extra lifecycle proves aliases are retired with their completed
+    // durable source, rather than merely surviving below a 256-entry cap.
+    for generation in 0..=256_u64 {
+        let recording_id = format!("tauri-scan-capacity-{generation}");
+        record_prepared_scan_recovery(&harness, &recording_id, generation);
+        complete_scan_recovery_through_tauri_routes(
+            &harness,
+            &recording_id,
+            &format!("scan-capacity-{generation}"),
+        )
+        .await;
+    }
+    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+}
+
+#[tokio::test]
+async fn scan_failure_recovery_tauri_routes_survive_fresh_process_restart() {
+    const CHILD_DIRECTORY: &str = "UBM_TAURI_SCAN_RECOVERY_CHILD_DIRECTORY";
+    const CHILD_RECORDING: &str = "UBM_TAURI_SCAN_RECOVERY_CHILD_RECORDING";
+    const CHILD_PHASE: &str = "UBM_TAURI_SCAN_RECOVERY_CHILD_PHASE";
+    let recording_id = "tauri-scan-fresh-process";
+
+    if let Ok(directory) = std::env::var(CHILD_DIRECTORY) {
+        let harness = Harness::new().await;
+        harness
+            .dispatcher
+            .recordings
+            .configure_directory_with_scan_recovery_storage(
+                std::path::Path::new(&directory),
+                Arc::new(ScanRecoveryTestProtector),
+            )
+            .expect("fresh process configures trusted registry");
+        let recording_id = std::env::var(CHILD_RECORDING).expect("child recording id");
+        if std::env::var(CHILD_PHASE).as_deref() == Ok("produce") {
+            record_prepared_scan_recovery(&harness, &recording_id, 900);
+            return;
+        }
+        harness
+            .dispatcher
+            .recordings
+            .open(
+                &recording_id,
+                &serde_json::json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 8,
+                },
+            )
+            .expect("fresh process reopens durable recording");
+        complete_scan_recovery_through_tauri_routes(&harness, &recording_id, "fresh-process").await;
+        return;
+    }
+
+    let directory = scan_recovery_test_directory("fresh-process");
+    std::fs::create_dir(&directory).expect("private fixture directory");
+    let executable = std::env::current_exe().expect("test executable");
+    let test_name = "btleplug_dispatcher::dispatcher_packet_b_tests::scan_failure_recovery_tauri_routes_survive_fresh_process_restart";
+    let produced = std::process::Command::new(&executable)
+        .arg("--exact")
+        .arg(test_name)
+        .env(CHILD_DIRECTORY, &directory)
+        .env(CHILD_RECORDING, recording_id)
+        .env(CHILD_PHASE, "produce")
+        .status()
+        .expect("producer test process starts");
+    assert!(
+        produced.success(),
+        "producer process commits durable recovery"
+    );
+    let recovered = std::process::Command::new(executable)
+        .arg("--exact")
+        .arg(test_name)
+        .env(CHILD_DIRECTORY, &directory)
+        .env(CHILD_RECORDING, recording_id)
+        .env(CHILD_PHASE, "recover")
+        .status()
+        .expect("fresh recovery test process starts");
+    assert!(
+        recovered.success(),
+        "fresh process completes durable Tauri recovery"
+    );
+    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+}
+
+#[tokio::test]
+async fn terminal_evidence_recipient_recovery_survives_a_real_process_restart() {
+    const DIRECTORY: &str = "UBM_TAURI_TERMINAL_EVIDENCE_CHILD_DIRECTORY";
+    const PHASE: &str = "UBM_TAURI_TERMINAL_EVIDENCE_CHILD_PHASE";
+    const RECIPIENT: &str = "test-app\0main";
+    if let Ok(directory) = std::env::var(DIRECTORY) {
+        let ledger = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
+            &std::path::Path::new(&directory).join("terminal.sqlite"),
+            1024,
+        )
+        .expect("open ledger");
+        let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+            producer: "subscription".to_owned(),
+            manager_id: "manager".to_owned(),
+            operation_id: "operation".to_owned(),
+            incarnation: "incarnation".to_owned(),
+        };
+        if std::env::var(PHASE).as_deref() == Ok("produce") {
+            let reservation = ledger.reserve(&scope, 512).expect("reserve");
+            let bytes = br#"{"formatVersion":1,"terminal":{"droppedBytes":23,"droppedItems":1,"kind":"terminal","reason":"overflow","replacedItems":0}}"#;
+            ledger
+                .stage(&reservation.reservation_id, RECIPIENT, bytes)
+                .expect("stage owner");
+            return;
+        }
+        let harness = Harness::new().await;
+        let dispatcher = BtleplugDispatcher::with_core_authority(
+            Arc::new(harness.central.clone()) as Arc<dyn CoreAuthority>
+        );
+        *dispatcher
+            .terminal_evidence_ledger
+            .lock()
+            .expect("ledger mutex") = Some(Arc::new(ledger));
+        let caller = AuthenticatedCaller::new("test-app".to_owned(), "main".to_owned());
+        dispatcher
+            .bootstrap(
+                caller.clone(),
+                IpcEventSink::new(Channel::new(|_| Ok(()))),
+                version_offer(),
+            )
+            .await
+            .expect("cold bootstrap resolves staged receipt");
+        let recovered = dispatcher
+            .terminal_evidence_route(
+                &caller,
+                "terminalEvidence.recovery.list",
+                &BTreeMap::from([("version".to_owned(), number(1))]),
+                None,
+            )
+            .await
+            .expect("route lists committed staged recovery")
+            .into_wire();
+        assert_eq!(recovered["records"].as_array().expect("records").len(), 1);
+        return;
+    }
+    let directory = scan_recovery_test_directory("terminal-evidence-process");
+    std::fs::create_dir(&directory).expect("fixture directory");
+    let executable = std::env::current_exe().expect("test executable");
+    let test_name = "btleplug_dispatcher::dispatcher_packet_b_tests::terminal_evidence_recipient_recovery_survives_a_real_process_restart";
+    for phase in ["produce", "recover"] {
+        let status = std::process::Command::new(&executable)
+            .arg("--exact")
+            .arg(test_name)
+            .env(DIRECTORY, &directory)
+            .env(PHASE, phase)
+            .status()
+            .expect("child starts");
+        assert!(status.success(), "{phase} child succeeds");
+    }
+    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+}
+
+#[tokio::test]
+async fn durable_peer_failure_routes_require_trusted_owner_grant_and_teardown_revokes_it() {
+    let harness = Harness::new().await;
+    let denied = harness
+        .route("peerFailureRecovery.list", "durable-denied", vec![], None)
+        .await
+        .expect_err("a renderer cannot enumerate recovery before trusted host opt-in");
+    assert_eq!(denied.code, BleErrorCode::OwnershipDenied);
+    assert_eq!(denied.domain, "restoration");
+
+    harness
+        .dispatcher
+        .peer_failure_recovery_admission
+        .lock()
+        .expect("owner grant mutex")
+        .entry(harness.key())
+        .or_default()
+        .owner_generation = Some(0);
+    let listed = harness
+        .route("peerFailureRecovery.list", "durable-granted", vec![], None)
+        .await
+        .expect("trusted owner can enumerate the attached durable ledger");
+    assert_eq!(field(&listed, "recoveries"), &IpcValue::Array(vec![]));
+
+    harness.dispatcher.release_caller(harness.caller.clone());
+    let revoked = harness
+        .route("peerFailureRecovery.list", "durable-revoked", vec![], None)
+        .await
+        .expect_err("caller teardown revokes durable recovery access");
+    assert_eq!(revoked.code, BleErrorCode::OwnershipDenied);
+}
+
+/// A trusted host's attach may wait on durable storage.  Teardown (and a
+/// replacement attachment for the same authenticated caller) must win that
+/// race: an older attach completion must never restore a recovery grant.
+#[tokio::test]
+async fn durable_peer_failure_grant_refuses_a_released_caller_after_attach_waits() {
+    let harness = Harness::new().await;
+    let (started, observed) = tokio::sync::oneshot::channel();
+    let (resume, release) = tokio::sync::oneshot::channel();
+    let dispatcher = harness.dispatcher.clone();
+    let caller = harness.caller.clone();
+    let grant = tokio::spawn(async move {
+        dispatcher
+            .enable_peer_failure_recovery_for_after(caller, async move {
+                started.send(()).expect("test waits for attach");
+                release.await.expect("test resumes attach");
+                Ok(())
+            })
+            .await
+    });
+    observed.await.expect("attach started before teardown");
+
+    harness.dispatcher.release_caller(harness.caller.clone());
+    resume.send(()).expect("resume attach after teardown");
+    let error = grant
+        .await
+        .expect("grant task joins")
+        .expect_err("a stale attachment must not recreate a caller grant");
+    assert_eq!(error["code"], "ownership.denied");
+    assert!(harness
+        .dispatcher
+        .peer_failure_recovery_admission
+        .lock()
+        .expect("owner grants")
+        .get(&harness.key())
+        .is_none_or(|entry| entry.owner_generation.is_none()));
+}
+
+/// A list result is computed outside the grant mutex.  The final insertion
+/// must reject an old generation after release and re-bootstrap, rather than
+/// leaving a handle that the replacement caller can use.
+#[tokio::test]
+async fn durable_peer_failure_list_insert_refuses_release_then_rebootstrap() {
+    let harness = Harness::new().await;
+    let key = harness.key();
+    {
+        let mut admission = harness
+            .dispatcher
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("admission");
+        admission.entry(key.clone()).or_default().owner_generation = Some(0);
+    }
+    let (_, old_generation) = harness
+        .dispatcher
+        .peer_failure_recovery_owner(&harness.caller, "test.list")
+        .expect("old grant");
+    harness.dispatcher.release_caller(harness.caller.clone());
+    {
+        let mut admission = harness
+            .dispatcher
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("admission");
+        let entry = admission.get_mut(&key).expect("revoked entry");
+        entry.owner_generation = Some(entry.generation);
+    }
+    let error = harness
+        .dispatcher
+        .install_peer_failure_recovery_handles(
+            key.clone(),
+            old_generation,
+            HashMap::from([("stale".into(), test_recovery_handle(old_generation))]),
+        )
+        .expect_err("old list completion cannot publish into replacement generation");
+    assert_eq!(error.code, BleErrorCode::OwnershipDenied);
+    assert!(harness
+        .dispatcher
+        .peer_failure_recovery_handles
+        .lock()
+        .expect("handles")
+        .get(&key)
+        .is_none());
+}
+
+/// ACK has one explicit linearization point.  Release before it denies with
+/// no retained native operation; release after it cannot make the handle
+/// usable by a caller that reuses the same authenticated key.
+#[tokio::test]
+async fn durable_peer_failure_ack_generation_fences_release_before_and_after_admission() {
+    let harness = Harness::new().await;
+    let key = harness.key();
+    {
+        let mut admission = harness
+            .dispatcher
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("admission");
+        admission.entry(key.clone()).or_default().owner_generation = Some(0);
+    }
+    harness
+        .dispatcher
+        .install_peer_failure_recovery_handles(
+            key.clone(),
+            0,
+            HashMap::from([("before".into(), test_recovery_handle(0))]),
+        )
+        .expect("install first handle");
+    harness.dispatcher.release_caller(harness.caller.clone());
+    let error = match harness
+        .dispatcher
+        .reserve_peer_failure_recovery_acknowledgement(&key, "before")
+    {
+        Ok(_) => panic!("release before ACK admission never reaches native ACK"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, BleErrorCode::OwnershipDenied);
+
+    {
+        let mut admission = harness
+            .dispatcher
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("admission");
+        let entry = admission.get_mut(&key).expect("entry");
+        entry.owner_generation = Some(entry.generation);
+        let generation = entry.generation;
+        drop(admission);
+        harness
+            .dispatcher
+            .install_peer_failure_recovery_handles(
+                key.clone(),
+                generation,
+                HashMap::from([("after".into(), test_recovery_handle(generation))]),
+            )
+            .expect("install replacement handle");
+    }
+    let (generation, _) = harness
+        .dispatcher
+        .reserve_peer_failure_recovery_acknowledgement(&key, "after")
+        .expect("ACK admitted before release");
+    harness.dispatcher.release_caller(harness.caller.clone());
+    assert!(
+        harness
+            .dispatcher
+            .renderer_peer_failure_recovery_handle(&harness.caller, "after", "test.after")
+            .is_err(),
+        "released/rebootstrapped caller cannot reuse an in-flight old handle"
+    );
+    assert!(harness
+        .dispatcher
+        .peer_failure_recovery_admission
+        .lock()
+        .expect("admission")
+        .get(&key)
+        .expect("entry")
+        .in_flight_acknowledgements
+        .contains(&(generation, "after".into())));
+    harness
+        .dispatcher
+        .finish_peer_failure_recovery_acknowledgement(&key, generation, "after");
+}
+
+/// Ownerless diagnostics are host facts: no caller at observation time, and a
+/// failed later channel send, must both leave the exact record for a later
+/// authenticated protocol-10 attachment.
+#[tokio::test]
+async fn attachment_diagnostics_replay_after_zero_caller_and_failed_send() {
+    let harness = Harness::new().await;
+    let _ = harness.dispatcher.release(&harness.key()).await;
+    let diagnostic = object([
+        ("kind", string("diagnostic-warning")),
+        ("schemaVersion", number(1)),
+        ("code", string("gatt.source-uncertain-lagged")),
+        ("missed", number(3)),
+    ]);
+    harness
+        .dispatcher
+        .emit_attachment_diagnostic(diagnostic)
+        .await;
+
+    let refused = IpcEventSink::new(Channel::new(|_| {
+        Err(tauri::Error::Io(std::io::Error::other(
+            "scripted attachment refusal",
+        )))
+    }));
+    harness
+        .dispatcher
+        .bootstrap(harness.caller.clone(), refused, version_offer())
+        .await
+        .expect("failed replay does not discard a retained diagnostic or fail bootstrap");
+    let _ = harness.dispatcher.release(&harness.key()).await;
+
+    let events = Arc::clone(&harness.events);
+    let accepted = IpcEventSink::new(Channel::new(move |body| {
+        if let InvokeResponseBody::Json(json) = body {
+            events
+                .lock()
+                .expect("event log")
+                .push(serde_json::from_str(&json).expect("event json"));
+        }
+        Ok(())
+    }));
+    harness
+        .dispatcher
+        .bootstrap(harness.caller.clone(), accepted, version_offer())
+        .await
+        .expect("later attachment");
+    assert!(harness.items("attachment").iter().any(|item| {
+        item["value"]["code"] == "gatt.source-uncertain-lagged" && item["value"]["missed"] == 3
+    }));
+}
+
+/// Retention is deliberately bounded, but losing its oldest entry is itself a
+/// replayable host fact.  A fresh protocol-10 attachment receives the loss
+/// diagnostic before the surviving FIFO tail, rather than a misleadingly
+/// complete-looking history.
+#[tokio::test]
+async fn attachment_diagnostics_overflow_replays_loss_then_surviving_fifo_tail() {
+    let harness = Harness::new().await;
+    let _ = harness.dispatcher.release(&harness.key()).await;
+    for index in 0..=super::MAX_RETAINED_ATTACHMENT_DIAGNOSTICS {
+        harness
+            .dispatcher
+            .emit_attachment_diagnostic(object([
+                ("kind", string("diagnostic-warning")),
+                ("schemaVersion", number(1)),
+                ("code", string("gatt.source-uncertain-lagged")),
+                ("missed", number(index as i64)),
+            ]))
+            .await;
+    }
+
+    let events = Arc::clone(&harness.events);
+    let accepted = IpcEventSink::new(Channel::new(move |body| {
+        if let InvokeResponseBody::Json(json) = body {
+            events
+                .lock()
+                .expect("event log")
+                .push(serde_json::from_str(&json).expect("event json"));
+        }
+        Ok(())
+    }));
+    harness
+        .dispatcher
+        .bootstrap(harness.caller.clone(), accepted, version_offer())
+        .await
+        .expect("overflowed diagnostics replay to a fresh attachment");
+
+    let items = harness.items("attachment");
+    assert_eq!(items.len(), super::MAX_RETAINED_ATTACHMENT_DIAGNOSTICS + 1);
+    assert_eq!(
+        items[0]["value"]["code"],
+        "gatt.source-uncertain-retention-lagged"
+    );
+    assert_eq!(items[0]["value"]["missed"], 1);
+    assert_eq!(items[1]["value"]["missed"], 1);
+    assert_eq!(
+        items.last().expect("surviving tail")["value"]["missed"],
+        super::MAX_RETAINED_ATTACHMENT_DIAGNOSTICS as i64
+    );
+}
+
+/// A crash after the source-ACK intent is durable cannot recreate the native
+/// source owner.  The real sidecar remains readable through the real Tauri
+/// renderer routes, while ACK truthfully reports that platform reconciliation
+/// is required instead of deleting the evidence or claiming a successful ACK.
+#[tokio::test]
+async fn durable_inflight_peer_failure_recovery_survives_restart_and_refuses_native_ack() {
+    let module = module_path!().split_once("::").unwrap().1;
+    let test = format!(
+        "{module}::durable_inflight_peer_failure_recovery_survives_restart_and_refuses_native_ack"
+    );
+    let Some(directory) = recording_fixture::isolated_fixture_process(&test) else {
+        return;
+    };
+
+    let harness = Harness::new().await;
+    harness
+        .dispatcher
+        .continuation_configure_recording_directory(&directory)
+        .await
+        .expect("configure private recording directory");
+    let journal = harness
+        .dispatcher
+        .recordings
+        .open(
+            "inflight-peer-failure",
+            &serde_json::json!({"kind":"tauri-inflight-peer-failure"}),
+            JournalQuota {
+                max_bytes: 1 << 20,
+                max_records: 8,
+            },
+        )
+        .expect("open authorized recording");
+    let ledger = journal
+        .peer_failure_recovery_ledger()
+        .expect("open peer failure sidecar");
+    let bytes = vec![0x57, 0x48, 0x4f, 0x4f, 0x50];
+    let occurrence = DurablePeerFailureRecoveryOccurrence {
+        descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [1; 16],
+                peer: [2; 16],
+                source_generation: [3; 16],
+                native_group: [4; 16],
+                transfer: [5; 16],
+                recovery: [6; 16],
+            },
+            encoded_length: bytes.len() as u64,
+            chunk_bytes: 64 * 1024,
+        },
+        source_ack_id: None,
+        recipients: vec![DurablePeerFailureRecoveryRecipient {
+            scope: (
+                "inflight-peer".into(),
+                HRM_SERVICE.into(),
+                0,
+                NOTIFY_ONLY.into(),
+                0,
+            ),
+            consumer: "original-consumer".into(),
+            epoch: 41,
+            recipient_lease: "original-recipient-lease".into(),
+            contiguous_read: 0,
+            acknowledged: false,
+        }],
+        producer_ack: DurablePeerFailureProducerAck::NotStarted,
+        teardown: None,
+    };
+    ledger
+        .begin_stage(&occurrence)
+        .await
+        .expect("persist recovery envelope");
+    ledger
+        .append_stage_chunk(&occurrence.descriptor, 0, &bytes, true)
+        .await
+        .expect("persist exact evidence bytes");
+    ledger
+        .commit_stage(&occurrence.descriptor)
+        .await
+        .expect("commit recovery evidence");
+    ledger
+        .mark_source_ack_inflight(&occurrence.descriptor, "opaque-native-source-ack")
+        .await
+        .expect("persist native source ACK intent before simulated restart");
+    drop(ledger);
+
+    let ungranted = harness.other_caller().await;
+    let denied = ungranted
+        .route(
+            "peerFailureRecovery.list",
+            "inflight-ungranted",
+            vec![],
+            None,
+        )
+        .await
+        .expect_err("another renderer cannot discover a retained occurrence");
+    assert_eq!(denied.code, BleErrorCode::OwnershipDenied);
+    assert_eq!(denied.domain, "restoration");
+
+    // This opens a new sidecar ledger and attaches it to the actual central;
+    // no test double returns a recovery response directly.
+    harness
+        .dispatcher
+        .enable_peer_failure_recovery_for(harness.caller.clone(), "inflight-peer-failure")
+        .await
+        .expect("trusted host attaches persisted recovery after restart");
+    let listed = harness
+        .route("peerFailureRecovery.list", "inflight-list", vec![], None)
+        .await
+        .expect("granted caller lists recovered occurrence");
+    let recoveries = match field(&listed, "recoveries") {
+        IpcValue::Array(recoveries) => recoveries,
+        other => panic!("recoveries is not an array: {other:?}"),
+    };
+    assert_eq!(recoveries.len(), 1);
+    let recovery = &recoveries[0];
+    assert_eq!(text(recovery, "peerId"), "inflight-peer");
+    assert_eq!(text(recovery, "producerAck"), "in-flight");
+    let handle = text(recovery, "handleId");
+
+    let stale = harness
+        .route(
+            "peerFailureRecovery.read",
+            "inflight-stale",
+            vec![
+                ("handleId", string("not-a-recovery-handle")),
+                ("offset", string("0")),
+            ],
+            None,
+        )
+        .await
+        .expect_err("a guessed or stale opaque handle cannot read evidence");
+    assert_eq!(stale.code, BleErrorCode::OwnershipDenied);
+    assert_eq!(stale.domain, "restoration");
+
+    let read = harness
+        .route(
+            "peerFailureRecovery.read",
+            "inflight-read",
+            vec![
+                ("handleId", string(handle.clone())),
+                ("offset", string("0")),
+            ],
+            None,
+        )
+        .await
+        .expect("real Tauri IPC reads retained sidecar bytes");
+    assert_eq!(field(&read, "bytes"), &IpcValue::Bytes(bytes.clone()));
+    assert_eq!(field(&read, "done"), &IpcValue::Bool(true));
+
+    let ack = harness
+        .route(
+            "peerFailureRecovery.ack",
+            "inflight-ack",
+            vec![("handleId", string(handle.clone()))],
+            None,
+        )
+        .await
+        .expect_err("a restored in-flight receipt cannot claim its lost native owner retired");
+    assert_eq!(ack.code, BleErrorCode::CapabilityUnavailable);
+    assert_eq!(ack.domain, "restoration");
+    assert_eq!(
+        ack.operation,
+        "gatt.notification.source-failure-recovery.reconcile"
+    );
+
+    // The original opaque handle is intentionally no longer readable after
+    // its recipient ACK is durable. A fresh list proves the occurrence was
+    // not deleted by the unavailable native reconciliation; it remains
+    // explicitly retained in its in-flight state for platform reconciliation.
+    let retained = harness
+        .route(
+            "peerFailureRecovery.list",
+            "inflight-retained",
+            vec![],
+            None,
+        )
+        .await
+        .expect("failed native reconciliation leaves a durable receipt");
+    let retained = match field(&retained, "recoveries") {
+        IpcValue::Array(recoveries) => recoveries,
+        other => panic!("recoveries is not an array: {other:?}"),
+    };
+    assert_eq!(retained.len(), 1);
+    assert_eq!(text(&retained[0], "producerAck"), "in-flight");
+    assert_eq!(field(&retained[0], "acknowledged"), &IpcValue::Bool(true));
+
+    harness.dispatcher.release_caller(harness.caller.clone());
+    let revoked = tokio::time::timeout(
+        WAIT,
+        harness.route("peerFailureRecovery.list", "inflight-revoked", vec![], None),
+    )
+    .await
+    .expect("caller teardown must not strand its renderer route")
+    .expect_err("caller teardown revokes recovered handles and the grant");
+    assert_eq!(revoked.code, BleErrorCode::OwnershipDenied);
+    assert_eq!(revoked.domain, "ipc");
+    harness.central.shutdown().await;
+    recording_fixture::complete_fixture_process(&directory);
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn security_watch_retains_racing_event_order_without_regressing_to_an_unsequenced_snapshot() {
@@ -2744,7 +4286,10 @@ impl Harness {
                 CallerState {
                     lease_id: LEASE_ID.to_owned(),
                     lease_generation: LEASE_GENERATION.to_owned(),
-                    versions: object([]),
+                    versions: object([(
+                        "ipcProtocol",
+                        object([("selected", object([("value", number(10))]))]),
+                    )]),
                     attachment: attachment.clone(),
                     event_sink: sink,
                     retired: false,
@@ -2752,6 +4297,7 @@ impl Harness {
                     connections: HashMap::new(),
                     databases: HashMap::new(),
                     subscriptions: HashMap::new(),
+                    ordered_groups: HashMap::new(),
                     acquired_writers: HashMap::new(),
                     acquired_releases: Default::default(),
                     connection_events: HashMap::new(),
@@ -2850,12 +4396,27 @@ impl Harness {
             (
                 "renderer",
                 object([
-                    ("clientId", string("test-app:main")),
-                    ("windowScope", string("main")),
+                    (
+                        "clientId",
+                        string(format!(
+                            "{}:{}",
+                            self.caller.app_identifier, self.caller.window_label
+                        )),
+                    ),
+                    ("windowScope", string(self.caller.window_label.clone())),
                     ("sessionScope", string(LEASE_GENERATION)),
                 ]),
             ),
-            ("versions", object([])),
+            // A route echoes the exact negotiated protocol selection from
+            // bootstrap; an empty object is not a stand-in for that proof.
+            // These packet-B harness callers are installed at protocol 10.
+            (
+                "versions",
+                object([(
+                    "ipcProtocol",
+                    object([("selected", object([("value", number(10))]))]),
+                )]),
+            ),
             (
                 "binaryPayload",
                 bytes.map_or(IpcValue::Null, IpcValue::Bytes),
@@ -3643,17 +5204,10 @@ async fn pr210_06_a_short_budget_bounds_the_radio_call() {
     // Room to reach the radio under parallel test load; the held read then
     // ends on the budget, far inside every liveness backstop.
     entries.push(("budgetMs", number(500)));
-    let started = std::time::Instant::now();
     let error = tokio::time::timeout(WAIT, harness.route("gatt.read", "short", entries, None))
         .await
         .expect("a 500 ms budget ends the read")
         .expect_err("the read times out");
-    eprintln!(
-        "DEBUG elapsed {:?} calls {:?} error {:?}",
-        started.elapsed(),
-        harness.radio().calls(),
-        error
-    );
     assert_eq!(error.code, BleErrorCode::OperationTimedOut);
     assert_eq!(
         error.platform, None,
@@ -4225,6 +5779,7 @@ async fn pr210_11_idle_link_loss_reaches_the_stream_and_invalidates() {
         .await
         .expect("subscribe");
     let notifications = text(&subscription, "handle");
+
     harness
         .connection_events(&link, "connection-events-ipc-1")
         .await;
@@ -4434,6 +5989,505 @@ async fn a_notification_terminal_sent_before_disconnect_is_not_sent_twice() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn caller_release_emits_owner_release_terminal_before_retirement_and_rebootstraps() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    let subscription = harness
+        .subscribe(&link, &database, NOTIFY_ONLY, None)
+        .await
+        .expect("subscribe");
+    let notifications = text(&subscription, "handle");
+
+    let cleanup = harness.dispatcher.release(&harness.key()).await;
+    assert!(super::is_released(&cleanup), "{cleanup:?}");
+    let terminal = harness.wait_items(&notifications, 1).await;
+    assert_eq!(terminal[0]["kind"], "terminal");
+    assert_eq!(terminal[0]["reason"], "owner-released");
+    assert_eq!(harness.items(&notifications).len(), 1, "one terminal only");
+
+    let sink = IpcEventSink::new(Channel::new(|_| Ok(())));
+    harness
+        .dispatcher
+        .bootstrap(harness.caller.clone(), sink, version_offer())
+        .await
+        .expect("release leaves no stale caller state that blocks rebootstrap");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+/// Deterministic fresh-dispatcher/SQLite-reopen evidence; this does not spawn
+/// a second OS process and therefore is not physical crash-recovery proof.
+async fn fresh_dispatcher_reopens_terminal_evidence_releases_failed_reservations_and_preserves_quota(
+) {
+    let harness = Harness::new().await;
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-tauri-terminal-rebootstrap-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("fixture directory");
+    let ledger = Arc::new(
+        ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
+            &directory.join("terminal-evidence.sqlite"),
+            1024,
+        )
+        .expect("ledger"),
+    );
+    *harness
+        .dispatcher
+        .terminal_evidence_ledger
+        .lock()
+        .expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        state
+            .callers
+            .get_mut(&harness.key())
+            .expect("caller")
+            .versions = object([(
+            "ipcProtocol",
+            object([("selected", object([("value", number(11))]))]),
+        )]);
+    }
+    let scope = object([
+        ("managerId", string("manager")),
+        ("operationId", string("subscription")),
+        ("incarnation", string("incarnation")),
+    ]);
+    let reservation = harness
+        .dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.reserve",
+            &BTreeMap::from([
+                ("version".to_owned(), number(1)),
+                ("producer".to_owned(), string("subscription")),
+                ("maximumBytes".to_owned(), number(512)),
+                ("formatVersion".to_owned(), number(1)),
+                ("scope".to_owned(), scope.clone()),
+            ]),
+            None,
+        )
+        .await
+        .expect("reserve terminal evidence");
+    let _reservation_id = text(&reservation, "reservationId");
+
+    let failed_scope = object([
+        ("managerId", string("manager")),
+        ("operationId", string("failed-commit")),
+        ("incarnation", string("incarnation")),
+    ]);
+    let failed_reservation = harness
+        .dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.reserve",
+            &BTreeMap::from([
+                ("version".to_owned(), number(1)),
+                ("producer".to_owned(), string("subscription")),
+                ("maximumBytes".to_owned(), number(512)),
+                ("formatVersion".to_owned(), number(1)),
+                ("scope".to_owned(), failed_scope),
+            ]),
+            None,
+        )
+        .await
+        .expect("reserve failed-commit evidence");
+    let failed_reservation_id = text(&failed_reservation, "reservationId");
+    assert!(
+        harness
+            .dispatcher
+            .terminal_evidence_route(
+                &harness.caller,
+                "terminalEvidence.commit",
+                &BTreeMap::from([
+                    ("version".to_owned(), number(1)),
+                    ("reservationId".to_owned(), string(failed_reservation_id)),
+                    ("digest".to_owned(), string("00".repeat(32))),
+                ]),
+                Some(vec![1]),
+            )
+            .await
+            .is_err(),
+        "a bad digest must not commit"
+    );
+
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+    entries.push(("terminalEvidenceScope", scope));
+    let subscription = harness
+        .execute("gatt.subscribe", entries, None, OpControl::unbounded())
+        .await
+        .expect("subscribe with reserved terminal evidence");
+    let notifications = text(&subscription, "handle");
+
+    assert!(
+        harness
+            .dispatcher
+            .terminal_evidence_route(
+                &harness.caller,
+                "terminalEvidence.recovery.list",
+                &BTreeMap::from([("version".to_owned(), number(1))]),
+                None
+            )
+            .await
+            .expect("live owner may list")
+            .into_wire()["records"]
+            .as_array()
+            .expect("records")
+            .is_empty(),
+        "a live terminal receipt is not recovery-visible"
+    );
+    assert!(harness
+        .dispatcher
+        .notification_terminal_with_counters(
+            &harness.key(),
+            (LEASE_ID, LEASE_GENERATION),
+            &notifications,
+            "overflow",
+            None,
+            super::terminal_evidence::TerminalCounters::new(1, 23, 0),
+        )
+        .await
+        .expect("terminal delivery"));
+    let overflow = harness.wait_items(&notifications, 1).await;
+    assert_eq!(overflow[0]["droppedItems"], 1);
+    assert_eq!(overflow[0]["droppedBytes"], 23);
+    assert_eq!(overflow[0]["replacedItems"], 0);
+    let overflow_reference = overflow[0]["evidence"]["ref"]
+        .as_str()
+        .expect("receipt ref");
+    let (overflow_bytes, _) = ledger
+        .read(overflow_reference, 1024)
+        .expect("receipt readable");
+    let overflow_canonical = String::from_utf8(overflow_bytes).expect("canonical receipt");
+    assert!(overflow_canonical.contains("\"droppedItems\":1"));
+    assert!(overflow_canonical.contains("\"droppedBytes\":23"));
+
+    let cleanup = harness.dispatcher.release(&harness.key()).await;
+    assert!(super::is_released(&cleanup), "{cleanup:?}");
+    harness
+        .dispatcher
+        .bootstrap(
+            harness.caller.clone(),
+            IpcEventSink::new(Channel::new(|_| Ok(()))),
+            version_offer(),
+        )
+        .await
+        .expect("same dispatcher rebootstrap releases runtime evidence authority");
+    let same_dispatcher_recovery = harness
+        .dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.recovery.list",
+            &BTreeMap::from([("version".to_owned(), number(1))]),
+            None,
+        )
+        .await
+        .expect("same dispatcher lists committed evidence after release");
+    assert_eq!(
+        same_dispatcher_recovery.into_wire()["records"]
+            .as_array()
+            .expect("same dispatcher records")
+            .len(),
+        1,
+        "runtime teardown retains the committed bytes but does not retain its lease"
+    );
+    let competing_dispatcher = BtleplugDispatcher::with_core_authority(Arc::new(
+        harness.central.clone(),
+    )
+        as Arc<dyn CoreAuthority>);
+    *competing_dispatcher
+        .terminal_evidence_ledger
+        .lock()
+        .expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
+    competing_dispatcher
+        .bootstrap(
+            harness.caller.clone(),
+            IpcEventSink::new(Channel::new(|_| Ok(()))),
+            version_offer(),
+        )
+        .await
+        .expect("a busy row must not hide independent recovery availability");
+    let legacy_busy = competing_dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.recovery.list",
+            &BTreeMap::from([("version".to_owned(), number(1))]),
+            None,
+        )
+        .await
+        .expect_err("legacy list must not silently return only cold rows");
+    assert_eq!(legacy_busy.code, BleErrorCode::PlatformFailure);
+    assert_eq!(legacy_busy.retryability, Retryability::CallerDecides);
+    assert_eq!(
+        legacy_busy.operation,
+        "tauri.terminal-evidence.recovery.list",
+        "legacy callers retain the pre-status retry signal"
+    );
+    let busy_status = competing_dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.recovery.listWithStatus",
+            &BTreeMap::from([("version".to_owned(), number(1))]),
+            None,
+        )
+        .await
+        .expect("status list reports contention without failing");
+    let busy_wire = busy_status.into_wire();
+    assert_eq!(
+        busy_wire["records"].as_array().expect("busy records").len(),
+        0,
+        "the winning controller alone exposes its claimed opaque alias"
+    );
+    assert_eq!(
+        busy_wire["busyProducers"],
+        serde_json::json!(["subscription"]),
+        "contention names only the producer that must be retried"
+    );
+    let release_recovery_controller = harness.dispatcher.release(&harness.key()).await;
+    assert!(
+        super::is_released(&release_recovery_controller),
+        "releasing the winning controller must relinquish its private recovery lease: {release_recovery_controller:?}"
+    );
+    let recovered_dispatcher = competing_dispatcher;
+    let terminal = harness.wait_items(&notifications, 1).await;
+    let reference = terminal[0]["evidence"]["ref"]
+        .as_str()
+        .expect("committed evidence reference");
+    let (raw, _) = ledger
+        .read(reference, 1024)
+        .expect("committed raw evidence remains readable");
+    let canonical = String::from_utf8(raw).expect("canonical JSON");
+    assert!(canonical.contains("\"reason\":\"overflow\""));
+
+    let recovery = recovered_dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.recovery.listWithStatus",
+            &BTreeMap::from([("version".to_owned(), number(1))]),
+            None,
+        )
+        .await
+        .expect("a status refresh claims evidence once its former controller releases");
+    let recovery_wire = recovery.into_wire();
+    assert!(
+        recovery_wire["busyProducers"]
+            .as_array()
+            .expect("released busy producers")
+            .is_empty(),
+        "contention clears on the next status refresh"
+    );
+    let records = recovery_wire["records"]
+        .as_array()
+        .cloned()
+        .expect("records");
+    assert_eq!(records.len(), 1);
+    let handle = records[0]["handle"].as_str().expect("handle").to_owned();
+    let recovered = recovered_dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.recovery.read",
+            &BTreeMap::from([
+                ("version".to_owned(), number(1)),
+                ("handle".to_owned(), string(handle.clone())),
+                ("maximumBytes".to_owned(), number(1024)),
+            ]),
+            None,
+        )
+        .await
+        .expect("fresh lease reads receipt");
+    assert_eq!(recovered.into_wire()["kind"], "committed");
+    let quota_remains_charged = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+        producer: "subscription".to_owned(),
+        manager_id: "manager".to_owned(),
+        operation_id: "must-wait-for-recovery-ack".to_owned(),
+        incarnation: "incarnation".to_owned(),
+    };
+    assert!(
+        matches!(
+            // A committed receipt is charged at its exact canonical byte
+            // length, not at the original reservation ceiling.  Request the
+            // whole configured quota so this assertion proves that *any*
+            // unacknowledged committed receipt survives stream drain and
+            // manager teardown without depending on incidental JSON size.
+            ledger.reserve(&quota_remains_charged, 1024),
+            Err(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Quota)
+        ),
+        "draining the live subscription and releasing its runtime must not reclaim committed evidence capacity"
+    );
+    let old_lease_error = recovered_dispatcher
+        .execute(
+            &harness.caller,
+            "terminalEvidence.recovery.read",
+            BTreeMap::from([
+                ("version".to_owned(), number(1)),
+                ("handle".to_owned(), string(handle.clone())),
+                ("maximumBytes".to_owned(), number(1024)),
+                ("__expectedLeaseId".to_owned(), string(LEASE_ID)),
+                (
+                    "__expectedLeaseGeneration".to_owned(),
+                    string(LEASE_GENERATION),
+                ),
+            ]),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect_err("old lease is denied");
+    assert_eq!(old_lease_error.code, BleErrorCode::OwnershipDenied);
+    let other = Harness::over_dispatcher(
+        harness.central.clone(),
+        recovered_dispatcher.clone(),
+        AuthenticatedCaller::new("test-app".to_owned(), "other-window".to_owned()),
+    )
+    .await;
+    {
+        let mut state = other.dispatcher.inner.lock().await;
+        state
+            .callers
+            .get_mut(&other.key())
+            .expect("other caller")
+            .versions = object([(
+            "ipcProtocol",
+            object([("selected", object([("value", number(11))]))]),
+        )]);
+    }
+    assert_eq!(
+        other
+            .dispatcher
+            .terminal_evidence_route(
+                &other.caller,
+                "terminalEvidence.recovery.read",
+                &BTreeMap::from([
+                    ("version".to_owned(), number(1)),
+                    ("handle".to_owned(), string(handle.clone())),
+                    ("maximumBytes".to_owned(), number(1024))
+                ]),
+                None
+            )
+            .await
+            .expect_err("other caller denied")
+            .code,
+        BleErrorCode::OwnershipDenied
+    );
+    recovered_dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.recovery.ack",
+            &BTreeMap::from([
+                ("version".to_owned(), number(1)),
+                ("handle".to_owned(), string(handle)),
+            ]),
+            None,
+        )
+        .await
+        .expect("ack");
+    assert!(
+        ledger.read(reference, 1024).is_err(),
+        "ack releases committed receipt"
+    );
+
+    let post_rebootstrap = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+        producer: "subscription".to_owned(),
+        manager_id: "manager".to_owned(),
+        operation_id: "post-rebootstrap".to_owned(),
+        incarnation: "incarnation".to_owned(),
+    };
+    ledger
+        .reserve(&post_rebootstrap, 512)
+        .expect("failed uncommitted reservation was released and quota is reusable");
+    drop(ledger);
+    std::fs::remove_dir_all(directory).expect("remove fixture directory");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_evidence_recovery_refresh_and_release_share_the_caller_lease_fence() {
+    let harness = Harness::new().await;
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-tauri-terminal-refresh-release-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock after epoch").as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("fixture directory");
+    let ledger = Arc::new(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
+        &directory.join("terminal-evidence.sqlite"),
+        1024,
+    ).expect("ledger"));
+    *harness.dispatcher.terminal_evidence_ledger.lock().expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
+    let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+        producer: "subscription".to_owned(), manager_id: "manager".to_owned(), operation_id: "refresh-release".to_owned(), incarnation: "incarnation".to_owned(),
+    };
+    let reservation = ledger.reserve(&scope, 64).expect("reserve");
+    let bytes = b"terminal";
+    ledger.stage(&reservation.reservation_id, &harness.key(), bytes).expect("stage");
+    use sha2::Digest;
+    ledger.commit(&reservation.reservation_id, bytes, sha2::Sha256::digest(bytes).into()).expect("commit");
+    ledger.abandon(&reservation.reservation_id).expect("release source authority");
+
+    let (claimed_sender, claimed_receiver) = std::sync::mpsc::sync_channel(1);
+    let (resume_sender, resume_receiver) = std::sync::mpsc::sync_channel(1);
+    *harness.dispatcher.terminal_evidence_recovery_pause.lock().expect("terminal evidence recovery pause mutex poisoned") = Some(Arc::new(super::TerminalEvidenceRecoveryPause {
+        claimed: claimed_sender,
+        resume: std::sync::Mutex::new(resume_receiver),
+    }));
+    let refreshing_dispatcher = harness.dispatcher.clone();
+    let refreshing_caller = harness.caller.clone();
+    let refresh = tokio::spawn(async move { refreshing_dispatcher.refresh_terminal_evidence_recovery(&refreshing_caller).await });
+    claimed_receiver.recv_timeout(Duration::from_secs(1)).expect("refresh claimed durable evidence before owner insertion");
+    let releasing_dispatcher = harness.dispatcher.clone();
+    let releasing_key = harness.key();
+    let mut release = tokio::spawn(async move { releasing_dispatcher.release(&releasing_key).await });
+    assert!(tokio::time::timeout(Duration::from_millis(20), &mut release).await.is_err(), "release must wait for the refresh lease fence after claim");
+    resume_sender.send(()).expect("resume refresh");
+    refresh.await.expect("refresh task").expect("refresh succeeds before release");
+    assert!(super::is_released(&release.await.expect("release task")), "teardown observes and releases the alias inserted by refresh");
+    *harness.dispatcher.terminal_evidence_recovery_pause.lock().expect("terminal evidence recovery pause mutex poisoned") = None;
+    harness.dispatcher.bootstrap(harness.caller.clone(), IpcEventSink::new(Channel::new(|_| Ok(()))), version_offer()).await.expect("fresh lease bootstraps");
+    let recovered = harness.dispatcher.terminal_evidence_route(&harness.caller, "terminalEvidence.recovery.list", &BTreeMap::from([("version".to_owned(), number(1))]), None).await.expect("fresh lease recovers after release");
+    assert_eq!(recovered.into_wire()["records"].as_array().expect("records").len(), 1);
+    drop(ledger);
+    std::fs::remove_dir_all(directory).expect("remove fixture directory");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_evidence_recovery_refresh_refuses_a_lease_retired_before_claim() {
+    let harness = Harness::new().await;
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-tauri-terminal-refresh-retired-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock after epoch").as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("fixture directory");
+    let ledger = Arc::new(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
+        &directory.join("terminal-evidence.sqlite"),
+        1024,
+    ).expect("ledger"));
+    *harness.dispatcher.terminal_evidence_ledger.lock().expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
+    let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+        producer: "subscription".to_owned(), manager_id: "manager".to_owned(), operation_id: "retired-before-claim".to_owned(), incarnation: "incarnation".to_owned(),
+    };
+    let reservation = ledger.reserve(&scope, 64).expect("reserve");
+    let bytes = b"terminal";
+    ledger.stage(&reservation.reservation_id, &harness.key(), bytes).expect("stage");
+    use sha2::Digest;
+    ledger.commit(&reservation.reservation_id, bytes, sha2::Sha256::digest(bytes).into()).expect("commit");
+    ledger.abandon(&reservation.reservation_id).expect("release source authority");
+    assert!(super::is_released(&harness.dispatcher.release(&harness.key()).await));
+    let denied = harness.dispatcher.refresh_terminal_evidence_recovery(&harness.caller).await.expect_err("retired lease cannot claim recovery evidence");
+    assert_eq!(denied.code, BleErrorCode::OwnershipDenied);
+    harness.dispatcher.bootstrap(harness.caller.clone(), IpcEventSink::new(Channel::new(|_| Ok(()))), version_offer()).await.expect("fresh lease bootstraps");
+    let recovered = harness.dispatcher.terminal_evidence_route(&harness.caller, "terminalEvidence.recovery.list", &BTreeMap::from([("version".to_owned(), number(1))]), None).await.expect("fresh lease recovers retained evidence");
+    assert_eq!(recovered.into_wire()["records"].as_array().expect("records").len(), 1);
+    drop(ledger);
+    std::fs::remove_dir_all(directory).expect("remove fixture directory");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_owner_terminal_send_keeps_the_disconnect_retryable() {
     let harness = Harness::new().await;
     let link = harness.connect("peer-a").await;
@@ -4545,6 +6599,36 @@ async fn pr210_11_a_stale_generation_matches_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_reset_reports_backend_restart_with_observation_cause() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    harness.connection_events(&link, "host-reset-events").await;
+    harness.ready("host-reset-events").await;
+    let generation = harness
+        .with_caller(|caller| caller.connections[&link.handle].core_generation.clone())
+        .await;
+    harness
+        .dispatcher
+        .apply_lifecycle_event(&LifecycleEvent {
+            sequence: 99,
+            peer_id: "peer-a".into(),
+            peer_key: "peer-a".into(),
+            connection_generation: Some(generation),
+            database_generation: None,
+            kind: LifecycleKind::HostReset,
+            platform: Some(PlatformDetail::new("ubm", "source-observation-overflow")),
+        })
+        .await;
+    let items = harness.wait_items("host-reset-events", 3).await;
+    assert_eq!(items[1]["value"]["cause"], "backend-restart");
+    assert_eq!(
+        items[1]["value"]["platform"]["code"],
+        "source-observation-overflow"
+    );
+    assert_eq!(items[2]["reason"], "source-failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lifecycle_platform_fact_survives_active_and_early_stream_delivery() {
     for ready_first in [true, false] {
         let harness = Harness::new().await;
@@ -4605,6 +6689,49 @@ async fn pr210_11_a_lagged_pump_ends_every_stream_with_overflow() {
     let items = harness.wait_items("connection-events-ipc-1", 2).await;
     assert_eq!(items[1]["kind"], "terminal");
     assert_eq!(items[1]["reason"], "overflow");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn notification_source_failure_preserves_native_error_after_buffered_value() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    let subscription = harness
+        .subscribe(&link, &database, NOTIFY_ONLY, None)
+        .await
+        .unwrap();
+    let stream = text(&subscription, "handle");
+    harness.notify("peer-a", NOTIFY_ONLY, vec![7]);
+    let epoch = harness
+        .radio()
+        .enable_epochs()
+        .iter()
+        .rev()
+        .find(|(key, _)| key.0 == "peer-a" && key.3 == NOTIFY_ONLY)
+        .map(|(_, epoch)| *epoch)
+        .unwrap();
+    harness
+        .radio()
+        .push_event(RadioEvent::NotificationSourceFailed {
+            peer_id: "peer-a".to_owned(),
+            service_uuid: HRM_SERVICE.to_owned(),
+            service_occurrence: 0,
+            characteristic_uuid: NOTIFY_ONLY.to_owned(),
+            characteristic_occurrence: 0,
+            epoch,
+            error: DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                ubm_core::contracts::BleErrorDomain::Gatt,
+                "gatt.notification",
+            )
+            .with_platform(PlatformDetail::new("test-radio", "radio-failed")),
+        });
+    let items = harness.wait_items(&stream, 2).await;
+    assert_eq!(value_bytes(&items[0]), vec![7]);
+    assert_eq!(items[1]["reason"], "source-failed");
+    assert_eq!(items[1]["error"]["code"], "platform.failure");
+    assert_eq!(items[1]["error"]["operation"], "gatt.notification");
+    assert_eq!(items[1]["error"]["platform"]["code"], "radio-failed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -6781,4 +8908,2929 @@ async fn phy_snapshot_preserves_native_refusal_and_stale_owner_admission() {
         .await
         .is_err());
     assert_eq!(count(&harness.radio().calls(), "connection_phy"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_group_dispatcher_replays_until_ack_and_retains_cleanup() {
+    let harness = Harness::new().await;
+    let link = harness.connect("ordered-peer").await;
+    let database = harness.discover(&link).await;
+    let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+    entries.push(("orderedHandle", string("ordered-test")));
+    entries.push((
+        "members",
+        IpcValue::Array(vec![
+            object([
+                ("memberId", string("a")),
+                (
+                    "characteristicHandle",
+                    string(database.characteristics[NOTIFY_ONLY].clone()),
+                ),
+                ("deliveryMode", string("prefer-notification")),
+            ]),
+            object([
+                ("memberId", string("b")),
+                (
+                    "characteristicHandle",
+                    string(database.characteristics[INDICATE_ONLY].clone()),
+                ),
+                ("deliveryMode", string("prefer-indication")),
+            ]),
+        ]),
+    ));
+    let opened = harness
+        .execute("gatt.ordered.open", entries, None, OpControl::unbounded())
+        .await
+        .expect("open ordered group");
+    assert_eq!(text(&opened, "state"), "native");
+    let status: Value = serde_json::from_str(&text(&opened, "nativeStatus")).unwrap();
+    assert!(status["setupError"].is_null(), "{status:?}");
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        let owner = state.callers.get_mut(&harness.key()).unwrap();
+        for index in 0..255 {
+            owner.ordered_groups.insert(
+                format!("occupied-{index}"),
+                Arc::new(tokio::sync::Mutex::new(
+                    super::ordered_groups::OrderedGroup {
+                        peer_id: "fixture".into(),
+                        collection_id: index,
+                        connection_handle: "fixture".into(),
+                        open_response: None,
+                        delivery: super::ordered_delivery::OrderedDelivery::default(),
+                        pending_native_id: None,
+                        source_closed: false,
+                        released: false,
+                        core_acknowledged: false,
+                        core_forgotten: false,
+                        last_status: None,
+                        terminal_status: None,
+                        terminal_status_pending: false,
+                        member_ids: Vec::new(),
+                        public_connection: "fixture".into(),
+                        public_database: "fixture".into(),
+                        orphan: super::ordered_groups::OrphanProgress::default(),
+                    },
+                )),
+            );
+        }
+    }
+    let mut quota_entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+    quota_entries.push(("orderedHandle", string("quota-test")));
+    quota_entries.push((
+        "members",
+        IpcValue::Array(vec![object([
+            ("memberId", string("q")),
+            (
+                "characteristicHandle",
+                string(database.characteristics[NOTIFY_ONLY].clone()),
+            ),
+            ("deliveryMode", string("prefer-notification")),
+        ])]),
+    ));
+    let before = count(&harness.radio().calls(), "set_notifications");
+    let error = harness
+        .execute(
+            "gatt.ordered.open",
+            quota_entries.clone(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, BleErrorCode::StreamQuota);
+    assert_eq!(count(&harness.radio().calls(), "set_notifications"), before);
+    let recovered = harness
+        .execute(
+            "gatt.ordered.status",
+            vec![("orderedHandle", string("ordered-test"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&recovered, "state"), "result");
+    harness.notify("ordered-peer", NOTIFY_ONLY, vec![1]);
+    harness.notify("ordered-peer", INDICATE_ONLY, vec![2]);
+    let poll = |ack: Option<String>| {
+        let mut entries = vec![("orderedHandle", string("ordered-test"))];
+        if let Some(ack) = ack {
+            entries.push(("ackDeliveryId", string(ack)));
+        }
+        harness.execute("gatt.ordered.next", entries, None, OpControl::unbounded())
+    };
+    let first = tokio::time::timeout(WAIT, async {
+        loop {
+            let item = poll(None).await.unwrap();
+            if text(&item, "state") == "item" {
+                break item;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("first value");
+    let id = text(&first, "deliveryId");
+    assert_eq!(
+        poll(None).await.unwrap(),
+        first,
+        "lost response is replayed"
+    );
+    assert!(poll(Some("wrong".into())).await.is_err());
+    let second = tokio::time::timeout(WAIT, async {
+        loop {
+            let item = poll(Some(id.clone())).await.unwrap();
+            if text(&item, "state") == "item" {
+                break item;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("second value");
+    let first_wire = field(&first, "nativeWire").clone().into_wire();
+    let second_wire = field(&second, "nativeWire").clone().into_wire();
+    assert_eq!(first_wire["memberId"], "0");
+    assert_eq!(second_wire["memberId"], "1");
+    let closed = harness
+        .execute(
+            "gatt.ordered.close",
+            vec![("orderedHandle", string("ordered-test"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        text(&closed, "cleanupState"),
+        "released",
+        "unacknowledged value stays owned"
+    );
+    let mut ack = Some(text(&second, "deliveryId"));
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let item = poll(ack.clone()).await.unwrap();
+            if text(&item, "state") == "item" {
+                ack = Some(text(&item, "deliveryId"));
+            }
+            let close = harness
+                .execute(
+                    "gatt.ordered.close",
+                    vec![("orderedHandle", string("ordered-test"))],
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+            if text(&item, "state") == "closed" && text(&close, "cleanupState") == "released" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("drain and cleanup");
+    let foreign = harness.other_caller().await;
+    assert!(
+        foreign
+            .execute(
+                "gatt.ordered.forget",
+                vec![("orderedHandle", string("ordered-test"))],
+                None,
+                OpControl::unbounded()
+            )
+            .await
+            .is_err(),
+        "foreign caller cannot claim a group receipt"
+    );
+    assert!(
+        harness
+            .execute(
+                "gatt.ordered.forget",
+                vec![("orderedHandle", string("never-issued"))],
+                None,
+                OpControl::unbounded()
+            )
+            .await
+            .is_err(),
+        "never-issued handles are refused"
+    );
+    let original = harness
+        .with_caller(|owner| owner.ordered_groups["ordered-test"].clone())
+        .await;
+    let (peer, collection) = {
+        let group = original.lock().await;
+        (group.peer_id.clone(), group.collection_id)
+    };
+    harness
+        .central
+        .acknowledge_ordered_batch(&peer, collection)
+        .await
+        .unwrap();
+    assert!(
+        harness
+            .central
+            .ordered_batch_member_status(&peer, collection)
+            .await
+            .is_ok(),
+        "lost acknowledgement response retains native receipt"
+    );
+    let forget = || {
+        harness.execute(
+            "gatt.ordered.forget",
+            vec![("orderedHandle", string("ordered-test"))],
+            None,
+            OpControl::unbounded(),
+        )
+    };
+    forget().await.unwrap();
+    forget().await.unwrap();
+    assert!(
+        harness
+            .central
+            .ordered_batch_member_status(&peer, collection)
+            .await
+            .is_err(),
+        "native forget reclaimed receipt"
+    );
+    assert_eq!(
+        harness
+            .with_caller(|owner| owner.ordered_groups.len())
+            .await,
+        256,
+        "lost forget response retains caller slot"
+    );
+    let retire = || {
+        harness.execute(
+            "gatt.ordered.retire",
+            vec![("orderedHandle", string("ordered-test"))],
+            None,
+            OpControl::unbounded(),
+        )
+    };
+    retire().await.unwrap();
+    retire().await.unwrap();
+    assert_eq!(
+        harness
+            .with_caller(|owner| owner.ordered_groups.len())
+            .await,
+        255
+    );
+    harness
+        .execute(
+            "gatt.ordered.open",
+            quota_entries,
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("reclaimed slot admits another group");
+    let mut quota_ack = None;
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let close = harness
+                .execute(
+                    "gatt.ordered.close",
+                    vec![("orderedHandle", string("quota-test"))],
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+            let mut entries = vec![("orderedHandle", string("quota-test"))];
+            if let Some(ack) = quota_ack.clone() {
+                entries.push(("ackDeliveryId", string(ack)));
+            }
+            let next = harness
+                .execute("gatt.ordered.next", entries, None, OpControl::unbounded())
+                .await
+                .unwrap();
+            if text(&next, "state") == "item" {
+                quota_ack = Some(text(&next, "deliveryId"));
+            }
+            if text(&next, "state") == "closed" && text(&close, "cleanupState") == "released" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("second group drains");
+    let second_group = harness
+        .with_caller(|owner| owner.ordered_groups["quota-test"].clone())
+        .await;
+    let (peer, collection) = {
+        let mut group = second_group.lock().await;
+        harness
+            .central
+            .acknowledge_ordered_batch(&group.peer_id, group.collection_id)
+            .await
+            .unwrap();
+        group.core_acknowledged = true;
+        (group.peer_id.clone(), group.collection_id)
+    };
+    harness
+        .central
+        .forget_ordered_batch(&peer, collection)
+        .await
+        .unwrap();
+    harness
+        .execute(
+            "gatt.ordered.forget",
+            vec![("orderedHandle", string("quota-test"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("retry after lost native forget response");
+    assert!(
+        harness
+            .with_caller(|owner| owner.ordered_groups.contains_key("quota-test"))
+            .await
+    );
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        state
+            .callers
+            .get_mut(&harness.key())
+            .unwrap()
+            .ordered_groups
+            .retain(|handle, _| !handle.starts_with("occupied-"));
+    }
+    use crate::IpcDispatcher;
+    harness.dispatcher.release_caller(harness.caller.clone());
+    harness
+        .dispatcher
+        .settle_revoked_ordered(&harness.key())
+        .await;
+    assert!(!harness
+        .dispatcher
+        .inner
+        .lock()
+        .await
+        .callers
+        .get(&harness.key())
+        .is_some_and(|owner| owner.ordered_groups.contains_key("quota-test")));
+    assert!(
+        harness
+            .dispatcher
+            .inspect_ordered_orphans(&harness.caller)
+            .await
+            .is_empty(),
+        "already acknowledged receipt is not reclassified as abandoned"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_group_cancel_before_reservation_never_enables_source() {
+    let harness = Harness::new().await;
+    let link = harness.connect("ordered-cancel-peer").await;
+    let database = harness.discover(&link).await;
+    let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+    entries.push(("orderedHandle", string("ordered-cancel")));
+    entries.push((
+        "members",
+        IpcValue::Array(vec![object([
+            ("memberId", string("a")),
+            (
+                "characteristicHandle",
+                string(database.characteristics[NOTIFY_ONLY].clone()),
+            ),
+            ("deliveryMode", string("prefer-notification")),
+        ])]),
+    ));
+    let ctl = OpControl::unbounded();
+    ctl.ticket.request_cancel();
+    assert!(harness
+        .execute("gatt.ordered.open", entries, None, ctl)
+        .await
+        .is_err());
+    let status = harness
+        .execute(
+            "gatt.ordered.status",
+            vec![("orderedHandle", string("ordered-cancel"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&status, "state"), "unknown");
+    assert_eq!(count(&harness.radio().calls(), "set_notifications"), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_group_failed_setup_preserves_shared_subscription_and_retry_owner() {
+    let harness = Harness::new().await;
+    let link = harness.connect("ordered-failure-peer").await;
+    let database = harness.discover(&link).await;
+    let subscription = harness
+        .subscribe(&link, &database, NOTIFY_ONLY, None)
+        .await
+        .unwrap();
+    let subscription_handle = text(&subscription, "handle");
+    harness
+        .radio()
+        .fail_next(FaultOp::Subscribe, "second enable refused");
+    let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+    entries.push(("orderedHandle", string("ordered-failed")));
+    entries.push((
+        "members",
+        IpcValue::Array(vec![
+            object([
+                ("memberId", string("a")),
+                (
+                    "characteristicHandle",
+                    string(database.characteristics[NOTIFY_ONLY].clone()),
+                ),
+                ("deliveryMode", string("prefer-notification")),
+            ]),
+            object([
+                ("memberId", string("b")),
+                (
+                    "characteristicHandle",
+                    string(database.characteristics[INDICATE_ONLY].clone()),
+                ),
+                ("deliveryMode", string("prefer-indication")),
+            ]),
+        ]),
+    ));
+    let open = harness
+        .execute("gatt.ordered.open", entries, None, OpControl::unbounded())
+        .await
+        .unwrap();
+    let status: Value = serde_json::from_str(&text(&open, "nativeStatus")).unwrap();
+    assert!(!status["setupError"].is_null(), "{status:?}");
+    assert_eq!(status["members"][0]["acquisition"], "acquired");
+    assert_ne!(status["members"][1]["acquisition"], "acquired");
+    let recovered = harness
+        .execute(
+            "gatt.ordered.status",
+            vec![("orderedHandle", string("ordered-failed"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&recovered, "state"), "result");
+    let _cleanup = harness
+        .execute(
+            "gatt.ordered.close",
+            vec![("orderedHandle", string("ordered-failed"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.notify("ordered-failure-peer", NOTIFY_ONLY, vec![42]);
+    let received = harness.wait_items(&subscription_handle, 1).await;
+    assert_eq!(
+        value_bytes(&received[0]),
+        vec![42],
+        "independent subscriber still receives values"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_group_owner_release_reports_and_retains_undrained_value() {
+    let harness = Harness::new().await;
+    let link = harness.connect("ordered-release-peer").await;
+    let database = harness.discover(&link).await;
+    let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+    entries.push(("orderedHandle", string("ordered-release")));
+    entries.push((
+        "members",
+        IpcValue::Array(vec![object([
+            ("memberId", string("a")),
+            (
+                "characteristicHandle",
+                string(database.characteristics[NOTIFY_ONLY].clone()),
+            ),
+            ("deliveryMode", string("prefer-notification")),
+        ])]),
+    ));
+    harness
+        .execute("gatt.ordered.open", entries, None, OpControl::unbounded())
+        .await
+        .unwrap();
+    harness.notify("ordered-release-peer", NOTIFY_ONLY, vec![9]);
+    let poll = |ack: Option<String>| {
+        let mut entries = vec![("orderedHandle", string("ordered-release"))];
+        if let Some(ack) = ack {
+            entries.push(("ackDeliveryId", string(ack)));
+        }
+        harness.execute("gatt.ordered.next", entries, None, OpControl::unbounded())
+    };
+    let item = tokio::time::timeout(WAIT, async {
+        loop {
+            let item = poll(None).await.unwrap();
+            if text(&item, "state") == "item" {
+                break item;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let cleanup = harness.dispatcher.release(&harness.key()).await;
+    assert_eq!(text(&cleanup, "state"), "release-failed");
+    assert_eq!(
+        poll(None).await.unwrap(),
+        item,
+        "retired owner can recover the retained item"
+    );
+    let mut ack = Some(text(&item, "deliveryId"));
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let item = poll(ack.clone()).await.unwrap();
+            if text(&item, "state") == "item" {
+                ack = Some(text(&item, "deliveryId"));
+            }
+            let close = harness
+                .execute(
+                    "gatt.ordered.close",
+                    vec![("orderedHandle", string("ordered-release"))],
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+            if text(&item, "state") == "closed" && text(&close, "cleanupState") == "released" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("retired owner drains and releases");
+    harness
+        .execute(
+            "gatt.ordered.forget",
+            vec![("orderedHandle", string("ordered-release"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness
+        .execute(
+            "gatt.ordered.retire",
+            vec![("orderedHandle", string("ordered-release"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        text(&harness.dispatcher.release(&harness.key()).await, "state"),
+        "released"
+    );
+}
+
+/// Test-only JSON-lines bridge used by the public TypeScript Tauri journey.
+/// It runs the production dispatcher over FakeRadio; no OS radio is opened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn ordered_public_tauri_bridge() {
+    use crate::IpcDispatcher;
+    use std::io::BufRead;
+    assert_eq!(std::env::var("UBM_TAURI_BRIDGE").as_deref(), Ok("1"));
+    fn send(value: Value) {
+        println!("UBM_BRIDGE {}", value);
+    }
+    let radio = FakeRadio::new();
+    radio.set_services("bridge-peer", vec![hrm_service()]);
+    radio.set_gatt_snapshot_identity(
+        "bridge-peer",
+        ubm_desktop::boundary::GattSnapshotIdentity {
+            owner: "fake".into(),
+            attachment: 1,
+            revision: 1,
+        },
+    );
+    radio.set_mtu("bridge-peer", 185);
+    let central = DesktopCentral::open(radio, "tauri-public-bridge")
+        .await
+        .unwrap();
+    central.boundary().push_event(advertisement("bridge-peer"));
+    tokio::time::timeout(WAIT, async {
+        while central.peer_key_for("bridge-peer").await.is_none() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let authority: Arc<dyn CoreAuthority> = Arc::new(central.clone());
+    let dispatcher = BtleplugDispatcher::with_core_authority(authority);
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-tauri-ordered-bridge-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    dispatcher
+        .continuation_configure_recording_directory(&directory)
+        .await
+        .unwrap();
+    // The bridge is a renderer-visible IPC journey, but its durable owner is
+    // deliberately installed by trusted host code, exactly as production
+    // does.  No renderer path receives the directory or ledger capability.
+    let terminal_ledger = dispatcher
+        .recordings
+        .terminal_evidence_ledger(8192)
+        .unwrap();
+    *dispatcher
+        .terminal_evidence_ledger
+        .lock()
+        .expect("terminal evidence ledger mutex poisoned") = Some(Arc::new(terminal_ledger));
+    let caller = AuthenticatedCaller::new("bridge-app".into(), "main".into());
+    let sink = IpcEventSink::new(Channel::new(|body| {
+        if let InvokeResponseBody::Json(json) = body {
+            if let Ok(event) = serde_json::from_str::<Value>(&json) {
+                send(serde_json::json!({"event":event}));
+            }
+        }
+        Ok(())
+    }));
+    send(serde_json::json!({"ready":true}));
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        let Ok(command) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let id = command["id"].clone();
+        let result = match command["kind"].as_str() {
+            Some("invoke") => {
+                let request = IpcValue::from_wire(command["request"].clone()).unwrap();
+                let attach = command["request"]["kind"] == "bootstrap";
+                dispatcher
+                    .dispatch(caller.clone(), request, attach.then(|| sink.clone()))
+                    .await
+                    .into_wire()
+            }
+            Some("notify") => {
+                let uuid = command["uuid"].as_str().unwrap();
+                let bytes = command["bytes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| u8::try_from(value.as_u64().unwrap()).unwrap())
+                    .collect();
+                let epoch = central
+                    .boundary()
+                    .enable_epochs()
+                    .into_iter()
+                    .rev()
+                    .find(|(key, _)| key.0 == "bridge-peer" && key.3 == uuid)
+                    .unwrap()
+                    .1;
+                central.boundary().push_event(RadioEvent::Notification {
+                    peer_id: "bridge-peer".into(),
+                    service_uuid: HRM_SERVICE.into(),
+                    service_occurrence: 0,
+                    characteristic_uuid: uuid.into(),
+                    characteristic_occurrence: 0,
+                    epoch,
+                    value: bytes,
+                });
+                serde_json::json!({"ok":true})
+            }
+            Some("loss") => {
+                let count = command["count"].as_u64();
+                match central
+                    .boundary()
+                    .stage_ordered_source_loss("bridge-peer", count)
+                {
+                    Ok(()) => serde_json::json!({"ok":true}),
+                    Err(error) => serde_json::json!({"error":error.to_string()}),
+                }
+            }
+            Some("fail-subscribe") => {
+                central
+                    .boundary()
+                    .fail_next(FaultOp::Subscribe, "bridge enable failure");
+                serde_json::json!({"ok":true})
+            }
+            Some("fail-notification-source") => {
+                let uuid = command["uuid"].as_str().unwrap();
+                let epoch = central
+                    .boundary()
+                    .enable_epochs()
+                    .into_iter()
+                    .rev()
+                    .find(|(key, _)| key.0 == "bridge-peer" && key.3 == uuid)
+                    .unwrap()
+                    .1;
+                central
+                    .boundary()
+                    .push_event(RadioEvent::NotificationSourceFailed {
+                        peer_id: "bridge-peer".into(),
+                        service_uuid: HRM_SERVICE.into(),
+                        service_occurrence: 0,
+                        characteristic_uuid: uuid.into(),
+                        characteristic_occurrence: 0,
+                        epoch,
+                        error: DesktopError::new(
+                            BleErrorCode::PlatformFailure,
+                            ubm_core::contracts::BleErrorDomain::Gatt,
+                            "gatt.notification",
+                        )
+                        .with_platform(PlatformDetail::new("test-radio", "terminal-source-failed")),
+                    })
+                    .unwrap();
+                serde_json::json!({"ok":true})
+            }
+            Some("recording-stop") => dispatcher
+                .continuation_recording_stop_ordered(command["recordingId"].as_str().unwrap())
+                .await
+                .unwrap(),
+            Some("recording-status") => dispatcher
+                .continuation_recording_status(command["recordingId"].as_str().unwrap())
+                .await
+                .unwrap(),
+            Some("recording-prepare") => dispatcher
+                .continuation_recording_prepare(
+                    command["recordingId"].as_str().unwrap(),
+                    128,
+                    65536,
+                )
+                .await
+                .unwrap(),
+            Some("settle-marker") => {
+                central.boundary().settle_marker_write(
+                    command["collectionId"].as_str().unwrap().parse().unwrap(),
+                    command["markerId"].as_str().unwrap().parse().unwrap(),
+                );
+                serde_json::json!({"ok":true})
+            }
+            Some("finish") => {
+                send(serde_json::json!({"id":id,"result":{"ok":true}}));
+                break;
+            }
+            _ => serde_json::json!({"error":"unknown bridge command"}),
+        };
+        send(serde_json::json!({"id":id,"result":result}));
+    }
+    drop(dispatcher);
+    drop(central);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_group_revoked_caller_is_recoverable_by_trusted_host() {
+    use crate::IpcDispatcher;
+    let harness = Harness::new().await;
+    let link = harness.connect("ordered-revoked-peer").await;
+    let database = harness.discover(&link).await;
+    let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+    entries.push(("orderedHandle", string("ordered-revoked")));
+    entries.push((
+        "members",
+        IpcValue::Array(vec![object([
+            ("memberId", string("a")),
+            (
+                "characteristicHandle",
+                string(database.characteristics[NOTIFY_ONLY].clone()),
+            ),
+            ("deliveryMode", string("prefer-notification")),
+        ])]),
+    ));
+    harness
+        .execute("gatt.ordered.open", entries, None, OpControl::unbounded())
+        .await
+        .unwrap();
+    harness.notify("ordered-revoked-peer", NOTIFY_ONLY, vec![11]);
+    let _item = tokio::time::timeout(WAIT, async {
+        loop {
+            let item = harness
+                .execute(
+                    "gatt.ordered.next",
+                    vec![("orderedHandle", string("ordered-revoked"))],
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+            if text(&item, "state") == "item" {
+                break item;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let other = AuthenticatedCaller::new("other-app".into(), "main".into());
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        for index in 0..super::MAX_PENDING_EVENTS {
+            state
+                .ordered_orphans
+                .push(super::ordered_groups::OrphanSlot {
+                    owner: caller_key(&other),
+                    id: format!("other-{index}"),
+                    receipt: Some(object([("receiptId", string(format!("other-{index}")))])),
+                    page_start: 0,
+                    page_end: None,
+                    page_done: false,
+                });
+        }
+    }
+    harness
+        .radio()
+        .fail_next(FaultOp::Unsubscribe, "first native cleanup refused");
+    harness.dispatcher.release_caller(harness.caller.clone());
+    harness
+        .dispatcher
+        .settle_revoked_ordered(&harness.key())
+        .await;
+    assert!(harness
+        .dispatcher
+        .inspect_ordered_orphans(&harness.caller)
+        .await
+        .is_empty());
+    assert!(
+        !harness
+            .dispatcher
+            .revoked_ordered_handles(&harness.caller)
+            .await
+            .is_empty(),
+        "full receipt quota retains source debt"
+    );
+    harness
+        .dispatcher
+        .acknowledge_ordered_orphan(&other, "other-0")
+        .await;
+    let receipt = tokio::time::timeout(WAIT, async {
+        loop {
+            let receipts = harness
+                .dispatcher
+                .inspect_ordered_orphans(&harness.caller)
+                .await;
+            if let Some(receipt) = receipts.into_iter().next() {
+                break receipt;
+            }
+            harness
+                .dispatcher
+                .settle_revoked_ordered(&harness.key())
+                .await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    let receipt = match receipt {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let group = harness
+                .with_caller(|owner| owner.ordered_groups["ordered-revoked"].clone())
+                .await;
+            let group = group.lock().await;
+            panic!(
+                "sealed orphan receipt: {error:?}; values={} controls={} terminal={} closed={} pending={:?} released={} error={:?}",
+                group.orphan.values,
+                group.orphan.controls,
+                group.orphan.terminal.is_some(),
+                group.orphan.source_closed,
+                group.orphan.pending_receipt_ack,
+                group.released,
+                group.orphan.error
+            );
+        }
+    };
+    let mut oversized = receipt.clone().into_wire();
+    oversized["terminal"]["reason"] = serde_json::json!({"kind":"source-failed", "error":{
+        "code":"platform.failure", "domain":"gatt", "operation":"bridge", "detail":"é".repeat(5001),
+        "platformDomain":null, "platformCode":null, "platformMessage":null, "platformMetadata":{}
+    }});
+    let receipt = IpcValue::from_wire(oversized).unwrap();
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        let slot = state
+            .ordered_orphans
+            .iter_mut()
+            .find(|slot| slot.owner == harness.key() && slot.receipt.is_some())
+            .unwrap();
+        slot.receipt = Some(receipt.clone());
+    }
+    assert!(
+        count(&harness.radio().calls(), "set_notifications") >= 3,
+        "failed cleanup was retried"
+    );
+    assert_eq!(text(&receipt, "values"), "1");
+    assert_eq!(text(&receipt, "bytes"), "1");
+    let wire = receipt.clone().into_wire();
+    assert_eq!(wire["trustedValues"][0]["memberId"], "0");
+    assert!(wire["trustedValues"][0]["sourceMembership"]["epoch"].is_string());
+    assert_eq!(field(&receipt, "uncertainTail"), &IpcValue::Bool(true));
+    assert!(
+        !receipt.clone().into_wire().to_string().contains("[11]"),
+        "receipt contains no value payload"
+    );
+    assert_eq!(
+        harness
+            .dispatcher
+            .inspect_ordered_orphans(&other)
+            .await
+            .len(),
+        super::MAX_PENDING_EVENTS - 1
+    );
+    let id = text(&receipt, "receiptId");
+    harness
+        .dispatcher
+        .acknowledge_ordered_orphan(&other, &id)
+        .await;
+    assert_eq!(
+        harness
+            .dispatcher
+            .inspect_ordered_orphans(&harness.caller)
+            .await
+            .len(),
+        1
+    );
+    let sink = IpcEventSink::new(Channel::new(|_| Ok(())));
+    harness
+        .dispatcher
+        .bootstrap(harness.caller.clone(), sink, version_offer())
+        .await
+        .expect("replacement attachment after sealed cleanup");
+    let summaries = harness
+        .dispatcher
+        .ordered_orphan_receipts(&harness.caller)
+        .await
+        .unwrap();
+    let IpcValue::Array(summaries) = field(&summaries, "receipts") else {
+        panic!("receipt summaries");
+    };
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(text(&summaries[0], "receiptId"), id);
+    let ack_payload = || {
+        [("receiptId".to_owned(), string(id.clone()))]
+            .into_iter()
+            .collect()
+    };
+    assert!(
+        harness
+            .dispatcher
+            .ack_ordered_orphan(&harness.caller, ack_payload())
+            .await
+            .is_err(),
+        "unread receipt cannot be acknowledged"
+    );
+    let mut offset = 0i64;
+    let mut pages = 0usize;
+    let mut assembled = String::new();
+    loop {
+        let payload = || {
+            [
+                ("receiptId".to_owned(), string(id.clone())),
+                ("offset".to_owned(), number(offset)),
+                ("limit".to_owned(), number(1000)),
+            ]
+            .into_iter()
+            .collect()
+        };
+        let page = harness
+            .dispatcher
+            .ordered_orphan_page(&harness.caller, payload())
+            .await
+            .unwrap();
+        assert_eq!(
+            harness
+                .dispatcher
+                .ordered_orphan_page(&harness.caller, payload())
+                .await
+                .unwrap(),
+            page,
+            "lost page response replays"
+        );
+        assembled.push_str(&text(&page, "chunk"));
+        pages += 1;
+        offset = match field(&page, "nextOffset") {
+            IpcValue::Number(value) => value.as_i64().unwrap(),
+            _ => panic!("offset"),
+        };
+        if field(&page, "done") == &IpcValue::Bool(true) {
+            break;
+        }
+    }
+    assert!(pages > 5, "oversized single control spans multiple pages");
+    assert_eq!(
+        serde_json::from_str::<Value>(&assembled).unwrap(),
+        receipt.clone().into_wire()
+    );
+    harness
+        .dispatcher
+        .ack_ordered_orphan(&harness.caller, ack_payload())
+        .await
+        .unwrap();
+    assert!(harness
+        .dispatcher
+        .inspect_ordered_orphans(&harness.caller)
+        .await
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_group_repeated_lifecycle_reclaims_each_slot() {
+    let harness = Harness::new().await;
+    let link = harness.connect("ordered-repeat-peer").await;
+    let database = harness.discover(&link).await;
+    for index in 0..3 {
+        let handle = format!("ordered-repeat-{index}");
+        let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+        entries.push(("orderedHandle", string(handle.clone())));
+        entries.push((
+            "members",
+            IpcValue::Array(vec![object([
+                ("memberId", string("a")),
+                (
+                    "characteristicHandle",
+                    string(database.characteristics[NOTIFY_ONLY].clone()),
+                ),
+                ("deliveryMode", string("prefer-notification")),
+            ])]),
+        ));
+        harness
+            .execute("gatt.ordered.open", entries, None, OpControl::unbounded())
+            .await
+            .unwrap();
+        let mut ack = None;
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let close = harness
+                    .execute(
+                        "gatt.ordered.close",
+                        vec![("orderedHandle", string(handle.clone()))],
+                        None,
+                        OpControl::unbounded(),
+                    )
+                    .await
+                    .unwrap();
+                let mut entries = vec![("orderedHandle", string(handle.clone()))];
+                if let Some(id) = ack.clone() {
+                    entries.push(("ackDeliveryId", string(id)));
+                }
+                let next = harness
+                    .execute("gatt.ordered.next", entries, None, OpControl::unbounded())
+                    .await
+                    .unwrap();
+                if text(&next, "state") == "item" {
+                    ack = Some(text(&next, "deliveryId"));
+                }
+                if text(&next, "state") == "closed" && text(&close, "cleanupState") == "released" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("drain repeated group");
+        harness
+            .execute(
+                "gatt.ordered.forget",
+                vec![("orderedHandle", string(handle.clone()))],
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        harness
+            .execute(
+                "gatt.ordered.retire",
+                vec![("orderedHandle", string(handle))],
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            harness
+                .with_caller(|owner| owner.ordered_groups.len())
+                .await,
+            0
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_recording_stop_reports_capacity_then_finishes_after_ack() {
+    use ubm_desktop::continuation_journal::JournalQuota;
+    use ubm_desktop::ordered_recording::{
+        OrderedRecording, OrderedRecordingDeclaration, OrderedRecordingMember,
+        RecordingDriverStatus,
+    };
+    let module = module_path!().split_once("::").unwrap().1;
+    let test = format!("{module}::ordered_recording_stop_reports_capacity_then_finishes_after_ack");
+    let Some(directory) = recording_fixture::isolated_fixture_process(&test) else {
+        return;
+    };
+    let harness = Harness::new().await;
+    let link = harness.connect("ordered-recording-peer").await;
+    let _database = harness.discover(&link).await;
+    harness
+        .dispatcher
+        .continuation_configure_recording_directory(&directory)
+        .await
+        .unwrap();
+    let peer = harness
+        .central
+        .peer_records()
+        .await
+        .into_iter()
+        .find(|peer| peer.peer_id == link.peer_id)
+        .unwrap();
+    let lease = harness
+        .with_caller(|owner| owner.connections[&link.handle].lease.clone())
+        .await;
+    let selector = DesktopCentral::<FakeRadio>::selector(
+        HRM_SERVICE,
+        Some(0),
+        Some(NOTIFY_ONLY),
+        Some(0),
+        None,
+        None,
+    )
+    .unwrap();
+    let declaration = OrderedRecordingDeclaration {
+        peer_id: link.peer_id.clone(),
+        connection_generation: peer.connection_generation.unwrap(),
+        database_generation: peer.database_generation.unwrap(),
+        members: vec![OrderedRecordingMember {
+            member_id: 1,
+            public_member_id: "a".into(),
+            selector,
+            delivery: None,
+            preference: None,
+        }],
+        max_items: 8,
+        max_bytes: 128,
+        max_controls: 8,
+    };
+    let recording = OrderedRecording::prepare(
+        Arc::new(harness.central.clone()),
+        harness.dispatcher.recordings.clone(),
+        "ordered-stop".into(),
+        JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 1,
+        },
+        declaration,
+    )
+    .await
+    .unwrap();
+    recording
+        .start_receipt(OpControl::budget_ms(5000).with_connection_lease(lease))
+        .await
+        .unwrap();
+    harness.notify(&link.peer_id, NOTIFY_ONLY, vec![1]);
+    harness.notify(&link.peer_id, NOTIFY_ONLY, vec![2]);
+    tokio::time::timeout(WAIT, async {
+        while !matches!(
+            recording.driver_status(),
+            RecordingDriverStatus::WaitingCapacity
+        ) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("recording reaches capacity");
+    let legacy = harness
+        .dispatcher
+        .continuation_recording_stop("ordered-stop")
+        .await;
+    assert!(
+        legacy.is_err(),
+        "legacy journal stop must not claim ordered radio release"
+    );
+    harness.radio().fail_next(
+        FaultOp::Unsubscribe,
+        "scripted ordered source cleanup failure",
+    );
+    let pending = harness
+        .dispatcher
+        .continuation_recording_stop_ordered("ordered-stop")
+        .await
+        .unwrap();
+    // Ordered stop receipts are revision 2: the linked producer persists the
+    // individual failure-observation records rather than collapsing them into
+    // the legacy terminal aggregate.
+    assert_eq!(pending["recording"]["version"], 2);
+    assert_eq!(pending["recording"]["state"], "waiting-capacity");
+    assert!(pending["recording"]["error"].is_null());
+    let finished = tokio::time::timeout(WAIT, async {
+        loop {
+            let page = harness
+                .dispatcher
+                .continuation_recording_prepare("ordered-stop", 16, 4096)
+                .await
+                .unwrap();
+            if let Some(token) = page["token"].as_str() {
+                harness
+                    .dispatcher
+                    .continuation_recording_acknowledge("ordered-stop", token)
+                    .await
+                    .unwrap();
+            }
+            let status = harness
+                .dispatcher
+                .continuation_recording_stop_ordered("ordered-stop")
+                .await
+                .unwrap();
+            if status["recording"]["state"] == "finished" {
+                break status;
+            }
+            if status["recording"]["state"] == "failed" {
+                assert_eq!(status["recording"]["error"]["kind"], "source");
+                assert!(status["recording"]["error"]["source"]["code"].is_string());
+            } else {
+                assert!(
+                    matches!(
+                        status["recording"]["state"].as_str(),
+                        Some("waiting-capacity" | "waiting-source" | "waiting-drain")
+                    ),
+                    "unexpected stop: {status}"
+                );
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("ordered stop releases after reader acknowledgement");
+    assert!(
+        count(&harness.radio().calls(), "set_notifications") >= 3,
+        "failed native cleanup was retried before completion"
+    );
+    assert!(finished["recording"]["error"].is_null());
+    assert_eq!(
+        harness
+            .dispatcher
+            .continuation_recording_stop_ordered("ordered-stop")
+            .await
+            .unwrap()["recording"]["state"],
+        "finished"
+    );
+    recording_fixture::complete_fixture_process(&directory);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_recording_dispatcher_retains_lease_across_caller_release() {
+    let module = module_path!().split_once("::").unwrap().1;
+    let test =
+        format!("{module}::ordered_recording_dispatcher_retains_lease_across_caller_release");
+    let Some(directory) = recording_fixture::isolated_fixture_process(&test) else {
+        return;
+    };
+    let harness = Harness::new().await;
+    harness.radio().set_gatt_snapshot_identity(
+        "ordered-recording-dispatch-peer",
+        ubm_desktop::boundary::GattSnapshotIdentity {
+            owner: "fake".into(),
+            attachment: 1,
+            revision: 1,
+        },
+    );
+    let link = harness.connect("ordered-recording-dispatch-peer").await;
+    let database = harness.discover(&link).await;
+    harness
+        .dispatcher
+        .continuation_configure_recording_directory(&directory)
+        .await
+        .unwrap();
+    let earlier = harness
+        .execute(
+            "gatt.ordered-recording.reserve",
+            vec![("reservationToken", string("earlier-local-token"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let earlier_handle = text(&earlier, "startHandle");
+    let reserve = || vec![("reservationToken", string("recording-local-token"))];
+    let reserved = harness
+        .execute(
+            "gatt.ordered-recording.reserve",
+            reserve(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .execute(
+                "gatt.ordered-recording.reserve",
+                reserve(),
+                None,
+                OpControl::unbounded()
+            )
+            .await
+            .unwrap(),
+        reserved
+    );
+    let start_handle = text(&reserved, "startHandle");
+    let entries = || {
+        let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+        entries.push(("startHandle", string(start_handle.clone())));
+        entries.push((
+            "recording",
+            object([
+                ("id", string("recording-dispatch")),
+                ("maxBytes", number(1 << 20)),
+                ("maxRecords", number(128)),
+            ]),
+        ));
+        entries.push((
+            "members",
+            IpcValue::Array(vec![object([
+                ("memberId", string("a")),
+                (
+                    "characteristicHandle",
+                    string(database.characteristics[NOTIFY_ONLY].clone()),
+                ),
+                ("deliveryMode", string("prefer-notification")),
+            ])]),
+        ));
+        entries
+    };
+    let failed_reservation = harness
+        .execute(
+            "gatt.ordered-recording.reserve",
+            vec![("reservationToken", string("invalid-setup-token"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let failed_handle = text(&failed_reservation, "startHandle");
+    let mut failed_entries = entries();
+    for (key, value) in &mut failed_entries {
+        if *key == "startHandle" {
+            *value = string(failed_handle.clone());
+        }
+        if *key == "recording" {
+            *value = object([
+                ("id", string("recording-invalid")),
+                ("maxBytes", number(1 << 20)),
+                ("maxRecords", number(128)),
+            ]);
+        }
+    }
+    failed_entries.push(("streamItemCapacity", number(65537)));
+    let failed = harness
+        .execute(
+            "gatt.ordered-recording.start",
+            failed_entries,
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(failed["kind"], "prepare-failed");
+    assert!(failed.get("leaseCleanup").is_none());
+    harness
+        .execute(
+            "gatt.ordered-recording.retire",
+            vec![("startHandle", string(failed_handle))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.radio().block_op(FaultOp::OrderedOpen);
+    let dispatcher = harness.dispatcher.clone();
+    let caller = harness.caller.clone();
+    let payload = Harness::lease_payload(entries());
+    let start_waiter = tokio::spawn(async move {
+        dispatcher
+            .execute(
+                &caller,
+                "gatt.ordered-recording.start",
+                payload,
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+    });
+    harness.wait_calls("ordered_open", 1).await;
+    start_waiter.abort();
+    let pending = harness
+        .execute(
+            "gatt.ordered-recording.status",
+            vec![("startHandle", string(start_handle.clone()))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&pending, "state"), "pending");
+    harness.radio().unblock_op(FaultOp::OrderedOpen);
+    let first = tokio::time::timeout(WAIT, async {
+        loop {
+            let status = harness
+                .execute(
+                    "gatt.ordered-recording.status",
+                    vec![("startHandle", string(start_handle.clone()))],
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+            if text(&status, "state") == "result" {
+                break field(&status, "result").clone();
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("lost start response is replayable");
+    assert_eq!(text(&first, "kind"), "started");
+    assert_eq!(first.clone().into_wire()["receipt"]["state"], "active");
+    let mut earlier_entries = entries();
+    for (key, value) in &mut earlier_entries {
+        if *key == "startHandle" {
+            *value = string(earlier_handle.clone());
+        }
+        if *key == "recording" {
+            *value = object([
+                ("id", string("recording-earlier")),
+                ("maxBytes", number(1 << 20)),
+                ("maxRecords", number(128)),
+            ]);
+        }
+    }
+    let earlier_start = harness
+        .execute(
+            "gatt.ordered-recording.start",
+            earlier_entries,
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        earlier_start.into_wire()["receipt"]["state"],
+        "active",
+        "earlier reservation starts after later reservation"
+    );
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let receipt = harness
+                .dispatcher
+                .continuation_recording_stop_ordered("recording-earlier")
+                .await
+                .unwrap();
+            if receipt["recording"]["state"] == "finished"
+                && receipt["hostCleanup"]["state"] == "released"
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("shared-link lease releases without disconnecting the other owner");
+    harness
+        .execute(
+            "gatt.ordered-recording.retire",
+            vec![("startHandle", string(earlier_handle.clone()))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let mut stale_entries = entries();
+    for (key, value) in &mut stale_entries {
+        if *key == "startHandle" {
+            *value = string(earlier_handle.clone());
+        }
+    }
+    assert!(
+        harness
+            .execute(
+                "gatt.ordered-recording.start",
+                stale_entries,
+                None,
+                OpControl::unbounded()
+            )
+            .await
+            .is_err(),
+        "retired start handle cannot be reopened"
+    );
+    assert_eq!(
+        harness
+            .execute(
+                "gatt.ordered-recording.start",
+                entries(),
+                None,
+                OpControl::unbounded()
+            )
+            .await
+            .unwrap(),
+        first
+    );
+    let mut changed = entries();
+    changed.push(("streamItemCapacity", number(3)));
+    assert!(harness
+        .execute(
+            "gatt.ordered-recording.start",
+            changed,
+            None,
+            OpControl::unbounded()
+        )
+        .await
+        .is_err());
+    let marker = harness
+        .execute(
+            "gatt.ordered-recording.marker.reserve",
+            vec![
+                ("startHandle", string(start_handle.clone())),
+                ("reservationToken", string("recording-marker")),
+            ],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let marker_handle = text(&marker, "markerHandle");
+    let mut marker_start = Harness::gatt_entries(&link, &database, CONTROL_POINT);
+    marker_start.push(("startHandle", string(start_handle.clone())));
+    marker_start.push(("markerHandle", string(marker_handle.clone())));
+    marker_start.push(("withResponse", IpcValue::Bool(true)));
+    harness
+        .execute(
+            "gatt.ordered-recording.marker.start",
+            marker_start,
+            Some(vec![8]),
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.wait_calls("ordered_marker_start", 1).await;
+    harness.notify(&link.peer_id, NOTIFY_ONLY, vec![7]);
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let status = harness
+                .dispatcher
+                .continuation_recording_status("recording-dispatch")
+                .await
+                .unwrap();
+            if status["records"].as_u64().unwrap_or(0) >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("notification recorded by supervised dispatcher start");
+    let recovery = harness
+        .execute(
+            "gatt.ordered-recording.recovery",
+            vec![("startHandle", string(start_handle.clone()))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let recovery_token = text(&recovery, "recoveryToken");
+    let collection: u64 = first.clone().into_wire()["receipt"]["collectionId"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let original_marker = || {
+        vec![
+            ("startHandle", string(start_handle.clone())),
+            ("markerHandle", string(marker_handle.clone())),
+        ]
+    };
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let status = harness
+                .execute(
+                    "gatt.ordered-recording.marker.status",
+                    original_marker(),
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap()
+                .into_wire();
+            if status["status"]["state"] == "admitted" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("original marker admitted");
+    harness.radio().settle_marker_write(collection, 0);
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let _status = harness
+                .execute(
+                    "gatt.ordered-recording.marker.status",
+                    original_marker(),
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+            if harness
+                .execute(
+                    "gatt.ordered-recording.marker.forget",
+                    original_marker(),
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("original marker settled before handoff");
+    crate::IpcDispatcher::release_caller(&harness.dispatcher, harness.caller.clone());
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if !harness
+                .dispatcher
+                .inner
+                .lock()
+                .await
+                .callers
+                .contains_key(&harness.key())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("caller released while recording lease stays owned");
+    let sink = IpcEventSink::new(Channel::new(|_| Ok(())));
+    harness
+        .dispatcher
+        .bootstrap(harness.caller.clone(), sink, version_offer())
+        .await
+        .unwrap();
+    let (new_lease, new_generation) = harness
+        .with_caller(|owner| (owner.lease_id.clone(), owner.lease_generation.clone()))
+        .await;
+    let replacement_payload = |entries: Vec<(&str, IpcValue)>| {
+        let mut payload: BTreeMap<String, IpcValue> = entries
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect();
+        payload.insert("__expectedLeaseId".into(), string(new_lease.clone()));
+        payload.insert(
+            "__expectedLeaseGeneration".into(),
+            string(new_generation.clone()),
+        );
+        payload
+    };
+    let connected = harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "connection.connect",
+            replacement_payload(vec![("peerId", string(link.peer_id.clone()))]),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let replacement = Link {
+        handle: text(&connected, "handle"),
+        peer_id: link.peer_id.clone(),
+        connection_id: text(&connected, "connectionId"),
+        owner_lease_id: text(&connected, "ownerLeaseId"),
+        generation: text(&connected, "connectionGeneration"),
+    };
+    let discovered = harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.discover",
+            replacement_payload(Harness::link_entries(&replacement)),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let IpcValue::Array(records) = field(&discovered, "characteristics") else {
+        panic!("replacement characteristics");
+    };
+    let replacement_database = Database {
+        handle: text(&discovered, "handle"),
+        id: text(&discovered, "databaseId"),
+        generation: text(&discovered, "databaseGeneration"),
+        characteristics: records
+            .iter()
+            .map(|record| (text(record, "characteristicUuid"), text(record, "handle")))
+            .collect(),
+    };
+    let mut reserve_reclaim =
+        Harness::gatt_entries(&replacement, &replacement_database, CONTROL_POINT);
+    reserve_reclaim.push(("recoveryToken", string(recovery_token.clone())));
+    reserve_reclaim.push(("callerKey", string("replacement-request")));
+    let foreign = AuthenticatedCaller::new("foreign-app".into(), "main".into());
+    assert!(
+        harness
+            .dispatcher
+            .ordered_reclaim_route(
+                &foreign,
+                "gatt.ordered-recording.reclaim.reserve",
+                replacement_payload(reserve_reclaim.clone())
+            )
+            .await
+            .is_err(),
+        "foreign window cannot claim recovery capability"
+    );
+    let reserved = harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.reclaim.reserve",
+            replacement_payload(reserve_reclaim.clone()),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .dispatcher
+            .execute(
+                &harness.caller,
+                "gatt.ordered-recording.reclaim.reserve",
+                replacement_payload(reserve_reclaim),
+                None,
+                OpControl::unbounded()
+            )
+            .await
+            .unwrap(),
+        reserved
+    );
+    let reclaim_handle = text(&reserved, "reclaimHandle");
+    let reclaim_payload =
+        || replacement_payload(vec![("reclaimHandle", string(reclaim_handle.clone()))]);
+    harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.reclaim.start",
+            reclaim_payload(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let status = harness
+                .dispatcher
+                .execute(
+                    &harness.caller,
+                    "gatt.ordered-recording.reclaim.status",
+                    reclaim_payload(),
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap()
+                .into_wire();
+            if status["status"]["state"] == "ready" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("replacement reclaim ready");
+    let committed = harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.reclaim.commit",
+            reclaim_payload(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap()
+        .into_wire();
+    // Publishing the replacement mapping consumes the native permit and
+    // immediately starts its asynchronous release. The mapping is committed,
+    // but cleanup is still owned, so the truthful reservation state is
+    // `releasing` rather than the obsolete intermediate `committed` state.
+    assert_eq!(committed["status"]["state"], "releasing");
+    assert_eq!(committed["status"]["mappingCommitted"], true);
+    harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.reclaim.release",
+            reclaim_payload(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let status = harness
+                .dispatcher
+                .execute(
+                    &harness.caller,
+                    "gatt.ordered-recording.reclaim.status",
+                    reclaim_payload(),
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap()
+                .into_wire();
+            if status["status"]["state"] == "released" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("replacement reclaim released");
+    for action in [
+        "retire",
+        "ack-retirement",
+        "forget-retirement",
+        "confirm-forgotten",
+    ] {
+        let command = format!("gatt.ordered-recording.reclaim.{action}");
+        harness
+            .dispatcher
+            .execute(
+                &harness.caller,
+                &command,
+                reclaim_payload(),
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+    }
+    let mut lookup = Harness::gatt_entries(&replacement, &replacement_database, CONTROL_POINT);
+    lookup.push(("recordingId", string("recording-dispatch")));
+    lookup.push(("reclaimHandle", string(reclaim_handle)));
+    let marker_owner = harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.marker-owner",
+            replacement_payload(lookup),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&marker_owner, "startHandle"), start_handle);
+    let mut revoked_reserve =
+        Harness::gatt_entries(&replacement, &replacement_database, CONTROL_POINT);
+    revoked_reserve.push(("recoveryToken", string(recovery_token)));
+    revoked_reserve.push(("callerKey", string("revoked-request")));
+    let revoked = harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.reclaim.reserve",
+            replacement_payload(revoked_reserve),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let revoked_handle = text(&revoked, "reclaimHandle");
+    harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.reclaim.start",
+            replacement_payload(vec![("reclaimHandle", string(revoked_handle.clone()))]),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let status = harness
+                .dispatcher
+                .execute(
+                    &harness.caller,
+                    "gatt.ordered-recording.reclaim.status",
+                    replacement_payload(vec![("reclaimHandle", string(revoked_handle.clone()))]),
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap()
+                .into_wire();
+            if status["status"]["state"] == "ready" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("revoked reclaim acquired native permit");
+    let release_count = count(&harness.radio().calls(), "reclaim_release");
+    harness.radio().block_op(FaultOp::ReclaimRelease);
+    crate::IpcDispatcher::release_caller(&harness.dispatcher, harness.caller.clone());
+    harness
+        .wait_calls("reclaim_release", release_count + 1)
+        .await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        harness
+            .dispatcher
+            .inner
+            .lock()
+            .await
+            .callers
+            .contains_key(&harness.key()),
+        "pending native release retains caller cleanup debt"
+    );
+    harness.radio().unblock_op(FaultOp::ReclaimRelease);
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if !harness
+                .dispatcher
+                .inner
+                .lock()
+                .await
+                .callers
+                .contains_key(&harness.key())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("host retries revoked reclaim cleanup without a client");
+    let sink = IpcEventSink::new(Channel::new(|_| Ok(())));
+    harness
+        .dispatcher
+        .bootstrap(harness.caller.clone(), sink, version_offer())
+        .await
+        .unwrap();
+    let (lease, generation) = harness
+        .with_caller(|owner| (owner.lease_id.clone(), owner.lease_generation.clone()))
+        .await;
+    let recovered_payload = || {
+        [
+            ("__expectedLeaseId".to_owned(), string(lease.clone())),
+            (
+                "__expectedLeaseGeneration".to_owned(),
+                string(generation.clone()),
+            ),
+            ("reclaimHandle".to_owned(), string(revoked_handle.clone())),
+        ]
+        .into_iter()
+        .collect()
+    };
+    let recovered = harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.reclaim.pending",
+            recovered_payload(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap()
+        .into_wire();
+    assert!(recovered["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["reclaimHandle"] == revoked_handle));
+    for action in [
+        "retire",
+        "ack-retirement",
+        "forget-retirement",
+        "confirm-forgotten",
+    ] {
+        let command = format!("gatt.ordered-recording.reclaim.{action}");
+        harness
+            .dispatcher
+            .execute(
+                &harness.caller,
+                &command,
+                recovered_payload(),
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+    }
+    harness
+        .radio()
+        .fail_next(FaultOp::Disconnect, "recording lease release refused once");
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let receipt = harness
+                .dispatcher
+                .continuation_recording_stop_ordered("recording-dispatch")
+                .await
+                .unwrap();
+            if receipt["hostCleanup"]["state"] == "release-failed" {
+                assert_eq!(
+                    receipt["hostCleanup"]["failures"][0]["resourceKind"],
+                    "ordered-recording-connection-lease"
+                );
+                break;
+            }
+            assert_ne!(
+                receipt["hostCleanup"]["state"], "released",
+                "failed lease release is reported"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("lease failure reported");
+    let before = count(&harness.radio().calls(), "disconnect");
+    harness.radio().block_op(FaultOp::Disconnect);
+    let dispatcher = harness.dispatcher.clone();
+    let waiter = tokio::spawn(async move {
+        dispatcher
+            .continuation_recording_stop_ordered("recording-dispatch")
+            .await
+    });
+    harness.wait_calls("disconnect", before + 1).await;
+    waiter.abort();
+    harness.radio().unblock_op(FaultOp::Disconnect);
+    let stopped = tokio::time::timeout(WAIT, async {
+        loop {
+            let receipt = harness
+                .dispatcher
+                .continuation_recording_stop_ordered("recording-dispatch")
+                .await
+                .unwrap();
+            if receipt["recording"]["state"] == "finished"
+                && receipt["hostCleanup"]["state"] == "released"
+            {
+                break receipt;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("detached lease release survives lost waiter");
+    assert_eq!(stopped["recording"]["state"], "finished");
+    assert_eq!(stopped["hostCleanup"]["state"], "released");
+    assert_eq!(
+        harness
+            .dispatcher
+            .continuation_recording_stop_ordered("recording-dispatch")
+            .await
+            .unwrap(),
+        stopped
+    );
+    let batch = harness
+        .dispatcher
+        .continuation_recording_prepare("recording-dispatch", 128, 65536)
+        .await
+        .unwrap();
+    assert!(
+        batch["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["record"]["kind"] == "value"
+                && entry["record"]["bytes"] == serde_json::json!([7])),
+        "recorded source value remains readable"
+    );
+    let sink = IpcEventSink::new(Channel::new(|_| Ok(())));
+    harness
+        .dispatcher
+        .bootstrap(harness.caller.clone(), sink, version_offer())
+        .await
+        .unwrap();
+    let (lease_id, lease_generation) = harness
+        .with_caller(|owner| (owner.lease_id.clone(), owner.lease_generation.clone()))
+        .await;
+    let payload = || {
+        [
+            ("startHandle".to_owned(), string(start_handle.clone())),
+            ("__expectedLeaseId".to_owned(), string(lease_id.clone())),
+            (
+                "__expectedLeaseGeneration".to_owned(),
+                string(lease_generation.clone()),
+            ),
+        ]
+        .into_iter()
+        .collect()
+    };
+    let recovery_payload = || {
+        [
+            ("__expectedLeaseId".to_owned(), string(lease_id.clone())),
+            (
+                "__expectedLeaseGeneration".to_owned(),
+                string(lease_generation.clone()),
+            ),
+        ]
+        .into_iter()
+        .collect()
+    };
+    let recovered = harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.starts",
+            recovery_payload(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(recovered["starts"][0]["startHandle"], start_handle);
+    assert_eq!(recovered["starts"][0]["recordingId"], "recording-dispatch");
+    let foreign = AuthenticatedCaller::new("other-app".into(), "main".into());
+    let isolated = harness
+        .dispatcher
+        .recover_ordered_recording_starts(&foreign, Default::default())
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(isolated["starts"], serde_json::json!([]));
+    {
+        let mut slots = harness.dispatcher.ordered_recording_starts.lock().await;
+        let slot = slots
+            .get(&(harness.key(), start_handle.clone()))
+            .unwrap()
+            .clone();
+        for id in 10000..10070 {
+            slots.insert((harness.key(), id.to_string()), slot.clone());
+        }
+    }
+    let page = harness
+        .dispatcher
+        .recover_ordered_recording_starts(&harness.caller, Default::default())
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(page["starts"].as_array().unwrap().len(), 64);
+    assert_eq!(page["truncated"], true);
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let after = [("after".to_owned(), string(cursor))].into_iter().collect();
+    let rest = harness
+        .dispatcher
+        .recover_ordered_recording_starts(&harness.caller, after)
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(rest["starts"].as_array().unwrap().len(), 7);
+    assert_eq!(rest["truncated"], false);
+    harness
+        .dispatcher
+        .ordered_recording_starts
+        .lock()
+        .await
+        .retain(|(_, handle), _| handle.parse::<u64>().unwrap() < 10000);
+    let status = harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.status",
+            payload(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&status, "state"), "result");
+    assert_eq!(field(&status, "result"), &first);
+    harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.retire",
+            payload(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.retire",
+            payload(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    recording_fixture::complete_fixture_process(&directory);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_recording_unused_reservations_are_reclaimed_on_revoke() {
+    let harness = Harness::new().await;
+    for index in 0..(super::MAX_PENDING_EVENTS + 1) {
+        let (lease, generation) = harness
+            .with_caller(|owner| (owner.lease_id.clone(), owner.lease_generation.clone()))
+            .await;
+        let payload = [
+            (
+                "reservationToken".to_owned(),
+                string(format!("unused-{index}")),
+            ),
+            ("__expectedLeaseId".to_owned(), string(lease)),
+            ("__expectedLeaseGeneration".to_owned(), string(generation)),
+        ]
+        .into_iter()
+        .collect();
+        harness
+            .dispatcher
+            .execute(
+                &harness.caller,
+                "gatt.ordered-recording.reserve",
+                payload,
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        crate::IpcDispatcher::release_caller(&harness.dispatcher, harness.caller.clone());
+        tokio::time::timeout(WAIT, async {
+            loop {
+                if !harness
+                    .dispatcher
+                    .inner
+                    .lock()
+                    .await
+                    .callers
+                    .contains_key(&harness.key())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let sink = IpcEventSink::new(Channel::new(|_| Ok(())));
+        harness
+            .dispatcher
+            .bootstrap(harness.caller.clone(), sink, version_offer())
+            .await
+            .unwrap();
+    }
+    let guard = harness
+        .dispatcher
+        .ordered_recording_reservations
+        .lock()
+        .await;
+    let (lease, generation) = harness
+        .with_caller(|owner| (owner.lease_id.clone(), owner.lease_generation.clone()))
+        .await;
+    let dispatcher = harness.dispatcher.clone();
+    let caller = harness.caller.clone();
+    let payload = [
+        ("reservationToken".to_owned(), string("racing")),
+        ("__expectedLeaseId".to_owned(), string(lease)),
+        ("__expectedLeaseGeneration".to_owned(), string(generation)),
+    ]
+    .into_iter()
+    .collect();
+    let racing = tokio::spawn(async move {
+        dispatcher
+            .execute(
+                &caller,
+                "gatt.ordered-recording.reserve",
+                payload,
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    crate::IpcDispatcher::release_caller(&harness.dispatcher, harness.caller.clone());
+    drop(guard);
+    assert!(
+        racing.await.unwrap().is_err(),
+        "revocation wins before reservation admission"
+    );
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if !harness
+                .dispatcher
+                .inner
+                .lock()
+                .await
+                .callers
+                .contains_key(&harness.key())
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let sink = IpcEventSink::new(Channel::new(|_| Ok(())));
+    harness
+        .dispatcher
+        .bootstrap(harness.caller.clone(), sink, version_offer())
+        .await
+        .unwrap();
+    let (lease, generation) = harness
+        .with_caller(|owner| (owner.lease_id.clone(), owner.lease_generation.clone()))
+        .await;
+    let payload = [
+        ("reservationToken".to_owned(), string("after-churn")),
+        ("__expectedLeaseId".to_owned(), string(lease)),
+        ("__expectedLeaseGeneration".to_owned(), string(generation)),
+    ]
+    .into_iter()
+    .collect();
+    harness
+        .dispatcher
+        .execute(
+            &harness.caller,
+            "gatt.ordered-recording.reserve",
+            payload,
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_recording_worker_panic_replays_failure_and_retains_cleanup() {
+    let module = module_path!().split_once("::").unwrap().1;
+    let test =
+        format!("{module}::ordered_recording_worker_panic_replays_failure_and_retains_cleanup");
+    let Some(directory) = recording_fixture::isolated_fixture_process(&test) else {
+        return;
+    };
+    let harness = Harness::new().await;
+    let link = harness.connect("ordered-recording-panic-peer").await;
+    let database = harness.discover(&link).await;
+    harness
+        .dispatcher
+        .continuation_configure_recording_directory(&directory)
+        .await
+        .unwrap();
+    for phase in 1..=3 {
+        let reserved = harness
+            .execute(
+                "gatt.ordered-recording.reserve",
+                vec![("reservationToken", string(format!("panic-{phase}")))],
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let handle = text(&reserved, "startHandle");
+        let id = format!("panic-{phase}");
+        let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+        entries.push(("startHandle", string(handle.clone())));
+        entries.push((
+            "recording",
+            object([
+                ("id", string(id.clone())),
+                ("maxBytes", number(1 << 20)),
+                ("maxRecords", number(128)),
+            ]),
+        ));
+        entries.push((
+            "members",
+            IpcValue::Array(vec![object([
+                ("memberId", string("a")),
+                (
+                    "characteristicHandle",
+                    string(database.characteristics[NOTIFY_ONLY].clone()),
+                ),
+                ("deliveryMode", string("prefer-notification")),
+            ])]),
+        ));
+        harness
+            .dispatcher
+            .ordered_recording_panic_phase
+            .store(phase, std::sync::atomic::Ordering::SeqCst);
+        let result = harness
+            .execute(
+                "gatt.ordered-recording.start",
+                entries,
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        harness
+            .dispatcher
+            .ordered_recording_panic_phase
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        let raw = result.clone().into_wire();
+        assert_eq!(
+            if phase >= 2 {
+                &raw["error"]["kind"]
+            } else {
+                &raw["receipt"]["error"]["kind"]
+            },
+            "worker-failed"
+        );
+        assert_eq!(
+            raw["kind"],
+            if phase >= 2 {
+                "owner-failed"
+            } else {
+                "prepare-failed"
+            }
+        );
+        let status = harness
+            .execute(
+                "gatt.ordered-recording.status",
+                vec![("startHandle", string(handle.clone()))],
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            field(&status, "result"),
+            &result,
+            "lost result replays terminal failure"
+        );
+        let stopped = tokio::time::timeout(WAIT, async {
+            loop {
+                let stopped = harness
+                    .dispatcher
+                    .continuation_recording_stop_ordered(&id)
+                    .await
+                    .unwrap();
+                if matches!(
+                    stopped["hostCleanup"]["state"].as_str(),
+                    Some("released" | "not-applicable")
+                ) {
+                    break stopped;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("panic cleanup remains retryable");
+        assert_eq!(
+            stopped["hostCleanup"]["state"],
+            if phase < 3 {
+                "not-applicable"
+            } else {
+                "released"
+            }
+        );
+        harness
+            .execute(
+                "gatt.ordered-recording.retire",
+                vec![("startHandle", string(handle))],
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+    }
+    recording_fixture::complete_fixture_process(&directory);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_recording_start_racing_revoke_has_no_source_effect() {
+    let harness = Harness::new().await;
+    let link = harness.connect("ordered-revocation-race-peer").await;
+    let database = harness.discover(&link).await;
+    let reserved = harness
+        .execute(
+            "gatt.ordered-recording.reserve",
+            vec![("reservationToken", string("race-start"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let handle = text(&reserved, "startHandle");
+    let mut entries = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+    entries.push(("startHandle", string(handle)));
+    entries.push((
+        "recording",
+        object([
+            ("id", string("race-start")),
+            ("maxBytes", number(1 << 20)),
+            ("maxRecords", number(128)),
+        ]),
+    ));
+    entries.push((
+        "members",
+        IpcValue::Array(vec![object([
+            ("memberId", string("a")),
+            (
+                "characteristicHandle",
+                string(database.characteristics[NOTIFY_ONLY].clone()),
+            ),
+            ("deliveryMode", string("prefer-notification")),
+        ])]),
+    ));
+    let guard = harness
+        .dispatcher
+        .ordered_recording_reservations
+        .lock()
+        .await;
+    let dispatcher = harness.dispatcher.clone();
+    let caller = harness.caller.clone();
+    let payload = Harness::lease_payload(entries);
+    let start = tokio::spawn(async move {
+        dispatcher
+            .execute(
+                &caller,
+                "gatt.ordered-recording.start",
+                payload,
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    crate::IpcDispatcher::release_caller(&harness.dispatcher, harness.caller.clone());
+    drop(guard);
+    assert!(start.await.unwrap().is_err());
+    assert_eq!(count(&harness.radio().calls(), "ordered_open"), 0);
+    assert_eq!(count(&harness.radio().calls(), "set_notifications"), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_marker_route_preserves_transaction_and_fifo_credit() {
+    let harness = Harness::new().await;
+    harness.radio().set_gatt_snapshot_identity(
+        "ordered-marker-route-peer",
+        ubm_desktop::boundary::GattSnapshotIdentity {
+            owner: "fake".into(),
+            attachment: 1,
+            revision: 1,
+        },
+    );
+    let link = harness.connect("ordered-marker-route-peer").await;
+    let database = harness.discover(&link).await;
+    let mut open = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+    open.push(("orderedHandle", string("marker-route")));
+    open.push((
+        "members",
+        IpcValue::Array(vec![object([
+            ("memberId", string("a")),
+            (
+                "characteristicHandle",
+                string(database.characteristics[NOTIFY_ONLY].clone()),
+            ),
+            ("deliveryMode", string("prefer-notification")),
+        ])]),
+    ));
+    let opened = harness
+        .execute("gatt.ordered.open", open, None, OpControl::unbounded())
+        .await
+        .unwrap();
+    let collection: u64 = text(&opened, "collectionId").parse().unwrap();
+    let reservation = harness
+        .execute(
+            "gatt.ordered.marker.reserve",
+            vec![
+                ("orderedHandle", string("marker-route")),
+                ("reservationToken", string("local-marker")),
+            ],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let marker_handle = text(&reservation, "markerHandle");
+    assert_eq!(
+        harness
+            .execute(
+                "gatt.ordered.marker.reserve",
+                vec![
+                    ("orderedHandle", string("marker-route")),
+                    ("reservationToken", string("local-marker"))
+                ],
+                None,
+                OpControl::unbounded()
+            )
+            .await
+            .unwrap(),
+        reservation
+    );
+    let mut marker = Harness::gatt_entries(&link, &database, CONTROL_POINT);
+    marker.push(("orderedHandle", string("marker-route")));
+    marker.push(("markerHandle", string(marker_handle.clone())));
+    marker.push(("withResponse", IpcValue::Bool(true)));
+    let first = harness
+        .execute(
+            "gatt.ordered.marker.start",
+            marker.clone(),
+            Some(vec![1, 2]),
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&first, "statusFormat"), "native");
+    assert!(matches!(
+        first.clone().into_wire()["status"]["state"].as_str(),
+        Some("pending" | "admitted")
+    ));
+    harness
+        .execute(
+            "gatt.ordered.marker.start",
+            marker.clone(),
+            Some(vec![1, 2]),
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert!(harness
+        .execute(
+            "gatt.ordered.marker.start",
+            marker,
+            Some(vec![9]),
+            OpControl::unbounded()
+        )
+        .await
+        .is_err());
+    let args = || {
+        vec![
+            ("orderedHandle", string("marker-route")),
+            ("markerHandle", string(marker_handle.clone())),
+        ]
+    };
+    assert!(harness
+        .execute(
+            "gatt.ordered.marker.forget",
+            args(),
+            None,
+            OpControl::unbounded()
+        )
+        .await
+        .is_err());
+    let item = tokio::time::timeout(WAIT, async {
+        loop {
+            let next = harness
+                .execute(
+                    "gatt.ordered.next",
+                    vec![("orderedHandle", string("marker-route"))],
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+            if text(&next, "state") == "item" {
+                break next;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(item.clone().into_wire()["nativeWire"]["kind"], "marker");
+    let ack = text(&item, "deliveryId");
+    harness
+        .execute(
+            "gatt.ordered.next",
+            vec![
+                ("orderedHandle", string("marker-route")),
+                ("ackDeliveryId", string(ack)),
+            ],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.radio().settle_marker_write(collection, 0);
+    let status = harness
+        .execute(
+            "gatt.ordered.marker.status",
+            args(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(status["status"]["write"]["state"], "settled");
+    harness
+        .execute(
+            "gatt.ordered.marker.forget",
+            args(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness
+        .execute(
+            "gatt.ordered.marker.forget",
+            args(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let reservation = harness
+        .execute(
+            "gatt.ordered.marker.reserve",
+            vec![
+                ("orderedHandle", string("marker-route")),
+                ("reservationToken", string("cancelled-marker")),
+            ],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let mut cancelled = Harness::gatt_entries(&link, &database, CONTROL_POINT);
+    cancelled.push(("orderedHandle", string("marker-route")));
+    cancelled.push(("markerHandle", string(text(&reservation, "markerHandle"))));
+    cancelled.push(("withResponse", IpcValue::Bool(true)));
+    let ctl = OpControl::unbounded();
+    ctl.ticket.request_cancel();
+    let before = count(&harness.radio().calls(), "ordered_marker_start");
+    let result = harness
+        .execute("gatt.ordered.marker.start", cancelled, Some(vec![9]), ctl)
+        .await;
+    if let Ok(result) = result {
+        assert_eq!(result.into_wire()["status"]["state"], "not-admitted");
+    }
+    assert_eq!(
+        count(&harness.radio().calls(), "ordered_marker_start"),
+        before,
+        "pre-cancel never starts native write"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoked_marker_transaction_is_accounted_before_orphan_ack() {
+    use crate::IpcDispatcher;
+    for before_admission in [true, false] {
+        let harness = Harness::new().await;
+        let peer = if before_admission {
+            "marker-revoke-before"
+        } else {
+            "marker-revoke-after"
+        };
+        harness.radio().set_gatt_snapshot_identity(
+            peer,
+            ubm_desktop::boundary::GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        let link = harness.connect(peer).await;
+        let database = harness.discover(&link).await;
+        let mut open = Harness::gatt_entries(&link, &database, NOTIFY_ONLY);
+        open.push(("orderedHandle", string("marker-revoked")));
+        open.push((
+            "members",
+            IpcValue::Array(vec![object([
+                ("memberId", string("a")),
+                (
+                    "characteristicHandle",
+                    string(database.characteristics[NOTIFY_ONLY].clone()),
+                ),
+                ("deliveryMode", string("prefer-notification")),
+            ])]),
+        ));
+        let opened = harness
+            .execute("gatt.ordered.open", open, None, OpControl::unbounded())
+            .await
+            .unwrap();
+        let collection: u64 = text(&opened, "collectionId").parse().unwrap();
+        let reserve = harness
+            .execute(
+                "gatt.ordered.marker.reserve",
+                vec![
+                    ("orderedHandle", string("marker-revoked")),
+                    ("reservationToken", string("dead-marker")),
+                ],
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let marker_handle = text(&reserve, "markerHandle");
+        let gate = if before_admission {
+            FaultOp::OrderedMarkerBeforeAdmission
+        } else {
+            FaultOp::OrderedMarkerStart
+        };
+        let call = if before_admission {
+            "ordered_marker_pending"
+        } else {
+            "ordered_marker_start"
+        };
+        harness.radio().block_op(gate);
+        let mut start = Harness::gatt_entries(&link, &database, CONTROL_POINT);
+        start.push(("orderedHandle", string("marker-revoked")));
+        start.push(("markerHandle", string(marker_handle.clone())));
+        start.push(("withResponse", IpcValue::Bool(true)));
+        harness
+            .execute(
+                "gatt.ordered.marker.start",
+                start,
+                Some(vec![12]),
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        harness.wait_calls(call, 1).await;
+        harness.dispatcher.release_caller(harness.caller.clone());
+        harness
+            .dispatcher
+            .settle_revoked_ordered(&harness.key())
+            .await;
+        let early = harness
+            .dispatcher
+            .inspect_ordered_orphans(&harness.caller)
+            .await;
+        if before_admission {
+            if let Some(receipt) = early.first() {
+                assert_eq!(
+                    receipt.clone().into_wire()["markerWrites"][0]["status"]["state"],
+                    "not-admitted"
+                );
+                assert_eq!(count(&harness.radio().calls(), "ordered_marker_start"), 0);
+            }
+        } else {
+            assert!(
+                early.is_empty(),
+                "an admitted unsettled write cannot produce a complete receipt"
+            );
+        }
+        harness.radio().unblock_op(gate);
+        if !before_admission {
+            harness.radio().settle_marker_write(collection, 0);
+        }
+        let receipt = tokio::time::timeout(WAIT, async {
+            loop {
+                harness.radio().settle_marker_write(collection, 0);
+                harness
+                    .dispatcher
+                    .settle_revoked_ordered(&harness.key())
+                    .await;
+                if let Some(receipt) = harness
+                    .dispatcher
+                    .inspect_ordered_orphans(&harness.caller)
+                    .await
+                    .into_iter()
+                    .next()
+                {
+                    break receipt;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("marker cleanup and source seal complete");
+        let raw = receipt.clone().into_wire();
+        assert_eq!(raw["markerWrites"].as_array().unwrap().len(), 1);
+        assert_eq!(raw["markerWrites"][0]["markerHandle"], marker_handle);
+        assert!(
+            !raw.to_string().contains("[12]"),
+            "orphan evidence contains no write payload"
+        );
+        assert_eq!(
+            harness
+                .dispatcher
+                .inspect_ordered_orphans(&harness.caller)
+                .await,
+            vec![receipt],
+            "lost inspection replays retained receipt"
+        );
+        let receipt_id = raw["receiptId"].as_str().unwrap();
+        harness
+            .dispatcher
+            .acknowledge_ordered_orphan(&harness.caller, receipt_id)
+            .await;
+        assert!(harness
+            .dispatcher
+            .inspect_ordered_orphans(&harness.caller)
+            .await
+            .is_empty());
+    }
 }

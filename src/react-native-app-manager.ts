@@ -28,6 +28,28 @@ export interface CreateReactNativeBleManagerOptions extends BleManagerCreateOpti
   readonly rustCore?: ReactNativeRustCoreBinding
 }
 
+const configuredTerminalEvidenceMaximumDurableBytes = new WeakMap<object, number>()
+
+export async function configureReactNativeTerminalEvidence(
+  binding: ReactNativeRustCoreBinding,
+  terminalEvidence: BleManagerCreateOptions['terminalEvidence']
+): Promise<void> {
+  if (terminalEvidence === undefined) return
+  const configure = binding.configureTerminalEvidenceMaximumBytes
+  if (configure === undefined)
+    throw contractError('capability.unsupported', 'core', 'react-native-manager.terminal-evidence.configure')
+  const maximumDurableBytes = terminalEvidence.maximumDurableBytes
+  if (
+    configuredTerminalEvidenceMaximumDurableBytes.has(binding) &&
+    configuredTerminalEvidenceMaximumDurableBytes.get(binding) !== maximumDurableBytes
+  )
+    throw contractError('lifecycle.invalid-state', 'core', 'react-native-manager.terminal-evidence.configure')
+  if (!configuredTerminalEvidenceMaximumDurableBytes.has(binding)) {
+    await configure(String(maximumDurableBytes))
+    configuredTerminalEvidenceMaximumDurableBytes.set(binding, maximumDurableBytes)
+  }
+}
+
 /**
  * Application factory: infers the React Native platform and clock. No
  * caller-supplied clientId/managerId/hostSessionScope — identity is supplied
@@ -51,6 +73,7 @@ export async function createReactNativeApplicationHost(
   const normalized = normalizeBleManagerCreateOptions(publicOptions)
   const platform = inferReactNativeBlePlatform()
   const binding = rustCore ?? createReactNativeRustCoreBinding({ platform })
+  await configureReactNativeTerminalEvidence(binding, normalized.terminalEvidence)
   const randomBytes =
     normalized.randomBytes ??
     (await createNativeRandomBytesSource(async length => Array.from(await binding.randomBytes(length))))
@@ -102,6 +125,7 @@ export async function createReactNativeApplicationHost(
     hostSessionScope,
     adapterId: normalized.adapterId,
     diagnostics: normalized.diagnostics,
+    ...(normalized.terminalEvidence === undefined ? {} : { terminalEvidence: normalized.terminalEvidence }),
     rustCore: binding,
     ...(restorationAuthority === undefined ? {} : { restorationAuthority }),
     ...(normalized.background === undefined ? {} : { background: normalized.background })

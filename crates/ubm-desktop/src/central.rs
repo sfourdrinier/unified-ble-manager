@@ -39,16 +39,33 @@
 
 #[path = "central_acquired.rs"]
 mod acquired;
+pub mod empty_ordered_source;
+#[path = "notification_settlement.rs"]
+mod notification_settlement;
+mod ordered_batch_cleanup;
+mod ordered_claims;
+mod ordered_cleanup_execution;
+mod ordered_marker_write;
+mod ordered_member_renewal;
+mod ordered_source_recovery;
+mod ordered_source_setup;
 pub use acquired::AcquiredGattHandle;
+pub use ordered_batch_cleanup::{
+    OrderedCleanupOutcome, OrderedDelivery, OrderedDiscardEvidence, OrderedDiscardReceipt,
+};
+pub use ordered_claims::OrderedClaimRequest;
+pub use ordered_source_recovery::{OrderedMemberAcquisition, OrderedMemberSetupStatus};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::{
     Arc, Mutex as StdMutex, MutexGuard, OnceLock, PoisonError, Weak,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, broadcast, watch};
 use ubm_core::central::{
     Central, CentralEffectKind, CentralResourceCounters, CompletionOutcome, ConnectionState,
@@ -66,6 +83,7 @@ use crate::boundary::{
     InstanceKey, ObservedDelivery, PeerSnapshot, RadioBoundary, RadioCloseFailure, RadioEvent,
     ScanFilterSpec, ServiceAccess,
 };
+use crate::errors::{DesktopErrorEvidence, PlatformDetail, PlatformMetadataEntry, PlatformValue};
 use ubm_core::central::ScanDuplicatePolicy;
 
 #[path = "central_parity.rs"]
@@ -124,6 +142,7 @@ pub const LIFECYCLE_EVENT_CAPACITY: usize = 4096;
 
 static EPOCH: OnceLock<Instant> = OnceLock::new();
 static OPEN_COUNTER: AtomicU64 = AtomicU64::new(1);
+static RECLAIM_AUTHORITY_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Monotonic milliseconds for core calls.
 fn now_ms() -> u64 {
@@ -149,15 +168,37 @@ fn drain_consumer_before_retirement(
     drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
 ) {
     if let Some(drain) = drain {
-        while let Some((value, receipt)) =
-            core.take_notification_value_with_receipt(index, consumer)
-        {
-            drain(match receipt {
-                Some(receipt) => NotificationPoll::ValueWithReceipt { value, receipt },
-                None => NotificationPoll::Value(value),
-            });
+        while let Some(entry) = core.take_notification_entry(index, consumer) {
+            drain(notification_entry(entry));
+        }
+        if core.take_peer_control_overflow(index, consumer) {
+            drain(NotificationPoll::SourceFailed(
+                DesktopError::subscribe_failed("peer source control queue overflow"),
+            ));
         }
         if let Some(terminal) = core.take_terminal(index, consumer) {
+            drain(NotificationPoll::Terminal(terminal));
+        }
+    }
+}
+
+fn drain_exact_consumer_before_retirement(
+    core: &mut Central,
+    index: usize,
+    consumer: &str,
+    admission: &ubm_core::central::OperationAdmission,
+    drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
+) {
+    if let Some(drain) = drain {
+        while let Some(entry) = core.take_notification_entry_exact(index, consumer, admission) {
+            drain(notification_entry(entry));
+        }
+        if core.take_peer_control_overflow_exact(index, consumer, admission) {
+            drain(NotificationPoll::SourceFailed(
+                DesktopError::subscribe_failed("peer source control queue overflow"),
+            ));
+        }
+        if let Some(terminal) = core.take_terminal_exact(index, consumer, admission) {
             drain(NotificationPoll::Terminal(terminal));
         }
     }
@@ -527,6 +568,60 @@ async fn drive<T>(ticket: &OpTicket, window: Window, work: impl Future<Output = 
     }
 }
 
+/// Synchronize cancellation with polls that can start native notification
+/// cleanup. Once started, the future's owner must retain it to observe the
+/// native answer independently of the caller's wait.
+async fn start_notification_cleanup<F>(
+    ticket: &OpTicket,
+    window: Window,
+    started: &AtomicBool,
+    mut on_start: impl FnMut(),
+    work: F,
+) -> Result<(), DesktopError>
+where
+    F: Future<Output = Result<(), DesktopError>>,
+{
+    let phase = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let work = crate::op_control::track_notification_cleanup(Arc::clone(&phase), work);
+    let mut work = std::pin::pin!(work);
+    std::future::poll_fn(|cx| {
+        // The ticket only gates the transition into physical work. Once that
+        // transition has happened, an owner of this future must be able to
+        // observe the native answer even after the caller's ticket settles.
+        if started.load(Ordering::Relaxed) {
+            return work.as_mut().poll(cx);
+        }
+        match ticket.start_if_active(|| {
+            if !started.load(Ordering::Relaxed)
+                && window
+                    .at
+                    .is_some_and(|at| tokio::time::Instant::now() >= at)
+            {
+                return std::task::Poll::Ready(Err(classify(
+                    timed_out("gatt.unsubscribe", window),
+                    OpKind::Cleanup,
+                    false,
+                )));
+            }
+            let result = work.as_mut().poll(cx);
+            if !started.load(Ordering::Relaxed) && phase.load(Ordering::SeqCst) != 1 {
+                on_start();
+                started.store(true, Ordering::Relaxed);
+            }
+            result
+        }) {
+            Some(result) => result,
+            None => {
+                // Let the driver's cancellation branch classify the result.
+                // This branch can only occur before physical dispatch.
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+    })
+    .await
+}
+
 fn link_end_count<B>(inner: &Inner<B>, peer_id: &str) -> u64 {
     lock_std(&inner.link_ends)
         .get(peer_id)
@@ -545,6 +640,17 @@ fn note_confirmed_release<B>(inner: &Inner<B>, peer_id: &str) {
     let mut releases = lock_std(&inner.confirmed_releases);
     let count = releases.entry(peer_id.to_owned()).or_insert(0);
     *count = count.wrapping_add(1);
+}
+
+fn note_mismatch_generation_release<B>(inner: &Inner<B>, peer_id: &str, generation: Option<&str>) {
+    let Some(generation) = generation else {
+        return;
+    };
+    for owner in lock_std(&inner.mismatch_compensations).iter() {
+        if owner.key.0 == peer_id && owner.connection_generation.as_deref() == Some(generation) {
+            owner.confirmed_release.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 /// Record that the OS reported `peer_id`'s link ended and wake every link
@@ -644,7 +750,12 @@ enum DropCleanup {
     },
     /// Subscribe: also fail the shared enable + remove routing + sweep
     /// (mirrors the timeout arm, aborted instead of timed out).
-    Subscribe { key: InstanceKey, path_index: usize },
+    Subscribe {
+        key: InstanceKey,
+        path_index: usize,
+        epoch: Option<u64>,
+        drive_enable: bool,
+    },
 }
 
 /// Cancels + reaps a dispatched op when its awaiting caller future is
@@ -677,6 +788,12 @@ impl<B: RadioBoundary> CancelOnDrop<B> {
     fn note_native_acquisition(&mut self, confirmed_release: u64) {
         if let Some(DropCleanup::Connect { release_serial, .. }) = self.cleanup.as_mut() {
             *release_serial = confirmed_release;
+        }
+    }
+
+    fn note_subscription_activation(&mut self, activation_epoch: u64) {
+        if let Some(DropCleanup::Subscribe { epoch, .. }) = self.cleanup.as_mut() {
+            *epoch = Some(activation_epoch);
         }
     }
 }
@@ -746,10 +863,29 @@ async fn run_drop_cleanup<B: RadioBoundary>(
             // outside the core lock per F24.
             central.compensate_half_open(&peer_id, &generation).await;
         }
-        DropCleanup::Subscribe { key, path_index } => {
-            central.inner.subscriptions.lock().await.remove(&key);
+        DropCleanup::Subscribe {
+            key,
+            path_index,
+            epoch,
+            drive_enable,
+        } => {
+            // A dropped subscribe may retire routing concurrently with an
+            // authenticated recovery page. Linearize only that removal;
+            // cancellation and core cleanup below remain outside the gate.
+            let _recovery_transition = central.inner.peer_failure_recovery_transition.lock().await;
+            let mut routes = central.inner.subscriptions.lock().await;
+            let owns_route = drive_enable
+                && match epoch {
+                    Some(epoch) => routes.get(&key) == Some(&(path_index, epoch)),
+                    None => !routes.contains_key(&key),
+                };
+            if owns_route && let Some(activation) = routes.remove(&key) {
+                lock_std(&central.inner.retained_claims).remove(&activation);
+            }
+            drop(routes);
+            drop(_recovery_transition);
             let _ = central.cancel_operation(&operation).await;
-            {
+            if owns_route {
                 let mut core = central.inner.core.lock().await;
                 let mut out = batch();
                 let _ = core.settle_subscribe_enable(path_index, false, now_ms(), &mut out);
@@ -934,6 +1070,9 @@ fn unregistrable(core: &mut Central, peer_key: &str, error: CoreError) -> Deskto
 pub struct DiscoveryReport {
     /// Paths registered (service, characteristic, and descriptor levels).
     pub paths_registered: usize,
+    /// Exact generations committed with this snapshot.
+    pub connection_generation: Option<String>,
+    pub database_generation: Option<String>,
     /// Why characteristic facts beyond the core property bits could not be
     /// read for this discovery, when the radio supports them but the read
     /// failed. The paths still register; their
@@ -998,9 +1137,15 @@ pub struct ShutdownReport {
     /// receipts): one entry per characteristic scope whose unsubscribe did
     /// not complete. Empty means every live scope released.
     pub radio_close_failures: Vec<RadioCloseFailure>,
-    /// Event-transport cleanup after the event consumer joined. This is not
-    /// a GATT scope; a failure retains backend ownership for a later retry.
+    /// Event-transport and outstanding background cleanup after the event
+    /// consumer joined. A failure retains ownership for later reconciliation.
     pub transport_close_failures: Vec<DesktopError>,
+    /// Exact peer-source recovery obligations still retained at the shutdown
+    /// cut.  Unlike the compatibility error in `transport_close_failures`,
+    /// this preserves the source descriptor and every recipient's original
+    /// route and lease, so a caller can resume the same recovery rather than
+    /// treating several retained heads as one anonymous failure.
+    pub peer_failure_recovery_debts: Vec<PeerFailureRecoveryShutdownDebt>,
     /// Current physical cleanup debt from failed or cancelled connection
     /// acquisition. These original native causes are separate from the
     /// immutable core cleanup record; an overall release requires this
@@ -1013,6 +1158,34 @@ pub struct ShutdownReport {
     /// stopped during shutdown (PR210-09). `None` when no scan was owned or
     /// the stop succeeded.
     pub scan_stop_failure: Option<DesktopError>,
+}
+
+/// One exact peer-source recovery still owned when a central shut down.
+///
+/// This is an observation, not an acknowledgement capability: callers must
+/// use the established recovery read/ack APIs with the descriptor and the
+/// source-time recipient lease.  The record is deliberately separate from
+/// `DesktopError` so diagnostic text never becomes an identity transport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerFailureRecoveryShutdownDebt {
+    pub descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    pub source_ack_inflight: bool,
+    pub recipients: Vec<PeerFailureRecoveryShutdownRecipient>,
+}
+
+/// One source-time recipient belonging to a retained shutdown debt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerFailureRecoveryShutdownRecipient {
+    pub peer_id: String,
+    pub service_uuid: String,
+    pub service_occurrence: u64,
+    pub characteristic_uuid: String,
+    pub characteristic_occurrence: u64,
+    pub consumer: String,
+    pub epoch: u64,
+    pub recipient_lease: String,
+    pub contiguous_read: u64,
+    pub acknowledged: bool,
 }
 
 impl ShutdownReport {
@@ -1044,10 +1217,30 @@ pub enum InvalidationCause {
 /// when data capacity is exhausted. Values drain before the terminal; the
 /// terminal is observed once, then the stream reports closed, never
 /// live-empty again.
+/// Whether a consumer still owns a radio activation or was retired by a confirmed link end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumerActivation {
+    Active(u64),
+    Retired,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NotificationPoll {
     /// One buffered value (FIFO arrival order).
     Value(Vec<u8>),
+    ValueWithProvenance {
+        value: Vec<u8>,
+        receipt: Option<ubm_core::central::NotificationReceipt>,
+        provenance: ubm_core::central::NotificationProvenance,
+        source_generation: u64,
+        source_ordinal: u64,
+    },
+    /// Ordered gap at the peer source; this is not a per-consumer loss count.
+    PeerSourceLoss {
+        peer_id: String,
+        generation: u64,
+        skipped_records: Option<u64>,
+    },
     ValueWithReceipt {
         value: Vec<u8>,
         receipt: ubm_core::central::NotificationReceipt,
@@ -1056,10 +1249,67 @@ pub enum NotificationPoll {
     Empty,
     /// Overflow terminal with loss details (exactly once).
     Terminal(ubm_core::central::SubscriptionTerminal),
+    /// The native source stopped; buffered values have already drained.
+    SourceFailed(DesktopError),
+    /// A nonterminal oversized source failure retained for paged recovery.
+    SourceFailureRecovery(PeerFailureRecoveryOffer),
     /// Hub invalidated: stale, resubscribe after the cause clears.
     Invalidated(InvalidationCause),
     /// Consumer removed/closed or failed terminal already consumed.
     Closed,
+}
+
+/// One native ordered record submitted in source FIFO order.
+#[derive(Debug, Clone)]
+pub enum OrderedIngressRecord {
+    Value {
+        member_id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        ordinal: u64,
+        value: Vec<u8>,
+        delivery: ubm_core::ordered_notifications::ObservedDelivery,
+        provenance: ubm_core::central::NotificationProvenance,
+    },
+    Marker {
+        marker_id: u64,
+        ordinal: u64,
+    },
+    Loss {
+        scope: ubm_core::ordered_notifications::LossScope,
+        unit: ubm_core::ordered_notifications::LossUnit,
+        count: Option<u64>,
+        bytes: Option<u64>,
+    },
+    Fence {
+        member_id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        uncertain_tail: bool,
+    },
+    Terminal {
+        reason: ubm_core::ordered_notifications::EndReason,
+        rejection: Option<ubm_core::ordered_notifications::SourceRejection>,
+        failure_member: Option<ubm_core::ordered_notifications::Membership>,
+        rejected_loss: Option<ubm_core::ordered_notifications::RejectedLoss>,
+        uncertain_tail: bool,
+    },
+    BridgeFailure {
+        failure: ubm_core::ordered_notifications::Failure,
+    },
+    /// The source explicitly reports an unknown positive number of omissions.
+    FailureObservationsOmitted,
+    /// A non-retiring native source barrier; host acknowledges only after batch ACK.
+    Barrier {
+        id: u64,
+        uncertain_tail: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderedIngressReceipt {
+    Admitted,
+    Terminalized,
+    /// No state changed; poll and retry this exact record.
+    PendingCapacity,
 }
 
 /// What one lifecycle event reports (PR210-11).
@@ -1077,6 +1327,8 @@ pub enum LifecycleKind {
     /// The link ended because the adapter was lost (finding 57; legacy
     /// `connection-state-changed` with reason `'adapter'`).
     AdapterLost,
+    /// Host reset after source observation failed, without asserting radio loss.
+    HostReset,
 }
 
 /// One connection-lifecycle transition, published after the core applied
@@ -1098,8 +1350,18 @@ pub struct LifecycleEvent {
     pub platform: Option<crate::errors::PlatformDetail>,
 }
 
+/// An uncorrelated native source observation. The peer identifier identifies
+/// the platform callback only; no accepted graph or connection is implied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceUncertaintyEvent {
+    pub sequence: u64,
+    pub peer_id: String,
+    pub error: DesktopError,
+}
+
 /// Connection and database generations of one peer, captured under the
 /// core lock before a lifecycle transition.
+#[derive(Clone)]
 struct Generations {
     connection: Option<String>,
     database: Option<String>,
@@ -1122,10 +1384,23 @@ pub enum CentralSignal {
     Advertisement(PeerSnapshot),
     /// A notification value was admitted into a subscription hub for this
     /// characteristic instance.
-    Value { scope: InstanceKey, value: Vec<u8> },
+    Value {
+        scope: InstanceKey,
+        value: Vec<u8>,
+    },
+    /// A notification source stopped for the current enable.
+    NotificationSourceFailed {
+        scope: InstanceKey,
+    },
+    PeerSourceLoss {
+        scope: InstanceKey,
+    },
     /// The lifecycle event also published on
     /// [`DesktopCentral::lifecycle_events`].
     Lifecycle(LifecycleEvent),
+    /// A native callback had no accepted graph. This is published separately
+    /// from lifecycle so it cannot terminate or mutate a UUID-reused link.
+    SourceUncertainty(SourceUncertaintyEvent),
     /// The adapter event also published on
     /// [`DesktopCentral::adapter_events`].
     Adapter(AdapterEvent),
@@ -1174,8 +1449,8 @@ pub struct AdapterResetEvent {
     /// The owned scan the reset ended (reported aborted on
     /// [`DesktopCentral::scan_terminal_events`]).
     pub ended_scan: Option<OperationId>,
-    /// Radio peer ids whose link the reset released
-    /// ([`LifecycleKind::AdapterLost`] each).
+    /// Radio peer ids whose link the reset released or whose link was
+    /// already observed disconnected or lost before the reset.
     pub released_links: Vec<String>,
     /// Per-instance subscription routes the reset ended.
     pub ended_subscriptions: usize,
@@ -1183,6 +1458,8 @@ pub struct AdapterResetEvent {
     /// adapter took them down with it or kept them; each is named, never
     /// dropped.
     pub release_failures: Vec<DesktopError>,
+    /// Failed physical link releases, keyed by the exact peer being released.
+    pub link_release_failures: Vec<(String, DesktopError)>,
 }
 
 /// The adapter facts admission reads (finding 58), as the radio last
@@ -1385,6 +1662,86 @@ pub const ADAPTER_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// tasks with no central lock held; it must not block.
 pub type CentralObserver = Arc<dyn Fn(CentralSignal) + Send + Sync>;
 
+/// Explicit host-owned persistence for retained peer-source failures.
+///
+/// The central never chooses a filesystem location or creates this ledger.
+/// A trusted host binds one only after it has configured durable storage. Each
+/// call is chunked, so staging arbitrarily large native evidence never asks
+/// central to materialize a second whole-error allocation. Implementations
+/// must retain a failed stage for retry and must not report `committed` until
+/// the occurrence envelope and every exact byte are durable.
+pub trait PeerFailureRecoveryLedger: Send + Sync {
+    /// Load every complete, integrity-checked occurrence retained by this
+    /// explicitly configured host ledger. Incomplete staging is never
+    /// surfaced as a recoverable source receipt.
+    fn recover_all<'a>(
+        &'a self,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Vec<DurablePeerFailureRecoveryOccurrence>, DesktopError>>
+                + Send
+                + 'a,
+        >,
+    >;
+    /// Read verified staged bytes after the native source may have advanced.
+    /// This durable-owner route is never used to substitute a live source
+    /// read before source acknowledgement starts.
+    fn read_recovered_chunk<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        offset: u64,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        ubm_core::oversized_evidence::PeerSourceFailureChunk,
+                        DesktopError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    >;
+    fn begin_stage<'a>(
+        &'a self,
+        occurrence: &'a DurablePeerFailureRecoveryOccurrence,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DesktopError>> + Send + 'a>>;
+    fn append_stage_chunk<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        offset: u64,
+        bytes: &'a [u8],
+        done: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DesktopError>> + Send + 'a>>;
+    fn commit_stage<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DesktopError>> + Send + 'a>>;
+    /// Persist the complete recipient cut after a bounded read or an
+    /// acknowledgement changes it. A restart must never turn RAM-only read
+    /// progress or an ACK into permission to advance the source head.
+    fn update_recipients<'a>(
+        &'a self,
+        occurrence: &'a DurablePeerFailureRecoveryOccurrence,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DesktopError>> + Send + 'a>>;
+    fn mark_source_ack_inflight<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        source_ack_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DesktopError>> + Send + 'a>>;
+    fn confirm_source_ack<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        source_ack_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DesktopError>> + Send + 'a>>;
+    /// Abandon an uncommitted stage after central proves it cannot publish the
+    /// captured recipient cut. This releases only durable staging state; it
+    /// never advances the native source.
+    fn release<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DesktopError>> + Send + 'a>>;
+}
+
 /// Identity and wiring for one central ([`DesktopCentral::open_with`]).
 #[derive(Clone)]
 pub struct CentralProfile {
@@ -1408,6 +1765,10 @@ pub struct CentralProfile {
     /// production btleplug radio only). A bus this build cannot honour
     /// fails the open with `capability.unsupported`, never falls back.
     pub bluez_bus: crate::boundary::BluezBus,
+    /// Optional trusted, host-configured durable recovery ledger. Absence is
+    /// reported at runtime when a source failure needs persistence; central
+    /// retains the native head and never silently falls back to a path.
+    pub peer_failure_recovery_ledger: Option<Arc<dyn PeerFailureRecoveryLedger>>,
 }
 
 impl CentralProfile {
@@ -1424,6 +1785,7 @@ impl CentralProfile {
             observer: None,
             adapter_id: None,
             bluez_bus: crate::boundary::BluezBus::System,
+            peer_failure_recovery_ledger: None,
         }
     }
 }
@@ -1435,6 +1797,10 @@ impl std::fmt::Debug for CentralProfile {
             .field("observer", &self.observer.is_some())
             .field("adapter_id", &self.adapter_id)
             .field("bluez_bus", &self.bluez_bus)
+            .field(
+                "peer_failure_recovery_ledger",
+                &self.peer_failure_recovery_ledger.is_some(),
+            )
             .finish()
     }
 }
@@ -1540,6 +1906,47 @@ struct ActiveScan {
     unpublished_cleanup: bool,
 }
 
+/// Keeps an exact recorder reclaim validation current through host mapping transfer.
+/// Dropping the permit releases peer and group admission without radio effects.
+pub struct OrderedRecordingReclaimPermit {
+    release: Option<tokio::sync::oneshot::Sender<()>>,
+    completion: tokio::sync::watch::Receiver<Option<Result<(), DesktopError>>>,
+}
+
+impl OrderedRecordingReclaimPermit {
+    /// Publish the handoff before calling this; failures retain retryable cleanup.
+    pub async fn release(&mut self) -> Result<(), DesktopError> {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+        if self.completion.borrow().as_ref().is_some_and(Result::is_ok) {
+            return Ok(());
+        }
+        self.completion.changed().await.map_err(|_| {
+            contract_error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.recording-reclaim.release",
+            )
+        })?;
+        self.completion.borrow_and_update().clone().ok_or_else(|| {
+            contract_error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.recording-reclaim.release",
+            )
+        })?
+    }
+}
+
+impl Drop for OrderedRecordingReclaimPermit {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
 /// A resolved characteristic-level path: core path index, radio instance
 /// address, and the descriptor address (UUID, occurrence) when the verb
 /// addresses a descriptor.
@@ -1566,6 +1973,7 @@ fn instance_key(peer_id: &str, stored: &StoredPath, characteristic: &str) -> Ins
 struct DiscoverySnapshot {
     generations: Option<(String, String)>,
     identity: Option<GattSnapshotIdentity>,
+    reclaim_binding: Option<Result<(), DesktopError>>,
     report: Option<DiscoveryReport>,
     leases: HashSet<String>,
 }
@@ -1576,11 +1984,116 @@ struct DiscoveryCoordinator {
     snapshot: Mutex<DiscoverySnapshot>,
 }
 
+struct DiscoveryTransaction {
+    id: u64,
+    peer_key: String,
+    generation: Generations,
+}
+
+/// A dropped caller leaves an owned cleanup obligation, independent of the
+/// lifecycle retirement queue (which shutdown is allowed to abort).
+struct DiscoveryCleanup<B: RadioBoundary> {
+    inner: Arc<Inner<B>>,
+    peer_id: String,
+    id: u64,
+    armed: bool,
+}
+
+impl<B: RadioBoundary> Drop for DiscoveryCleanup<B> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let inner = Arc::clone(&self.inner);
+        let peer_id = self.peer_id.clone();
+        let id = self.id;
+        tokio::spawn(async move {
+            let coordinator = discovery_coordinator(&inner, &peer_id);
+            let mut snapshot = coordinator.snapshot.lock().await;
+            let mut core = inner.core.lock().await;
+            if retire_discovery_transaction(&inner, &mut core, &peer_id, id) {
+                *snapshot = DiscoverySnapshot::default();
+            }
+        });
+    }
+}
+
+fn retire_discovery_transaction<B>(
+    inner: &Inner<B>,
+    core: &mut Central,
+    peer_id: &str,
+    id: u64,
+) -> bool {
+    let mut transactions = lock_std(&inner.discovery_transactions);
+    let Some(transaction) = transactions.get(peer_id) else {
+        return false;
+    };
+    if transaction.id != id {
+        return false;
+    }
+    let current = Generations::of(core, &transaction.peer_key);
+    let matches = current.connection == transaction.generation.connection
+        && current.database == transaction.generation.database;
+    if matches {
+        let result = match core.database_state(&transaction.peer_key) {
+            Some(DatabaseState::Discovering) => core.fail_discovery(&transaction.peer_key),
+            Some(DatabaseState::Current) => core
+                .services_changed(&transaction.peer_key)
+                .and_then(|()| core.require_rediscovery(&transaction.peer_key)),
+            _ => Ok(()),
+        };
+        if let Err(error) = result {
+            inner.note_compensation_failure();
+            eprintln!(
+                "{}: abandoned discovery cleanup failed: {error}",
+                inner.identity.log_tag()
+            );
+        }
+    }
+    transactions.remove(peer_id);
+    matches
+}
+
 fn discovery_coordinator<B>(inner: &Inner<B>, peer_id: &str) -> Arc<DiscoveryCoordinator> {
     lock_std(&inner.discoveries)
         .entry(peer_id.to_owned())
         .or_default()
         .clone()
+}
+
+#[derive(Default)]
+struct ReclaimIdWindow {
+    next: u64,
+    frontier: u64,
+    retired: std::collections::BTreeSet<u64>,
+}
+
+impl ReclaimIdWindow {
+    fn issue(&mut self) -> Option<u64> {
+        if self.next.checked_sub(self.frontier)? >= 256 {
+            return None;
+        }
+        let id = self.next.checked_add(1)?;
+        self.next = id;
+        Some(id)
+    }
+    fn retire(&mut self, id: u64) {
+        self.retired.insert(id);
+        while let Some(next) = self.frontier.checked_add(1) {
+            if !self.retired.remove(&next) {
+                break;
+            }
+            self.frontier = next;
+        }
+    }
+}
+
+struct ReclaimTaskDone<B>(Arc<Inner<B>>);
+impl<B> Drop for ReclaimTaskDone<B> {
+    fn drop(&mut self) {
+        self.0.reclaim_active.fetch_sub(1, Ordering::SeqCst);
+        self.0.reclaim_changed.notify_waiters();
+    }
 }
 
 struct HalfOpenCleanup {
@@ -1604,10 +2117,816 @@ struct NotificationSourceFailure {
     peer_id: String,
     epoch: u64,
     error: DesktopError,
+    recovery: Option<ubm_core::oversized_evidence::PeerSourceFailureDescriptor>,
     terminal_seen: HashSet<String>,
 }
 
+/// Central-owned obligation for one oversized nonterminal peer failure. The
+/// backend retains the native FIFO head; this receipt proves central staged
+/// the immutable recipient cut before it lets that head advance.
+struct PeerFailureRecoveryReceipt {
+    members: HashMap<PeerFailureRecoveryRecipientKey, PeerFailureRecoveryMember>,
+    teardown: Option<DesktopErrorEvidence>,
+    /// Exactly one final source acknowledgement may be in flight.  All
+    /// recipient acknowledgement state stays retained until that irreversible
+    /// boundary answers.
+    committing: bool,
+    source_ack_id: Option<String>,
+    /// Native retirement completed. A retry after journal confirmation fails
+    /// must not invoke the one-shot retirement operation a second time.
+    source_ack_retired: bool,
+    /// The durable ledger has confirmed the native retirement. This is
+    /// distinct from `source_ack_retired`: a crash or ledger failure after a
+    /// successful native retire must retry durable confirmation before release.
+    source_ack_confirmed: bool,
+    /// The sidecar survived a process restart after durable begin intent but
+    /// before native retirement. The opaque receipt remains readable, but a
+    /// fresh process must not pretend it rehydrates an OS-native owner.
+    source_ack_native_owner_unavailable: bool,
+    /// This receipt was restored from the trusted durable ledger. Its bytes
+    /// must be read from that ledger even when the recorded producer phase
+    /// has no native acknowledgement receipt yet: a fresh process has no
+    /// honest live route from which to recreate the source evidence.
+    durable_restored: bool,
+}
+
+/// Exact source-time logical recipient identity. A physical characteristic can
+/// have several consumers, each with independent read/ACK authority.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct PeerFailureRecoveryRecipientKey {
+    scope: InstanceKey,
+    consumer: String,
+}
+
+/// The central, rather than the radio's shared range reader, accounts for
+/// every source-time recipient.  A read by one routed consumer must never
+/// make a second recipient eligible to advance the retained source head.
+struct PeerFailureRecoveryMember {
+    epoch: u64,
+    recipient_lease: String,
+    contiguous_read: u64,
+    acknowledged: bool,
+}
+
+/// A native source offer intentionally held while the host binds the durable
+/// ledger required to make it recoverable across a restart.  The acknowledgement
+/// is capability-like and is never fired by drop or by attachment alone.
+struct PendingPeerFailureRecoveryOffer {
+    members: Vec<(InstanceKey, u64)>,
+    teardown: DesktopErrorEvidence,
+    ack: crate::boundary::PeerSourceFailureAck,
+}
+
+/// A source-wide descriptor together with the unforgeable, source-time
+/// recipient lease that may read and acknowledge it.  The descriptor alone
+/// deliberately carries no authority to advance a peer's retained head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerFailureRecoveryOffer {
+    pub descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    pub recipient_lease: String,
+    /// The exact producer failure. Historical V1 durable rows omit it and
+    /// therefore cannot be projected as a live recovery offer.
+    pub error: Option<DesktopError>,
+}
+
+/// Crate-visible durable handoff record for a retained peer-source failure.
+/// `continuation_journal` owns its encoding and transactional persistence;
+/// central owns conversion to its live receipt and never invents a second
+/// descriptor encoding. Recipient progress is persisted as a contiguous
+/// prefix only after a raw page has been returned; an out-of-order page never
+/// authorizes acknowledgement after a process loss.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurablePeerFailureRecoveryOccurrence {
+    pub descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    /// Opaque native source-ACK receipt minted with the retained offer.  It
+    /// survives a crash between the irreversible source ACK and journal
+    /// commit; never derive it from the public descriptor.
+    pub source_ack_id: Option<String>,
+    pub recipients: Vec<DurablePeerFailureRecoveryRecipient>,
+    pub producer_ack: DurablePeerFailureProducerAck,
+    /// Full owned error evidence, including nested platform cleanup detail.
+    /// It is deliberately not a formatted message; journal can persist each
+    /// public field losslessly and restore it with `DesktopError::from`.
+    pub teardown: Option<crate::errors::DesktopErrorEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurablePeerFailureRecoveryRecipient {
+    pub scope: InstanceKey,
+    /// Original logical consumer lease/name at source failure time.
+    pub consumer: String,
+    pub epoch: u64,
+    pub recipient_lease: String,
+    /// The exact contiguous durable-read prefix for this source-time
+    /// recipient. It is persisted before the recipient may acknowledge.
+    pub contiguous_read: u64,
+    pub acknowledged: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurablePeerFailureProducerAck {
+    NotStarted,
+    InFlight,
+    Committed,
+}
+
+impl PeerFailureRecoveryReceipt {
+    fn shutdown_debt(
+        &self,
+        descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> PeerFailureRecoveryShutdownDebt {
+        let mut recipients = self
+            .members
+            .iter()
+            .map(|(key, member)| PeerFailureRecoveryShutdownRecipient {
+                peer_id: key.scope.0.clone(),
+                service_uuid: key.scope.1.clone(),
+                service_occurrence: key.scope.2,
+                characteristic_uuid: key.scope.3.clone(),
+                characteristic_occurrence: key.scope.4,
+                consumer: key.consumer.clone(),
+                epoch: member.epoch,
+                recipient_lease: member.recipient_lease.clone(),
+                contiguous_read: member.contiguous_read,
+                acknowledged: member.acknowledged,
+            })
+            .collect::<Vec<_>>();
+        recipients.sort_by(|left, right| {
+            (
+                &left.peer_id,
+                &left.service_uuid,
+                left.service_occurrence,
+                &left.characteristic_uuid,
+                left.characteristic_occurrence,
+                &left.consumer,
+                left.epoch,
+                &left.recipient_lease,
+            )
+                .cmp(&(
+                    &right.peer_id,
+                    &right.service_uuid,
+                    right.service_occurrence,
+                    &right.characteristic_uuid,
+                    right.characteristic_occurrence,
+                    &right.consumer,
+                    right.epoch,
+                    &right.recipient_lease,
+                ))
+        });
+        PeerFailureRecoveryShutdownDebt {
+            descriptor,
+            source_ack_inflight: self.committing,
+            recipients,
+        }
+    }
+
+    fn durable(
+        &self,
+        descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> DurablePeerFailureRecoveryOccurrence {
+        DurablePeerFailureRecoveryOccurrence {
+            descriptor,
+            source_ack_id: self.source_ack_id.clone(),
+            recipients: self
+                .members
+                .iter()
+                .map(|(key, member)| DurablePeerFailureRecoveryRecipient {
+                    scope: key.scope.clone(),
+                    consumer: key.consumer.clone(),
+                    epoch: member.epoch,
+                    recipient_lease: member.recipient_lease.clone(),
+                    contiguous_read: member.contiguous_read,
+                    acknowledged: member.acknowledged,
+                })
+                .collect(),
+            // `committing` starts when the final recipient has ACKed, before
+            // the boundary mints its opaque source receipt. Durable state may
+            // call that a source ACK only after the receipt exists; otherwise
+            // a restart would hold an impossible in-flight entry.
+            producer_ack: if self.source_ack_confirmed {
+                DurablePeerFailureProducerAck::Committed
+            } else if self.source_ack_id.is_some() {
+                DurablePeerFailureProducerAck::InFlight
+            } else {
+                DurablePeerFailureProducerAck::NotStarted
+            },
+            teardown: self.teardown.clone(),
+        }
+    }
+
+    fn from_durable(occurrence: &DurablePeerFailureRecoveryOccurrence) -> Self {
+        Self {
+            members: occurrence
+                .recipients
+                .iter()
+                .map(|recipient| {
+                    (
+                        PeerFailureRecoveryRecipientKey {
+                            scope: recipient.scope.clone(),
+                            consumer: recipient.consumer.clone(),
+                        },
+                        PeerFailureRecoveryMember {
+                            epoch: recipient.epoch,
+                            recipient_lease: recipient.recipient_lease.clone(),
+                            contiguous_read: recipient.contiguous_read,
+                            acknowledged: recipient.acknowledged,
+                        },
+                    )
+                })
+                .collect(),
+            teardown: occurrence.teardown.clone(),
+            // A final recipient ACK is itself durable intent to finish this
+            // source transition.  It can legitimately precede `prepare`, so
+            // `NotStarted` does not mean no commit is pending after a restart.
+            // Keeping that fact lets the original lease retry and report the
+            // honest missing-native-owner outcome instead of inventing an
+            // invalid-state rejection.
+            committing: occurrence
+                .recipients
+                .iter()
+                .all(|recipient| recipient.acknowledged),
+            source_ack_id: occurrence.source_ack_id.clone(),
+            source_ack_retired: matches!(
+                occurrence.producer_ack,
+                DurablePeerFailureProducerAck::Committed
+            ),
+            source_ack_confirmed: matches!(
+                occurrence.producer_ack,
+                DurablePeerFailureProducerAck::Committed
+            ),
+            source_ack_native_owner_unavailable: matches!(
+                occurrence.producer_ack,
+                DurablePeerFailureProducerAck::NotStarted | DurablePeerFailureProducerAck::InFlight
+            ),
+            durable_restored: true,
+        }
+    }
+}
+
+/// Canonical, lossless journal form for a retained peer-source failure.
+///
+/// The journal stores this alongside the raw evidence bytes. It is deliberately
+/// crate-private: public recovery continues to use only the frozen `/1`
+/// descriptor and a recipient lease. Any malformed durable row is refused
+/// before it can acknowledge a live source head.
+pub(crate) fn durable_peer_failure_recovery_occurrence_encode(
+    occurrence: &DurablePeerFailureRecoveryOccurrence,
+) -> Value {
+    json!({
+        "version": 2,
+        "descriptor": durable_descriptor_encode(&occurrence.descriptor),
+        "sourceAckId": occurrence.source_ack_id,
+        "recipients": occurrence.recipients.iter().map(|recipient| json!({
+            "scope": [recipient.scope.0, recipient.scope.1, recipient.scope.2, recipient.scope.3, recipient.scope.4],
+            "consumer": recipient.consumer,
+            "epoch": recipient.epoch,
+            "recipientLease": recipient.recipient_lease,
+            "contiguousRead": recipient.contiguous_read,
+            "acknowledged": recipient.acknowledged,
+        })).collect::<Vec<_>>(),
+        "producerAck": match occurrence.producer_ack {
+            DurablePeerFailureProducerAck::NotStarted => "not-started",
+            DurablePeerFailureProducerAck::InFlight => "in-flight",
+            DurablePeerFailureProducerAck::Committed => "committed",
+        },
+        "teardown": occurrence.teardown.as_ref().map(durable_error_encode),
+    })
+}
+
+pub(crate) fn durable_peer_failure_recovery_occurrence_decode(
+    value: &Value,
+) -> Result<DurablePeerFailureRecoveryOccurrence, DesktopError> {
+    let object = value.as_object().ok_or_else(durable_occurrence_error)?;
+    let version = object.get("version").and_then(Value::as_u64);
+    if !matches!(version, Some(1 | 2)) {
+        return Err(durable_occurrence_error());
+    }
+    let descriptor = durable_descriptor_decode(
+        object
+            .get("descriptor")
+            .ok_or_else(durable_occurrence_error)?,
+    )?;
+    let source_ack_id = optional_string(object.get("sourceAckId"))?;
+    let recipients = object
+        .get("recipients")
+        .and_then(Value::as_array)
+        .ok_or_else(durable_occurrence_error)?
+        .iter()
+        .map(durable_recipient_decode)
+        .collect::<Result<Vec<_>, _>>()?;
+    if recipients.is_empty()
+        || recipients.iter().any(|recipient| {
+            recipient.consumer.is_empty()
+                || recipient.contiguous_read > descriptor.encoded_length
+                || (recipient.acknowledged
+                    && recipient.contiguous_read != descriptor.encoded_length)
+        })
+        || recipients.iter().enumerate().any(|(index, recipient)| {
+            recipients[..index]
+                .iter()
+                .any(|prior| prior.scope == recipient.scope && prior.consumer == recipient.consumer)
+        })
+    {
+        return Err(durable_occurrence_error());
+    }
+    let producer_ack = match object.get("producerAck").and_then(Value::as_str) {
+        Some("not-started") => DurablePeerFailureProducerAck::NotStarted,
+        Some("in-flight") => DurablePeerFailureProducerAck::InFlight,
+        Some("committed") => DurablePeerFailureProducerAck::Committed,
+        _ => return Err(durable_occurrence_error()),
+    };
+    if matches!(producer_ack, DurablePeerFailureProducerAck::NotStarted) != source_ack_id.is_none()
+    {
+        return Err(durable_occurrence_error());
+    }
+    let teardown = match object.get("teardown") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(durable_error_decode(value)?),
+    };
+    Ok(DurablePeerFailureRecoveryOccurrence {
+        descriptor,
+        source_ack_id,
+        recipients,
+        producer_ack,
+        teardown,
+    })
+}
+
+fn durable_occurrence_error() -> DesktopError {
+    DesktopError::new(
+        BleErrorCode::ProtocolMalformed,
+        BleErrorDomain::Restoration,
+        "gatt.notification.source-failure-recovery.restore",
+    )
+    .with_detail("durable peer source failure occurrence is malformed")
+}
+
+fn optional_string(value: Option<&Value>) -> Result<Option<String>, DesktopError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.clone())),
+        _ => Err(durable_occurrence_error()),
+    }
+}
+
+fn durable_id_encode(id: [u8; 16]) -> String {
+    id.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn durable_id_decode(value: &Value) -> Result<[u8; 16], DesktopError> {
+    let text = value.as_str().ok_or_else(durable_occurrence_error)?;
+    if text.len() != 32 {
+        return Err(durable_occurrence_error());
+    }
+    let mut id = [0_u8; 16];
+    for (index, slot) in id.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)
+            .map_err(|_| durable_occurrence_error())?;
+    }
+    Ok(id)
+}
+
+fn durable_descriptor_encode(
+    descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+) -> Value {
+    json!({
+        "protocol": descriptor.protocol,
+        "representation": descriptor.representation,
+        "host": durable_id_encode(descriptor.identity.host),
+        "peer": durable_id_encode(descriptor.identity.peer),
+        "sourceGeneration": durable_id_encode(descriptor.identity.source_generation),
+        "nativeGroup": durable_id_encode(descriptor.identity.native_group),
+        "transfer": durable_id_encode(descriptor.identity.transfer),
+        "recovery": durable_id_encode(descriptor.identity.recovery),
+        "encodedLength": descriptor.encoded_length,
+        "chunkBytes": descriptor.chunk_bytes,
+    })
+}
+
+fn durable_descriptor_decode(
+    value: &Value,
+) -> Result<ubm_core::oversized_evidence::PeerSourceFailureDescriptor, DesktopError> {
+    let object = value.as_object().ok_or_else(durable_occurrence_error)?;
+    let protocol = object
+        .get("protocol")
+        .and_then(Value::as_u64)
+        .and_then(|v| u8::try_from(v).ok())
+        .ok_or_else(durable_occurrence_error)?;
+    let representation = object
+        .get("representation")
+        .and_then(Value::as_str)
+        .ok_or_else(durable_occurrence_error)?;
+    if protocol != 1
+        || representation != ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION
+    {
+        return Err(durable_occurrence_error());
+    }
+    let chunk_bytes = object
+        .get("chunkBytes")
+        .and_then(Value::as_u64)
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|v| *v > 0)
+        .ok_or_else(durable_occurrence_error)?;
+    Ok(ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+        protocol,
+        representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+        identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+            host: durable_id_decode(object.get("host").ok_or_else(durable_occurrence_error)?)?,
+            peer: durable_id_decode(object.get("peer").ok_or_else(durable_occurrence_error)?)?,
+            source_generation: durable_id_decode(
+                object
+                    .get("sourceGeneration")
+                    .ok_or_else(durable_occurrence_error)?,
+            )?,
+            native_group: durable_id_decode(
+                object
+                    .get("nativeGroup")
+                    .ok_or_else(durable_occurrence_error)?,
+            )?,
+            transfer: durable_id_decode(
+                object
+                    .get("transfer")
+                    .ok_or_else(durable_occurrence_error)?,
+            )?,
+            recovery: durable_id_decode(
+                object
+                    .get("recovery")
+                    .ok_or_else(durable_occurrence_error)?,
+            )?,
+        },
+        encoded_length: object
+            .get("encodedLength")
+            .and_then(Value::as_u64)
+            .ok_or_else(durable_occurrence_error)?,
+        chunk_bytes,
+    })
+}
+
+fn durable_recipient_decode(
+    value: &Value,
+) -> Result<DurablePeerFailureRecoveryRecipient, DesktopError> {
+    let object = value.as_object().ok_or_else(durable_occurrence_error)?;
+    let scope = object
+        .get("scope")
+        .and_then(Value::as_array)
+        .ok_or_else(durable_occurrence_error)?;
+    if scope.len() != 5 {
+        return Err(durable_occurrence_error());
+    }
+    Ok(DurablePeerFailureRecoveryRecipient {
+        scope: (
+            scope[0]
+                .as_str()
+                .ok_or_else(durable_occurrence_error)?
+                .to_owned(),
+            scope[1]
+                .as_str()
+                .ok_or_else(durable_occurrence_error)?
+                .to_owned(),
+            scope[2].as_u64().ok_or_else(durable_occurrence_error)?,
+            scope[3]
+                .as_str()
+                .ok_or_else(durable_occurrence_error)?
+                .to_owned(),
+            scope[4].as_u64().ok_or_else(durable_occurrence_error)?,
+        ),
+        consumer: object
+            .get("consumer")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(durable_occurrence_error)?
+            .to_owned(),
+        epoch: object
+            .get("epoch")
+            .and_then(Value::as_u64)
+            .ok_or_else(durable_occurrence_error)?,
+        recipient_lease: object
+            .get("recipientLease")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(durable_occurrence_error)?
+            .to_owned(),
+        contiguous_read: object
+            .get("contiguousRead")
+            .and_then(Value::as_u64)
+            .ok_or_else(durable_occurrence_error)?,
+        acknowledged: object
+            .get("acknowledged")
+            .and_then(Value::as_bool)
+            .ok_or_else(durable_occurrence_error)?,
+    })
+}
+
+fn durable_error_encode(error: &DesktopErrorEvidence) -> Value {
+    json!({
+        "code": error.code.as_str(),
+        "domain": error.domain.as_str(),
+        "operation": error.operation,
+        "detail": error.detail,
+        "platform": error.platform.as_deref().map(durable_platform_encode),
+        "commit": error.commit.map(CommitState::as_str),
+        "retryability": error.retryability.as_str(),
+    })
+}
+
+fn durable_error_decode(value: &Value) -> Result<DesktopErrorEvidence, DesktopError> {
+    let object = value.as_object().ok_or_else(durable_occurrence_error)?;
+    let code = BleErrorCode::from_str(
+        object
+            .get("code")
+            .and_then(Value::as_str)
+            .ok_or_else(durable_occurrence_error)?,
+    )
+    .ok_or_else(durable_occurrence_error)?;
+    let domain = match object.get("domain").and_then(Value::as_str) {
+        Some("core") => BleErrorDomain::Core,
+        Some("adapter") => BleErrorDomain::Adapter,
+        Some("scan") => BleErrorDomain::Scan,
+        Some("chooser") => BleErrorDomain::Chooser,
+        Some("connection") => BleErrorDomain::Connection,
+        Some("gatt") => BleErrorDomain::Gatt,
+        Some("stream") => BleErrorDomain::Stream,
+        Some("capability") => BleErrorDomain::Capability,
+        Some("boundary") => BleErrorDomain::Boundary,
+        Some("cleanup") => BleErrorDomain::Cleanup,
+        Some("restoration") => BleErrorDomain::Restoration,
+        Some("ipc") => BleErrorDomain::Ipc,
+        Some("platform") => BleErrorDomain::Platform,
+        _ => return Err(durable_occurrence_error()),
+    };
+    let operation = object
+        .get("operation")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(durable_occurrence_error)?
+        .to_owned();
+    let detail = optional_string(object.get("detail"))?;
+    let platform = match object.get("platform") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(Box::new(durable_platform_decode(value)?)),
+    };
+    let commit = match object.get("commit") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(match value.as_str() {
+            "committed" => CommitState::Committed,
+            "not-dispatched" => CommitState::NotDispatched,
+            "unknown" => CommitState::Unknown,
+            "released" => CommitState::Released,
+            _ => return Err(durable_occurrence_error()),
+        }),
+        _ => return Err(durable_occurrence_error()),
+    };
+    let retryability = match object.get("retryability").and_then(Value::as_str) {
+        Some("never") => Retryability::Never,
+        Some("caller-decides") => Retryability::CallerDecides,
+        _ => return Err(durable_occurrence_error()),
+    };
+    Ok(DesktopErrorEvidence {
+        code,
+        domain,
+        operation,
+        detail,
+        platform,
+        commit,
+        retryability,
+    })
+}
+
+fn durable_platform_value_encode(value: &PlatformValue) -> Value {
+    match value {
+        PlatformValue::Int(value) => json!({"kind":"int","value":value}),
+        PlatformValue::Text(value) => json!({"kind":"text","value":value}),
+        PlatformValue::Bool(value) => json!({"kind":"bool","value":value}),
+    }
+}
+
+fn durable_platform_value_decode(value: &Value) -> Result<PlatformValue, DesktopError> {
+    let object = value.as_object().ok_or_else(durable_occurrence_error)?;
+    match object.get("kind").and_then(Value::as_str) {
+        Some("int") => Ok(PlatformValue::Int(
+            object
+                .get("value")
+                .and_then(Value::as_i64)
+                .ok_or_else(durable_occurrence_error)?,
+        )),
+        Some("text") => Ok(PlatformValue::Text(
+            object
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(durable_occurrence_error)?
+                .to_owned(),
+        )),
+        Some("bool") => Ok(PlatformValue::Bool(
+            object
+                .get("value")
+                .and_then(Value::as_bool)
+                .ok_or_else(durable_occurrence_error)?,
+        )),
+        _ => Err(durable_occurrence_error()),
+    }
+}
+
+fn durable_platform_encode(platform: &PlatformDetail) -> Value {
+    json!({
+        "domain": platform.domain,
+        "code": platform.code,
+        "message": platform.message,
+        "metadata": platform.metadata.iter().map(|(key, value)| json!([key, durable_platform_value_encode(value)])).collect::<Vec<_>>(),
+        "metadataEntries": platform.metadata_entries.as_ref().map(|entries| entries.iter().map(|entry| json!([entry.key, durable_platform_value_encode(&entry.value)])).collect::<Vec<_>>()),
+        "cleanup": platform.cleanup.iter().map(durable_platform_encode).collect::<Vec<_>>(),
+        "cleanupFailures": platform.cleanup_failures.iter().cloned().map(DesktopErrorEvidence::from).map(|error| durable_error_encode(&error)).collect::<Vec<_>>(),
+    })
+}
+
+fn durable_pairs_decode(value: &Value) -> Result<Vec<(String, PlatformValue)>, DesktopError> {
+    value
+        .as_array()
+        .ok_or_else(durable_occurrence_error)?
+        .iter()
+        .map(|entry| {
+            let pair = entry.as_array().ok_or_else(durable_occurrence_error)?;
+            if pair.len() != 2 {
+                return Err(durable_occurrence_error());
+            }
+            Ok((
+                pair[0]
+                    .as_str()
+                    .ok_or_else(durable_occurrence_error)?
+                    .to_owned(),
+                durable_platform_value_decode(&pair[1])?,
+            ))
+        })
+        .collect()
+}
+
+fn durable_platform_decode(value: &Value) -> Result<PlatformDetail, DesktopError> {
+    let object = value.as_object().ok_or_else(durable_occurrence_error)?;
+    let domain = object
+        .get("domain")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(durable_occurrence_error)?
+        .to_owned();
+    let code = object
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(durable_occurrence_error)?
+        .to_owned();
+    let metadata = durable_pairs_decode(
+        object
+            .get("metadata")
+            .ok_or_else(durable_occurrence_error)?,
+    )?
+    .into_iter()
+    .collect();
+    let metadata_entries = match object.get("metadataEntries") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            durable_pairs_decode(value)?
+                .into_iter()
+                .map(|(key, value)| PlatformMetadataEntry { key, value })
+                .collect(),
+        ),
+    };
+    let cleanup = object
+        .get("cleanup")
+        .and_then(Value::as_array)
+        .ok_or_else(durable_occurrence_error)?
+        .iter()
+        .map(durable_platform_decode)
+        .collect::<Result<Vec<_>, _>>()?;
+    let cleanup_failures = object
+        .get("cleanupFailures")
+        .and_then(Value::as_array)
+        .ok_or_else(durable_occurrence_error)?
+        .iter()
+        .map(durable_error_decode)
+        .map(|result| result.map(DesktopError::from))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PlatformDetail {
+        domain,
+        code,
+        message: optional_string(object.get("message"))?,
+        metadata,
+        metadata_entries,
+        cleanup,
+        cleanup_failures,
+    })
+}
+
 type RetainedParameterSourceFailure = (Option<String>, DesktopError, u64);
+
+/// The native disable and its answer outlive the subscribe caller.  The
+/// activation, rather than the current route, identifies every retry.
+struct MismatchCompensation {
+    key: InstanceKey,
+    selector: PathSelector,
+    consumer: String,
+    activation: (usize, u64),
+    peer_key: String,
+    core_admission: Option<ubm_core::central::OperationAdmission>,
+    admission: Option<ubm_core::central::OperationAdmission>,
+    connection_generation: Option<String>,
+    confirmed_release: AtomicBool,
+    native_released: AtomicBool,
+    logical: StdMutex<MismatchLogical>,
+    state: StdMutex<MismatchCompensationState>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    retirement_requested: AtomicBool,
+    reconcile_errors: StdMutex<VecDeque<DesktopError>>,
+    changed: tokio::sync::Notify,
+}
+
+struct MismatchLogical {
+    operation: Option<OperationId>,
+    enable_pending: bool,
+    consumer_pending: bool,
+}
+
+const MISMATCH_COMPENSATION_CAPACITY: usize = 4096;
+
+// Reserve before native enable: once an enable has happened, refusing to
+// retain its compensation would lose the physical cleanup obligation.
+struct MismatchReservation<'a>(&'a StdMutex<usize>);
+
+impl Drop for MismatchReservation<'_> {
+    fn drop(&mut self) {
+        *lock_std(self.0) -= 1;
+    }
+}
+
+#[derive(Clone)]
+enum MismatchCompensationState {
+    Pending,
+    Failed(DesktopError, bool), // bool: the native failure was reported
+    ReconcileFailed(DesktopError),
+    Interrupted(DesktopError, bool), // unknown native outcome, and whether it was reported
+    Released,
+}
+
+struct MismatchTaskGuard {
+    owner: Arc<MismatchCompensation>,
+    armed: bool,
+}
+
+impl Drop for MismatchTaskGuard {
+    fn drop(&mut self) {
+        let mut state = lock_std(&self.owner.state);
+        if self.armed && matches!(*state, MismatchCompensationState::Pending) {
+            *state = MismatchCompensationState::Interrupted(
+                contract_error(
+                    BleErrorCode::LifecycleInvariantViolation,
+                    BleErrorDomain::Cleanup,
+                    "gatt.subscribe.compensation",
+                )
+                .with_detail("compensation task ended without a native outcome"),
+                false,
+            );
+            self.owner.changed.notify_waiters();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ExactSubscriptionOwner {
+    peer: String,
+    selector: PathSelector,
+    consumer: String,
+    activation: (usize, u64),
+    release: Arc<Mutex<Option<Result<bool, DesktopError>>>>,
+    disable_drain_required: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct ExactSubscriptionBook {
+    owners: HashMap<ubm_core::central::OperationAdmission, ExactSubscriptionOwner>,
+    reservations: usize,
+}
+
+struct ExactSubscriptionReservation<'a>(&'a StdMutex<ExactSubscriptionBook>);
+
+impl Drop for ExactSubscriptionReservation<'_> {
+    fn drop(&mut self) {
+        lock_std(self.0).reservations -= 1;
+    }
+}
+
+type ExactDisableRegistry = notification_settlement::Registry<
+    ubm_core::central::OperationAdmission,
+    ubm_core::central::OperationAdmission,
+    NotificationPoll,
+    (),
+    (),
+    DesktopError,
+>;
+type ExactDisableSettlement = notification_settlement::Settlement<
+    ubm_core::central::OperationAdmission,
+    NotificationPoll,
+    (),
+    (),
+    DesktopError,
+>;
 
 struct Inner<B> {
     acquired: Arc<crate::acquired_gatt::ownership::Registry>,
@@ -1624,6 +2943,13 @@ struct Inner<B> {
     ordinal: u64,
     /// Resets so far; names each new generation.
     resets: AtomicU64,
+    adapter_retirement_epoch: AtomicU64,
+    pending_adapter_reset: AtomicU64,
+    pending_adapter_power: StdMutex<Option<AdapterPowerState>>,
+    recording_registration_gate: StdMutex<()>,
+    recording_registration_sealed: AtomicBool,
+    connection_admission: StdMutex<HashMap<String, Arc<Mutex<()>>>>,
+    retained_connection_origins: StdMutex<HashMap<(String, String), (String, String)>>,
     /// The adapter facts admission reads (finding 58).
     adapter_facts: StdMutex<AdapterFacts>,
     admission: AdmissionPolicy,
@@ -1661,9 +2987,50 @@ struct Inner<B> {
     completed_scans: ScanTickets,
     /// Radio peripheral id -> core session peer key.
     peers: Mutex<HashMap<String, String>>,
+    retirement_tail: StdMutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    retirement_slots: Arc<tokio::sync::Semaphore>,
+    retirement_overflow: AtomicBool,
+    retirement_tasks: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
+    reclaim_tasks: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
+    reclaim_active: AtomicU64,
+    reclaim_changed: tokio::sync::Notify,
+    empty_ordered_ingress: empty_ordered_source::EmptyOrderedSources,
+    ordered_physical_origins:
+        StdMutex<HashMap<(InstanceKey, u64), crate::boundary::OrderedPhysicalOrigin>>,
+    next_ordered_recording_owner: AtomicU64,
+    reclaim_ids: StdMutex<ReclaimIdWindow>,
+    reclaim_authority_request: AtomicU64,
+    reclaim_open_gate: Mutex<()>,
+    reclaim_authority: AtomicU64,
+    reclaim_authority_opened: AtomicBool,
+    reclaim_authority_closed: AtomicBool,
+    reclaim_authority_retiring: AtomicBool,
+    reclaim_authority_shutdown: Mutex<()>,
+    ordered_recording_exclusions: StdMutex<HashSet<(String, u64)>>,
+    ordered_batches: ordered_claims::OrderedBatchRegistry,
+    ordered_recovery_workers: StdMutex<HashSet<(String, u64)>>,
+    #[cfg(test)]
+    ordered_before_open: StdMutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    #[cfg(test)]
+    marker_before_publication:
+        StdMutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    mobile_ordered_ingress: StdMutex<crate::ordered_notification_groups::OrderedGroupRegistry>,
+    mobile_ordered_secondary: StdMutex<
+        HashMap<
+            (crate::ordered_notification_groups::SourceKey, u64),
+            ubm_core::ordered_notifications::LateFailureSummary,
+        >,
+    >,
+    quarantined_mobile_ordered:
+        StdMutex<HashSet<(crate::ordered_notification_groups::SourceKey, u64)>>,
+    #[cfg(target_os = "linux")]
+    uncertain_physical_losses:
+        StdMutex<HashMap<(String, u64), (crate::gatt_admission::GattProvisionalGate, bool)>>,
     /// One physical snapshot per peer; lease attachments do not rediscover
     /// or invalidate another owner's current logical database.
     discoveries: StdMutex<HashMap<String, Arc<DiscoveryCoordinator>>>,
+    discovery_transactions: StdMutex<HashMap<String, DiscoveryTransaction>>,
+    next_discovery_transaction: AtomicU64,
     /// Actual observation failure: retained for this host lifetime. Read-only
     /// FIFO drainage and teardown remain available after GATT admission stops.
     gatt_watch_failure: StdMutex<Option<DesktopError>>,
@@ -1678,7 +3045,43 @@ struct Inner<B> {
     /// share routing, and a queued value whose epoch no longer matches the
     /// live routing never delivers (F10).
     subscriptions: Mutex<HashMap<InstanceKey, (usize, u64)>>,
+    /// Short critical section which linearizes a live-route recovery
+    /// transition with route retirement. It protects only the decision and
+    /// in-memory receipt mutation; radio and ledger futures always run after
+    /// it is dropped. A completed final recipient transition is retained as
+    /// exact source-time cleanup debt, so later route retirement cannot make
+    /// a late durable result authorize a replacement route.
+    peer_failure_recovery_transition: Mutex<()>,
     notification_failures: StdMutex<HashMap<usize, NotificationSourceFailure>>,
+    peer_failure_recoveries: StdMutex<
+        HashMap<
+            ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+            PeerFailureRecoveryReceipt,
+        >,
+    >,
+    /// Serializes durable recipient-progress snapshots. The receipt itself is
+    /// mutable under its short std lock, but persistence must observe a
+    /// monotonic whole occurrence when several recipients read or ACK.
+    peer_failure_recovery_persistence: Mutex<()>,
+    peer_failure_recovery_ledger: StdMutex<Option<Arc<dyn PeerFailureRecoveryLedger>>>,
+    /// Offers which the radio deliberately retains while the host has not
+    /// yet bound a durable ledger.  Keeping the acknowledgement capability
+    /// here is what makes a later explicit attachment a re-offer rather than
+    /// a lossy best-effort retry.
+    pending_peer_failure_recovery_offers: StdMutex<
+        HashMap<
+            ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+            PendingPeerFailureRecoveryOffer,
+        >,
+    >,
+    /// Failed deletion of an unpublished durable peer-failure stage. The
+    /// native source remains unacknowledged, but an explicit retry must also
+    /// retry this cleanup even when its callback-time routes have retired.
+    /// Otherwise a failed `release` would be silently forgotten behind a
+    /// later route-mismatch fast path.
+    peer_failure_recovery_release_debt:
+        StdMutex<HashMap<ubm_core::oversized_evidence::PeerSourceFailureDescriptor, DesktopError>>,
+    peer_notification_sources: StdMutex<HashMap<String, u64>>,
     notification_activation_epochs: StdMutex<HashMap<InstanceKey, u64>>,
     /// Current subscription epoch per radio peer. Bumped every time the
     /// peer's routing invalidates (disconnect, loss, service change), so
@@ -1700,7 +3103,11 @@ struct Inner<B> {
     /// Per-instance keys whose physical disable failed and is pending
     /// retry through `unsubscribe`. A pending key fails new subscribes
     /// closed until the disable completes.
-    failed_disables: Mutex<HashSet<InstanceKey>>,
+    failed_disables: Arc<Mutex<HashSet<InstanceKey>>>,
+    /// Entries introduced solely to bridge core removal to the first poll.
+    predispatch_disables: StdMutex<HashSet<InstanceKey>>,
+    #[cfg(all(test, feature = "btleplug"))]
+    test_notification_cleanup_gate: StdMutex<Option<Arc<crate::btleplug_backend::GattCache<()>>>>,
     /// Delivery mode the radio observed when each live instance was
     /// enabled; joiners are checked against it, never re-enable.
     deliveries: StdMutex<HashMap<InstanceKey, ObservedDelivery>>,
@@ -1715,7 +3122,31 @@ struct Inner<B> {
     /// core paths and routing are gone, but the OS-side CCCD may still be
     /// live. `unsubscribe` releases them by the instance the enable
     /// addressed; a link loss releases them with the link.
-    retained_enablements: StdMutex<HashSet<InstanceKey>>,
+    retained_enablements: StdMutex<HashMap<(usize, u64), InstanceKey>>,
+    retained_cleanup_owners: StdMutex<HashMap<(String, String), (usize, u64)>>,
+    mismatch_compensations: StdMutex<Vec<Arc<MismatchCompensation>>>,
+    mismatch_reservations: StdMutex<usize>,
+    /// Retry obligations addressed by the original consumer admission.
+    exact_retained_cleanup: StdMutex<
+        HashMap<
+            ubm_core::central::OperationAdmission,
+            (
+                String,
+                PathSelector,
+                String,
+                usize,
+                u64,
+                Option<DesktopError>,
+            ),
+        >,
+    >,
+    exact_subscription_owners: StdMutex<ExactSubscriptionBook>,
+    exact_disable_tasks: ExactDisableRegistry,
+    /// An interrupted native call has no observed settlement. It cannot be
+    /// retried as if it had definitely failed or succeeded.
+    exact_unsettled_cleanup:
+        StdMutex<HashMap<ubm_core::central::OperationAdmission, Option<DesktopError>>>,
+    retained_claims: StdMutex<HashMap<(usize, u64), HashSet<String>>>,
     /// Link-security changes (pair/unpair results and OS reports).
     security: broadcast::Sender<SecurityEvent>,
     security_sequence: AtomicU64,
@@ -1747,6 +3178,8 @@ struct Inner<B> {
     lifecycle: broadcast::Sender<LifecycleEvent>,
     lifecycle_sequence: AtomicU64,
     lifecycle_unobserved: AtomicU64,
+    source_uncertainty: broadcast::Sender<SourceUncertaintyEvent>,
+    source_uncertainty_sequence: AtomicU64,
     adapter: broadcast::Sender<AdapterEvent>,
     adapter_sequence: AtomicU64,
     /// Adapter events the OS broadcast lost (vendored btleplug patch 10).
@@ -1897,6 +3330,790 @@ impl<B> Drop for StopLead<'_, B> {
 }
 
 impl<B: RadioBoundary> DesktopCentral<B> {
+    /// Whether both handles refer to the same central ownership authority.
+    pub fn same_authority(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Install one mobile source-owned collection before any member enable.
+    pub async fn install_mobile_ordered_ingress(
+        &self,
+        source: crate::ordered_notification_groups::SourceKey,
+        owner: ubm_core::ordered_notifications::OrderedCollection,
+        admission: &crate::GattAdmission,
+    ) -> Result<(), DesktopError> {
+        let collection_id = owner.group_id;
+        if !admission.belongs_to(&self.inner.gatt_admission, &source.peer_id) {
+            return Err(contract_error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.install",
+            ));
+        }
+        let _starting = admission.begin_starting().await?;
+        let peer_key = self.known_peer_key(&source.peer_id).await?;
+        let mut core = self.inner.core.lock().await;
+        if core.connection_generation(&peer_key).as_deref() != Some(owner.peer_generation.as_str())
+            || core.database_generation(&peer_key).as_deref()
+                != Some(owner.database_generation.as_str())
+            || core.database_state(&peer_key) != Some(DatabaseState::Current)
+        {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.install",
+            ));
+        }
+        lock_std(&self.inner.mobile_ordered_ingress)
+            .install(collection_id, source, owner)
+            .map_err(|error| {
+                contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.install",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+
+    /// Own an already-opened stale source only to drain failed-setup evidence.
+    /// The batch coordinator retains the exact old request and cleanup key.
+    fn quarantine_mobile_ordered_ingress(
+        &self,
+        source: crate::ordered_notification_groups::SourceKey,
+        owner: ubm_core::ordered_notifications::OrderedCollection,
+    ) -> Result<(), DesktopError> {
+        let collection_id = owner.group_id;
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        registry
+            .install(collection_id, source.clone(), owner)
+            .map_err(|error| {
+                contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.quarantine",
+                )
+                .with_detail(format!("{error:?}"))
+            })?;
+        lock_std(&self.inner.quarantined_mobile_ordered).insert((source, collection_id));
+        Ok(())
+    }
+
+    pub fn update_mobile_ordered_ingress(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+        transition: crate::boundary::OrderedSourceTransition,
+    ) -> Result<(), DesktopError> {
+        use crate::boundary::OrderedSourceTransition;
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if !registry.owns_source(collection_id, source) {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.update",
+            ));
+        }
+        if lock_std(&self.inner.quarantined_mobile_ordered)
+            .contains(&(source.clone(), collection_id))
+            && !matches!(&transition, OrderedSourceTransition::Close { .. })
+        {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.quarantine",
+            ));
+        }
+        registry
+            .with_collection(collection_id, |owner| match transition {
+                OrderedSourceTransition::BeginEnable { member_id } => owner.begin_enable(member_id),
+                OrderedSourceTransition::EnableResult { member_id, outcome } => {
+                    owner.enable_result(member_id, outcome)
+                }
+                OrderedSourceTransition::FailEnable {
+                    member_id,
+                    outcome,
+                    failure,
+                    tail_uncertain,
+                } => owner.fail_enable(member_id, outcome, failure, tail_uncertain),
+                OrderedSourceTransition::BeginRelease { member_id } => {
+                    owner.begin_release(member_id)
+                }
+                OrderedSourceTransition::ReleaseResult { member_id, result } => {
+                    owner.release_result(member_id, result)
+                }
+                OrderedSourceTransition::Close {
+                    reason,
+                    tail_uncertain,
+                } => owner.close(reason, tail_uncertain),
+            })
+            .map_err(|error| {
+                contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.update",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+
+    /// Increase an exact installed collection's byte budget atomically with
+    /// source admission and retirement. No queue or cleanup state is reset.
+    pub fn increase_mobile_ordered_byte_capacity(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+        max_bytes: usize,
+    ) -> Result<usize, DesktopError> {
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if !registry.owns_source(collection_id, source) {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.increase-capacity",
+            ));
+        }
+        registry
+            .with_collection(collection_id, |owner| {
+                owner.increase_byte_capacity(&source.generation, collection_id, max_bytes)
+            })
+            .map_err(|error| {
+                contract_error(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.increase-capacity",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+
+    pub fn poll_mobile_ordered_ingress(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+    ) -> Result<ubm_core::ordered_notifications::Poll, DesktopError> {
+        let exclusions = lock_std(&self.inner.ordered_recording_exclusions);
+        if exclusions.contains(&(source.peer_id.clone(), collection_id)) {
+            return Err(contract_error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.recording-owner",
+            ));
+        }
+        self.poll_mobile_ordered_ingress_internal(collection_id, source)
+    }
+    fn poll_mobile_ordered_ingress_internal(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+    ) -> Result<ubm_core::ordered_notifications::Poll, DesktopError> {
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if !registry.owns_source(collection_id, source) {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.poll",
+            ));
+        }
+        registry.poll(collection_id).map_err(|error| {
+            contract_error(
+                BleErrorCode::ProtocolViolation,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.poll",
+            )
+            .with_detail(format!("{error:?}"))
+        })
+    }
+
+    pub fn mobile_ordered_ingress_status(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+    ) -> Result<crate::boundary::OrderedSourceStatus, DesktopError> {
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if !registry.owns_source(collection_id, source) {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.status",
+            ));
+        }
+        registry
+            .with_collection_silent(collection_id, |owner| {
+                Ok(crate::boundary::OrderedSourceStatus {
+                    phase: owner.phase(),
+                    members: owner.members().to_vec(),
+                    cleanup_complete: owner.cleanup_complete(),
+                })
+            })
+            .map_err(|error| {
+                contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.status",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+
+    /// Claim an exact occurrence under the same source-order lock as close.
+    /// On refusal the producer receives the original record back.
+    pub fn retain_mobile_ordered_occurrence(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+        record: ubm_core::ordered_notifications::RetainedRecord,
+    ) -> Result<
+        ubm_core::ordered_notifications::OccurrenceLease,
+        (
+            DesktopError,
+            ubm_core::ordered_notifications::RetainedRecord,
+        ),
+    > {
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if !registry.owns_source(collection_id, source) {
+            return Err((
+                contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.retain",
+                ),
+                record,
+            ));
+        }
+        // Keep the record available even if registry lookup fails.
+        let mut record = Some(record);
+        let result = registry.with_collection(collection_id, |owner| {
+            let Some(occurrence) = record.take() else {
+                return Err(ubm_core::ordered_notifications::Error::InvalidPhase);
+            };
+            match owner.retain_occurrence(&source.generation, collection_id, occurrence) {
+                Ok(lease) => Ok(lease),
+                Err((error, occurrence)) => {
+                    record = Some(occurrence);
+                    Err(error)
+                }
+            }
+        });
+        match result {
+            Ok(lease) => Ok(lease),
+            Err(error) => Err((
+                contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.retain",
+                )
+                .with_detail(format!("{error:?}")),
+                record.expect("refused occurrence remains owned"),
+            )),
+        }
+    }
+
+    /// Retry or recover the same claim without synthesizing a source failure.
+    pub fn retry_mobile_ordered_occurrence(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+        lease: &mut ubm_core::ordered_notifications::OccurrenceLease,
+    ) -> Result<OrderedIngressReceipt, DesktopError> {
+        use crate::ordered_notification_groups::RegistryError;
+        use ubm_core::ordered_notifications::Error;
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if !registry.owns_source(collection_id, source) {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.retry",
+            ));
+        }
+        match registry.with_collection(collection_id, |owner| {
+            owner.retry_occurrence(&source.generation, collection_id, lease)
+        }) {
+            Ok(()) => Ok(OrderedIngressReceipt::Admitted),
+            Err(RegistryError::Collection(Error::PendingCapacity)) => {
+                Ok(OrderedIngressReceipt::PendingCapacity)
+            }
+            Err(error) => Err(contract_error(
+                BleErrorCode::ProtocolViolation,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.retry",
+            )
+            .with_detail(format!("{error:?}"))),
+        }
+    }
+
+    /// Return an unadmitted occurrence to its source owner on explicit cancel.
+    pub fn cancel_mobile_ordered_occurrence(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+        lease: &mut ubm_core::ordered_notifications::OccurrenceLease,
+    ) -> Result<ubm_core::ordered_notifications::RetainedRecord, DesktopError> {
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if !registry.owns_source(collection_id, source) {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.cancel",
+            ));
+        }
+        registry
+            .with_collection(collection_id, |owner| {
+                owner.cancel_occurrence(&source.generation, collection_id, lease)
+            })
+            .map_err(|error| {
+                contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.cancel",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+
+    /// Admit exactly one retained native record before its batch is acknowledged.
+    pub fn admit_mobile_ordered_record(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+        record: OrderedIngressRecord,
+    ) -> Result<OrderedIngressReceipt, DesktopError> {
+        match self.try_admit_mobile_ordered_record(collection_id, source, record)? {
+            OrderedIngressReceipt::PendingCapacity => Err(contract_error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.ingress",
+            )
+            .with_detail("ordered evidence capacity pending; retry the same record")),
+            receipt => Ok(receipt),
+        }
+    }
+
+    /// A full value or control lane leaves the record for the source owner to retry.
+    pub fn try_admit_mobile_ordered_record(
+        &self,
+        collection_id: u64,
+        source: &crate::ordered_notification_groups::SourceKey,
+        record: OrderedIngressRecord,
+    ) -> Result<OrderedIngressReceipt, DesktopError> {
+        use crate::ordered_notification_groups::RegistryError;
+        use ubm_core::ordered_notifications::{EndReason, Error, Phase, Record};
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if !registry.owns_source(collection_id, source) {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.ingress",
+            ));
+        }
+        let phase = registry
+            .with_collection_silent(collection_id, |owner| Ok(owner.phase()))
+            .map_err(|error| {
+                contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.ingress",
+                )
+                .with_detail(format!("{error:?}"))
+            })?;
+        let failure = match &record {
+            OrderedIngressRecord::BridgeFailure { failure }
+            | OrderedIngressRecord::Terminal {
+                reason:
+                    EndReason::SetupFailed(failure)
+                    | EndReason::SourceFailed(failure)
+                    | EndReason::HostReset(failure),
+                ..
+            } => Some(failure),
+            _ => None,
+        };
+        if let Some(failure) = failure {
+            match registry.with_collection_silent(collection_id, |owner| {
+                owner.validate_failure_evidence(failure)
+            }) {
+                Ok(()) => {}
+                Err(RegistryError::Collection(Error::RecordTooLarge)) => {
+                    return Err(contract_error(
+                        BleErrorCode::ArgumentInvalid,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.ingress.record-too-large",
+                    )
+                    .with_detail(
+                        "failure evidence exceeds the configured byte or nesting capacity",
+                    ));
+                }
+                Err(error) => {
+                    return Err(contract_error(
+                        BleErrorCode::ProtocolViolation,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.ingress",
+                    )
+                    .with_detail(format!("{error:?}")));
+                }
+            }
+        }
+        let late = matches!(phase, Phase::Closing | Phase::Terminal);
+        let observation = match &record {
+            OrderedIngressRecord::FailureObservationsOmitted => {
+                Some(Record::FailureObservationsOmitted { count: None })
+            }
+            OrderedIngressRecord::BridgeFailure { failure } if late => {
+                Some(Record::FailureObservation {
+                    failure: Some(failure.clone()),
+                    source_rejection: None,
+                    source_failure_member: None,
+                    rejected_loss: None,
+                    tail_uncertain: false,
+                })
+            }
+            OrderedIngressRecord::Terminal {
+                reason: EndReason::SourceOverflow,
+                rejection,
+                failure_member,
+                rejected_loss,
+                uncertain_tail,
+            } if late
+                && (rejection.is_some()
+                    || failure_member.is_some()
+                    || rejected_loss.is_some()
+                    || *uncertain_tail) =>
+            {
+                Some(Record::FailureObservation {
+                    failure: None,
+                    source_rejection: *rejection,
+                    source_failure_member: *failure_member,
+                    rejected_loss: *rejected_loss,
+                    tail_uncertain: *uncertain_tail,
+                })
+            }
+            OrderedIngressRecord::Barrier {
+                uncertain_tail: true,
+                ..
+            } if late => Some(Record::FailureObservation {
+                failure: None,
+                source_rejection: None,
+                source_failure_member: None,
+                rejected_loss: None,
+                tail_uncertain: true,
+            }),
+            _ => None,
+        };
+        if let Some(observation) = observation {
+            return match registry.with_collection(collection_id, |owner| {
+                owner.admit_failure_record(&source.generation, collection_id, observation)
+            }) {
+                Ok(()) => Ok(if late {
+                    OrderedIngressReceipt::Terminalized
+                } else {
+                    OrderedIngressReceipt::Admitted
+                }),
+                Err(RegistryError::Collection(Error::PendingCapacity)) => {
+                    Ok(OrderedIngressReceipt::PendingCapacity)
+                }
+                Err(RegistryError::Collection(Error::RecordTooLarge)) => Err(contract_error(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.ingress.record-too-large",
+                )
+                .with_detail("failure observation exceeds the configured byte capacity")),
+                Err(error) => Err(contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.ingress",
+                )
+                .with_detail(format!("{error:?}"))),
+            };
+        }
+        if let OrderedIngressRecord::BridgeFailure { failure } = &record {
+            let terminal = registry.with_collection(collection_id, |owner| {
+                if matches!(owner.phase(), Phase::Closing | Phase::Terminal) {
+                    Ok(true)
+                } else {
+                    owner.source_terminal(
+                        EndReason::SourceFailed(failure.clone()),
+                        None,
+                        None,
+                        true,
+                    )?;
+                    Ok(false)
+                }
+            });
+            let already_terminal = terminal.map_err(|error| {
+                contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.bridge-failure",
+                )
+                .with_detail(format!("{error:?}"))
+            })?;
+            if already_terminal {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.ingress",
+                ));
+            }
+            return Ok(OrderedIngressReceipt::Terminalized);
+        }
+        if let OrderedIngressRecord::Barrier { uncertain_tail, .. } = &record {
+            let transition = registry.with_collection(collection_id, |owner| {
+                if matches!(owner.phase(), Phase::Closing | Phase::Terminal) {
+                    return Ok((OrderedIngressReceipt::Terminalized, true));
+                }
+                if *uncertain_tail {
+                    owner.admit_loss(
+                        &source.generation,
+                        collection_id,
+                        ubm_core::ordered_notifications::LossScope::Unknown,
+                        ubm_core::ordered_notifications::LossUnit::Values,
+                        None,
+                        None,
+                    )?;
+                }
+                Ok((
+                    if matches!(owner.phase(), Phase::Closing | Phase::Terminal) {
+                        OrderedIngressReceipt::Terminalized
+                    } else {
+                        OrderedIngressReceipt::Admitted
+                    },
+                    false,
+                ))
+            });
+            let (receipt, already_terminal) = match transition {
+                Ok(result) => result,
+                Err(RegistryError::Collection(Error::PendingCapacity)) => {
+                    return Ok(OrderedIngressReceipt::PendingCapacity);
+                }
+                Err(error) => {
+                    return Err({
+                        contract_error(
+                            BleErrorCode::ProtocolViolation,
+                            BleErrorDomain::Gatt,
+                            "gatt.ordered.barrier",
+                        )
+                        .with_detail(format!("{error:?}"))
+                    });
+                }
+            };
+            if *uncertain_tail && already_terminal {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.ingress",
+                ));
+            }
+            return Ok(receipt);
+        }
+        let mut retire = None;
+        let result = registry.with_collection(collection_id, |owner| {
+            if matches!(owner.phase(), Phase::Closing | Phase::Terminal) {
+                return Err(Error::InvalidPhase);
+            }
+            match record {
+                OrderedIngressRecord::Value {
+                    member_id,
+                    membership,
+                    ordinal,
+                    value,
+                    delivery,
+                    provenance,
+                } => {
+                    if !owner.members().iter().any(|member| {
+                        member.member.id == member_id && member.member.source == membership
+                    }) {
+                        return Err(Error::UnknownMember);
+                    }
+                    owner.admit_value(
+                        &source.generation,
+                        collection_id,
+                        membership,
+                        ordinal,
+                        &value,
+                        delivery,
+                        provenance,
+                    )?;
+                }
+                OrderedIngressRecord::Marker { marker_id, ordinal } => {
+                    owner.admit_marker(&source.generation, collection_id, marker_id, ordinal)?
+                }
+                OrderedIngressRecord::Loss {
+                    scope,
+                    unit,
+                    count,
+                    bytes,
+                } => owner.admit_loss(
+                    &source.generation,
+                    collection_id,
+                    scope,
+                    unit,
+                    count,
+                    bytes,
+                )?,
+                OrderedIngressRecord::Fence {
+                    member_id,
+                    membership,
+                    uncertain_tail,
+                } => {
+                    if !owner.members().iter().any(|member| {
+                        member.member.id == member_id && member.member.source == membership
+                    }) {
+                        return Err(Error::UnknownMember);
+                    }
+                    retire = Some(membership);
+                    if uncertain_tail {
+                        owner.admit_loss(
+                            &source.generation,
+                            collection_id,
+                            ubm_core::ordered_notifications::LossScope::Member(member_id),
+                            ubm_core::ordered_notifications::LossUnit::Values,
+                            None,
+                            None,
+                        )?;
+                    }
+                }
+                OrderedIngressRecord::Terminal {
+                    reason,
+                    rejection,
+                    failure_member,
+                    rejected_loss,
+                    uncertain_tail,
+                } => owner.source_terminal_with_rejected_loss(
+                    reason,
+                    rejection,
+                    failure_member,
+                    rejected_loss,
+                    uncertain_tail,
+                )?,
+                OrderedIngressRecord::BridgeFailure { .. }
+                | OrderedIngressRecord::FailureObservationsOmitted => {
+                    return Err(Error::InvalidPhase);
+                }
+                OrderedIngressRecord::Barrier { .. } => return Err(Error::InvalidPhase),
+            }
+            Ok(
+                if matches!(owner.phase(), Phase::Closing | Phase::Terminal) {
+                    OrderedIngressReceipt::Terminalized
+                } else {
+                    OrderedIngressReceipt::Admitted
+                },
+            )
+        });
+        match result {
+            Ok(receipt) => {
+                if let Some(membership) = retire {
+                    registry.retire_membership(source, membership);
+                }
+                Ok(receipt)
+            }
+            Err(RegistryError::Collection(Error::PendingCapacity)) => {
+                Ok(OrderedIngressReceipt::PendingCapacity)
+            }
+            Err(RegistryError::Collection(Error::RecordTooLarge)) => Err(contract_error(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.ingress.record-too-large",
+            )
+            .with_detail("native value exceeds the configured byte capacity")),
+            Err(error) => {
+                let failure = contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.ingress",
+                )
+                .with_detail(format!("{error:?}"));
+                let terminal = registry.with_collection(collection_id, |owner| {
+                    owner.source_terminal(
+                        EndReason::SourceFailed(
+                            crate::ordered_notification_groups::failure_from_desktop(&failure),
+                        ),
+                        None,
+                        None,
+                        true,
+                    )
+                });
+                if terminal.is_ok() {
+                    Ok(OrderedIngressReceipt::Terminalized)
+                } else {
+                    Err(failure)
+                }
+            }
+        }
+    }
+
+    /// Take a bridge failure independently of a terminal already delivered.
+    pub(crate) fn take_mobile_ordered_bridge_failure(
+        &self,
+        source: &crate::ordered_notification_groups::SourceKey,
+        collection_id: u64,
+    ) -> Option<ubm_core::ordered_notifications::LateFailureSummary> {
+        lock_std(&self.inner.mobile_ordered_secondary).remove(&(source.clone(), collection_id))
+    }
+
+    /// Rebind only after native batch ACK confirms the old fence was consumed.
+    pub fn rebind_mobile_ordered_member(
+        &self,
+        source: &crate::ordered_notification_groups::SourceKey,
+        collection_id: u64,
+        member_id: u64,
+        old: ubm_core::ordered_notifications::Membership,
+        new: ubm_core::ordered_notifications::Membership,
+    ) -> Result<(), DesktopError> {
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if lock_std(&self.inner.quarantined_mobile_ordered)
+            .contains(&(source.clone(), collection_id))
+        {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.rebind",
+            ));
+        }
+        registry
+            .rebind_member(collection_id, source, member_id, old, new)
+            .map_err(|error| {
+                contract_error(
+                    BleErrorCode::ProtocolViolation,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.rebind",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+
+    pub fn remove_mobile_ordered_ingress(
+        &self,
+        source: &crate::ordered_notification_groups::SourceKey,
+        collection_id: u64,
+    ) -> Result<(), DesktopError> {
+        let mut registry = lock_std(&self.inner.mobile_ordered_ingress);
+        if !registry.owns_source(collection_id, source) {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.remove",
+            ));
+        }
+        if lock_std(&self.inner.mobile_ordered_secondary)
+            .contains_key(&(source.clone(), collection_id))
+        {
+            return Err(contract_error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.remove",
+            )
+            .with_detail("bridge failure remains unconsumed"));
+        }
+        registry.remove(collection_id).map_err(|error| {
+            contract_error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.remove",
+            )
+            .with_detail(format!("{error:?}"))
+        })?;
+        lock_std(&self.inner.quarantined_mobile_ordered).remove(&(source.clone(), collection_id));
+        Ok(())
+    }
     /// Open a central over `boundary` with the desktop profile and a fresh
     /// attachment scope. `owner` labels the attachment (host identity, e.g.
     /// `"node"`). Same as [`DesktopCentral::open_with`] with
@@ -1936,6 +4153,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 )),
             );
         }
+        let reclaim_authority = RECLAIM_AUTHORITY_COUNTER
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |id| id.checked_add(1))
+            .map_err(|_| {
+                contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.ordered.recording-reclaim",
+                )
+            })?;
         let ordinal = OPEN_COUNTER.fetch_add(1, Ordering::Relaxed);
         let epoch = AttachmentEpoch {
             ordinal,
@@ -1983,6 +4209,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         )
         .map_err(DesktopError::from)?;
         let (lifecycle, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
+        let (source_uncertainty, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
         crate::capabilities::apply_control_capability_limitation(
             &mut core,
             "connection:priority",
@@ -2018,6 +4245,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             identity: profile.identity,
             ordinal,
             resets: AtomicU64::new(0),
+            adapter_retirement_epoch: AtomicU64::new(0),
+            pending_adapter_reset: AtomicU64::new(0),
+            pending_adapter_power: StdMutex::new(None),
+            recording_registration_gate: StdMutex::new(()),
+            recording_registration_sealed: AtomicBool::new(false),
+            connection_admission: StdMutex::new(HashMap::new()),
+            retained_connection_origins: StdMutex::new(HashMap::new()),
             adapter_facts: StdMutex::new(facts),
             admission,
             teardown_on_loss,
@@ -2031,7 +4265,41 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             scan: StdMutex::new(None),
             completed_scans: StdMutex::new(CompletedScanTickets::new(&ticket_scope)),
             peers: Mutex::new(HashMap::new()),
+            retirement_tail: StdMutex::new(None),
+            retirement_slots: Arc::new(tokio::sync::Semaphore::new(256)),
+            retirement_overflow: AtomicBool::new(false),
+            retirement_tasks: StdMutex::new(Vec::new()),
+            reclaim_tasks: StdMutex::new(Vec::new()),
+            reclaim_active: AtomicU64::new(0),
+            reclaim_changed: tokio::sync::Notify::new(),
+            empty_ordered_ingress: empty_ordered_source::EmptyOrderedSources::default(),
+            ordered_physical_origins: StdMutex::new(HashMap::new()),
+            next_ordered_recording_owner: AtomicU64::new(1),
+            reclaim_ids: StdMutex::new(ReclaimIdWindow::default()),
+            reclaim_authority_request: AtomicU64::new(reclaim_authority),
+            reclaim_open_gate: Mutex::new(()),
+            reclaim_authority: AtomicU64::new(0),
+            reclaim_authority_opened: AtomicBool::new(false),
+            reclaim_authority_closed: AtomicBool::new(false),
+            reclaim_authority_retiring: AtomicBool::new(false),
+            reclaim_authority_shutdown: Mutex::new(()),
+            ordered_recording_exclusions: StdMutex::new(HashSet::new()),
+            ordered_batches: ordered_claims::OrderedBatchRegistry::default(),
+            ordered_recovery_workers: StdMutex::new(HashSet::new()),
+            #[cfg(test)]
+            ordered_before_open: StdMutex::new(None),
+            #[cfg(test)]
+            marker_before_publication: StdMutex::new(None),
+            mobile_ordered_ingress: StdMutex::new(
+                crate::ordered_notification_groups::OrderedGroupRegistry::default(),
+            ),
+            mobile_ordered_secondary: StdMutex::new(HashMap::new()),
+            quarantined_mobile_ordered: StdMutex::new(HashSet::new()),
+            #[cfg(target_os = "linux")]
+            uncertain_physical_losses: StdMutex::new(HashMap::new()),
             discoveries: StdMutex::new(HashMap::new()),
+            discovery_transactions: StdMutex::new(HashMap::new()),
+            next_discovery_transaction: AtomicU64::new(1),
             gatt_admission: crate::gatt_admission::GattAdmissionQueue::new(4096),
             gatt_watch_failure: StdMutex::new(None),
             gatt_observation_failures: StdMutex::new(HashMap::new()),
@@ -2039,17 +4307,35 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             pending_lease_children: StdMutex::new(HashMap::new()),
             half_open_cleanup: StdMutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
+            peer_failure_recovery_transition: Mutex::new(()),
             notification_failures: StdMutex::new(HashMap::new()),
+            peer_failure_recoveries: StdMutex::new(HashMap::new()),
+            peer_failure_recovery_persistence: Mutex::new(()),
+            peer_failure_recovery_ledger: StdMutex::new(profile.peer_failure_recovery_ledger),
+            pending_peer_failure_recovery_offers: StdMutex::new(HashMap::new()),
+            peer_failure_recovery_release_debt: StdMutex::new(HashMap::new()),
+            peer_notification_sources: StdMutex::new(HashMap::new()),
             notification_activation_epochs: StdMutex::new(HashMap::new()),
             epochs: Mutex::new(HashMap::new()),
             link_ends: StdMutex::new(HashMap::new()),
             confirmed_releases: StdMutex::new(HashMap::new()),
             link_end: tokio::sync::Notify::new(),
-            failed_disables: Mutex::new(HashSet::new()),
+            failed_disables: Arc::new(Mutex::new(HashSet::new())),
+            predispatch_disables: StdMutex::new(HashSet::new()),
+            #[cfg(all(test, feature = "btleplug"))]
+            test_notification_cleanup_gate: StdMutex::new(None),
             deliveries: StdMutex::new(HashMap::new()),
             access: StdMutex::new(HashMap::new()),
             service_access: StdMutex::new(HashMap::new()),
-            retained_enablements: StdMutex::new(HashSet::new()),
+            retained_enablements: StdMutex::new(HashMap::new()),
+            retained_cleanup_owners: StdMutex::new(HashMap::new()),
+            mismatch_compensations: StdMutex::new(Vec::new()),
+            mismatch_reservations: StdMutex::new(0),
+            exact_retained_cleanup: StdMutex::new(HashMap::new()),
+            exact_subscription_owners: StdMutex::new(ExactSubscriptionBook::default()),
+            exact_disable_tasks: ExactDisableRegistry::new(4096, 0, 0),
+            exact_unsettled_cleanup: StdMutex::new(HashMap::new()),
+            retained_claims: StdMutex::new(HashMap::new()),
             security: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             security_sequence: AtomicU64::new(0),
             pairings: StdMutex::new(HashMap::new()),
@@ -2066,6 +4352,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             lifecycle,
             lifecycle_sequence: AtomicU64::new(0),
             lifecycle_unobserved: AtomicU64::new(0),
+            source_uncertainty,
+            source_uncertainty_sequence: AtomicU64::new(0),
             adapter,
             adapter_sequence: AtomicU64::new(0),
             radio_events_lost: AtomicU64::new(0),
@@ -2090,6 +4378,96 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     #[must_use]
     pub fn boundary(&self) -> &B {
         &self.inner.boundary
+    }
+
+    /// Bind the host-selected durable peer-failure ledger and retry every
+    /// source offer which was intentionally retained while no ledger was
+    /// available.  This is an explicit host action: it does not acknowledge
+    /// a native source merely because a ledger appeared.
+    pub async fn attach_peer_failure_recovery_ledger(
+        &self,
+        ledger: Arc<dyn PeerFailureRecoveryLedger>,
+    ) -> Result<(), DesktopError> {
+        // Rehydrate before exposing the ledger or re-offering live source
+        // failures. A failed/tampered sidecar must fail closed rather than
+        // overwrite a restored recipient cut with a fresh offer.
+        let restored = ledger.recover_all().await?;
+        let mut restored_receipts = HashMap::with_capacity(restored.len());
+        for occurrence in restored {
+            let descriptor = occurrence.descriptor.clone();
+            if restored_receipts
+                .insert(
+                    descriptor,
+                    PeerFailureRecoveryReceipt::from_durable(&occurrence),
+                )
+                .is_some()
+            {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Restoration,
+                    "central.peer-failure-recovery-ledger.attach",
+                )
+                .with_detail("the durable peer failure ledger contains a duplicate occurrence"));
+            }
+        }
+        if !restored_receipts.is_empty() {
+            let mut recoveries = lock_std(&self.inner.peer_failure_recoveries);
+            if !recoveries.is_empty() {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Restoration,
+                    "central.peer-failure-recovery-ledger.attach",
+                )
+                .with_detail(
+                    "peer failure recovery state already exists before durable attachment",
+                ));
+            }
+            *recoveries = restored_receipts;
+        }
+        {
+            let mut configured = lock_std(&self.inner.peer_failure_recovery_ledger);
+            if configured.is_some() {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Restoration,
+                    "central.peer-failure-recovery-ledger.attach",
+                )
+                .with_detail("a durable peer failure ledger is already configured"));
+            }
+            *configured = Some(ledger);
+        }
+
+        retry_pending_peer_failure_recoveries(&self.inner).await?;
+        let _ = self.inner.native_wake.send(());
+        Ok(())
+    }
+
+    /// Retry source failures retained after a transient durable-stage refusal.
+    /// This explicit host action is the only way to re-offer a pending source
+    /// while its ledger remains attached; attachment itself is one-shot.
+    pub async fn retry_pending_peer_failure_recoveries(&self) -> Result<usize, DesktopError> {
+        if lock_std(&self.inner.peer_failure_recovery_ledger).is_none() {
+            return Err(contract_error(
+                BleErrorCode::CapabilityUnavailable,
+                BleErrorDomain::Restoration,
+                "central.peer-failure-recovery.retry",
+            )
+            .with_detail("no trusted durable peer failure ledger is configured"));
+        }
+        let staged = retry_pending_peer_failure_recoveries(&self.inner).await?;
+        let _ = self.inner.native_wake.send(());
+        Ok(staged)
+    }
+
+    /// Enumerate trusted durable recovery handles after a host-attached
+    /// ledger has restored them. These are source-time provenance records;
+    /// they deliberately do not mint a fresh subscription or route epoch.
+    #[must_use]
+    pub fn durable_peer_failure_recoveries(&self) -> Vec<DurablePeerFailureRecoveryOccurrence> {
+        lock_std(&self.inner.peer_failure_recoveries)
+            .iter()
+            .map(|(descriptor, receipt)| receipt.durable(descriptor.clone()))
+            .collect()
     }
 
     /// The current attachment scope: minted at open, replaced by every
@@ -2169,6 +4547,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.inner.lifecycle.subscribe()
     }
 
+    /// Subscribe to native source observations that could not be associated
+    /// with an accepted graph. A receiver more than
+    /// [`LIFECYCLE_EVENT_CAPACITY`] events behind receives `Lagged`; the
+    /// observation is diagnostic only and never changes connection state.
+    #[must_use]
+    pub fn source_uncertainty_events(&self) -> broadcast::Receiver<SourceUncertaintyEvent> {
+        self.inner.source_uncertainty.subscribe()
+    }
+
     /// Coalesced native-consumer wake. Payloads remain in their bounded core
     /// queues; lag is a wake, never a discarded data record. Subscribe before
     /// collecting to close the collect/wait race.
@@ -2216,6 +4603,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         }
         let mut pending = PendingTicket(Some(ctl.ticket.clone()));
+        // Shutdown seals new GATT slots, but a retained mismatch receipt
+        // still has to reach the cleanup handler and its exact owner.
+        if self.is_shut_down()
+            && lock_std(&self.inner.mismatch_compensations)
+                .iter()
+                .any(|owner| owner.key.0 == peer_id)
+        {
+            if ctl
+                .gatt_admission()
+                .is_some_and(|admission| !admission.belongs_to(&self.inner.gatt_admission, peer_id))
+            {
+                return Err(contract_error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Gatt,
+                    "gatt.admission",
+                ));
+            }
+            pending.0 = None;
+            return Ok(ctl);
+        }
         let mut ctl = self.bind_gatt_admission(peer_id, ctl)?;
         // Confirmed shutdown has a local retirement path that does not enter
         // the GATT queue or dispatch to the radio.
@@ -2566,6 +4973,33 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         Ok(())
     }
 
+    async fn fence_peer_source(
+        &self,
+        peer_id: &str,
+        ctl: &OpControl,
+        window: Window,
+        operation: &'static str,
+    ) -> Result<(), DesktopError> {
+        let result = match drive_link(
+            &self.inner,
+            peer_id,
+            operation,
+            &ctl.ticket,
+            window,
+            self.inner.boundary.flush_peer_notification_source(peer_id),
+        )
+        .await
+        {
+            Wait::Done(result) => result,
+            Wait::Expired => Err(timed_out(operation, window)),
+            Wait::Cancelled => Err(ctl.ticket.interruption(operation)),
+        };
+        if let Err(error) = &result {
+            fail_peer_source_fence(&self.inner, peer_id, error.clone()).await;
+        }
+        result
+    }
+
     /// [`DesktopCentral::precheck`] for a read of the adapter's own state
     /// (power, authorization). Such a read is not tracked, so an adapter
     /// reset never ends it with `operation.reset`: the reset is the
@@ -2821,7 +5255,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let core = self.inner.core.lock().await.resource_counters();
         let radio_peers = self.inner.peers.lock().await.len();
         let routed_subscriptions = self.inner.subscriptions.lock().await.len();
-        let pending_disables = self.inner.failed_disables.lock().await.len();
+        let pending_disables = self.inner.failed_disables.lock().await.len()
+            + lock_std(&self.inner.mismatch_compensations)
+                .iter()
+                .filter(|owner| {
+                    !matches!(*lock_std(&owner.state), MismatchCompensationState::Released)
+                })
+                .count();
         let queued_advertisements = self.inner.advertisements.lock().await.len();
         ResourceCounters {
             core,
@@ -2958,6 +5398,52 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             Some(epoch) => epoch,
             None => self.routing_epoch(peer_id).await,
         }
+    }
+
+    /// The exact activation owned by a consumer, including a retired database path.
+    pub async fn subscription_epoch_for_consumer(
+        &self,
+        peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
+        characteristic_uuid: &str,
+        characteristic_occurrence: u64,
+        consumer: &str,
+    ) -> Option<ConsumerActivation> {
+        let key = (
+            peer_id.to_owned(),
+            service_uuid.to_owned(),
+            service_occurrence,
+            characteristic_uuid.to_owned(),
+            characteristic_occurrence,
+        );
+        let active = self.inner.subscriptions.lock().await.get(&key).copied();
+        let retry = lock_std(&self.inner.retained_cleanup_owners)
+            .get(&(peer_id.to_owned(), consumer.to_owned()))
+            .copied();
+        {
+            let retained = lock_std(&self.inner.retained_enablements);
+            if let Some(activation) = retry {
+                return (retained.get(&activation) == Some(&key))
+                    .then_some(ConsumerActivation::Active(activation.1));
+            }
+            let claims = lock_std(&self.inner.retained_claims);
+            let mut matches = claims.iter().filter_map(|(activation, owners)| {
+                (owners.contains(consumer)
+                    && (active == Some(*activation) || retained.get(activation) == Some(&key)))
+                .then_some(activation.1)
+            });
+            if let Some(epoch) = matches.next() {
+                return matches
+                    .next()
+                    .is_none()
+                    .then_some(ConsumerActivation::Active(epoch));
+            }
+        }
+        let peer_key = self.known_peer_key(peer_id).await.ok()?;
+        lock_std(&self.inner.retired_consumers)
+            .contains(&(peer_key, consumer.to_owned()))
+            .then_some(ConsumerActivation::Retired)
     }
 
     /// Build a validated path selector with canonical UUIDs. Occurrence
@@ -3654,13 +6140,88 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// and settles the op as failed; the radio error takes precedence over
     /// compensation bookkeeping. Every path that does not hand the caller a
     /// handle releases the possibly half-open link.
+    /// Retain a host-owned lease from an existing authorized connection.
+    /// No radio operation or reconnect is performed.
+    pub async fn retain_connection_lease(
+        &self,
+        peer_id: &str,
+        source: &str,
+        dest: &str,
+        expected_generation: &str,
+    ) -> Result<(), DesktopError> {
+        const OP: &str = "connection.retain";
+        let peer_key = self.known_peer_key(peer_id).await?;
+        let gate = {
+            let mut gates = lock_std(&self.inner.connection_admission);
+            Arc::clone(
+                gates
+                    .entry(peer_id.to_owned())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        };
+        let _gate = gate.lock().await;
+        if self.inner.shut_down.load(Ordering::SeqCst)
+            || self.inner.pending_adapter_reset.load(Ordering::SeqCst) != 0
+        {
+            return Err(contract_error(
+                BleErrorCode::OperationReset,
+                BleErrorDomain::Connection,
+                OP,
+            ));
+        }
+        let mut core = self.inner.core.lock().await;
+        if self.inner.shut_down.load(Ordering::SeqCst)
+            || self.inner.pending_adapter_reset.load(Ordering::SeqCst) != 0
+        {
+            return Err(contract_error(
+                BleErrorCode::OperationReset,
+                BleErrorDomain::Connection,
+                OP,
+            ));
+        }
+        let mut owners = lock_std(&self.inner.retained_connection_origins);
+        owners.retain(|(peer, lease), _| {
+            core.connection_state(peer) == Some(ConnectionState::Connected)
+                && core.holds_lease(peer, lease)
+        });
+        let key = (peer_key.clone(), dest.to_owned());
+        if let Some((old_source, old_generation)) = owners.get(&key) {
+            if old_source == source
+                && old_generation == expected_generation
+                && core.lease_accepts_work(&peer_key, source)
+                && core.lease_accepts_work(&peer_key, dest)
+                && core.connection_generation(&peer_key).as_deref() == Some(expected_generation)
+                && core.connection_state(&peer_key) == Some(ConnectionState::Connected)
+            {
+                return Ok(());
+            }
+            return Err(contract_error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Connection,
+                OP,
+            ));
+        }
+        if owners.len() >= 256 {
+            return Err(contract_error(
+                BleErrorCode::StreamQuota,
+                BleErrorDomain::Connection,
+                OP,
+            ));
+        }
+        core.retain_connection_lease(&peer_key, source, dest, expected_generation)
+            .map_err(DesktopError::from)?;
+        owners.insert(key, (source.to_owned(), expected_generation.to_owned()));
+        Ok(())
+    }
+
     pub async fn connect(
         &self,
         peer_id: &str,
         lease: &str,
         ctl: OpControl,
     ) -> Result<ConnectionHandle, DesktopError> {
-        self.connect_intent(peer_id, lease, ctl, false).await
+        self.connect_intent(peer_id, lease, ctl, false, &mut None)
+            .await
     }
 
     /// Native deferred acquisition, over the same lease/compensation authority.
@@ -3670,7 +6231,43 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         lease: &str,
         ctl: OpControl,
     ) -> Result<ConnectionHandle, DesktopError> {
-        self.connect_intent(peer_id, lease, ctl, true).await
+        self.connect_intent(peer_id, lease, ctl, true, &mut None)
+            .await
+    }
+
+    /// Connect and retain the attachment on which the core admitted the operation.
+    pub async fn connect_with_admission(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        ctl: OpControl,
+    ) -> Result<(ConnectionHandle, ubm_core::central::OperationAdmission), DesktopError> {
+        let mut admitted = None;
+        let result = self
+            .connect_intent(peer_id, lease, ctl, false, &mut admitted)
+            .await?;
+        let attachment = admitted.ok_or_else(|| {
+            contract_error(
+                BleErrorCode::LifecycleInvariantViolation,
+                BleErrorDomain::Core,
+                "connection.connect.admission",
+            )
+        })?;
+        Ok((result, attachment))
+    }
+
+    /// Publish host-owned state while the core still owns the admitted attachment.
+    /// The callback must not block or call back into the central.
+    pub async fn publish_if_attached<T>(
+        &self,
+        attachment: &AttachmentTuple,
+        publish: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let core = self.inner.core.lock().await;
+        if core.attachment() != attachment {
+            return None;
+        }
+        Some(publish())
     }
 
     async fn connect_intent(
@@ -3679,8 +6276,17 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         lease: &str,
         ctl: OpControl,
         deferred: bool,
+        admitted: &mut Option<ubm_core::central::OperationAdmission>,
     ) -> Result<ConnectionHandle, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
+        let admission_epoch = self.inner.adapter_retirement_epoch.load(Ordering::SeqCst);
+        if self.inner.pending_adapter_reset.load(Ordering::SeqCst) != 0 {
+            return Err(contract_error(
+                BleErrorCode::AdapterResetting,
+                BleErrorDomain::Adapter,
+                "connection.connect",
+            ));
+        }
         self.precheck(&ctl, "connection.connect")?;
         self.inner
             .boundary
@@ -3734,8 +6340,30 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .lock()
             .await
             .insert(peer_id.to_owned(), peer_key.clone());
+        let connection_gate = {
+            let mut gates = lock_std(&self.inner.connection_admission);
+            Arc::clone(
+                gates
+                    .entry(peer_id.to_owned())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        };
+        let connection_admission = match drive(&ctl.ticket, window, connection_gate.lock()).await {
+            Wait::Done(guard) => guard,
+            Wait::Expired => return Err(timed_out("connection.connect", window)),
+            Wait::Cancelled => return Err(ctl.ticket.interruption("connection.connect")),
+        };
         let (operation, connection_generation, adapter_epoch, mut release_serial) = {
             let mut core = self.inner.core.lock().await;
+            if self.inner.pending_adapter_reset.load(Ordering::SeqCst) != 0
+                || self.inner.adapter_retirement_epoch.load(Ordering::SeqCst) != admission_epoch
+            {
+                return Err(contract_error(
+                    BleErrorCode::OperationReset,
+                    BleErrorDomain::Connection,
+                    "connection.connect",
+                ));
+            }
             if lock_std(&self.inner.half_open_cleanup).contains_key(peer_id) {
                 return Err(contract_error(
                     BleErrorCode::LifecycleInvalidState,
@@ -3745,8 +6373,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .with_detail("previous half-open connection cleanup remains owned"));
             }
             let mut out = batch();
-            let id = core
-                .connect(
+            let admission = core
+                .connect_with_admission(
                     &peer_key,
                     lease,
                     window.core_timeout_ms(),
@@ -3754,7 +6382,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     &mut out,
                 )
                 .map_err(DesktopError::from)?;
+            let id = admission.operation_id().clone();
             publish_or_refuse(&mut core, &ctl.ticket, &id, "connection.connect", None)?;
+            *admitted = Some(admission);
             lock_std(&self.inner.retired_leases).remove(&(peer_key.clone(), lease.to_owned()));
             core.dispatch_op(&id, &mut out)
                 .map_err(DesktopError::from)?;
@@ -3801,6 +6431,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 release_serial,
             },
         );
+        drop(connection_admission);
         let acquisition = async {
             if deferred {
                 self.inner
@@ -3823,6 +6454,16 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 let settled = {
                     let mut core = self.inner.core.lock().await;
                     let mut out = batch();
+                    if self.inner.pending_adapter_reset.load(Ordering::SeqCst) != 0
+                        || self.inner.adapter_retirement_epoch.load(Ordering::SeqCst)
+                            != admission_epoch
+                    {
+                        return Err(contract_error(
+                            BleErrorCode::OperationReset,
+                            BleErrorDomain::Connection,
+                            "connection.connect",
+                        ));
+                    }
                     if core.connection_generation(&peer_key).as_deref() != Some(expected_generation)
                     {
                         return Err(contract_error(
@@ -4033,7 +6674,94 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         lease: &str,
         ctl: OpControl,
     ) -> Result<ConnectionReleaseReport, DesktopError> {
+        self.release_connection_lease_report_inner(peer_id, lease, None, ctl)
+            .await
+    }
+
+    /// Release only the lease admitted by this exact core operation.
+    pub async fn release_connection_lease_exact(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        admission: &ubm_core::central::OperationAdmission,
+        ctl: OpControl,
+    ) -> Result<bool, DesktopError> {
+        self.release_connection_lease_report_inner(peer_id, lease, Some(admission), ctl)
+            .await
+            .map(|report| report.physical)
+    }
+
+    async fn release_connection_lease_report_inner(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        admission: Option<&ubm_core::central::OperationAdmission>,
+        ctl: OpControl,
+    ) -> Result<ConnectionReleaseReport, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
+        let window = ctl.budget.window(LIVENESS_CLEANUP);
+        let gate = {
+            let mut gates = lock_std(&self.inner.lease_releases);
+            gates.retain(|_, gate| gate.strong_count() != 0);
+            let slot = gates
+                .entry((peer_id.to_owned(), lease.to_owned()))
+                .or_default();
+            if let Some(gate) = slot.upgrade() {
+                gate
+            } else {
+                let gate = Arc::new(Mutex::new(None));
+                *slot = Arc::downgrade(&gate);
+                gate
+            }
+        };
+        let mut released = match drive(&ctl.ticket, window, gate.lock()).await {
+            Wait::Done(guard) => guard,
+            Wait::Expired => {
+                return Err(classify(
+                    timed_out("connection.release", window),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+            Wait::Cancelled => {
+                return Err(classify(
+                    ctl.ticket.interruption("connection.release"),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+        };
+        // A replacement connect uses this same gate. Keep it until all
+        // name-addressed cleanup is complete, including native cleanup that
+        // cannot itself carry a core admission token.
+        let connection_gate = admission.map(|_| {
+            let mut gates = lock_std(&self.inner.connection_admission);
+            Arc::clone(
+                gates
+                    .entry(peer_id.to_owned())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        });
+        let _connection_guard = if let Some(gate) = &connection_gate {
+            Some(match drive(&ctl.ticket, window, gate.lock()).await {
+                Wait::Done(guard) => guard,
+                Wait::Expired => return Err(timed_out("connection.release", window)),
+                Wait::Cancelled => return Err(ctl.ticket.interruption("connection.release")),
+            })
+        } else {
+            None
+        };
+        if let Some(admission) = admission {
+            self.precheck(&ctl, "connection.release")?;
+            self.refuse_before_admission(&ctl, "connection.release")?;
+            let peer_key = self.known_peer_key(peer_id).await?;
+            self.inner
+                .core
+                .lock()
+                .await
+                .begin_lease_release_exact(&peer_key, lease, admission)
+                .map_err(DesktopError::from)?;
+        }
         if self.inner.shutdown_release_confirmed.load(Ordering::SeqCst) {
             let peer_key = self.known_peer_key(peer_id).await?;
             let mut core = self.inner.core.lock().await;
@@ -4064,7 +6792,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         }
         self.precheck(&ctl, "connection.release")?;
-        let window = ctl.budget.window(LIVENESS_CLEANUP);
+        self.refuse_before_admission(&ctl, "connection.release")?;
+        if let Some(report) = released.as_ref() {
+            return Ok(report.clone());
+        }
         let terminal_peer_key = self.known_peer_key(peer_id).await?;
         self.release_terminal_cleanup(peer_id, &terminal_peer_key, lease, &ctl, window)
             .await?;
@@ -4098,44 +6829,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
             Wait::Cancelled => return Err(ctl.ticket.interruption("connection.release")),
         }
-        let gate = {
-            let mut gates = lock_std(&self.inner.lease_releases);
-            gates.retain(|_, gate| gate.strong_count() != 0);
-            let slot = gates
-                .entry((peer_id.to_owned(), lease.to_owned()))
-                .or_default();
-            if let Some(gate) = slot.upgrade() {
-                gate
-            } else {
-                let gate = Arc::new(Mutex::new(None));
-                *slot = Arc::downgrade(&gate);
-                gate
-            }
-        };
-        let mut released = match drive(&ctl.ticket, window, gate.lock()).await {
-            Wait::Done(guard) => guard,
-            Wait::Expired => {
-                return Err(classify(
-                    timed_out("connection.release", window),
-                    OpKind::Cleanup,
-                    false,
-                ));
-            }
-            Wait::Cancelled => {
-                return Err(classify(
-                    ctl.ticket.interruption("connection.release"),
-                    OpKind::Cleanup,
-                    false,
-                ));
-            }
-        };
-        self.refuse_before_admission(&ctl, "connection.release")?;
-        if let Some(report) = released.as_ref() {
-            return Ok(report.clone());
-        }
         let peer_key = self.known_peer_key(peer_id).await?;
         let children = {
             let mut core = self.inner.core.lock().await;
+            if let Some(admission) = admission {
+                core.begin_lease_release_exact(&peer_key, lease, admission)
+                    .map_err(DesktopError::from)?;
+            }
             if !core.holds_lease(&peer_key, lease)
                 && let Some(original_generation) = lock_std(&self.inner.retired_leases)
                     .remove(&(peer_key.clone(), lease.to_owned()))
@@ -4225,6 +6925,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         {
             let mut core = self.inner.core.lock().await;
+            if let Some(admission) = admission {
+                core.begin_lease_release_exact(&peer_key, lease, admission)
+                    .map_err(DesktopError::from)?;
+            }
             let another = core
                 .held_leases()
                 .iter()
@@ -4255,6 +6959,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 peer_id,
                 lease,
                 OpControl::new(release_budget, ctl.ticket.clone()),
+                admission.is_some(),
             )
             .await
             .map(|report| ConnectionReleaseReport {
@@ -4292,7 +6997,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         lease: &str,
         ctl: OpControl,
     ) -> Result<LinkRelease, DesktopError> {
-        self.disconnect_report(peer_id, lease, ctl)
+        self.disconnect_report(peer_id, lease, ctl, false)
             .await
             .map(|report| report.release)
     }
@@ -4301,6 +7006,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         peer_id: &str,
         lease: &str,
         ctl: OpControl,
+        connection_gate_held: bool,
     ) -> Result<DisconnectReport, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "connection.disconnect")?;
@@ -4308,8 +7014,70 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let peer_key = self.known_peer_key(peer_id).await?;
         self.release_terminal_cleanup(peer_id, &peer_key, lease, &ctl, window)
             .await?;
+        let connection_gate = {
+            let mut gates = lock_std(&self.inner.connection_admission);
+            Arc::clone(
+                gates
+                    .entry(peer_id.to_owned())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        };
+        let connection_admission = if connection_gate_held {
+            None
+        } else {
+            Some(
+                match drive(&ctl.ticket, window, connection_gate.lock()).await {
+                    Wait::Done(guard) => guard,
+                    Wait::Expired => return Err(timed_out("connection.disconnect", window)),
+                    Wait::Cancelled => {
+                        return Err(ctl.ticket.interruption("connection.disconnect"));
+                    }
+                },
+            )
+        };
+        let retirement = {
+            let core = self.inner.core.lock().await;
+            core.holds_lease(&peer_key, lease).then(|| {
+                (
+                    Generations::of(&core, &peer_key),
+                    self.inner.gatt_admission.provisional_peer(peer_id),
+                )
+            })
+        };
+        if let Some((generation, gate)) = &retirement {
+            gate.wait_starting().await;
+            {
+                let core = self.inner.core.lock().await;
+                if core.connection_generation(&peer_key) != generation.connection {
+                    return Err(contract_error(
+                        BleErrorCode::ConnectionStale,
+                        BleErrorDomain::Connection,
+                        "connection.disconnect",
+                    ));
+                }
+                gate.commit(BleErrorCode::OperationDisconnected);
+            }
+            retire_peer_ordered_groups(
+                &self.inner,
+                peer_id,
+                generation,
+                ubm_core::ordered_notifications::EndReason::OwnerReleased,
+            )
+            .await;
+            self.fence_peer_source(peer_id, &ctl, window, "connection.disconnect")
+                .await?;
+        }
         let release_generation = {
             let mut core = self.inner.core.lock().await;
+            if let Some((generation, _)) = &retirement
+                && core.connection_generation(&peer_key) != generation.connection
+            {
+                return Err(contract_error(
+                    BleErrorCode::ConnectionStale,
+                    BleErrorDomain::Connection,
+                    "connection.disconnect",
+                ));
+            }
             if core.connection_state(&peer_key).is_none()
                 && let Some(original_generation) = lock_std(&self.inner.retired_leases)
                     .remove(&(peer_key.clone(), lease.to_owned()))
@@ -4343,6 +7111,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
             Generations::of(&core, &peer_key)
         };
+        drop(retirement);
+        drop(connection_admission);
         // The release is underway: operations still waiting on this link end
         // now, `operation.disconnected`, as Android's stack ends them at an
         // app disconnect (owner decision, 5.0).
@@ -4390,6 +7160,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             &self.inner,
             peer_id,
             Some((&peer_key, release_generation.connection.as_deref())),
+            false,
         )
         .await;
         let (result, event) = {
@@ -4401,6 +7172,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         && core.connection_state(&peer_key) == Some(ConnectionState::Disconnecting)
                     {
                         note_confirmed_release(&self.inner, peer_id);
+                        note_mismatch_generation_release(
+                            &self.inner,
+                            peer_id,
+                            release_generation.connection.as_deref(),
+                        );
                         core.note_link_released(&peer_key)
                             .map_err(DesktopError::from)?;
                         self.inner
@@ -4483,42 +7259,41 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// or `Released { requested: true }` when a release was pending.
     pub async fn remote_peer_loss(&self, peer_id: &str) -> Result<(), DesktopError> {
         let peer_key = self.known_peer_key(peer_id).await?;
-        self.drop_peer_subscriptions(peer_id).await;
-        let event = {
-            let mut core = self.inner.core.lock().await;
-            let mut out = batch();
-            let generation = Generations::of(&core, &peer_key);
-            let before = core.connection_state(&peer_key);
-            let consumers: Vec<_> = core
-                .held_consumers()
-                .into_iter()
-                .filter(|(owner, _)| owner == &peer_key)
-                .collect();
-            core.note_peer_loss(&peer_key, now_ms(), &mut out)
-                .map_err(DesktopError::from)?;
-            if before.is_some_and(|state| !state.is_terminal()) {
-                lock_std(&self.inner.retired_consumers).extend(consumers);
-                lock_std(&self.inner.retired_leases).extend(
-                    core.held_leases()
-                        .into_iter()
-                        .filter(|(peer, _)| peer == &peer_key)
-                        .map(|key| {
-                            let generation = Generations::of(&core, &key.0).connection;
-                            (key, generation)
-                        }),
-                );
-            }
-            let kind = if before == Some(ConnectionState::Disconnecting) {
-                LifecycleKind::Released { requested: true }
-            } else {
-                LifecycleKind::LinkLost
-            };
-            self.inner
-                .stage_lifecycle(peer_id, &peer_key, generation, kind)
+        let generation = self
+            .inner
+            .core
+            .lock()
+            .await
+            .connection_generation(&peer_key);
+        let Some(generation) = generation else {
+            return Err(contract_error(
+                BleErrorCode::ConnectionNotFound,
+                BleErrorDomain::Connection,
+                "connection.peer-loss",
+            ));
         };
-        note_link_end(&self.inner, peer_id);
-        self.inner.signal(CentralSignal::Lifecycle(event));
-        Ok(())
+        let completion = defer_link_end(
+            &self.inner,
+            peer_id.to_owned(),
+            false,
+            None,
+            Some(generation),
+        )
+        .await
+        .ok_or_else(|| {
+            contract_error(
+                BleErrorCode::ConnectionStale,
+                BleErrorDomain::Connection,
+                "connection.peer-loss",
+            )
+        })?;
+        completion.await.map_err(|_| {
+            contract_error(
+                BleErrorCode::ConnectionStale,
+                BleErrorDomain::Connection,
+                "connection.peer-loss",
+            )
+        })?
     }
 
     /// Discover services and register service/characteristic/descriptor
@@ -4569,9 +7344,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         };
         if rediscover {
             if let Some(admission) = ctl.gatt_admission() {
-                self.inner
-                    .gatt_admission
-                    .invalidate_except(&admission, BleErrorCode::GattStaleHandle);
+                match drive_link(
+                    &self.inner,
+                    peer_id,
+                    "discovery.complete",
+                    &ctl.ticket,
+                    window,
+                    self.inner
+                        .gatt_admission
+                        .invalidate_except_when_open(&admission, BleErrorCode::GattStaleHandle),
+                )
+                .await
+                {
+                    Wait::Done(result) => result?,
+                    Wait::Expired => return Err(timed_out("discovery.complete", window)),
+                    Wait::Cancelled => return Err(ctl.ticket.interruption("discovery.complete")),
+                }
             }
             self.inner.acquired.retire(
                 Some(peer_id),
@@ -4590,6 +7378,30 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .wait_gatt_admission(peer_id, &ctl, "discovery.complete", window)
             .await
             .map_err(|error| classify(error, OpKind::Discover, false))?;
+        let _retirement = if rediscover {
+            let gate = self
+                .inner
+                .gatt_admission
+                .block_peer_except(&_gatt_admission, BleErrorCode::GattStaleHandle)?;
+            _gatt_admission.assert_current()?;
+            let generation = {
+                let core = self.inner.core.lock().await;
+                Generations::of(&core, &peer_key)
+            };
+            retire_peer_ordered_groups(
+                &self.inner,
+                peer_id,
+                &generation,
+                ubm_core::ordered_notifications::EndReason::ServiceChanged,
+            )
+            .await;
+            self.fence_peer_source(peer_id, &ctl, window, "discovery.complete")
+                .await?;
+            _gatt_admission.assert_current()?;
+            Some(gate)
+        } else {
+            None
+        };
         let mut snapshot = match drive_link(
             &self.inner,
             peer_id,
@@ -4618,6 +7430,18 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         };
         self.refuse_before_admission(&ctl, "discovery.complete")?;
+        // A dropped predecessor may not have had its cleanup task polled yet.
+        // Holding this snapshot guard proves that predecessor no longer owns
+        // publication, so adopt its debt before admitting another attempt.
+        let abandoned = lock_std(&self.inner.discovery_transactions)
+            .get(peer_id)
+            .map(|transaction| transaction.id);
+        if let Some(id) = abandoned {
+            let mut core = self.inner.core.lock().await;
+            if retire_discovery_transaction(&self.inner, &mut core, peer_id, id) {
+                *snapshot = DiscoverySnapshot::default();
+            }
+        }
         {
             let core = self.inner.core.lock().await;
             if !core.lease_accepts_work(&peer_key, lease) {
@@ -4648,30 +7472,106 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 return Ok(report);
             }
         }
-        let result = self
-            .discover_physical(peer_id, lease, peer_key.clone(), &ctl, window)
+        let id = self
+            .inner
+            .next_discovery_transaction
+            .fetch_add(1, Ordering::Relaxed);
+        let mut cleanup = {
+            let mut core = self.inner.core.lock().await;
+            let mut transactions = lock_std(&self.inner.discovery_transactions);
+            if self.inner.shut_down.load(Ordering::SeqCst) {
+                return Err(contract_error(
+                    BleErrorCode::OperationCancelledByDestroy,
+                    BleErrorDomain::Core,
+                    "discovery.complete",
+                ));
+            }
+            core.begin_discovery(&peer_key)
+                .map_err(DesktopError::from)?;
+            transactions.insert(
+                peer_id.to_owned(),
+                DiscoveryTransaction {
+                    id,
+                    peer_key: peer_key.clone(),
+                    generation: Generations::of(&core, &peer_key),
+                },
+            );
+            DiscoveryCleanup {
+                inner: Arc::clone(&self.inner),
+                peer_id: peer_id.to_owned(),
+                id,
+                armed: true,
+            }
+        };
+        let mut result = self
+            .discover_physical(peer_id, lease, peer_key.clone(), &ctl, window, id)
             .await;
-        snapshot.report = result.as_ref().ok().map(|(report, _)| report.clone());
+        snapshot.report = None;
         snapshot.leases.clear();
         snapshot.generations = None;
         snapshot.identity = None;
+        snapshot.reclaim_binding = None;
         if result.is_ok() {
             let core = self.inner.core.lock().await;
-            snapshot.generations = core
-                .connection_generation(&peer_key)
-                .zip(core.database_generation(&peer_key));
-            let generation = Generations::of(&core, &peer_key);
-            lock_std(&self.inner.discovered_leases).insert(
-                (peer_id.to_owned(), lease.to_owned()),
-                (peer_key.clone(), generation.connection, generation.database),
-            );
-            snapshot.leases.insert(lease.to_owned());
-            snapshot.identity = result
-                .as_ref()
-                .ok()
-                .and_then(|(_, identity)| identity.clone());
+            if self.inner.shut_down.load(Ordering::SeqCst) {
+                result = Err(contract_error(
+                    BleErrorCode::OperationCancelledByDestroy,
+                    BleErrorDomain::Core,
+                    "discovery.complete",
+                ));
+            } else {
+                snapshot.generations = core
+                    .connection_generation(&peer_key)
+                    .zip(core.database_generation(&peer_key));
+                let generation = Generations::of(&core, &peer_key);
+                if let Ok((report, _)) = &mut result {
+                    report.connection_generation = generation.connection.clone();
+                    report.database_generation = generation.database.clone();
+                    snapshot.report = Some(report.clone());
+                }
+                lock_std(&self.inner.discovered_leases).insert(
+                    (peer_id.to_owned(), lease.to_owned()),
+                    (peer_key.clone(), generation.connection, generation.database),
+                );
+                snapshot.leases.insert(lease.to_owned());
+                snapshot.identity = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|(_, identity)| identity.clone());
+                drop(core);
+                if self
+                    .inner
+                    .boundary
+                    .ordered_reclaim_requires_snapshot_binding()
+                {
+                    let binding = match (snapshot.generations.as_ref(), snapshot.identity.as_ref())
+                    {
+                        (Some((connection, _)), Some(identity)) => self
+                            .inner
+                            .boundary
+                            .bind_ordered_reclaim_snapshot(peer_id, connection, identity),
+                        _ => Err(contract_error(
+                            BleErrorCode::GattDiscoveryRequired,
+                            BleErrorDomain::Gatt,
+                            "gatt.ordered.recording-reclaim",
+                        )),
+                    };
+                    snapshot.reclaim_binding =
+                        Some(binding.and_then(|()| _gatt_admission.assert_current()));
+                }
+            }
         }
         coordinator.completed.fetch_add(1, Ordering::Release);
+        {
+            let mut transactions = lock_std(&self.inner.discovery_transactions);
+            if transactions
+                .get(peer_id)
+                .is_some_and(|transaction| transaction.id == id)
+            {
+                transactions.remove(peer_id);
+            }
+        }
+        cleanup.armed = false;
         result.map(|(report, _)| report)
     }
 
@@ -4682,12 +7582,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         peer_key: String,
         ctl: &OpControl,
         window: Window,
+        transaction_id: u64,
     ) -> Result<(DiscoveryReport, Option<GattSnapshotIdentity>), DesktopError> {
-        {
-            let mut core = self.inner.core.lock().await;
-            core.begin_discovery(&peer_key)
-                .map_err(DesktopError::from)?;
-        }
         let (services, identity) = match drive_link(
             &self.inner,
             peer_id,
@@ -4831,6 +7727,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             // Current; entries then register one by one underneath it.
             core.complete_discovery(&peer_key)
                 .map_err(DesktopError::from)?;
+            if let Some(transaction) = lock_std(&self.inner.discovery_transactions).get_mut(peer_id)
+            {
+                if transaction.id == transaction_id {
+                    transaction.generation = Generations::of(&core, &peer_key);
+                }
+            }
             // Occurrences count per UUID in snapshot order, as before: the
             // radio's order is the discovery order (finding 96).
             let mut canonical_counts: HashMap<String, u64> = HashMap::new();
@@ -5855,6 +8757,73 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         .await
     }
 
+    /// Subscribe and retain the attachment on which the core admitted the operation.
+    pub async fn subscribe_with_admission(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        delivery: Option<DeliveryMode>,
+        ctl: OpControl,
+    ) -> Result<(ObservedDelivery, ubm_core::central::OperationAdmission), DesktopError> {
+        let mut admitted = None;
+        let observed = self
+            .subscribe_buffered_with_admission(
+                peer_id,
+                selector,
+                consumer,
+                delivery,
+                ubm_core::streams::OverflowPolicy::Error,
+                (DEFAULT_SUB_ITEM_CAP, DEFAULT_SUB_BYTE_CAP),
+                ctl,
+                &mut admitted,
+                false,
+            )
+            .await?;
+        let attachment = admitted.ok_or_else(|| {
+            contract_error(
+                BleErrorCode::LifecycleInvariantViolation,
+                BleErrorDomain::Core,
+                "gatt.subscribe.admission",
+            )
+        })?;
+        Ok((observed, attachment))
+    }
+
+    /// Subscribe with a bounded exact cleanup owner. Callers must retain the
+    /// admission and use `unsubscribe_exact_draining` for this owner.
+    pub async fn subscribe_exact_with_admission(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        delivery: Option<DeliveryMode>,
+        ctl: OpControl,
+    ) -> Result<(ObservedDelivery, ubm_core::central::OperationAdmission), DesktopError> {
+        let mut admitted = None;
+        let observed = self
+            .subscribe_buffered_with_admission(
+                peer_id,
+                selector,
+                consumer,
+                delivery,
+                ubm_core::streams::OverflowPolicy::Error,
+                (DEFAULT_SUB_ITEM_CAP, DEFAULT_SUB_BYTE_CAP),
+                ctl,
+                &mut admitted,
+                true,
+            )
+            .await?;
+        let admission = admitted.ok_or_else(|| {
+            contract_error(
+                BleErrorCode::LifecycleInvariantViolation,
+                BleErrorDomain::Core,
+                "gatt.subscribe.admission",
+            )
+        })?;
+        Ok((observed, admission))
+    }
+
     /// [`DesktopCentral::subscribe`] with the consumer's own overflow policy
     /// (finding 131): a loss the OS or the ingress reports is applied by it,
     /// `error` ending the stream with an overflow terminal, the lossy
@@ -5917,14 +8886,92 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         (item_capacity, byte_capacity): (u64, u64),
         ctl: OpControl,
     ) -> Result<ObservedDelivery, DesktopError> {
+        self.subscribe_buffered_with_admission(
+            peer_id,
+            selector,
+            consumer,
+            delivery,
+            policy,
+            (item_capacity, byte_capacity),
+            ctl,
+            &mut None,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn subscribe_buffered_with_admission(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        delivery: Option<DeliveryMode>,
+        policy: ubm_core::streams::OverflowPolicy,
+        (item_capacity, byte_capacity): (u64, u64),
+        ctl: OpControl,
+        admitted: &mut Option<ubm_core::central::OperationAdmission>,
+        track_exact: bool,
+    ) -> Result<ObservedDelivery, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "gatt.subscribe")?;
+        let _mismatch_reservation = {
+            let mut reservations = lock_std(&self.inner.mismatch_reservations);
+            if self.is_shut_down() {
+                return Err(DesktopError::adapter_unavailable("gatt.subscribe"));
+            }
+            if lock_std(&self.inner.mismatch_compensations)
+                .len()
+                .saturating_add(*reservations)
+                >= MISMATCH_COMPENSATION_CAPACITY
+            {
+                return Err(contract_error(
+                    BleErrorCode::CapabilityLimited,
+                    BleErrorDomain::Gatt,
+                    "gatt.subscribe.compensation",
+                )
+                .with_detail("notification compensation capacity exhausted"));
+            }
+            *reservations += 1;
+            MismatchReservation(&self.inner.mismatch_reservations)
+        };
+        let _exact_reservation = if track_exact {
+            let mut book = lock_std(&self.inner.exact_subscription_owners);
+            if book.owners.len().saturating_add(book.reservations) >= 4096 {
+                return Err(contract_error(
+                    BleErrorCode::CapabilityLimited,
+                    BleErrorDomain::Gatt,
+                    "gatt.subscribe.admission",
+                )
+                .with_detail("exact subscription ownership capacity exhausted"));
+            }
+            book.reservations += 1;
+            Some(ExactSubscriptionReservation(
+                &self.inner.exact_subscription_owners,
+            ))
+        } else {
+            None
+        };
         let window = ctl.budget.window(LIVENESS_OP);
         self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.subscribe", false)
             .await?;
         let _gatt_admission = self
             .wait_gatt_admission(peer_id, &ctl, "gatt.subscribe", window)
             .await?;
+        let _starting = match drive_link(
+            &self.inner,
+            peer_id,
+            "gatt.subscribe",
+            &ctl.ticket,
+            window,
+            _gatt_admission.begin_starting(),
+        )
+        .await
+        {
+            Wait::Done(result) => result?,
+            Wait::Expired => return Err(timed_out("gatt.subscribe", window)),
+            Wait::Cancelled => return Err(ctl.ticket.interruption("gatt.subscribe")),
+        };
         let peer_key = self.known_peer_key(peer_id).await?;
         // Resolve the instance first (pure read, no side effects) so the
         // scoped retirement gate covers admission through routing insertion,
@@ -5978,7 +9025,16 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // L7 resubscribe semantics: a pending failed disable fails the
         // resubscribe closed — complete the disable with `unsubscribe`
         // first instead of racing it with an enable.
-        if self.inner.failed_disables.lock().await.contains(&key) {
+        let routed_activation = self.inner.subscriptions.lock().await.get(&key).copied();
+        if self.inner.failed_disables.lock().await.contains(&key)
+            || lock_std(&self.inner.mismatch_compensations)
+                .iter()
+                .any(|owner| {
+                    owner.key == key
+                        && Some(owner.activation) == routed_activation
+                        && !matches!(*lock_std(&owner.state), MismatchCompensationState::Released)
+                })
+        {
             return Err(contract_error(
                 BleErrorCode::LifecycleInvalidState,
                 BleErrorDomain::Core,
@@ -6005,7 +9061,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
             }
         }
-        let (operation, path_index, drive_enable) = {
+        let (operation, path_index, drive_enable, connection_generation) = {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
             let (index, resolved, _) = self.resolve_instance(
@@ -6017,6 +9073,44 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 false,
             )?;
             debug_assert_eq!(key, resolved);
+            {
+                let book = lock_std(&self.inner.exact_subscription_owners);
+                let has_exact_name = book
+                    .owners
+                    .values()
+                    .any(|owner| owner.peer == peer_id && owner.consumer == consumer);
+                if !track_exact && has_exact_name {
+                    return Err(contract_error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.subscribe.admission",
+                    )
+                    .with_detail("this consumer name has an exact subscription owner"));
+                }
+                if track_exact
+                    && matches!(
+                        core.consumer_state(index, consumer),
+                        Some(
+                            ubm_core::central::ConsumerState::Enabling
+                                | ubm_core::central::ConsumerState::Ready
+                                | ubm_core::central::ConsumerState::Removing
+                        )
+                    )
+                    && !book.owners.iter().any(|(admission, owner)| {
+                        owner.peer == peer_id
+                            && owner.consumer == consumer
+                            && core.consumer_path_exact(&peer_key, selector, consumer, admission)
+                                == Some(index)
+                    })
+                {
+                    return Err(contract_error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.subscribe.admission",
+                    )
+                    .with_detail("the existing consumer has no matching exact owner"));
+                }
+            }
             if let Some(failure) = lock_std(&self.inner.notification_failures).get(&index) {
                 return Err(failure.error.clone());
             }
@@ -6028,8 +9122,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             // from `physical_cccd_enabled` would re-drive the enable for
             // every joiner that arrives mid-flight.
             let effects_before = core.typed_effects().len();
-            let id = core
-                .subscribe(
+            let admission = core
+                .subscribe_with_admission(
                     ctl.gatt_path(index),
                     policy.as_str(),
                     item_capacity,
@@ -6040,6 +9134,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     &mut out,
                 )
                 .map_err(DesktopError::from)?;
+            let id = admission.operation_id().clone();
             // Consumer IDs may be reused after a terminal generation. The
             // new admission owns its own cleanup; old link-loss evidence
             // must never waive a later generation's native disable.
@@ -6049,6 +9144,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 effect.kind() == CentralEffectKind::SubscribeEnable && effect.operation_id() == &id
             });
             publish_or_refuse(&mut core, &ctl.ticket, &id, "gatt.subscribe", None)?;
+            *admitted = Some(admission);
             if !drive_enable && let Some(required) = delivery {
                 // Raced another subscriber to the enable: this consumer
                 // joined a CCCD whose mode it cannot prove. Roll the join
@@ -6081,7 +9177,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 core.dispatch_op(&id, &mut out)
                     .map_err(DesktopError::from)?;
             }
-            (id, index, drive_enable)
+            (
+                id,
+                index,
+                drive_enable,
+                core.connection_generation(&peer_key),
+            )
         };
         let mut drop_guard = CancelOnDrop::armed(
             self,
@@ -6089,6 +9190,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             DropCleanup::Subscribe {
                 key: key.clone(),
                 path_index,
+                epoch: None,
+                drive_enable,
             },
         );
         // Route before the physical enable so values arriving mid-enable
@@ -6096,12 +9199,36 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // routing carries the epoch the forwarder is about to capture, so
         // a value queued under a dead generation never matches (F10).
         let epoch = if drive_enable {
+            // Publishing a new route is the other half of retirement: a
+            // recovery page must not authenticate an old route between its
+            // epoch selection and this insert.  This guard protects only
+            // in-memory ownership; no radio or ledger future runs here.
+            let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
             let peer_epoch = self.routing_epoch(peer_id).await;
-            let mut activations = lock_std(&self.inner.notification_activation_epochs);
-            let next = activations.get(&key).map_or(peer_epoch, |previous| {
-                previous.saturating_add(1).max(peer_epoch)
-            });
-            activations.insert(key.clone(), next);
+            let next = {
+                let mut activations = lock_std(&self.inner.notification_activation_epochs);
+                let next = match activations.get(&key) {
+                    Some(previous) => previous
+                        .checked_add(1)
+                        .ok_or_else(|| {
+                            contract_error(
+                                BleErrorCode::LifecycleInvalidState,
+                                BleErrorDomain::Gatt,
+                                "gatt.subscribe.epoch",
+                            )
+                            .with_detail("notification activation epoch exhausted")
+                        })?
+                        .max(peer_epoch),
+                    None => peer_epoch,
+                };
+                activations.insert(key.clone(), next);
+                next
+            };
+            self.inner
+                .subscriptions
+                .lock()
+                .await
+                .insert(key.clone(), (path_index, next));
             next
         } else {
             self.inner
@@ -6118,15 +9245,44 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     )
                 })?
         };
-        // A new enable owns this instance's CCCD from here on (its failure
-        // paths disable it), superseding any enablement a service change
-        // orphaned (finding 40).
-        lock_std(&self.inner.retained_enablements).remove(&key);
-        self.inner
-            .subscriptions
-            .lock()
-            .await
-            .insert(key.clone(), (path_index, epoch));
+        drop_guard.note_subscription_activation(epoch);
+        // Keep older database-generation obligations until their exact claims release.
+        if !drive_enable {
+            // Joiners do not publish a route, but retain the existing
+            // activation only after the transition gate has observed it.
+            let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
+            if self.inner.subscriptions.lock().await.get(&key) != Some(&(path_index, epoch)) {
+                return Err(contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.subscribe.routing",
+                ));
+            }
+        }
+        lock_std(&self.inner.retained_claims)
+            .entry((path_index, epoch))
+            .or_default()
+            .insert(consumer.to_owned());
+        if track_exact {
+            let identity = admitted.as_ref().ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::LifecycleInvariantViolation,
+                    BleErrorDomain::Core,
+                    "gatt.subscribe.admission",
+                )
+            })?;
+            lock_std(&self.inner.exact_subscription_owners)
+                .owners
+                .entry(identity.clone())
+                .or_insert_with(|| ExactSubscriptionOwner {
+                    peer: peer_id.to_owned(),
+                    selector: selector.clone(),
+                    consumer: consumer.to_owned(),
+                    activation: (path_index, epoch),
+                    release: Arc::new(Mutex::new(None)),
+                    disable_drain_required: Arc::new(AtomicBool::new(false)),
+                });
+        }
         drop(admission);
         if !drive_enable {
             _gatt_admission.mark_dispatched();
@@ -6169,9 +9325,68 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     // The radio enabled the CCCD without proving the
                     // required mode: undo the enable and fail it, never
                     // accept a requirement nobody enforced.
-                    self.disable_orphan_enable(peer_id, &key, epoch).await;
-                    self.fail_enable(&key, path_index, &operation, ContenderKind::Failure)
-                        .await;
+                    let owner = Arc::new(MismatchCompensation {
+                        key: key.clone(),
+                        selector: selector.clone(),
+                        consumer: consumer.to_owned(),
+                        activation: (path_index, epoch),
+                        peer_key: peer_key.clone(),
+                        core_admission: admitted.clone(),
+                        admission: if track_exact { admitted.clone() } else { None },
+                        connection_generation: connection_generation.clone(),
+                        confirmed_release: AtomicBool::new(false),
+                        native_released: AtomicBool::new(false),
+                        logical: StdMutex::new(MismatchLogical {
+                            operation: Some(operation.clone()),
+                            enable_pending: true,
+                            consumer_pending: true,
+                        }),
+                        state: StdMutex::new(MismatchCompensationState::Pending),
+                        task: Mutex::new(None),
+                        retirement_requested: AtomicBool::new(false),
+                        reconcile_errors: StdMutex::new(VecDeque::new()),
+                        changed: tokio::sync::Notify::new(),
+                    });
+                    {
+                        let mut receipts = lock_std(&self.inner.mismatch_compensations);
+                        receipts.push(Arc::clone(&owner));
+                        *owner
+                            .task
+                            .try_lock()
+                            .expect("new compensation task is unlocked") =
+                            Some(self.spawn_mismatch_compensation(Arc::clone(&owner)));
+                    }
+                    // Ownership is already transferred before the next await.
+                    drop_guard.defuse();
+                    let completed = match drive(
+                        &ctl.ticket,
+                        window,
+                        tokio::time::timeout(COMPENSATION_TIMEOUT, Self::wait_mismatch(&owner)),
+                    )
+                    .await
+                    {
+                        Wait::Done(result) => result.is_ok(),
+                        Wait::Expired => {
+                            return Err(classify(
+                                timed_out("gatt.subscribe", window),
+                                OpKind::Subscribe,
+                                true,
+                            ));
+                        }
+                        Wait::Cancelled => {
+                            return Err(classify(
+                                ctl.ticket.interruption("gatt.subscribe"),
+                                OpKind::Subscribe,
+                                true,
+                            ));
+                        }
+                    };
+                    if completed {
+                        if matches!(*lock_std(&owner.state), MismatchCompensationState::Released) {
+                            lock_std(&self.inner.mismatch_compensations)
+                                .retain(|receipt| !Arc::ptr_eq(receipt, &owner));
+                        }
+                    }
                     Err(Self::delivery_unenforced(
                         required,
                         observed,
@@ -6198,7 +9413,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 Err(timed_out("gatt.subscribe", window))
             }
             Wait::Cancelled => {
-                self.inner.subscriptions.lock().await.remove(&key);
+                let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
+                if let Some(activation) = self.inner.subscriptions.lock().await.remove(&key) {
+                    lock_std(&self.inner.retained_claims).remove(&activation);
+                }
+                // The transition owns only the in-memory route mutation.
+                // `settle_abort` can wait on the platform/core, so retaining
+                // this gate would allow one cancelled subscribe to stall an
+                // unrelated retirement or its cleanup debt.
+                drop(_recovery_transition);
                 let error = self.settle_abort(&operation, "gatt.subscribe").await;
                 {
                     let mut core = self.inner.core.lock().await;
@@ -6217,6 +9440,223 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             result.map_err(|error| self.annotate_observation_failure(peer_id, error)),
         )
         .await
+    }
+
+    fn spawn_mismatch_compensation(
+        &self,
+        owner: Arc<MismatchCompensation>,
+    ) -> tokio::task::JoinHandle<()> {
+        let central = self.clone();
+        // The guard exists before the first poll, so task cancellation cannot
+        // silently turn an unknown native answer into a confirmed release.
+        let task_guard = MismatchTaskGuard {
+            owner: Arc::clone(&owner),
+            armed: true,
+        };
+        tokio::spawn(async move {
+            let mut task_guard = task_guard;
+            {
+                let routes = central.inner.subscriptions.lock().await;
+                let mut core = central.inner.core.lock().await;
+                let mut out = batch();
+                let operation = lock_std(&owner.logical).operation.clone();
+                if let Some(operation) = operation {
+                    let settled = match core.operation_state(&operation) {
+                        Some(ubm_core::ownership::OpStateView::Terminal(_)) => Ok(()),
+                        Some(_) => core
+                            .settle_op(
+                                &operation,
+                                ContenderKind::Failure,
+                                true,
+                                0,
+                                now_ms(),
+                                &mut out,
+                            )
+                            .map_err(DesktopError::from)
+                            .and_then(|outcome| match outcome {
+                                CompletionOutcome::Settled { .. }
+                                | CompletionOutcome::DuplicateSuppressed { .. } => Ok(()),
+                                CompletionOutcome::ContenderIgnored => Err(contract_error(
+                                    BleErrorCode::LifecycleInvariantViolation,
+                                    BleErrorDomain::Cleanup,
+                                    "gatt.subscribe.compensation",
+                                )
+                                .with_detail("logical settlement contender was ignored")),
+                            }),
+                        None if core.shutdown_terminal_kind(&operation).is_some() => Ok(()),
+                        None => Err(contract_error(
+                            BleErrorCode::LifecycleInvariantViolation,
+                            BleErrorDomain::Cleanup,
+                            "gatt.subscribe.compensation",
+                        )
+                        .with_detail("logical operation disappeared without a release receipt")),
+                    };
+                    let released = settled.and_then(|()| {
+                        if matches!(
+                            core.operation_state(&operation),
+                            Some(ubm_core::ownership::OpStateView::Terminal(_))
+                        ) {
+                            core.report_release_success(&operation)
+                                .map_err(DesktopError::from)
+                        } else {
+                            Ok(())
+                        }
+                    });
+                    match released {
+                        Ok(()) => lock_std(&owner.logical).operation = None,
+                        Err(error) => lock_std(&owner.reconcile_errors).push_back(error),
+                    }
+                }
+                let routed = routes.get(&owner.key) == Some(&owner.activation);
+                let settle_enable = {
+                    let logical = lock_std(&owner.logical);
+                    logical.operation.is_none() && logical.enable_pending
+                };
+                if settle_enable {
+                    if routed {
+                        match core.settle_subscribe_enable(
+                            owner.activation.0,
+                            false,
+                            now_ms(),
+                            &mut out,
+                        ) {
+                            Ok(()) => lock_std(&owner.logical).enable_pending = false,
+                            Err(error) => lock_std(&owner.reconcile_errors)
+                                .push_back(DesktopError::from(error)),
+                        }
+                    } else {
+                        lock_std(&owner.logical).enable_pending = false;
+                    }
+                }
+                let remove_consumer = {
+                    let logical = lock_std(&owner.logical);
+                    logical.consumer_pending && !logical.enable_pending
+                };
+                if remove_consumer {
+                    let result = match &owner.core_admission {
+                        Some(admission)
+                            if core.consumer_path_exact(
+                                &owner.peer_key,
+                                &owner.selector,
+                                &owner.consumer,
+                                admission,
+                            ) == Some(owner.activation.0) =>
+                        {
+                            core.unsubscribe_exact(
+                                owner.activation.0,
+                                &owner.consumer,
+                                admission,
+                                now_ms(),
+                                &mut out,
+                            )
+                        }
+                        Some(_) => Ok(false),
+                        None if routed => core.unsubscribe(
+                            owner.activation.0,
+                            &owner.consumer,
+                            now_ms(),
+                            &mut out,
+                        ),
+                        None => Ok(false),
+                    };
+                    match result {
+                        Ok(_) => lock_std(&owner.logical).consumer_pending = false,
+                        Err(error) => {
+                            lock_std(&owner.reconcile_errors).push_back(DesktopError::from(error))
+                        }
+                    }
+                }
+                let _ = out.drain();
+                sweep_terminal_successes(&mut core);
+                recycle_observations(&mut core);
+            }
+            let result = if owner.native_released.load(Ordering::SeqCst)
+                || owner.confirmed_release.load(Ordering::SeqCst)
+            {
+                Ok(())
+            } else {
+                central
+                    .release_notification_physical(&owner.key.0, &owner.key, owner.activation.1)
+                    .await
+            };
+            if result.is_ok() {
+                owner.native_released.store(true, Ordering::SeqCst);
+            }
+            let logical_done = {
+                let logical = lock_std(&owner.logical);
+                logical.operation.is_none() && !logical.enable_pending && !logical.consumer_pending
+            };
+            let first_reconcile_error = lock_std(&owner.reconcile_errors).front().cloned();
+            if result.is_err() || !logical_done {
+                central.inner.note_compensation_failure();
+            }
+            if result.is_ok() && logical_done && first_reconcile_error.is_none() {
+                let _recovery_transition =
+                    central.inner.peer_failure_recovery_transition.lock().await;
+                let mut routes = central.inner.subscriptions.lock().await;
+                if routes.get(&owner.key) == Some(&owner.activation) {
+                    routes.remove(&owner.key);
+                    lock_std(&central.inner.deliveries).remove(&owner.key);
+                }
+                lock_std(&central.inner.retained_claims).remove(&owner.activation);
+                lock_std(&central.inner.retained_enablements).remove(&owner.activation);
+                drop(routes);
+                if let Some(admission) = &owner.core_admission {
+                    central
+                        .inner
+                        .core
+                        .lock()
+                        .await
+                        .acknowledge_exact_consumer_cleanup(
+                            owner.activation.0,
+                            &owner.consumer,
+                            admission,
+                        );
+                }
+                if let Some(admission) = &owner.admission {
+                    lock_std(&central.inner.exact_subscription_owners)
+                        .owners
+                        .remove(admission);
+                }
+            }
+            let mut state = lock_std(&owner.state);
+            *state = match result {
+                Err(error) => MismatchCompensationState::Failed(error, false),
+                Ok(()) if logical_done && first_reconcile_error.is_none() => {
+                    MismatchCompensationState::Released
+                }
+                Ok(()) => MismatchCompensationState::ReconcileFailed(
+                    first_reconcile_error.unwrap_or_else(|| {
+                        contract_error(
+                            BleErrorCode::LifecycleInvariantViolation,
+                            BleErrorDomain::Cleanup,
+                            "gatt.subscribe.compensation",
+                        )
+                        .with_detail("logical compensation remains pending")
+                    }),
+                ),
+            };
+            task_guard.armed = false;
+            let released = matches!(*state, MismatchCompensationState::Released);
+            drop(state);
+            if released {
+                lock_std(&central.inner.mismatch_compensations)
+                    .retain(|receipt| !Arc::ptr_eq(receipt, &owner));
+            }
+            owner.changed.notify_waiters();
+        })
+    }
+
+    async fn wait_mismatch(owner: &MismatchCompensation) {
+        loop {
+            let notified = owner.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !matches!(*lock_std(&owner.state), MismatchCompensationState::Pending) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     /// The physical enable succeeded: settle the hub and our op. A late
@@ -6262,7 +9702,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 let _ = out.drain();
                 sweep_terminal_successes(&mut core);
             }
+            let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
             self.inner.subscriptions.lock().await.remove(key);
+            lock_std(&self.inner.retained_claims).remove(&(path_index, epoch));
             return Err(DesktopError::cancelled("gatt.subscribe"));
         }
         match own_kind {
@@ -6283,7 +9725,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         operation: &OperationId,
         contender: ContenderKind,
     ) {
-        self.inner.subscriptions.lock().await.remove(key);
+        let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
+        if let Some((index, epoch)) = self.inner.subscriptions.lock().await.remove(key) {
+            lock_std(&self.inner.retained_claims).remove(&(index, epoch));
+        }
         let mut core = self.inner.core.lock().await;
         let mut out = batch();
         let _ = settle_and_release(&mut core, operation, contender, true, None, &mut out);
@@ -6300,14 +9745,181 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     async fn disable_orphan_enable(&self, peer_id: &str, key: &InstanceKey, epoch: u64) {
         let disabled = tokio::time::timeout(
             COMPENSATION_TIMEOUT,
-            self.inner
-                .boundary
-                .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, false, epoch, None),
+            self.release_notification_physical(peer_id, key, epoch),
         )
         .await;
         if !matches!(disabled, Ok(Ok(_))) {
             self.inner.note_compensation_failure();
         }
+    }
+
+    /// Roll back one exact ordered-batch claim, retaining retryable cleanup debt.
+    async fn rollback_ordered_claim(
+        &self,
+        peer_id: &str,
+        claim: &mut ordered_claims::OrderedClaim,
+        ticket: &OpTicket,
+        window: Window,
+    ) -> Result<(), DesktopError> {
+        use ordered_claims::OrderedClaimPhase;
+        if claim.phase == OrderedClaimPhase::Released {
+            return Ok(());
+        }
+        let owner = (peer_id.to_owned(), claim.consumer.clone());
+        if lock_std(&self.inner.retained_cleanup_owners)
+            .get(&owner)
+            .copied()
+            == Some((claim.path_index, claim.epoch))
+        {
+            self.release_retained(
+                peer_id,
+                claim.path_index,
+                &claim.scope,
+                claim.epoch,
+                ticket,
+                window,
+            )
+            .await?;
+            lock_std(&self.inner.retained_cleanup_owners).remove(&owner);
+            let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
+            let mut routes = self.inner.subscriptions.lock().await;
+            if routes.get(&claim.scope) == Some(&(claim.path_index, claim.epoch)) {
+                routes.remove(&claim.scope);
+            }
+            claim.ticket.settle();
+            claim.phase = OrderedClaimPhase::Released;
+            return Ok(());
+        }
+        if self
+            .inner
+            .failed_disables
+            .lock()
+            .await
+            .contains(&claim.scope)
+        {
+            self.drive_disable(
+                peer_id,
+                &claim.scope,
+                claim.path_index,
+                ticket,
+                window,
+                &claim.consumer,
+                None,
+                None,
+            )
+            .await?;
+            claim.ticket.settle();
+            claim.phase = OrderedClaimPhase::Released;
+            return Ok(());
+        }
+        let pre_enable = claim.drive_enable && claim.phase != OrderedClaimPhase::Acquired;
+        let disable = {
+            let mut core = self.inner.core.lock().await;
+            let mut out = batch();
+            if pre_enable
+                && core.consumer_state(claim.path_index, &claim.consumer)
+                    == Some(ubm_core::central::ConsumerState::Enabling)
+            {
+                if terminal_kind_of(&core, &claim.operation).is_none() {
+                    core.cancel_op(&claim.operation, now_ms(), &mut out)
+                        .map_err(DesktopError::from)?;
+                }
+                core.settle_subscribe_enable(claim.path_index, false, now_ms(), &mut out)
+                    .map_err(DesktopError::from)?;
+            }
+            let disable = core
+                .unsubscribe(claim.path_index, &claim.consumer, now_ms(), &mut out)
+                .map_err(DesktopError::from)?;
+            let _ = out.drain();
+            report_terminal_release(&mut core, &claim.operation, true, None);
+            recycle_observations(&mut core);
+            disable
+        };
+        let activation = (claim.path_index, claim.epoch);
+        if disable {
+            self.drive_disable(
+                peer_id,
+                &claim.scope,
+                claim.path_index,
+                ticket,
+                window,
+                &claim.consumer,
+                None,
+                None,
+            )
+            .await?;
+        } else if pre_enable && claim.phase != OrderedClaimPhase::Admitted {
+            // The native owner may have retained a target before its prepare
+            // waiter returned. Publish its exact retry key before awaiting.
+            lock_std(&self.inner.retained_enablements).insert(activation, claim.scope.clone());
+            lock_std(&self.inner.retained_cleanup_owners)
+                .insert((peer_id.to_owned(), claim.consumer.clone()), activation);
+            self.release_retained(
+                peer_id,
+                claim.path_index,
+                &claim.scope,
+                claim.epoch,
+                ticket,
+                window,
+            )
+            .await?;
+            lock_std(&self.inner.retained_cleanup_owners)
+                .remove(&(peer_id.to_owned(), claim.consumer.clone()));
+            let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
+            let mut routes = self.inner.subscriptions.lock().await;
+            if routes.get(&claim.scope) == Some(&activation) {
+                routes.remove(&claim.scope);
+            }
+        } else {
+            let empty = {
+                let mut claims = lock_std(&self.inner.retained_claims);
+                if let Some(owners) = claims.get_mut(&activation) {
+                    owners.remove(&claim.consumer);
+                    if owners.is_empty() {
+                        claims.remove(&activation);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
+            };
+            let retained_physical =
+                lock_std(&self.inner.retained_enablements).get(&activation) == Some(&claim.scope);
+            let ordered_origin = lock_std(&self.inner.ordered_physical_origins)
+                .contains_key(&(claim.scope.clone(), claim.epoch));
+            if empty && (retained_physical || ordered_origin) {
+                // The exact origin receipt is independently owned even if a
+                // lifecycle transition already removed its live routing row.
+                // Recreate only its old-generation cleanup key before await.
+                if ordered_origin {
+                    lock_std(&self.inner.retained_enablements)
+                        .insert(activation, claim.scope.clone());
+                }
+                lock_std(&self.inner.retained_cleanup_owners).insert(owner.clone(), activation);
+                self.release_retained(
+                    peer_id,
+                    claim.path_index,
+                    &claim.scope,
+                    claim.epoch,
+                    ticket,
+                    window,
+                )
+                .await?;
+                lock_std(&self.inner.retained_cleanup_owners).remove(&owner);
+            }
+            if empty && claim.drive_enable {
+                let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
+                let mut routes = self.inner.subscriptions.lock().await;
+                if routes.get(&claim.scope) == Some(&activation) {
+                    routes.remove(&claim.scope);
+                }
+            }
+        }
+        claim.ticket.settle();
+        claim.phase = OrderedClaimPhase::Released;
+        Ok(())
     }
 
     /// Remove one consumer. Removing one consumer never disables another
@@ -6344,8 +9956,167 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         ctl: OpControl,
         drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
     ) -> Result<bool, DesktopError> {
+        self.unsubscribe_draining_inner(peer_id, selector, consumer, None, ctl, drain)
+            .await
+    }
+
+    /// Release only the consumer represented by this core admission. An old
+    /// admission is rejected once its receipt is no longer retained.
+    pub async fn unsubscribe_exact_draining(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        admission: &ubm_core::central::OperationAdmission,
+        ctl: OpControl,
+        drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
+    ) -> Result<bool, DesktopError> {
+        let ticket = ctl.ticket.clone();
+        let _settle = SettleOnDrop(&ticket);
+        let owner = lock_std(&self.inner.exact_subscription_owners)
+            .owners
+            .get(admission)
+            .cloned()
+            .ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::ConnectionStale,
+                    BleErrorDomain::Gatt,
+                    "gatt.unsubscribe.admission",
+                )
+            })?;
+        if owner.peer != peer_id || owner.selector != *selector || owner.consumer != consumer {
+            return Err(contract_error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Gatt,
+                "gatt.unsubscribe.admission",
+            ));
+        }
+        let mut ctl = ctl;
+        let window = ctl.prepare_unsubscribe_window();
+        let (mut release, joined) = match owner.release.try_lock() {
+            Ok(guard) => (guard, false),
+            Err(_) => match drive(&ctl.ticket, window, owner.release.lock()).await {
+                Wait::Done(guard) => (guard, true),
+                Wait::Expired => {
+                    return Err(classify(
+                        timed_out("gatt.unsubscribe", window),
+                        OpKind::Cleanup,
+                        true,
+                    ));
+                }
+                Wait::Cancelled => {
+                    return Err(classify(
+                        ctl.ticket.interruption("gatt.unsubscribe"),
+                        OpKind::Cleanup,
+                        true,
+                    ));
+                }
+            },
+        };
+        if let Some(slot) = self.inner.exact_disable_tasks.get(admission) {
+            match slot.snapshot() {
+                notification_settlement::State::NotStarted { .. } => {
+                    let _ = slot.acknowledge(admission);
+                    let _ = self.inner.exact_disable_tasks.retire(admission);
+                    lock_std(&self.inner.exact_unsettled_cleanup).remove(admission);
+                }
+                notification_settlement::State::Complete { .. } => {
+                    return self
+                        .finish_exact_disable(
+                            peer_id, selector, consumer, admission, &owner, &slot, drain,
+                        )
+                        .await;
+                }
+                _ => {
+                    return Err(contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Cleanup,
+                        "gatt.unsubscribe.settlement",
+                    )
+                    .with_detail("the previous native cleanup has not settled"));
+                }
+            }
+        }
+        if let Some(result) = release.as_ref()
+            && (joined || result.is_ok())
+        {
+            return result.clone();
+        }
+        if let Some(error) = lock_std(&self.inner.exact_unsettled_cleanup)
+            .get(admission)
+            .cloned()
+        {
+            return Err(error.unwrap_or_else(|| {
+                contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.unsubscribe.settlement",
+                )
+                .with_detail("the previous native cleanup has not settled")
+            }));
+        }
+        *release = None;
+        let result = self
+            .unsubscribe_draining_inner(peer_id, selector, consumer, Some(admission), ctl, drain)
+            .await;
+        *release = Some(result.clone());
+        if result.is_ok() {
+            self.inner
+                .core
+                .lock()
+                .await
+                .acknowledge_exact_consumer_cleanup(owner.activation.0, consumer, admission);
+            lock_std(&self.inner.exact_subscription_owners)
+                .owners
+                .remove(admission);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn unsubscribe_draining_inner(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        exact: Option<&ubm_core::central::OperationAdmission>,
+        ctl: OpControl,
+        drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
+    ) -> Result<bool, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
-        if self.inner.shutdown_release_confirmed.load(Ordering::SeqCst) {
+        if exact.is_none()
+            && !lock_std(&self.inner.mismatch_compensations)
+                .iter()
+                .any(|owner| {
+                    owner.key.0 == peer_id
+                        && owner.selector == *selector
+                        && owner.consumer == consumer
+                        && owner.admission.is_some()
+                })
+            && lock_std(&self.inner.exact_subscription_owners)
+                .owners
+                .values()
+                .any(|owner| owner.peer == peer_id && owner.consumer == consumer)
+        {
+            return Err(contract_error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Gatt,
+                "gatt.unsubscribe.admission",
+            )
+            .with_detail("this consumer requires its exact subscription admission"));
+        }
+        let has_mismatch = lock_std(&self.inner.mismatch_compensations)
+            .iter()
+            .any(|owner| {
+                owner.key.0 == peer_id
+                    && owner.selector == *selector
+                    && owner.consumer == consumer
+                    && exact.is_none_or(|admission| owner.admission.as_ref() == Some(admission))
+            });
+        if exact.is_none()
+            && !has_mismatch
+            && self.inner.shutdown_release_confirmed.load(Ordering::SeqCst)
+        {
             let peer_key = self.known_peer_key(peer_id).await?;
             let mut core = self.inner.core.lock().await;
             let retired = lock_std(&self.inner.retired_consumers)
@@ -6375,18 +10146,464 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 return Ok(false);
             }
         }
-        self.precheck(&ctl, "gatt.unsubscribe")?;
         let window = ctl.unsubscribe_window();
-        let _gatt_admission = self
-            .wait_gatt_admission(peer_id, &ctl, "gatt.unsubscribe", window)
-            .await?;
+        let _gatt_admission = if has_mismatch && self.is_shut_down() {
+            None
+        } else {
+            self.precheck(&ctl, "gatt.unsubscribe")?;
+            Some(
+                self.wait_gatt_admission(peer_id, &ctl, "gatt.unsubscribe", window)
+                    .await?,
+            )
+        };
+        if exact.is_none()
+            && !lock_std(&self.inner.mismatch_compensations)
+                .iter()
+                .any(|owner| {
+                    owner.key.0 == peer_id
+                        && owner.selector == *selector
+                        && owner.consumer == consumer
+                        && owner.admission.is_some()
+                })
+            && lock_std(&self.inner.exact_subscription_owners)
+                .owners
+                .values()
+                .any(|owner| owner.peer == peer_id && owner.consumer == consumer)
+        {
+            return Err(contract_error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Gatt,
+                "gatt.unsubscribe.admission",
+            )
+            .with_detail("this consumer requires its exact subscription admission"));
+        }
         let peer_key = self.known_peer_key(peer_id).await?;
-        let (disable_physical, path_index, key) = {
+        let cleanup_owner = (peer_id.to_owned(), consumer.to_owned());
+        let mismatch = lock_std(&self.inner.mismatch_compensations)
+            .iter()
+            .find(|owner| {
+                owner.key.0 == peer_id
+                    && owner.selector == *selector
+                    && owner.consumer == consumer
+                    && exact.is_none_or(|admission| owner.admission.as_ref() == Some(admission))
+            })
+            .cloned();
+        if let Some(owner) = mismatch {
+            if owner.selector != *selector {
+                return Err(contract_error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Gatt,
+                    "gatt.unsubscribe.admission",
+                ));
+            }
+            if let Some(admission) = exact {
+                let matches = lock_std(&self.inner.exact_subscription_owners)
+                    .owners
+                    .get(admission)
+                    .is_some_and(|exact_owner| exact_owner.activation == owner.activation);
+                if !matches {
+                    return Err(contract_error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.unsubscribe.admission",
+                    ));
+                }
+            }
+            let mut task_slot = match drive(&ctl.ticket, window, owner.task.lock()).await {
+                Wait::Done(guard) => guard,
+                Wait::Expired => {
+                    return Err(classify(
+                        timed_out("gatt.unsubscribe", window),
+                        OpKind::Cleanup,
+                        true,
+                    ));
+                }
+                Wait::Cancelled => {
+                    return Err(classify(
+                        ctl.ticket.interruption("gatt.unsubscribe"),
+                        OpKind::Cleanup,
+                        true,
+                    ));
+                }
+            };
+            // A confirmed release of this exact link generation discharges
+            // the physical obligation, but does not answer the native call.
+            // Retire its local future and join it before reconciling the
+            // remaining logical work. Never infer a native result from abort.
+            let retire = if owner.confirmed_release.load(Ordering::SeqCst) {
+                let state = lock_std(&owner.state);
+                if matches!(*state, MismatchCompensationState::Pending) && task_slot.is_some() {
+                    owner.retirement_requested.store(true, Ordering::SeqCst);
+                }
+                owner.retirement_requested.load(Ordering::SeqCst)
+            } else {
+                false
+            };
+            if retire {
+                if let Some(task) = task_slot.as_mut() {
+                    task.abort();
+                    if task.await.is_err_and(|error| error.is_cancelled()) {
+                        let mut state = lock_std(&owner.state);
+                        if let MismatchCompensationState::Interrupted(_, reported) = &mut *state {
+                            *reported = true;
+                        }
+                    }
+                    *task_slot = None;
+                }
+                owner.retirement_requested.store(false, Ordering::SeqCst);
+            }
+            let retry = {
+                let mut state = lock_std(&owner.state);
+                match &mut *state {
+                    MismatchCompensationState::Pending => {
+                        return Err(contract_error(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "gatt.unsubscribe.settlement",
+                        )
+                        .with_detail("the previous native cleanup has not settled"));
+                    }
+                    MismatchCompensationState::Failed(error, reported) if !*reported => {
+                        *reported = true;
+                        return Err(error.clone());
+                    }
+                    MismatchCompensationState::Failed(_, _) => {
+                        if let Some(error) = lock_std(&owner.reconcile_errors).pop_front() {
+                            return Err(error);
+                        }
+                        *state = MismatchCompensationState::Pending;
+                        true
+                    }
+                    MismatchCompensationState::ReconcileFailed(_) => {
+                        if let Some(error) = lock_std(&owner.reconcile_errors).pop_front() {
+                            return Err(error);
+                        }
+                        *state = MismatchCompensationState::Pending;
+                        true
+                    }
+                    MismatchCompensationState::Interrupted(error, reported) => {
+                        if !*reported
+                            || !(owner.confirmed_release.load(Ordering::SeqCst)
+                                || owner.native_released.load(Ordering::SeqCst))
+                        {
+                            *reported = true;
+                            return Err(error.clone());
+                        }
+                        if let Some(error) = lock_std(&owner.reconcile_errors).pop_front() {
+                            return Err(error);
+                        }
+                        *state = MismatchCompensationState::Pending;
+                        true
+                    }
+                    MismatchCompensationState::Released => false,
+                }
+            };
+            if retry {
+                let released_by_link = owner.confirmed_release.load(Ordering::SeqCst);
+                *task_slot = Some(self.spawn_mismatch_compensation(Arc::clone(&owner)));
+                match drive(&ctl.ticket, window, Self::wait_mismatch(&owner)).await {
+                    Wait::Done(()) => {}
+                    Wait::Expired => {
+                        return Err(classify(
+                            timed_out("gatt.unsubscribe", window),
+                            OpKind::Cleanup,
+                            true,
+                        ));
+                    }
+                    Wait::Cancelled => {
+                        return Err(classify(
+                            ctl.ticket.interruption("gatt.unsubscribe"),
+                            OpKind::Cleanup,
+                            true,
+                        ));
+                    }
+                }
+                let failure = {
+                    let mut state = lock_std(&owner.state);
+                    match &mut *state {
+                        MismatchCompensationState::Failed(error, reported) => {
+                            *reported = true;
+                            Some(error.clone())
+                        }
+                        MismatchCompensationState::ReconcileFailed(error) => Some(
+                            lock_std(&owner.reconcile_errors)
+                                .pop_front()
+                                .unwrap_or_else(|| error.clone()),
+                        ),
+                        MismatchCompensationState::Interrupted(error, reported) => {
+                            *reported = true;
+                            Some(error.clone())
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                return Ok(!released_by_link);
+            }
+            lock_std(&self.inner.mismatch_compensations)
+                .retain(|receipt| !Arc::ptr_eq(receipt, &owner));
+            return Ok(true);
+        }
+        let _gatt_admission =
+            _gatt_admission.ok_or_else(|| DesktopError::adapter_unavailable("gatt.unsubscribe"))?;
+        let exact_owner = if let Some(admission) = exact {
+            let owner = lock_std(&self.inner.exact_subscription_owners)
+                .owners
+                .get(admission)
+                .cloned()
+                .ok_or_else(|| {
+                    contract_error(
+                        BleErrorCode::ConnectionStale,
+                        BleErrorDomain::Gatt,
+                        "gatt.unsubscribe.admission",
+                    )
+                })?;
+            if owner.peer != peer_id || owner.selector != *selector || owner.consumer != consumer {
+                return Err(contract_error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Gatt,
+                    "gatt.unsubscribe.admission",
+                ));
+            }
+            Some(owner)
+        } else {
+            None
+        };
+        if let Some(admission) = exact {
+            let retry = lock_std(&self.inner.exact_retained_cleanup)
+                .get(admission)
+                .cloned();
+            if let Some((
+                owner_peer,
+                owner_selector,
+                owner_consumer,
+                index,
+                epoch,
+                original_error,
+            )) = retry
+            {
+                if owner_peer != peer_id
+                    || owner_selector != *selector
+                    || owner_consumer != consumer
+                {
+                    return Err(contract_error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.unsubscribe.admission",
+                    ));
+                }
+                let key = lock_std(&self.inner.retained_enablements)
+                    .get(&(index, epoch))
+                    .cloned()
+                    .ok_or_else(|| {
+                        original_error.unwrap_or_else(|| {
+                            contract_error(
+                                BleErrorCode::ConnectionStale,
+                                BleErrorDomain::Gatt,
+                                "gatt.unsubscribe.admission",
+                            )
+                        })
+                    })?;
+                let routed =
+                    self.inner.subscriptions.lock().await.get(&key) == Some(&(index, epoch));
+                let result = if routed {
+                    // A pruned terminal can still own the live route and its
+                    // core disable. Settle that route when it is still the
+                    // exact activation; a rediscovered route must stay intact.
+                    let _starting =
+                        match drive(&ctl.ticket, window, _gatt_admission.begin_starting()).await {
+                            Wait::Done(result) => result?,
+                            Wait::Expired => {
+                                return Err(classify(
+                                    timed_out("gatt.unsubscribe", window),
+                                    OpKind::Cleanup,
+                                    false,
+                                ));
+                            }
+                            Wait::Cancelled => {
+                                return Err(classify(
+                                    ctl.ticket.interruption("gatt.unsubscribe"),
+                                    OpKind::Cleanup,
+                                    false,
+                                ));
+                            }
+                        };
+                    self.drive_exact_disable(
+                        peer_id,
+                        &key,
+                        index,
+                        epoch,
+                        &ctl.ticket,
+                        window,
+                        consumer,
+                        selector,
+                        admission,
+                        drain,
+                        Arc::clone(&_gatt_admission),
+                        _starting,
+                        true,
+                    )
+                    .await
+                } else {
+                    self.release_retained_exact(
+                        peer_id,
+                        index,
+                        &key,
+                        epoch,
+                        &ctl.ticket,
+                        window,
+                        admission,
+                        drain,
+                        Arc::clone(&_gatt_admission),
+                    )
+                    .await
+                };
+                if result.is_ok() {
+                    lock_std(&self.inner.exact_retained_cleanup).remove(admission);
+                } else if let Err(error) = &result {
+                    if let Some(debt) =
+                        lock_std(&self.inner.exact_retained_cleanup).get_mut(admission)
+                    {
+                        debt.5.get_or_insert_with(|| error.clone());
+                    }
+                }
+                return result;
+            }
+        }
+        let retry_index = if exact.is_none() {
+            lock_std(&self.inner.retained_cleanup_owners)
+                .get(&cleanup_owner)
+                .copied()
+        } else {
+            None
+        };
+        if let Some((index, epoch)) = retry_index {
+            let retained = lock_std(&self.inner.retained_enablements)
+                .get(&(index, epoch))
+                .cloned();
+            if let Some(key) = retained {
+                let result = self
+                    .release_retained(peer_id, index, &key, epoch, &ctl.ticket, window)
+                    .await;
+                if result.is_ok() {
+                    lock_std(&self.inner.retained_cleanup_owners).remove(&cleanup_owner);
+                }
+                return result;
+            }
+            lock_std(&self.inner.retained_cleanup_owners).remove(&cleanup_owner);
+        }
+        let current_consumer = {
+            let core = self.inner.core.lock().await;
+            if let Some(admission) = exact {
+                core.consumer_path_exact(&peer_key, selector, consumer, admission)
+                    .is_some()
+            } else {
+                core.consumer_path(&peer_key, selector, consumer).is_some()
+            }
+        };
+        if exact.is_some() && !current_consumer {
+            // A rediscovery can reclaim the old core hub once its buffered
+            // observations are gone. Its physical activation still belongs
+            // to the captured admission, not to a new same-name consumer.
+            let owner = exact_owner.as_ref().expect("exact owner was validated");
+            let (index, epoch) = owner.activation;
+            let key = lock_std(&self.inner.retained_enablements)
+                .get(&(index, epoch))
+                .cloned()
+                .ok_or_else(|| {
+                    contract_error(
+                        BleErrorCode::ConnectionStale,
+                        BleErrorDomain::Gatt,
+                        "gatt.unsubscribe.admission",
+                    )
+                })?;
+            let has_others = {
+                let mut claims = lock_std(&self.inner.retained_claims);
+                let owners = claims.get_mut(&(index, epoch)).ok_or_else(|| {
+                    contract_error(
+                        BleErrorCode::ConnectionStale,
+                        BleErrorDomain::Gatt,
+                        "gatt.unsubscribe.admission",
+                    )
+                })?;
+                if !owners.remove(consumer) {
+                    return Err(contract_error(
+                        BleErrorCode::ConnectionStale,
+                        BleErrorDomain::Gatt,
+                        "gatt.unsubscribe.admission",
+                    ));
+                }
+                !owners.is_empty()
+            };
+            if has_others {
+                return Ok(false);
+            }
+            let admission = exact.expect("exact admission was validated");
+            lock_std(&self.inner.exact_retained_cleanup).insert(
+                admission.clone(),
+                (
+                    peer_id.to_owned(),
+                    selector.clone(),
+                    consumer.to_owned(),
+                    index,
+                    epoch,
+                    None,
+                ),
+            );
+            let result = self
+                .release_retained_exact(
+                    peer_id,
+                    index,
+                    &key,
+                    epoch,
+                    &ctl.ticket,
+                    window,
+                    admission,
+                    drain,
+                    Arc::clone(&_gatt_admission),
+                )
+                .await;
+            if result.is_ok() {
+                lock_std(&self.inner.exact_retained_cleanup).remove(admission);
+            } else if let Err(error) = &result {
+                if let Some(debt) = lock_std(&self.inner.exact_retained_cleanup).get_mut(admission)
+                {
+                    debt.5.get_or_insert_with(|| error.clone());
+                }
+            }
+            return result;
+        }
+        if current_consumer {
+            self.fence_peer_source(peer_id, &ctl, window, "gatt.unsubscribe")
+                .await?;
+            _gatt_admission.assert_current()?;
+        }
+        // Lifecycle retirement takes this lock before the core lock too.
+        // Hold it across the core transition so dropping this future cannot
+        // leave a Removing consumer without a retryable physical disable.
+        let mut pending_disables = self.inner.failed_disables.lock().await;
+        let (disable_physical, path_index, key, other_consumers) = {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
             // Cleanup addresses the exact admitted consumer, not whichever
             // generation happens to resolve the same selector now.
-            let resolved = match core.consumer_path(&peer_key, selector, consumer) {
+            let path = if let Some(admission) = exact {
+                Some(
+                    core.consumer_path_exact(&peer_key, selector, consumer, admission)
+                        .ok_or_else(|| {
+                            contract_error(
+                                BleErrorCode::ConnectionStale,
+                                BleErrorDomain::Gatt,
+                                "gatt.unsubscribe.admission",
+                            )
+                        })?,
+                )
+            } else {
+                core.consumer_path(&peer_key, selector, consumer)
+            };
+            let resolved = match path {
                 Some(index) => core
                     .stored_path(index)
                     .and_then(|stored| {
@@ -6413,6 +10630,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let (index, key, _) = match resolved {
                 Ok(resolved) => resolved,
                 Err(error) => {
+                    if exact.is_some() {
+                        return Err(error);
+                    }
                     // A confirmed link end/reset already ended this exact
                     // consumer's physical obligation, independently of whether
                     // a later reconnect could rediscover its former path.
@@ -6424,31 +10644,171 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     // Finding 40: the path died with a service change, but
                     // the enablement it addressed may still be live.
                     drop(core);
-                    let Some(key) = self.retained_enablement(peer_id, selector) else {
+                    drop(pending_disables);
+                    let Some((retained_index, key, epoch)) =
+                        self.retained_enablement(peer_id, selector, consumer)
+                    else {
                         return Err(error);
                     };
-                    return self
-                        .release_retained(peer_id, &key, &ctl.ticket, window)
+                    let has_others = {
+                        let mut claims = lock_std(&self.inner.retained_claims);
+                        let Some(owners) = claims.get_mut(&(retained_index, epoch)) else {
+                            return Err(error);
+                        };
+                        if !owners.remove(consumer) {
+                            return Err(error);
+                        }
+                        !owners.is_empty()
+                    };
+                    if has_others {
+                        return Ok(false);
+                    }
+                    lock_std(&self.inner.retained_cleanup_owners)
+                        .insert(cleanup_owner.clone(), (retained_index, epoch));
+                    let result = self
+                        .release_retained(peer_id, retained_index, &key, epoch, &ctl.ticket, window)
                         .await;
+                    if result.is_ok() {
+                        lock_std(&self.inner.retained_cleanup_owners).remove(&cleanup_owner);
+                    }
+                    return result;
                 }
             };
             // Invalid consumers may be removed immediately by unsubscribe.
             // Hand their already accepted FIFO to the owner before retirement.
-            drain_consumer_before_retirement(&mut core, index, consumer, drain);
-            let disable = core
-                .unsubscribe(index, consumer, now_ms(), &mut out)
-                .map_err(DesktopError::from)?;
-            lock_std(&self.inner.retired_consumers)
-                .remove(&(peer_key.clone(), consumer.to_owned()));
-            drain_consumer_before_retirement(&mut core, index, consumer, drain);
-            (disable, index, key)
+            if let Some(admission) = exact {
+                drain_exact_consumer_before_retirement(
+                    &mut core, index, consumer, admission, drain,
+                );
+            } else {
+                drain_consumer_before_retirement(&mut core, index, consumer, drain);
+            }
+            let disable = if let Some(admission) = exact {
+                core.unsubscribe_exact(index, consumer, admission, now_ms(), &mut out)
+            } else {
+                core.unsubscribe(index, consumer, now_ms(), &mut out)
+            }
+            .map_err(DesktopError::from)?;
+            if exact.is_none() {
+                lock_std(&self.inner.retired_consumers)
+                    .remove(&(peer_key.clone(), consumer.to_owned()));
+            }
+            if let Some(admission) = exact {
+                drain_exact_consumer_before_retirement(
+                    &mut core, index, consumer, admission, drain,
+                );
+            } else {
+                drain_consumer_before_retirement(&mut core, index, consumer, drain);
+            }
+            let old_claim = {
+                let retained = lock_std(&self.inner.retained_enablements);
+                let mut claims = lock_std(&self.inner.retained_claims);
+                claims.iter_mut().find_map(|(&(path, epoch), owners)| {
+                    if path == index
+                        && retained.contains_key(&(path, epoch))
+                        && exact_owner
+                            .as_ref()
+                            .is_none_or(|owner| owner.activation == (path, epoch))
+                        && owners.remove(consumer)
+                    {
+                        Some((epoch, !owners.is_empty()))
+                    } else {
+                        None
+                    }
+                })
+            };
+            if disable && old_claim.is_none() && pending_disables.insert(key.clone()) {
+                lock_std(&self.inner.predispatch_disables).insert(key.clone());
+            }
+            // A terminal already taken by the owner (including the drain
+            // callback above) is removed immediately by the core. Publish
+            // its exact activation before any further await or caller drop.
+            if disable
+                && old_claim.is_none()
+                && let (Some(admission), Some(owner)) = (exact, exact_owner.as_ref())
+                && core
+                    .consumer_path_exact(&peer_key, selector, consumer, admission)
+                    .is_none()
+            {
+                let (path, epoch) = owner.activation;
+                lock_std(&self.inner.retained_enablements).insert((path, epoch), key.clone());
+                lock_std(&self.inner.exact_retained_cleanup).insert(
+                    admission.clone(),
+                    (
+                        peer_id.to_owned(),
+                        selector.clone(),
+                        consumer.to_owned(),
+                        path,
+                        epoch,
+                        None,
+                    ),
+                );
+            }
+            (disable, index, key, old_claim)
         };
-        if !disable_physical && lock_std(&self.inner.retained_enablements).contains(&key) {
-            return self
-                .release_retained(peer_id, &key, &ctl.ticket, window)
-                .await;
+        drop(pending_disables);
+        if let Some((epoch, other_consumers)) = other_consumers {
+            if other_consumers {
+                return Ok(false);
+            }
+            if let Some(admission) = exact {
+                lock_std(&self.inner.exact_retained_cleanup).insert(
+                    admission.clone(),
+                    (
+                        peer_id.to_owned(),
+                        selector.clone(),
+                        consumer.to_owned(),
+                        path_index,
+                        epoch,
+                        None,
+                    ),
+                );
+            } else {
+                lock_std(&self.inner.retained_cleanup_owners)
+                    .insert(cleanup_owner.clone(), (path_index, epoch));
+            }
+            let result = if let Some(admission) = exact {
+                self.release_retained_exact(
+                    peer_id,
+                    path_index,
+                    &key,
+                    epoch,
+                    &ctl.ticket,
+                    window,
+                    admission,
+                    drain,
+                    Arc::clone(&_gatt_admission),
+                )
+                .await
+            } else {
+                self.release_retained(peer_id, path_index, &key, epoch, &ctl.ticket, window)
+                    .await
+            };
+            if result.is_ok() {
+                if let Some(admission) = exact {
+                    lock_std(&self.inner.exact_retained_cleanup).remove(admission);
+                } else {
+                    lock_std(&self.inner.retained_cleanup_owners).remove(&cleanup_owner);
+                }
+            } else if let (Some(admission), Err(error)) = (exact, &result) {
+                if let Some(debt) = lock_std(&self.inner.exact_retained_cleanup).get_mut(admission)
+                {
+                    debt.5.get_or_insert_with(|| error.clone());
+                }
+            }
+            return result;
         }
         if !disable_physical && !self.inner.failed_disables.lock().await.contains(&key) {
+            if let Some((index, epoch)) = self.inner.subscriptions.lock().await.get(&key).copied() {
+                if exact_owner
+                    .as_ref()
+                    .is_none_or(|owner| owner.activation == (index, epoch))
+                    && let Some(owners) =
+                        lock_std(&self.inner.retained_claims).get_mut(&(index, epoch))
+                {
+                    owners.remove(consumer);
+                }
+            }
             // No radio work: still recycle any terminal shares (e.g. an
             // immediate-success join that released elsewhere) so the
             // ledger never grows across unsubscribe-only cycles.
@@ -6456,29 +10816,76 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             recycle_observations(&mut core);
             return Ok(false);
         }
-        _gatt_admission
-            .dispatch(self.drive_disable(
+        // The lifecycle gate may close after the source fence. Keep this
+        // wait in the same cancellation/deadline window as the cleanup;
+        // the pending disable was published before reaching this await.
+        let _starting = match drive(&ctl.ticket, window, _gatt_admission.begin_starting()).await {
+            Wait::Done(result) => result?,
+            Wait::Expired => {
+                return Err(classify(
+                    timed_out("gatt.unsubscribe", window),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+            Wait::Cancelled => {
+                return Err(classify(
+                    ctl.ticket.interruption("gatt.unsubscribe"),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+        };
+        if let (Some(admission), Some(owner)) = (exact, exact_owner.as_ref()) {
+            self.drive_exact_disable(
                 peer_id,
                 &key,
                 path_index,
+                owner.activation.1,
                 &ctl.ticket,
                 window,
                 consumer,
+                selector,
+                admission,
                 drain,
-            ))
+                Arc::clone(&_gatt_admission),
+                _starting,
+                true,
+            )
             .await
+        } else {
+            _gatt_admission
+                .dispatch(self.drive_disable(
+                    peer_id,
+                    &key,
+                    path_index,
+                    &ctl.ticket,
+                    window,
+                    consumer,
+                    drain,
+                    None,
+                ))
+                .await
+        }
     }
 
     /// Drive one physical disable (first attempt or a retry of a failed
-    /// one). Teardown is keyed by instance: the boundary ignores the epoch
-    /// on disable, so the current generation is passed through untouched.
-    /// The orphaned enablement `selector` addresses, when exactly one
+    /// one). The orphaned enablement `selector` addresses, when exactly one
     /// matches (finding 40).
-    fn retained_enablement(&self, peer_id: &str, selector: &PathSelector) -> Option<InstanceKey> {
+    fn retained_enablement(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+    ) -> Option<(usize, InstanceKey, u64)> {
         let characteristic = selector.characteristic_uuid.as_deref()?;
         let retained = lock_std(&self.inner.retained_enablements);
-        let mut matches = retained.iter().filter(|key| {
-            key.0 == peer_id
+        let claims = lock_std(&self.inner.retained_claims);
+        let mut matches = retained.iter().filter(|(claim, key)| {
+            claims
+                .get(claim)
+                .is_some_and(|owners| owners.contains(consumer))
+                && key.0 == peer_id
                 && key.1 == selector.service_uuid
                 && selector
                     .service_occurrence
@@ -6488,8 +10895,162 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     .characteristic_occurrence
                     .is_none_or(|occurrence| occurrence == key.4)
         });
-        let first = matches.next()?.clone();
+        let ((index, epoch), key) = matches.next()?;
+        let first = (*index, key.clone(), *epoch);
         matches.next().is_none().then_some(first)
+    }
+
+    fn release_notification_physical<'a>(
+        &'a self,
+        peer_id: &'a str,
+        key: &'a InstanceKey,
+        epoch: u64,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), DesktopError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Exercise the production backend's cancellable peer lock with
+            // a deterministic boundary, without opening a physical radio.
+            #[cfg(all(test, feature = "btleplug"))]
+            let test_gate = lock_std(&self.inner.test_notification_cleanup_gate).clone();
+            #[cfg(all(test, feature = "btleplug"))]
+            let _test_guard = if let Some(cache) = test_gate.as_ref() {
+                Some(cache.lock_peer(peer_id).await)
+            } else {
+                None
+            };
+            let origin = lock_std(&self.inner.ordered_physical_origins)
+                .get(&(key.clone(), epoch))
+                .cloned();
+            if let Some(origin) = origin {
+                use crate::boundary::OrderedNotificationSettlement;
+                match self
+                    .inner
+                    .boundary
+                    .ordered_notification_settlement(
+                        &origin.lease,
+                        origin.member_id,
+                        origin.membership,
+                        &origin.prepared,
+                    )
+                    .await?
+                {
+                    OrderedNotificationSettlement::Pending => {
+                        return Err(contract_error(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "gatt.ordered.settlement",
+                        )
+                        .with_detail("ordered enable remains pending"));
+                    }
+                    OrderedNotificationSettlement::Enabled
+                    | OrderedNotificationSettlement::Released => {}
+                }
+                self.inner
+                    .boundary
+                    .release_ordered_notification(
+                        &origin.lease,
+                        origin.member_id,
+                        origin.membership,
+                        &origin.prepared,
+                    )
+                    .await?;
+                lock_std(&self.inner.ordered_physical_origins).remove(&(key.clone(), epoch));
+                // The originating logical group may have closed while another
+                // consumer retained this physical activation. Its source removal
+                // was pinned by the receipt and is now eligible for retry.
+                let inner = Arc::clone(&self.inner);
+                let peer = origin.lease.peer_id.clone();
+                let collection = origin.lease.collection_id;
+                spawn_retirement(&Arc::clone(&inner), async move {
+                    let central = DesktopCentral {
+                        inner: Arc::clone(&inner),
+                    };
+                    if inner.ordered_batches.get(&peer, collection).is_some() {
+                        let retry: std::pin::Pin<
+                            Box<
+                                dyn Future<Output = Result<OrderedCleanupOutcome, DesktopError>>
+                                    + Send
+                                    + '_,
+                            >,
+                        > = Box::pin(central.retry_retained_ordered_batch(
+                            &peer,
+                            collection,
+                            OpControl::budget_ms(5000),
+                        ));
+                        if let Err(error) = retry.await {
+                            if let Some(owner) = inner.ordered_batches.get(&peer, collection) {
+                                owner.lock().await.fence_error.get_or_insert(error);
+                            }
+                        }
+                    }
+                });
+                Ok(())
+            } else {
+                self.inner
+                    .boundary
+                    .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, false, epoch, None)
+                    .await
+                    .map(|_| ())
+            }
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn release_retained_exact(
+        &self,
+        peer_id: &str,
+        path_index: usize,
+        key: &InstanceKey,
+        epoch: u64,
+        ticket: &OpTicket,
+        window: Window,
+        admission: &ubm_core::central::OperationAdmission,
+        drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
+        gatt: Arc<crate::GattAdmission>,
+    ) -> Result<bool, DesktopError> {
+        let owner = lock_std(&self.inner.exact_subscription_owners)
+            .owners
+            .get(admission)
+            .cloned()
+            .ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::ConnectionStale,
+                    BleErrorDomain::Gatt,
+                    "gatt.unsubscribe.admission",
+                )
+            })?;
+        let starting = match drive(ticket, window, gatt.begin_starting()).await {
+            Wait::Done(result) => result?,
+            Wait::Expired => {
+                return Err(classify(
+                    timed_out("gatt.unsubscribe", window),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+            Wait::Cancelled => {
+                return Err(classify(
+                    ticket.interruption("gatt.unsubscribe"),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+        };
+        self.drive_exact_disable(
+            peer_id,
+            key,
+            path_index,
+            epoch,
+            ticket,
+            window,
+            &owner.consumer,
+            &owner.selector,
+            admission,
+            drain,
+            gatt,
+            starting,
+            false,
+        )
+        .await
     }
 
     /// Disable an orphaned enablement at the radio (finding 40). Released
@@ -6498,35 +11059,414 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     async fn release_retained(
         &self,
         peer_id: &str,
+        path_index: usize,
         key: &InstanceKey,
+        epoch: u64,
         ticket: &OpTicket,
         window: Window,
     ) -> Result<bool, DesktopError> {
+        self.release_retained_inner(peer_id, path_index, key, epoch, ticket, window, None)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn release_retained_inner(
+        &self,
+        peer_id: &str,
+        path_index: usize,
+        key: &InstanceKey,
+        epoch: u64,
+        ticket: &OpTicket,
+        window: Window,
+        exact: Option<&ubm_core::central::OperationAdmission>,
+    ) -> Result<bool, DesktopError> {
+        if let Some(admission) = exact {
+            lock_std(&self.inner.exact_unsettled_cleanup).insert(admission.clone(), None);
+        }
+        let started = AtomicBool::new(false);
         let outcome = drive(
             ticket,
             window,
-            self.inner
-                .boundary
-                .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, false, 0, None),
+            start_notification_cleanup(
+                ticket,
+                window,
+                &started,
+                || {},
+                self.release_notification_physical(peer_id, key, epoch),
+            ),
         )
         .await;
-        match outcome {
+        let definitive = matches!(&outcome, Wait::Done(_)) || !started.load(Ordering::Relaxed);
+        let result = match outcome {
             Wait::Done(Ok(_)) => {
-                lock_std(&self.inner.retained_enablements).remove(key);
+                lock_std(&self.inner.retained_enablements).remove(&(path_index, epoch));
+                lock_std(&self.inner.retained_claims).remove(&(path_index, epoch));
                 Ok(true)
             }
             Wait::Done(Err(error)) => Err(error),
             Wait::Expired => Err(classify(
                 timed_out("gatt.unsubscribe", window),
                 OpKind::Cleanup,
-                true,
+                started.load(Ordering::Relaxed),
             )),
             Wait::Cancelled => Err(classify(
                 ticket.interruption("gatt.unsubscribe"),
                 OpKind::Cleanup,
-                true,
+                started.load(Ordering::Relaxed),
             )),
+        };
+        if let Some(admission) = exact {
+            if definitive {
+                lock_std(&self.inner.exact_unsettled_cleanup).remove(admission);
+            } else if let Err(error) = &result {
+                lock_std(&self.inner.exact_unsettled_cleanup)
+                    .insert(admission.clone(), Some(error.clone()));
+            }
         }
+        result
+    }
+
+    /// Own the physical future independently of the caller. The caller's
+    /// borrowed drain is used only when it observes the completed receipt.
+    #[allow(clippy::too_many_arguments)]
+    async fn drive_exact_disable(
+        &self,
+        peer_id: &str,
+        key: &InstanceKey,
+        path_index: usize,
+        epoch: u64,
+        ticket: &OpTicket,
+        window: Window,
+        consumer: &str,
+        selector: &PathSelector,
+        admission: &ubm_core::central::OperationAdmission,
+        drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
+        gatt: Arc<crate::GattAdmission>,
+        starting: crate::gatt_admission::StartingPoll,
+        routed: bool,
+    ) -> Result<bool, DesktopError> {
+        let owner = lock_std(&self.inner.exact_subscription_owners)
+            .owners
+            .get(admission)
+            .cloned()
+            .ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::ConnectionStale,
+                    BleErrorDomain::Gatt,
+                    "gatt.unsubscribe.admission",
+                )
+            })?;
+        if owner.activation != (path_index, epoch)
+            || (routed
+                && self.inner.subscriptions.lock().await.get(key) != Some(&(path_index, epoch)))
+            || (!routed
+                && lock_std(&self.inner.retained_enablements).get(&(path_index, epoch))
+                    != Some(key))
+        {
+            return Err(contract_error(
+                BleErrorCode::ConnectionStale,
+                BleErrorDomain::Gatt,
+                "gatt.unsubscribe.admission",
+            ));
+        }
+        let pending = match drive(
+            ticket,
+            window,
+            Arc::clone(&self.inner.failed_disables).lock_owned(),
+        )
+        .await
+        {
+            Wait::Done(pending) => pending,
+            Wait::Expired => {
+                return Err(classify(
+                    timed_out("gatt.unsubscribe", window),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+            Wait::Cancelled => {
+                return Err(classify(
+                    ticket.interruption("gatt.unsubscribe"),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+        };
+        let mut predispatch = if lock_std(&self.inner.predispatch_disables).contains(key) {
+            Some(pending)
+        } else {
+            drop(pending);
+            None
+        };
+        let slot = self
+            .inner
+            .exact_disable_tasks
+            .reserve(admission.clone(), admission.clone(), false, 0, 0)
+            .map_err(|_| {
+                contract_error(
+                    BleErrorCode::CapabilityLimited,
+                    BleErrorDomain::Cleanup,
+                    "gatt.unsubscribe.settlement",
+                )
+                .with_detail("native cleanup settlement capacity exhausted")
+            })?;
+        owner
+            .disable_drain_required
+            .store(drain.is_some(), Ordering::SeqCst);
+        lock_std(&self.inner.exact_unsettled_cleanup).insert(admission.clone(), None);
+        let central = self.clone();
+        let peer = peer_id.to_owned();
+        let instance = key.clone();
+        let phase = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let tracked_phase = Arc::clone(&phase);
+        let gate_ticket = ticket.clone();
+        let gate_inner = Arc::clone(&self.inner);
+        let gate_key = key.clone();
+        let mut starting = Some(starting);
+        let deadline = window
+            .at
+            .unwrap_or_else(|| tokio::time::Instant::now() + LIVENESS_CLEANUP);
+        let guard = slot
+            .start_controlled(
+                deadline,
+                move || async move {
+                    crate::op_control::track_notification_cleanup(tracked_phase, async move {
+                        central
+                            .release_notification_physical(&peer, &instance, epoch)
+                            .await
+                    })
+                    .await
+                },
+                move |mut future, cx| {
+                    use notification_settlement::{FirstPoll, Stop};
+                    let result = gate_ticket.start_if_active(|| {
+                        if let Err(error) = gatt.assert_current() {
+                            starting.take();
+                            return FirstPoll::Dispatched(std::task::Poll::Ready(Err(error)));
+                        }
+                        let answer = future.as_mut().poll(cx);
+                        if phase.load(Ordering::SeqCst) == 1 && answer.is_pending() {
+                            FirstPoll::Waiting
+                        } else {
+                            if let Some(mut pending) = predispatch.take() {
+                                lock_std(&gate_inner.predispatch_disables).remove(&gate_key);
+                                pending.remove(&gate_key);
+                            }
+                            gatt.mark_dispatched();
+                            starting.take();
+                            FirstPoll::Dispatched(answer)
+                        }
+                    });
+                    result.unwrap_or(FirstPoll::Stopped(Stop::Cancelled))
+                },
+                |native| async move {
+                    match native {
+                        Ok(()) => notification_settlement::Outcome::Success(()),
+                        Err(error) => notification_settlement::Outcome::Failed(error),
+                    }
+                },
+            )
+            .map_err(|_| {
+                contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.unsubscribe.settlement",
+                )
+            })?;
+        let answer = drive(ticket, window, slot.wait()).await;
+        drop(guard);
+        match answer {
+            Wait::Done(notification_settlement::State::Complete { .. }) => {
+                self.finish_exact_disable(
+                    peer_id, selector, consumer, admission, &owner, &slot, drain,
+                )
+                .await
+            }
+            Wait::Done(notification_settlement::State::NotStarted { .. }) => {
+                let _ = slot.acknowledge(admission);
+                let _ = self.inner.exact_disable_tasks.retire(admission);
+                lock_std(&self.inner.exact_unsettled_cleanup).remove(admission);
+                Err(classify(
+                    ticket.interruption("gatt.unsubscribe"),
+                    OpKind::Cleanup,
+                    false,
+                ))
+            }
+            Wait::Done(_) => Err(contract_error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.unsubscribe.settlement",
+            )
+            .with_detail("native cleanup task ended without a reconciled answer")),
+            Wait::Expired | Wait::Cancelled => {
+                let dispatched = !matches!(
+                    slot.snapshot(),
+                    notification_settlement::State::NotStarted { .. }
+                );
+                if !dispatched {
+                    let _ = slot.acknowledge(admission);
+                    let _ = self.inner.exact_disable_tasks.retire(admission);
+                    lock_std(&self.inner.exact_unsettled_cleanup).remove(admission);
+                }
+                let error = if matches!(answer, Wait::Expired) {
+                    timed_out("gatt.unsubscribe", window)
+                } else {
+                    ticket.interruption("gatt.unsubscribe")
+                };
+                Err(classify(error, OpKind::Cleanup, dispatched))
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_exact_disable(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        admission: &ubm_core::central::OperationAdmission,
+        owner: &ExactSubscriptionOwner,
+        slot: &Arc<ExactDisableSettlement>,
+        drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
+    ) -> Result<bool, DesktopError> {
+        use notification_settlement::State;
+        let native = match slot.snapshot() {
+            State::Complete { native, .. } => native,
+            _ => {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.unsubscribe.settlement",
+                )
+                .with_detail("the previous native cleanup has not settled"));
+            }
+        };
+        let (index, epoch) = owner.activation;
+        let key = {
+            let routes = self.inner.subscriptions.lock().await;
+            routes
+                .iter()
+                .find_map(|(key, value)| (*value == (index, epoch)).then(|| key.clone()))
+        };
+        if let Err(error) = native {
+            if let Some(key) = key {
+                self.inner.failed_disables.lock().await.insert(key);
+            }
+            slot.acknowledge(admission).map_err(|_| {
+                contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.unsubscribe.settlement",
+                )
+            })?;
+            self.inner
+                .exact_disable_tasks
+                .retire(admission)
+                .map_err(|_| {
+                    contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Cleanup,
+                        "gatt.unsubscribe.settlement",
+                    )
+                })?;
+            lock_std(&self.inner.exact_unsettled_cleanup).remove(admission);
+            return Err(error);
+        }
+        if owner.disable_drain_required.load(Ordering::SeqCst) && drain.is_none() {
+            return Err(contract_error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.unsubscribe.settlement",
+            )
+            .with_detail("the original consumer requires a drain"));
+        }
+        // Native disable has already settled. Linearize the final route
+        // retirement with a recovery cursor/final-ACK decision, without
+        // extending the lease across the native operation above.
+        let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
+        let mut routes = self.inner.subscriptions.lock().await;
+        if let Some(key) = key.filter(|key| routes.get(key) == Some(&(index, epoch))) {
+            let peer_key = self.known_peer_key(peer_id).await?;
+            let mut failed = self.inner.failed_disables.lock().await;
+            let mut core = self.inner.core.lock().await;
+            if let Some(actual) = core.consumer_path_exact(&peer_key, selector, consumer, admission)
+            {
+                if actual != index {
+                    return Err(contract_error(
+                        BleErrorCode::ConnectionStale,
+                        BleErrorDomain::Gatt,
+                        "gatt.unsubscribe.admission",
+                    ));
+                }
+                drain_exact_consumer_before_retirement(
+                    &mut core, index, consumer, admission, drain,
+                );
+            } else if owner.disable_drain_required.load(Ordering::SeqCst) {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.unsubscribe.settlement",
+                )
+                .with_detail("the original consumer drain is no longer available"));
+            }
+            let mut out = batch();
+            core.settle_subscribe_disable(index, now_ms(), &mut out)
+                .map_err(DesktopError::from)?;
+            let _ = out.drain();
+            sweep_terminal_successes(&mut core);
+            routes.remove(&key);
+            failed.remove(&key);
+            lock_std(&self.inner.predispatch_disables).remove(&key);
+            lock_std(&self.inner.deliveries).remove(&key);
+            lock_std(&self.inner.notification_failures).remove(&index);
+        } else if owner.disable_drain_required.load(Ordering::SeqCst) {
+            // The old hub can remain readable after its route has retired.
+            // Address it only by its original admission, while holding the
+            // core lock, so a same-name replacement cannot receive its tail.
+            let peer_key = self.known_peer_key(peer_id).await?;
+            let mut core = self.inner.core.lock().await;
+            if core.consumer_path_exact(&peer_key, selector, consumer, admission) != Some(index) {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.unsubscribe.settlement",
+                )
+                .with_detail(
+                    "the original activation retired before its drain could be collected",
+                ));
+            }
+            drain_exact_consumer_before_retirement(&mut core, index, consumer, admission, drain);
+        }
+        self.inner
+            .core
+            .lock()
+            .await
+            .acknowledge_exact_consumer_cleanup(index, consumer, admission);
+        lock_std(&self.inner.retained_claims).remove(&(index, epoch));
+        lock_std(&self.inner.retained_enablements).remove(&(index, epoch));
+        lock_std(&self.inner.exact_retained_cleanup).remove(admission);
+        slot.acknowledge(admission).map_err(|_| {
+            contract_error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.unsubscribe.settlement",
+            )
+        })?;
+        self.inner
+            .exact_disable_tasks
+            .retire(admission)
+            .map_err(|_| {
+                contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.unsubscribe.settlement",
+                )
+            })?;
+        lock_std(&self.inner.exact_unsettled_cleanup).remove(admission);
+        lock_std(&self.inner.exact_subscription_owners)
+            .owners
+            .remove(admission);
+        Ok(true)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6539,19 +11479,90 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         window: Window,
         consumer: &str,
         drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
+        exact: Option<(
+            &ubm_core::central::OperationAdmission,
+            &PathSelector,
+            (usize, u64),
+        )>,
     ) -> Result<bool, DesktopError> {
-        let epoch = self.routing_epoch(peer_id).await;
+        let epoch = self
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .get(key)
+            .filter(|(index, _)| *index == path_index)
+            .map(|(_, epoch)| *epoch)
+            .ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.unsubscribe.routing",
+                )
+            })?;
+        if exact.is_some_and(|(_, _, activation)| activation != (path_index, epoch)) {
+            return Err(contract_error(
+                BleErrorCode::ConnectionStale,
+                BleErrorDomain::Gatt,
+                "gatt.unsubscribe.admission",
+            ));
+        }
+        // A marker introduced for the pre-dispatch gap is removed at the
+        // first physical poll. An older failed-disable marker keeps its
+        // original post-dispatch behavior.
+        let pending = self.inner.failed_disables.lock().await;
+        let mut predispatch = if lock_std(&self.inner.predispatch_disables).contains(key) {
+            Some(pending)
+        } else {
+            drop(pending);
+            None
+        };
+        if let Some((admission, _, _)) = exact {
+            lock_std(&self.inner.exact_unsettled_cleanup).insert(admission.clone(), None);
+        }
+        let started = AtomicBool::new(false);
         let outcome = drive(
             ticket,
             window,
-            self.inner
-                .boundary
-                .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, false, epoch, None),
+            start_notification_cleanup(
+                ticket,
+                window,
+                &started,
+                || {
+                    if let Some(mut pending) = predispatch.take() {
+                        lock_std(&self.inner.predispatch_disables).remove(key);
+                        pending.remove(key);
+                    }
+                },
+                self.release_notification_physical(peer_id, key, epoch),
+            ),
         )
         .await;
+        drop(predispatch);
+        if (matches!(&outcome, Wait::Done(Err(_))) || !started.load(Ordering::Relaxed))
+            && let Some((admission, _, _)) = exact
+        {
+            lock_std(&self.inner.exact_unsettled_cleanup).remove(admission);
+        }
         let error = match outcome {
             Wait::Done(Ok(_)) => {
-                self.inner.subscriptions.lock().await.remove(key);
+                lock_std(&self.inner.retained_claims).remove(&(path_index, epoch));
+                lock_std(&self.inner.retained_enablements).remove(&(path_index, epoch));
+                if let Some((admission, _, _)) = exact {
+                    lock_std(&self.inner.exact_retained_cleanup).remove(admission);
+                }
+                let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
+                let mut routes = self.inner.subscriptions.lock().await;
+                if routes.get(key) != Some(&(path_index, epoch)) {
+                    // The old native operation completed after the route was
+                    // replaced. Its success is real but owns no new route,
+                    // stream, delivery mode, or core hub.
+                    if let Some((admission, _, _)) = exact {
+                        lock_std(&self.inner.exact_unsettled_cleanup).remove(admission);
+                    }
+                    return Ok(true);
+                }
+                routes.remove(key);
                 self.inner.failed_disables.lock().await.remove(key);
                 lock_std(&self.inner.deliveries).remove(key);
                 lock_std(&self.inner.notification_failures).remove(&path_index);
@@ -6561,20 +11572,52 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 let _ = core.settle_subscribe_disable(path_index, now_ms(), &mut out);
                 let _ = out.drain();
                 sweep_terminal_successes(&mut core);
+                drop(routes);
+                if let Some((admission, _, _)) = exact {
+                    lock_std(&self.inner.exact_unsettled_cleanup).remove(admission);
+                }
                 return Ok(true);
             }
             Wait::Done(Err(error)) => error,
-            Wait::Expired => classify(timed_out("gatt.unsubscribe", window), OpKind::Cleanup, true),
+            Wait::Expired => classify(
+                timed_out("gatt.unsubscribe", window),
+                OpKind::Cleanup,
+                started.load(Ordering::Relaxed),
+            ),
             Wait::Cancelled => classify(
                 ticket.interruption("gatt.unsubscribe"),
                 OpKind::Cleanup,
-                true,
+                started.load(Ordering::Relaxed),
             ),
         };
+        if let Some((admission, _, _)) = exact
+            && let Some(pending) = lock_std(&self.inner.exact_unsettled_cleanup).get_mut(admission)
+        {
+            *pending = Some(error.clone());
+        }
         // Routing stays: the CCCD may still be live, so values must still
         // reach the hub. The pending-disable set routes the next
         // `unsubscribe` into a retry.
-        self.inner.failed_disables.lock().await.insert(key.clone());
+        let routes = self.inner.subscriptions.lock().await;
+        if routes.get(key) == Some(&(path_index, epoch)) {
+            self.inner.failed_disables.lock().await.insert(key.clone());
+        } else {
+            lock_std(&self.inner.retained_enablements).insert((path_index, epoch), key.clone());
+            if let Some((admission, selector, _)) = exact {
+                lock_std(&self.inner.exact_retained_cleanup)
+                    .entry(admission.clone())
+                    .or_insert_with(|| {
+                        (
+                            peer_id.to_owned(),
+                            selector.clone(),
+                            consumer.to_owned(),
+                            path_index,
+                            epoch,
+                            Some(error.clone()),
+                        )
+                    });
+            }
+        }
         Err(error)
     }
 
@@ -6602,6 +11645,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .resolve_path(&peer_key, selector)
                 .map_err(DesktopError::from)?,
         };
+        if core.notification_requires_typed_poll(index, consumer) {
+            return Err(contract_error(
+                BleErrorCode::CapabilityLimited,
+                BleErrorDomain::Gatt,
+                "gatt.take-notification",
+            )
+            .with_detail("the next record requires typed notification polling"));
+        }
         Ok(core.take_notification_value(index, consumer))
     }
 
@@ -6611,6 +11662,486 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// the connection state), or closure. Values drain before the terminal;
     /// after the terminal is observed the stream reports closed, never
     /// live-empty again.
+    /// Read one bounded page of an offered peer-source failure recovery.
+    /// The descriptor remains owned until the backend confirms the final ACK.
+    pub async fn read_peer_notification_failure_recovery(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        recipient_lease: &str,
+        offset: u64,
+    ) -> Result<ubm_core::oversized_evidence::PeerSourceFailureChunk, DesktopError> {
+        // Recovery I/O is deliberately outside routing locks. A stalled
+        // radio or ledger operation must not prevent unsubscribe, link loss,
+        // reset, or shutdown from retiring the live route. We authenticate
+        // again immediately before recording progress below; once a final
+        // acknowledgement is durable, its exact source-time receipt becomes
+        // retained cleanup debt and may finish without a live route.
+        let (scope, epoch, source_consumer) = self
+            .peer_failure_recovery_recipient(
+                peer_id,
+                selector,
+                consumer,
+                descriptor,
+                recipient_lease,
+                "read",
+            )
+            .await?;
+        // Once an opaque source receipt exists, native ownership may already
+        // have advanced. Read the immutable staged bytes instead of asking a
+        // new/live source to reconstruct old evidence.
+        let durable_read = lock_std(&self.inner.peer_failure_recoveries)
+            .get(descriptor)
+            .is_some_and(|receipt| receipt.source_ack_id.is_some() || receipt.durable_restored);
+        let chunk = if durable_read {
+            let ledger = lock_std(&self.inner.peer_failure_recovery_ledger)
+                .clone()
+                .ok_or_else(|| {
+                    contract_error(
+                        BleErrorCode::CapabilityUnavailable,
+                        BleErrorDomain::Restoration,
+                        "gatt.notification.source-failure-recovery.read",
+                    )
+                })?;
+            ledger.read_recovered_chunk(descriptor, offset).await?
+        } else {
+            self.inner
+                .boundary
+                .read_peer_notification_failure_recovery(descriptor, offset)
+                .await?
+        };
+        // A recipient read is a durable state transition.  Keep the same
+        // serial used by ACK through the snapshot write: otherwise a failed
+        // ledger write can leave an in-memory complete cursor that a later
+        // ACK mistakes for persisted permission to advance the source.
+        let _serial = self.inner.peer_failure_recovery_persistence.lock().await;
+        // A read from a live native source may record a cursor only for the
+        // still-current route. The transition gate prevents route retirement
+        // from passing between that check and the exact receipt mutation; it
+        // is dropped before the durable write.
+        let route_transition = self.inner.peer_failure_recovery_transition.lock().await;
+        if !durable_read && !routes_match(&self.inner, &[(scope.clone(), epoch)]).await {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.notification.source-failure-recovery.read",
+            ));
+        }
+        let previous_contiguous_read = {
+            let mut recoveries = lock_std(&self.inner.peer_failure_recoveries);
+            let receipt = recoveries.get_mut(descriptor).ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.read",
+                )
+            })?;
+            let member = receipt
+                .members
+                .get_mut(&PeerFailureRecoveryRecipientKey {
+                    scope: scope.clone(),
+                    consumer: source_consumer.clone(),
+                })
+                .filter(|member| member.epoch == epoch && member.recipient_lease == recipient_lease)
+                .ok_or_else(|| {
+                    contract_error(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Gatt,
+                        "gatt.notification.source-failure-recovery.read",
+                    )
+                    .with_detail("the retained recipient route is no longer current")
+                })?;
+            // Out-of-order pages are readable for inspection, but only a
+            // contiguous prefix authorizes this recipient's acknowledgement.
+            if offset <= member.contiguous_read {
+                let next = member.contiguous_read.max(chunk.next_offset);
+                let previous = member.contiguous_read;
+                member.contiguous_read = next;
+                (next != previous).then_some(previous)
+            } else {
+                None
+            }
+        };
+        drop(route_transition);
+        if let Some(previous) = previous_contiguous_read {
+            if let Err(error) =
+                persist_peer_failure_recovery_recipients_serialized(&self.inner, descriptor).await
+            {
+                // The serial fence excludes another read or ACK while this
+                // snapshot is in flight.  Restore only this exact source-time
+                // lease, leaving every other recipient's durable progress
+                // untouched and making this page safely retryable.
+                if let Some(receipt) =
+                    lock_std(&self.inner.peer_failure_recoveries).get_mut(descriptor)
+                {
+                    if let Some(member) =
+                        receipt.members.get_mut(&PeerFailureRecoveryRecipientKey {
+                            scope: scope.clone(),
+                            consumer: source_consumer.clone(),
+                        })
+                    {
+                        if member.epoch == epoch
+                            && member.recipient_lease == recipient_lease
+                            && member.contiguous_read == chunk.next_offset
+                        {
+                            member.contiguous_read = previous;
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        }
+        Ok(chunk)
+    }
+
+    /// Acknowledge a fully read peer-source failure. Every recipient must
+    /// still name the exact source-time route; a disconnect/reconnect is a
+    /// stale receipt rather than permission to advance the old source head.
+    pub async fn ack_peer_notification_failure_recovery(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        recipient_lease: &str,
+    ) -> Result<(), DesktopError> {
+        // The final producer acknowledgement is route-owned until the final
+        // member acknowledgement is durably persisted. No routing lock spans
+        // its ledger or native I/O: after that durable handoff, the exact
+        // source-time receipt is retained cleanup debt.
+        let (scope, epoch, source_consumer) = self
+            .peer_failure_recovery_recipient(
+                peer_id,
+                selector,
+                consumer,
+                descriptor,
+                recipient_lease,
+                "ack",
+            )
+            .await?;
+        // Serialize the state mutation with its durable snapshot. Two
+        // recipients can acknowledge concurrently; an unsuccessful write
+        // must never roll back the other recipient's acknowledged state.
+        let _serial = self.inner.peer_failure_recovery_persistence.lock().await;
+        // A stale live route must not persist a final recipient ACK or retire
+        // a replacement's retained source. The gate is held only through the
+        // exact receipt mutation, then released before durable/native I/O.
+        let route_transition = self.inner.peer_failure_recovery_transition.lock().await;
+        let durable_owner = lock_std(&self.inner.peer_failure_recoveries)
+            .get(descriptor)
+            .is_some_and(|receipt| receipt.source_ack_id.is_some() || receipt.durable_restored);
+        if !durable_owner && !routes_match(&self.inner, &[(scope.clone(), epoch)]).await {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.notification.source-failure-recovery.ack",
+            ));
+        }
+        let (should_commit, newly_acknowledged) = {
+            let mut recoveries = lock_std(&self.inner.peer_failure_recoveries);
+            let receipt = recoveries.get_mut(descriptor).ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.ack",
+                )
+            })?;
+            let member = receipt
+                .members
+                .get_mut(&PeerFailureRecoveryRecipientKey {
+                    scope: scope.clone(),
+                    consumer: source_consumer.clone(),
+                })
+                .filter(|member| member.epoch == epoch && member.recipient_lease == recipient_lease)
+                .ok_or_else(|| {
+                    contract_error(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Gatt,
+                        "gatt.notification.source-failure-recovery.ack",
+                    )
+                    .with_detail("the retained recipient route is no longer current")
+                })?;
+            if member.contiguous_read != descriptor.encoded_length {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.ack",
+                )
+                .with_detail("this recipient has not read the complete retained source failure"));
+            }
+            if member.acknowledged {
+                // A lost response after the final member's ACK must resume
+                // the same durable begin/commit/retire sequence, not mint a
+                // second producer acknowledgement. The exact member lease
+                // remains required for that retry.
+                if !receipt.committing {
+                    return Err(contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Gatt,
+                        "gatt.notification.source-failure-recovery.ack",
+                    ));
+                }
+                (true, false)
+            } else {
+                member.acknowledged = true;
+                if receipt.members.values().all(|member| member.acknowledged) {
+                    receipt.committing = true;
+                    (true, true)
+                } else {
+                    (false, true)
+                }
+            }
+        };
+        drop(route_transition);
+        // Persist every recipient acknowledgement before its in-memory state
+        // can authorize the final producer boundary. A process loss may make
+        // a recipient reread bytes, but it must never manufacture its ACK.
+        if let Err(error) =
+            persist_peer_failure_recovery_recipients_serialized(&self.inner, descriptor).await
+        {
+            // A failed durable write never grants an in-memory ACK. Restore
+            // exactly this lease so the caller can retry rather than being
+            // trapped behind an acknowledgement the journal never accepted.
+            if newly_acknowledged {
+                if let Some(receipt) =
+                    lock_std(&self.inner.peer_failure_recoveries).get_mut(descriptor)
+                {
+                    if let Some(member) =
+                        receipt.members.get_mut(&PeerFailureRecoveryRecipientKey {
+                            scope: scope.clone(),
+                            consumer: source_consumer.clone(),
+                        })
+                    {
+                        if member.epoch == epoch && member.recipient_lease == recipient_lease {
+                            member.acknowledged = false;
+                            receipt.committing = false;
+                        }
+                    }
+                }
+            }
+            return Err(error);
+        }
+        if !should_commit {
+            return Ok(());
+        }
+        let Some(ledger) = lock_std(&self.inner.peer_failure_recovery_ledger).clone() else {
+            return Err(contract_error(
+                BleErrorCode::CapabilityUnavailable,
+                BleErrorDomain::Restoration,
+                "gatt.notification.source-failure-recovery.ack",
+            )
+            .with_detail("no trusted durable peer failure ledger is configured"));
+        };
+        let (known_source_ack_id, already_retired, already_confirmed, native_owner_unavailable) =
+            lock_std(&self.inner.peer_failure_recoveries)
+                .get(descriptor)
+                .map(|receipt| {
+                    (
+                        receipt.source_ack_id.clone(),
+                        receipt.source_ack_retired,
+                        receipt.source_ack_confirmed,
+                        receipt.source_ack_native_owner_unavailable,
+                    )
+                })
+                .ok_or_else(|| {
+                    contract_error(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Gatt,
+                        "gatt.notification.source-failure-recovery.ack",
+                    )
+                })?;
+        if native_owner_unavailable && !already_confirmed {
+            return Err(contract_error(
+                BleErrorCode::CapabilityUnavailable,
+                BleErrorDomain::Restoration,
+                "gatt.notification.source-failure-recovery.reconcile",
+            )
+            .with_detail("the durable begin-ack receipt outlived its native source owner; bytes remain readable but retirement requires a platform-native reconciliation"));
+        }
+        let source_ack_id = match known_source_ack_id {
+            Some(receipt) => receipt,
+            None => match self
+                .inner
+                .boundary
+                .prepare_peer_notification_failure_recovery_ack(descriptor)
+                .await
+            {
+                Ok(receipt) => {
+                    let mut recoveries = lock_std(&self.inner.peer_failure_recoveries);
+                    let Some(live) = recoveries.get_mut(descriptor) else {
+                        return Err(contract_error(
+                            BleErrorCode::GattStaleHandle,
+                            BleErrorDomain::Gatt,
+                            "gatt.notification.source-failure-recovery.ack",
+                        ));
+                    };
+                    live.source_ack_id = Some(receipt.clone());
+                    receipt
+                }
+                // The final recipient ACK is already durable. Preserve its
+                // committing state when native preparation fails so the same
+                // lease can retry preparation without a duplicate ACK or an
+                // impossible LifecycleInvalidState.
+                Err(error) => return Err(error),
+            },
+        };
+        // `prepare` above does not advance the native source.  Persist its
+        // opaque receipt first, then let the idempotent `begin` cross the
+        // irreversible FIFO boundary. A recovered committed receipt skips
+        // both operations and proceeds directly to sidecar release.
+        if !already_retired {
+            ledger
+                .mark_source_ack_inflight(descriptor, &source_ack_id)
+                .await?;
+            let begun = self
+                .inner
+                .boundary
+                .begin_peer_notification_failure_recovery_ack(descriptor, &source_ack_id)
+                .await?;
+            if begun != source_ack_id {
+                return Err(contract_error(
+                    BleErrorCode::ProtocolMalformed,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.begin-ack",
+                )
+                .with_detail(
+                    "native source returned a different prepared acknowledgement receipt",
+                ));
+            }
+        }
+        if !already_retired {
+            if let Err(error) = self
+                .inner
+                .boundary
+                .retire_peer_notification_failure_recovery_ack(descriptor, &source_ack_id)
+                .await
+            {
+                return Err(error);
+            }
+            let mut recoveries = lock_std(&self.inner.peer_failure_recoveries);
+            let Some(receipt) = recoveries.get_mut(descriptor) else {
+                return Err(contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.ack",
+                ));
+            };
+            receipt.source_ack_retired = true;
+        }
+        if !already_confirmed {
+            if let Err(error) = ledger.confirm_source_ack(descriptor, &source_ack_id).await {
+                // Native retirement has happened. The durable ledger owns the
+                // in-flight receipt and must report this failure for recovery;
+                // leave central's receipt intact rather than pretending release.
+                return Err(error);
+            }
+            let mut recoveries = lock_std(&self.inner.peer_failure_recoveries);
+            let Some(receipt) = recoveries.get_mut(descriptor) else {
+                return Err(contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.ack",
+                ));
+            };
+            receipt.source_ack_confirmed = true;
+        }
+        // Confirmation proves source-side retirement, but the durable sidecar
+        // still owns its quota until release succeeds. Keep the receipt for
+        // an idempotent retry rather than leaking the sidecar after a crash.
+        if let Err(error) = ledger.release(descriptor).await {
+            return Err(error);
+        }
+        lock_std(&self.inner.peer_failure_recoveries).remove(descriptor);
+        Ok(())
+    }
+
+    /// Resolve one exact routed recipient.  A descriptor is shared source
+    /// evidence, never a bearer capability that permits one subscriber to
+    /// consume another subscriber's source-time receipt.
+    async fn peer_failure_recovery_recipient(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        recipient_lease: &str,
+        operation: &'static str,
+    ) -> Result<(InstanceKey, u64, String), DesktopError> {
+        let op = match operation {
+            "read" => "gatt.notification.source-failure-recovery.read",
+            _ => "gatt.notification.source-failure-recovery.ack",
+        };
+        // Once final recipient acknowledgement has crossed the short
+        // route-transition gate, it is exact cleanup debt. Route retirement
+        // may not strand that already-authorized handoff behind a fresh
+        // subscription; only the original opaque lease may resume it. The
+        // same rule applies after an opaque source receipt is persisted or a
+        // durable occurrence is restored.
+        if let Some((key, member)) = lock_std(&self.inner.peer_failure_recoveries)
+            .get(descriptor)
+            .and_then(|receipt| {
+                receipt.members.iter().find(|(key, member)| {
+                    key.scope.0 == peer_id
+                        && key.scope.1 == selector.service_uuid
+                        && selector.service_occurrence == Some(key.scope.2)
+                        && selector.characteristic_uuid.as_deref() == Some(key.scope.3.as_str())
+                        && selector.characteristic_occurrence == Some(key.scope.4)
+                        && key.consumer == consumer
+                        && member.recipient_lease == recipient_lease
+                        && (operation != "read" || !member.acknowledged)
+                        && (receipt.source_ack_id.is_some()
+                            || receipt.durable_restored
+                            || (operation == "ack" && receipt.committing && member.acknowledged))
+                })
+            })
+        {
+            return Ok((key.scope.clone(), member.epoch, key.consumer.clone()));
+        }
+        let peer_key = self.known_peer_key(peer_id).await?;
+        let index = self
+            .inner
+            .core
+            .lock()
+            .await
+            .consumer_path(&peer_key, selector, consumer)
+            .ok_or_else(|| {
+                contract_error(BleErrorCode::GattStaleHandle, BleErrorDomain::Gatt, op)
+            })?;
+        let routes = self.inner.subscriptions.lock().await;
+        let (scope, epoch) = routes
+            .iter()
+            .find_map(|(scope, (path, epoch))| {
+                (scope.0 == peer_id && *path == index).then(|| (scope.clone(), *epoch))
+            })
+            .ok_or_else(|| {
+                contract_error(BleErrorCode::GattStaleHandle, BleErrorDomain::Gatt, op)
+            })?;
+        drop(routes);
+        let valid = lock_std(&self.inner.peer_failure_recoveries)
+            .get(descriptor)
+            .and_then(|receipt| {
+                receipt.members.get(&PeerFailureRecoveryRecipientKey {
+                    scope: scope.clone(),
+                    consumer: consumer.to_owned(),
+                })
+            })
+            .is_some_and(|member| {
+                member.epoch == epoch
+                    && member.recipient_lease == recipient_lease
+                    && (operation != "read" || !member.acknowledged)
+            });
+        if !valid {
+            return Err(contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                op,
+            ));
+        }
+        Ok((scope, epoch, consumer.to_owned()))
+    }
+
     pub async fn poll_notification(
         &self,
         peer_id: &str,
@@ -6661,23 +12192,106 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
             },
         };
-        if let Some((value, receipt)) = core.take_notification_value_with_receipt(index, consumer) {
-            return Ok(match receipt {
-                Some(receipt) => NotificationPoll::ValueWithReceipt { value, receipt },
-                None => NotificationPoll::Value(value),
-            });
+        if let Some(entry) = core.take_notification_entry(index, consumer) {
+            return Ok(notification_entry(entry));
         }
+        if core.take_peer_control_overflow(index, consumer) {
+            return Ok(NotificationPoll::SourceFailed(
+                DesktopError::subscribe_failed("peer source control queue overflow"),
+            ));
+        }
+        // A source failure is source-time evidence.  In particular, an
+        // adapter-reset retirement invalidates the core hub before its
+        // consumer polls, but it must not overwrite a failure that was
+        // already attributed to that consumer's old route.  Check it before
+        // consuming the core invalidation terminal.  A replacement route is
+        // still protected by the activation epoch below.
+        let owns_consumer = core.consumer_path(&peer_key, selector, consumer).is_some();
+        // The source-time failure path below sometimes needs route ownership
+        // and may therefore reacquire the core afterwards.  Release this
+        // initial read guard for every path: an unresolved consumer must not
+        // deadlock itself by attempting that second acquisition.
+        drop(core);
+        if owns_consumer {
+            // A path index is recyclable after an unsubscribe and rediscovery.
+            // Do not let a terminal recorded by an old native callback close
+            // the consumer which now owns that recycled index.  The same
+            // short transition that publishes a terminal also keeps this
+            // route/epoch observation and `terminal_seen` mutation atomic
+            // with retirement and replacement.  Drop the core lock first:
+            // route publication takes subscriptions before it touches core.
+            let failure = {
+                let _recovery_transition = self.inner.peer_failure_recovery_transition.lock().await;
+                let route_epoch = {
+                    let routes = self.inner.subscriptions.lock().await;
+                    routes.iter().find_map(|(scope, (path, epoch))| {
+                        (scope.0 == peer_id && *path == index).then_some(*epoch)
+                    })
+                };
+                let mut failures = lock_std(&self.inner.notification_failures);
+                failures.get_mut(&index).and_then(|failure| {
+                    let source_time_owner = route_epoch
+                        .map(|route_epoch| failure.epoch == route_epoch)
+                        // Adapter reset retires routing but intentionally
+                        // retains an already-published source failure until
+                        // its original hub can report it.  There is no live
+                        // replacement route in this branch, so do not infer
+                        // an old callback applies to a new activation.
+                        .unwrap_or(failure.peer_id == peer_id);
+                    source_time_owner.then(|| {
+                        failure
+                            .terminal_seen
+                            .insert(consumer.to_owned())
+                            .then(|| (failure.recovery, failure.error.clone()))
+                    })
+                })
+            };
+            if let Some(Some((recovery, error))) = failure {
+                if let Some(descriptor) = recovery {
+                    let routes = self.inner.subscriptions.lock().await;
+                    let offer = routes
+                        .iter()
+                        .find_map(|(scope, (path, epoch))| {
+                            (scope.0 == peer_id && *path == index).then(|| (scope, *epoch))
+                        })
+                        .and_then(|(scope, epoch)| {
+                            lock_std(&self.inner.peer_failure_recoveries)
+                                .get(&descriptor)
+                                .and_then(|receipt| {
+                                    receipt
+                                        .members
+                                        .get(&PeerFailureRecoveryRecipientKey {
+                                            scope: scope.clone(),
+                                            consumer: consumer.to_owned(),
+                                        })
+                                        .filter(|member| member.epoch == epoch)
+                                        .map(|member| PeerFailureRecoveryOffer {
+                                            descriptor,
+                                            recipient_lease: member.recipient_lease.clone(),
+                                            error: receipt.teardown.clone().map(DesktopError::from),
+                                        })
+                                })
+                        });
+                    return Ok(offer.map_or(
+                        NotificationPoll::Closed,
+                        NotificationPoll::SourceFailureRecovery,
+                    ));
+                }
+                return Ok(NotificationPoll::SourceFailed(error));
+            }
+            if failure.is_some() {
+                return Ok(NotificationPoll::Closed);
+            }
+        }
+        // Source-time failure handling above deliberately precedes the core
+        // invalidation terminal. Ordinary terminals retain their historical
+        // FIFO behaviour.
+        let mut core = self.inner.core.lock().await;
         if let Some(terminal) = core.take_terminal(index, consumer) {
             return Ok(NotificationPoll::Terminal(terminal));
         }
-        if core.consumer_path(&peer_key, selector, consumer).is_some()
-            && let Some(failure) = lock_std(&self.inner.notification_failures).get_mut(&index)
-        {
-            if failure.terminal_seen.insert(consumer.to_owned()) {
-                return Err(failure.error.clone());
-            }
-            return Ok(NotificationPoll::Closed);
-        }
+        // The terminal branch drops `core` to avoid a subscriptions/core
+        // inversion. Reacquire it only for the ordinary nonterminal state.
         match core.consumer_state(index, consumer) {
             Some(
                 ubm_core::central::ConsumerState::Ready
@@ -6795,8 +12409,122 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .store(false, Ordering::SeqCst);
         // F14: admission closes before any cleanup starts, so a racing
         // starter cannot slip work in behind the scan stop.
-        self.inner.shut_down.store(true, Ordering::SeqCst);
-        self.inner.gatt_admission.seal();
+        {
+            let _reservation_fence = lock_std(&self.inner.mismatch_reservations);
+            self.inner.shut_down.store(true, Ordering::SeqCst);
+            self.inner.gatt_admission.seal();
+        }
+        // A caller can hold its discovery future indefinitely. Adopt its
+        // registered transaction without waiting for its snapshot guard.
+        let transactions: Vec<_> = lock_std(&self.inner.discovery_transactions)
+            .iter()
+            .map(|(peer, transaction)| (peer.clone(), transaction.id))
+            .collect();
+        for (peer, id) in transactions {
+            let mut core = self.inner.core.lock().await;
+            retire_discovery_transaction(&self.inner, &mut core, &peer, id);
+        }
+        // Reclaim workers own native permits and lease pins. They must finish
+        // exact release before the radio can be torn down; unlike ordinary
+        // lifecycle tasks they cannot be aborted without losing that debt.
+        // Synchronize with task publication before testing the active count.
+        drop(lock_std(&self.inner.reclaim_tasks));
+        loop {
+            let notified = self.inner.reclaim_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.inner.reclaim_active.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            notified.await;
+        }
+        lock_std(&self.inner.reclaim_tasks).retain(|task| !task.is_finished());
+        let _authority_shutdown = self.inner.reclaim_authority_shutdown.lock().await;
+        if self.inner.reclaim_authority_opened.load(Ordering::SeqCst) {
+            let authority = self.inner.reclaim_authority.load(Ordering::SeqCst);
+            let mut delay = Duration::from_millis(250);
+            if !self.inner.reclaim_authority_closed.load(Ordering::SeqCst) {
+                loop {
+                    if matches!(
+                        tokio::time::timeout(
+                            Duration::from_secs(5),
+                            self.inner
+                                .boundary
+                                .close_ordered_reclaim_authority(authority)
+                        )
+                        .await,
+                        Ok(Ok(()))
+                    ) {
+                        break;
+                    }
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(30));
+                }
+                self.inner
+                    .reclaim_authority_closed
+                    .store(true, Ordering::SeqCst);
+            }
+            delay = Duration::from_millis(250);
+            loop {
+                if matches!(
+                    tokio::time::timeout(
+                        Duration::from_secs(5),
+                        self.inner
+                            .boundary
+                            .forget_ordered_reclaim_authority(authority)
+                    )
+                    .await,
+                    Ok(Ok(()))
+                ) {
+                    break;
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(30));
+            }
+            self.inner
+                .reclaim_authority_opened
+                .store(false, Ordering::SeqCst);
+        }
+        drop(_authority_shutdown);
+        let retirement_tasks = std::mem::take(&mut *lock_std(&self.inner.retirement_tasks));
+        let had_pending_retirement = retirement_tasks.iter().any(|task| !task.is_finished());
+        for task in &retirement_tasks {
+            task.abort();
+        }
+        for task in retirement_tasks {
+            let _ = task.await;
+        }
+        lock_std(&self.inner.retirement_tail).take();
+        self.inner.pending_adapter_reset.store(0, Ordering::SeqCst);
+        self.inner
+            .retirement_overflow
+            .store(false, Ordering::SeqCst);
+        #[cfg(target_os = "linux")]
+        lock_std(&self.inner.uncertain_physical_losses).clear();
+        if had_pending_retirement {
+            let peers: Vec<_> = self
+                .inner
+                .subscriptions
+                .lock()
+                .await
+                .keys()
+                .map(|scope| scope.0.clone())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            for peer in peers {
+                fail_peer_source_fence(
+                    &self.inner,
+                    &peer,
+                    contract_error(
+                        BleErrorCode::OperationCancelledByDestroy,
+                        BleErrorDomain::Gatt,
+                        "gatt.notification.fence",
+                    ),
+                )
+                .await;
+            }
+        }
         self.inner.acquired.retire(
             None,
             None,
@@ -6932,6 +12660,71 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .with_detail("acquired child cleanup remains owned"),
             ),
         }
+        // A native compensation can outlive its subscriber and the close
+        // call. Its answer and logical reconciliation remain owned even if
+        // the backend's own close report happens to be empty.
+        if *lock_std(&self.inner.mismatch_reservations) != 0 {
+            transport_close_failures.push(
+                contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.subscribe.compensation",
+                )
+                .with_detail("subscription admissions remain pending during shutdown"),
+            );
+        }
+        for owner in lock_std(&self.inner.mismatch_compensations).iter() {
+            match &*lock_std(&owner.state) {
+                MismatchCompensationState::Pending => transport_close_failures.push(
+                    contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Cleanup,
+                        "gatt.subscribe.compensation",
+                    )
+                    .with_detail("notification compensation remains pending during shutdown"),
+                ),
+                MismatchCompensationState::Failed(error, _)
+                | MismatchCompensationState::Interrupted(error, _) => {
+                    transport_close_failures.push(error.clone());
+                }
+                MismatchCompensationState::ReconcileFailed(error)
+                    if lock_std(&owner.reconcile_errors).is_empty() =>
+                {
+                    transport_close_failures.push(error.clone());
+                }
+                MismatchCompensationState::ReconcileFailed(_) => {}
+                MismatchCompensationState::Released => {}
+            }
+            transport_close_failures.extend(lock_std(&owner.reconcile_errors).iter().cloned());
+        }
+        // A peer-source recovery is a durable, independently retryable
+        // obligation.  Shutdown must never wait for its host ledger (which
+        // may itself be waiting for the caller that requested shutdown), but
+        // it also must not claim that the central released while the exact
+        // source receipt is still retained.  The ACK path remains live after
+        // shutdown and a later shutdown re-evaluates this inventory.
+        let mut peer_failure_recovery_debts = lock_std(&self.inner.peer_failure_recoveries)
+            .iter()
+            .map(|(descriptor, receipt)| receipt.shutdown_debt(descriptor.clone()))
+            .collect::<Vec<_>>();
+        peer_failure_recovery_debts.sort_by(|left, right| {
+            durable_descriptor_encode(&left.descriptor)
+                .to_string()
+                .cmp(&durable_descriptor_encode(&right.descriptor).to_string())
+        });
+        transport_close_failures.extend(peer_failure_recovery_debts.iter().map(|receipt| {
+            let detail = if receipt.source_ack_inflight {
+                "peer-source recovery acknowledgement remains owned by the durable ledger"
+            } else {
+                "peer-source recovery bytes remain owned by the durable ledger"
+            };
+            contract_error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Restoration,
+                "gatt.notification.source-failure-recovery.shutdown",
+            )
+            .with_detail(detail)
+        }));
         let radio_close_failures = self.inner.boundary.take_close_failures();
         // F15: the final record is taken only after every destroy pass
         // executed, every dispatched remainder was answered, and every
@@ -6941,6 +12734,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             record,
             radio_close_failures,
             transport_close_failures,
+            peer_failure_recovery_debts,
             half_open_close_failures,
             destroy_steps,
             scan_stop_failure,
@@ -7002,15 +12796,18 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .collect()
         };
         for (peer_id, peer_key) in peers {
-            let live = {
+            let (live, connection_generation) = {
                 let core = self.inner.core.lock().await;
-                matches!(
-                    core.connection_state(&peer_key),
-                    Some(
-                        ConnectionState::Connected
-                            | ConnectionState::Connecting
-                            | ConnectionState::Disconnecting
-                    )
+                (
+                    matches!(
+                        core.connection_state(&peer_key),
+                        Some(
+                            ConnectionState::Connected
+                                | ConnectionState::Connecting
+                                | ConnectionState::Disconnecting
+                        )
+                    ),
+                    core.connection_generation(&peer_key),
                 )
             };
             if !live {
@@ -7037,6 +12834,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .await;
             if matches!(&outcome, Ok(Ok(_))) {
                 note_confirmed_release(&self.inner, &peer_id);
+                note_mismatch_generation_release(
+                    &self.inner,
+                    &peer_id,
+                    connection_generation.as_deref(),
+                );
             }
             // Late radio completions must not resurrect the link: drop local
             // subscription routing for this peer now.
@@ -7234,19 +13036,54 @@ impl DesktopCentral<crate::btleplug_backend::BtleplugRadio> {
         Self::open_btleplug_with_policy(profile, None).await
     }
 
+    /// Open a production central whose peripheral owners retain exact
+    /// native failure evidence in the caller's explicitly selected store.
+    /// The store is not a journal substitute: callers still bind a trusted
+    /// [`PeerFailureRecoveryLedger`] in the profile before acknowledging a
+    /// source failure.
+    pub async fn open_btleplug_with_failure_evidence_store(
+        profile: CentralProfile,
+        failure_evidence_store: Arc<
+            dyn btleplug::ubm_peer_notification_ingress::FailureEvidenceStore,
+        >,
+    ) -> Result<Self, DesktopError> {
+        Self::open_btleplug_with_policy_and_failure_evidence_store(
+            profile,
+            None,
+            Some(failure_evidence_store),
+        )
+        .await
+    }
+
     /// The normal production open path with a trusted BlueZ LE attestation.
     /// Adapter initialization and compensation are identical to `open_btleplug`.
     pub async fn open_btleplug_with_policy(
         mut profile: CentralProfile,
         connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
     ) -> Result<Self, DesktopError> {
+        Self::open_btleplug_with_policy_and_failure_evidence_store(profile, connection_policy, None)
+            .await
+    }
+
+    /// [`Self::open_btleplug_with_policy`] with an explicitly owned
+    /// failure-evidence store. Passing a store on a host that cannot install
+    /// it is an honest capability failure at radio construction.
+    pub async fn open_btleplug_with_policy_and_failure_evidence_store(
+        mut profile: CentralProfile,
+        connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
+        failure_evidence_store: Option<
+            Arc<dyn btleplug::ubm_peer_notification_ingress::FailureEvidenceStore>,
+        >,
+    ) -> Result<Self, DesktopError> {
         let started = tokio::time::Instant::now();
-        let open = crate::btleplug_backend::BtleplugRadio::open_on_with_policy(
-            crate::executor::desktop_runtime(),
-            profile.adapter_id.clone(),
-            profile.bluez_bus,
-            connection_policy,
-        );
+        let open =
+            crate::btleplug_backend::BtleplugRadio::open_on_with_policy_and_failure_evidence_store(
+                crate::executor::desktop_runtime(),
+                profile.adapter_id.clone(),
+                profile.bluez_bus,
+                connection_policy,
+                failure_evidence_store,
+            );
         // btleplug's CoreBluetooth manager blocks until the first
         // `centralManagerDidUpdateState:` with no bound of its own.
         let radio = if cfg!(target_os = "macos") {
@@ -7300,13 +13137,17 @@ impl DesktopCentral<crate::btleplug_backend::BtleplugRadio> {
 /// and values still queued under the dead generation fail the routing check
 /// after resubscribe.
 async fn clear_peer_routing<B>(inner: &Arc<Inner<B>>, peer_id: &str) {
-    clear_peer_routing_scoped(inner, peer_id, None).await;
+    clear_peer_routing_scoped(inner, peer_id, None, false).await;
 }
 async fn clear_peer_routing_scoped<B>(
     inner: &Arc<Inner<B>>,
     peer_id: &str,
     expected: Option<(&str, Option<&str>)>,
+    preserve_source_failures: bool,
 ) {
+    // Linearize retirement with the short recovery receipt transition. This
+    // guard never crosses ledger or radio I/O.
+    let _recovery_transition = inner.peer_failure_recovery_transition.lock().await;
     let mut subscriptions = inner.subscriptions.lock().await;
     let mut failed = inner.failed_disables.lock().await;
     let mut epochs = inner.epochs.lock().await;
@@ -7319,11 +13160,46 @@ async fn clear_peer_routing_scoped<B>(
     } else {
         None
     };
-    lock_std(&inner.retained_enablements).retain(|key| key.0 != peer_id);
+    {
+        let mut retained = lock_std(&inner.retained_enablements);
+        let mut withdrawn = lock_std(&inner.retained_claims);
+        retained.retain(|index, key| {
+            if key.0 == peer_id {
+                withdrawn.remove(index);
+                false
+            } else {
+                true
+            }
+        });
+    }
+    lock_std(&inner.retained_cleanup_owners).retain(|(peer, _), _| peer != peer_id);
     lock_std(&inner.service_access).retain(|(peer, _, _), _| peer != peer_id);
-    lock_std(&inner.notification_failures).retain(|_, failure| failure.peer_id != peer_id);
+    if !preserve_source_failures {
+        lock_std(&inner.notification_failures).retain(|_, failure| failure.peer_id != peer_id);
+    }
+    {
+        let mut claims = lock_std(&inner.retained_claims);
+        for (key, activation) in subscriptions.iter() {
+            if key.0 == peer_id {
+                claims.remove(activation);
+            }
+        }
+    }
+    // Link/reset invalidation cannot erase a retained ordered physical
+    // receipt. Its exact old activation remains cleanup debt even after the
+    // live hub/routing was retired.
+    {
+        let origins = lock_std(&inner.ordered_physical_origins);
+        let mut retained = lock_std(&inner.retained_enablements);
+        for (key, (index, epoch)) in subscriptions.iter() {
+            if key.0 == peer_id && origins.contains_key(&(key.clone(), *epoch)) {
+                retained.insert((*index, *epoch), key.clone());
+            }
+        }
+    }
     subscriptions.retain(|key, _| key.0 != peer_id);
     failed.retain(|key| key.0 != peer_id);
+    lock_std(&inner.predispatch_disables).retain(|key| key.0 != peer_id);
     lock_std(&inner.deliveries).retain(|key, _| key.0 != peer_id);
     let epoch = epochs.entry(peer_id.to_owned()).or_insert(0);
     *epoch = epoch.saturating_add(1);
@@ -7387,11 +13263,20 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                     }
                     Some(RadioEvent::ScanTerminated { aborted, detail }) => {
                         // The OS stopped the scan without a stop request
-                        // (legacy WinRT `OnScanTerminal`). Only an active,
-                        // not-stopping scan is ours to end here: a stop in
-                        // flight owns its own settlement.
+                        // (legacy WinRT `OnScanTerminal`). A recovered WinRT
+                        // watcher may report an abort after its Stopped
+                        // callback was lost while the owner is stopping. That
+                        // is terminal OS evidence, not a successful stop, so
+                        // it must release the retained source rather than
+                        // parking it in StopFailed forever.
                         let id = inner.scan_slot().as_ref().and_then(|active| {
-                            matches!(active.phase, ScanPhase::Active).then(|| active.id.clone())
+                            (matches!(active.phase, ScanPhase::Active)
+                                || (aborted
+                                    && matches!(
+                                        active.phase,
+                                        ScanPhase::Stopping(_) | ScanPhase::StopFailed
+                                    )))
+                            .then(|| active.id.clone())
                         });
                         if let Some(id) = id {
                             let contender = if aborted {
@@ -7442,46 +13327,60 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         if connected {
                             reconcile_connected_scoped(&inner, &peer_id, Some(&expected_generation)).await;
                         } else {
-                            reconcile_disconnected_scoped(
-                                &inner,
-                                &peer_id,
-                                errored,
-                                None,
-                                Some(&expected_generation),
-                            )
-                            .await;
+                            let _ = defer_link_end(&inner, peer_id, errored, None, Some(expected_generation)).await;
                         }
                     }
                     Some(RadioEvent::Disconnected(peer_id)) => {
-                        reconcile_disconnected(&inner, &peer_id, false).await;
+                        let _ = defer_link_end(&inner, peer_id, false, None, None).await;
                     }
                     Some(RadioEvent::Lost(peer_id)) => {
-                        reconcile_disconnected(&inner, &peer_id, true).await;
+                        let _ = defer_link_end(&inner, peer_id, true, None, None).await;
                     }
                     #[cfg(target_os = "linux")]
                     Some(RadioEvent::LinuxPhysicalLost { peer_id, physical_generation, reason }) => {
-                        reconcile_disconnected_scoped(&inner, &peer_id, false, Some((physical_generation, reason)), None).await;
+                        defer_physical_loss(&inner, peer_id, physical_generation, reason).await;
                     }
                     Some(RadioEvent::ServicesChanged(peer_id)) => {
-                        services_changed_invalidated(&inner, &peer_id).await;
+                        defer_services_changed(&inner, peer_id, None, None, false, false).await;
                     }
                     Some(RadioEvent::ServicesChangedScoped { peer_id, identity }) => {
-                        services_changed_scoped_invalidated(&inner, &peer_id, &identity).await;
+                        defer_services_changed(&inner, peer_id, Some(identity), None, false, false).await;
                     }
                     Some(RadioEvent::GattInvalidationHint(peer_id)) => {
                         inner.note_compensation_failure();
                         eprintln!("{}: unresolved GATT invalidation hint for {peer_id}", inner.identity.log_tag());
                     }
                     Some(RadioEvent::GattWatchFailed(detail)) => {
-                        gatt_watch_failed(&inner, &detail).await;
+                        defer_gatt_watch_failure(&inner, detail).await;
                     }
                     Some(RadioEvent::GattObservationFailed { peer_id, identity, error }) => {
-                        gatt_observation_failed(&inner, &peer_id, &identity, &error).await;
+                        defer_services_changed(&inner, peer_id, Some(identity), Some(error), false, false).await;
+                    }
+                    Some(RadioEvent::GattSourceUncertain { peer_id, identity, error }) => {
+                        defer_services_changed(&inner, peer_id, Some(identity), Some(error), true, false).await;
+                    }
+                    Some(RadioEvent::GattSourceUncertainUnassociated { peer_id, error }) => {
+                        let sequence = inner
+                            .source_uncertainty_sequence
+                            .fetch_add(1, Ordering::SeqCst)
+                            + 1;
+                        let event = SourceUncertaintyEvent { sequence, peer_id, error };
+                        let _ = inner.source_uncertainty.send(event.clone());
+                        inner.signal(CentralSignal::SourceUncertainty(event));
+                    }
+                    Some(RadioEvent::GattGraphRetired { peer_id, identity }) => {
+                        let error = contract_error(BleErrorCode::GattStaleHandle, BleErrorDomain::Gatt, "discovery.graph-retired")
+                            .with_detail("the accepted native graph was replaced before central publication");
+                        defer_services_changed(&inner, peer_id, Some(identity), Some(error), true, true).await;
                     }
                     Some(RadioEvent::SecurityChanged { peer_id, state }) => {
                         parity::publish_security(&inner, &peer_id, state);
                     }
                     Some(RadioEvent::AdapterState(state)) => {
+                        if state == AdapterPowerState::PoweredOn && inner.pending_adapter_reset.load(Ordering::SeqCst) != 0 {
+                            *lock_std(&inner.pending_adapter_power) = Some(state);
+                            continue;
+                        }
                         let loss = note_power(&inner, state);
                         let sequence = inner.adapter_sequence.fetch_add(1, Ordering::SeqCst) + 1;
                         let event = AdapterEvent { sequence, state };
@@ -7490,7 +13389,7 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         let _ = inner.adapter.send(event);
                         inner.signal(CentralSignal::Adapter(event));
                         if let Some(cause) = loss {
-                            adapter_reset(&inner, cause, Some(state), Some(sequence)).await;
+                            defer_adapter_reset(&inner, cause, Some(state), Some(sequence)).await;
                         }
                     }
                     Some(RadioEvent::AdapterAuthorization(authorization)) => {
@@ -7510,7 +13409,7 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         // Waiters on a usable adapter re-read the facts.
                         let event = wake_state_waiters(&inner);
                         if loss {
-                            adapter_reset(
+                            defer_adapter_reset(
                                 &inner,
                                 AdapterLossCause::Unauthorized,
                                 Some(event.state),
@@ -7532,12 +13431,47 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         }
                         let event = wake_state_waiters(&inner);
                         if inner.teardown_on_loss {
-                            adapter_reset(&inner, cause, Some(event.state), Some(event.sequence)).await;
+                            defer_adapter_reset(&inner, cause, Some(event.state), Some(event.sequence)).await;
                         }
                     }
                     Some(RadioEvent::AdapterRestored) => {
                         lock_std(&inner.adapter_facts).removed = false;
                         wake_state_waiters(&inner);
+                    }
+                    Some(RadioEvent::PeerNotificationSourceFence { ack }) => { ack.acknowledge(); }
+                    Some(RadioEvent::PeerNotificationSourceStarted { peer_id, generation }) => {
+                        lock_std(&inner.peer_notification_sources).insert(peer_id, generation);
+                    }
+                    Some(RadioEvent::PeerNotificationsLost { peer_id, generation, members, lost }) => {
+                        peer_notification_loss(&inner, &peer_id, generation, &members, lost).await;
+                    }
+                    Some(RadioEvent::PeerNotificationSourceFailed { peer_id, generation, members, error, rejected_loss, tail_uncertain }) => {
+                        if lock_std(&inner.peer_notification_sources).get(&peer_id).copied() == Some(generation) {
+                            if let Some(lost) = rejected_loss {
+                                peer_notification_loss(&inner, &peer_id, generation, &members, Some(lost)).await;
+                            }
+                            if tail_uncertain {
+                                peer_notification_loss(&inner, &peer_id, generation, &members, None).await;
+                            }
+                            for (scope, epoch) in members {
+                                if scope.0 == peer_id { notification_source_failed(&inner, scope, epoch, error.clone()).await; }
+                            }
+                        }
+                    }
+                    Some(RadioEvent::PeerNotificationFailureRecoveryOffered { descriptor, members, teardown, ack }) => {
+                        if stage_peer_failure_recovery(&inner, descriptor, members.clone(), Some(teardown.clone())).await {
+                            ack.acknowledge();
+                        } else {
+                            // Staging can fail transiently even with a ledger
+                            // (for example a durable write conflict). Retain
+                            // the exact producer offer and its ACK in-process:
+                            // dropping it would acknowledge/lossily advance the
+                            // source before either durable staging or an
+                            // explicit retry succeeds.
+                            lock_std(&inner.pending_peer_failure_recovery_offers)
+                                .entry(descriptor)
+                                .or_insert(PendingPeerFailureRecoveryOffer { members, teardown, ack });
+                        }
                     }
                     Some(RadioEvent::NotificationSourceFailed {
                         peer_id, service_uuid, service_occurrence,
@@ -7602,6 +13536,9 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                             value,
                         )
                         .await;
+                    }
+                    Some(RadioEvent::NotificationWithProvenance { peer_id, service_uuid, service_occurrence, characteristic_uuid, characteristic_occurrence, epoch, value, provenance, source_generation, source_ordinal }) => {
+                        deliver_with_provenance(&inner, (peer_id, service_uuid, service_occurrence, characteristic_uuid, characteristic_occurrence), epoch, value, ubm_core::central::NotificationSource { provenance, generation: source_generation, ordinal: source_ordinal }).await;
                     }
                     Some(RadioEvent::NotificationWithReceipt { peer_id, service_uuid, service_occurrence, characteristic_uuid, characteristic_occurrence, epoch, value, receipt }) => {
                         deliver_with_receipt(&inner, (peer_id, service_uuid, service_occurrence, characteristic_uuid, characteristic_occurrence), epoch, value, Some(receipt)).await;
@@ -7744,6 +13681,100 @@ fn next_scope(
 /// 3. the OS scan stop and link releases are asked for, bounded; what the
 ///    adapter no longer holds counts as released, anything else is named;
 /// 4. one [`AdapterResetEvent`] reports it all.
+async fn defer_adapter_reset<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    cause: AdapterLossCause,
+    power: Option<AdapterPowerState>,
+    adapter_sequence: Option<u64>,
+) {
+    let Some(slot) = reserve_retirement(inner) else {
+        return;
+    };
+    inner.pending_adapter_reset.fetch_add(1, Ordering::SeqCst);
+    inner
+        .adapter_retirement_epoch
+        .fetch_add(1, Ordering::SeqCst);
+    let gate = inner.gatt_admission.block_all(BleErrorCode::OperationReset);
+    let peers: Vec<_> = inner
+        .peers
+        .lock()
+        .await
+        .iter()
+        .map(|(id, key)| (id.clone(), key.clone()))
+        .collect();
+    let peers = {
+        let core = inner.core.lock().await;
+        peers
+            .into_iter()
+            .map(|(id, key)| {
+                let generation = Generations::of(&core, &key);
+                (id, generation)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (done, next) = tokio::sync::oneshot::channel();
+    let previous = lock_std(&inner.retirement_tail).replace(next);
+    let inner = Arc::clone(inner);
+    spawn_retirement(&Arc::clone(&inner), async move {
+        let _slot = slot;
+        let _gate = gate;
+        if let Some(previous) = previous {
+            let _ = previous.await;
+        }
+        _gate.wait_starting().await;
+        for (peer, generation) in peers {
+            let reason = if cause == AdapterLossCause::SourceObservationOverflow {
+                ubm_core::ordered_notifications::EndReason::HostReset(
+                    crate::ordered_notification_groups::failure_from_desktop(
+                        &contract_error(
+                            BleErrorCode::PlatformFailure,
+                            BleErrorDomain::Gatt,
+                            "gatt.lifecycle.queue",
+                        )
+                        .with_detail("source observation overflow")
+                        .with_platform(crate::errors::PlatformDetail::new(
+                            "ubm",
+                            "source-observation-overflow",
+                        )),
+                    ),
+                )
+            } else {
+                ubm_core::ordered_notifications::EndReason::ConnectionLost
+            };
+            retire_peer_ordered_groups(&inner, &peer, &generation, reason).await;
+            let fenced = tokio::time::timeout(
+                LIVENESS_CLEANUP,
+                inner.boundary.flush_peer_notification_source(&peer),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(contract_error(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.fence",
+                ))
+            });
+            if let Err(error) = fenced {
+                fail_peer_source_fence(&inner, &peer, error).await;
+            }
+        }
+        adapter_reset(&inner, cause, power, adapter_sequence).await;
+        #[cfg(target_os = "linux")]
+        lock_std(&inner.uncertain_physical_losses).clear();
+        if inner.pending_adapter_reset.fetch_sub(1, Ordering::SeqCst) == 1 {
+            let pending = lock_std(&inner.pending_adapter_power).take();
+            if let Some(state) = pending {
+                note_power(&inner, state);
+                let sequence = inner.adapter_sequence.fetch_add(1, Ordering::SeqCst) + 1;
+                let event = AdapterEvent { sequence, state };
+                let _ = inner.adapter.send(event);
+                inner.signal(CentralSignal::Adapter(event));
+            }
+        }
+        let _ = done.send(());
+    });
+}
+
 async fn adapter_reset<B: RadioBoundary>(
     inner: &Arc<Inner<B>>,
     cause: AdapterLossCause,
@@ -7770,8 +13801,9 @@ async fn adapter_reset<B: RadioBoundary>(
     let ended_subscriptions = inner.subscriptions.lock().await.len();
     let index;
     let mut release_failures = Vec::new();
+    let mut link_release_failures = Vec::new();
     let previous = lock_std(&inner.attachment).clone();
-    let (current, cancelled_operations, links, events) = {
+    let (current, cancelled_operations, links, already_ended, events) = {
         let mut core = inner.core.lock().await;
         // Publish the adapter epoch together with its generation transition.
         // A failed connect retaining cleanup under this lock must see either
@@ -7790,6 +13822,16 @@ async fn adapter_reset<B: RadioBoundary>(
                     Generations::of(&core, peer_key),
                 )
             })
+            .collect();
+        let already_ended: Vec<String> = peers
+            .iter()
+            .filter(|(_, peer_key)| {
+                matches!(
+                    core.connection_state(peer_key),
+                    Some(ConnectionState::Disconnected | ConnectionState::Lost)
+                )
+            })
+            .map(|(peer_id, _)| peer_id.clone())
             .collect();
         lock_std(&inner.reset_ops).extend(core.live_operation_ids());
         lock_std(&inner.retired_leases).extend(core.held_leases().into_iter().map(|key| {
@@ -7831,22 +13873,35 @@ async fn adapter_reset<B: RadioBoundary>(
             .iter()
             .map(|(peer_id, peer_key, generation)| {
                 reset_peers.insert(peer_key.clone());
-                inner.stage_lifecycle(
+                inner.stage_lifecycle_with_platform(
                     peer_id,
                     peer_key,
                     Generations {
                         connection: generation.connection.clone(),
                         database: generation.database.clone(),
                     },
-                    LifecycleKind::AdapterLost,
+                    if cause == AdapterLossCause::SourceObservationOverflow {
+                        LifecycleKind::HostReset
+                    } else {
+                        LifecycleKind::AdapterLost
+                    },
+                    (cause == AdapterLossCause::SourceObservationOverflow).then(|| {
+                        crate::errors::PlatformDetail::new("ubm", "source-observation-overflow")
+                    }),
                 )
             })
             .collect();
         drop(reset_peers);
-        (current, settled, links, events)
+        (current, settled, links, already_ended, events)
     };
     for (peer_id, _) in &peers {
-        clear_peer_routing(inner, peer_id).await;
+        clear_peer_routing_scoped(
+            inner,
+            peer_id,
+            None,
+            cause == AdapterLossCause::SourceObservationOverflow,
+        )
+        .await;
     }
     lock_std(&inner.pairings).clear();
     let tickets = std::mem::take(&mut *lock_std(&inner.tickets));
@@ -7856,7 +13911,11 @@ async fn adapter_reset<B: RadioBoundary>(
     for event in events {
         inner.signal(CentralSignal::Lifecycle(event));
     }
-    let detail = format!("the adapter was lost ({})", cause.as_str());
+    let detail = if cause == AdapterLossCause::SourceObservationOverflow {
+        "host source observation overflow required a reset".to_owned()
+    } else {
+        format!("the adapter was lost ({})", cause.as_str())
+    };
     if let Some(active) = &scan {
         parity::publish_scan_terminal(inner, &active.id, true, &detail);
         match tokio::time::timeout(COMPENSATION_TIMEOUT, inner.boundary.stop_scan()).await {
@@ -7868,34 +13927,49 @@ async fn adapter_reset<B: RadioBoundary>(
             Err(_) => {
                 inner.note_compensation_failure();
                 release_failures.push(DesktopError::scan_stop_failed(
-                    "the OS did not answer the scan stop after the adapter loss",
+                    "the OS did not answer the scan stop after the reset",
                 ));
             }
         }
     }
-    for (peer_id, _, _) in &links {
-        match tokio::time::timeout(COMPENSATION_TIMEOUT, inner.boundary.disconnect(peer_id)).await {
+    for (peer_id, _, generation) in &links {
+        match tokio::time::timeout(
+            COMPENSATION_TIMEOUT,
+            inner.boundary.disconnect_with_observation(peer_id),
+        )
+        .await
+        {
             // The adapter took the peer with it: nothing is left to release.
-            Ok(Ok(())) => {
+            Ok(Ok(observation)) => {
                 note_confirmed_release(inner, peer_id);
+                note_mismatch_generation_release(inner, peer_id, generation.connection.as_deref());
+                inner
+                    .boundary
+                    .consume_disconnect_observation(peer_id, &observation);
+                if let Some(error) = observation.cleanup_failure {
+                    inner.note_compensation_failure();
+                    link_release_failures.push((peer_id.clone(), error.clone()));
+                    release_failures.push(error);
+                }
             }
             Ok(Err(error)) if error.code() == BleErrorCode::PeerNotFound => {}
             Ok(Err(error)) => {
                 inner.note_compensation_failure();
+                link_release_failures.push((peer_id.clone(), error.clone()));
                 release_failures.push(error);
             }
             Err(_) => {
                 inner.note_compensation_failure();
-                release_failures.push(
-                    contract_error(
-                        BleErrorCode::OperationTimedOut,
-                        BleErrorDomain::Connection,
-                        "connection.disconnect",
-                    )
-                    .with_detail(format!(
-                        "the OS did not release the link to {peer_id} after the adapter loss"
-                    )),
-                );
+                let error = contract_error(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Connection,
+                    "connection.disconnect",
+                )
+                .with_detail(format!(
+                    "the OS did not release the link to {peer_id} after the reset"
+                ));
+                link_release_failures.push((peer_id.clone(), error.clone()));
+                release_failures.push(error);
             }
         }
     }
@@ -7908,9 +13982,14 @@ async fn adapter_reset<B: RadioBoundary>(
         current,
         cancelled_operations,
         ended_scan: scan.map(|active| active.id),
-        released_links: links.into_iter().map(|(peer_id, _, _)| peer_id).collect(),
+        released_links: links
+            .into_iter()
+            .map(|(peer_id, _, _)| peer_id)
+            .chain(already_ended)
+            .collect(),
         ended_subscriptions,
         release_failures,
+        link_release_failures,
     };
     let _ = inner.reset_events.send(event.clone());
     inner.signal(CentralSignal::AdapterReset(event));
@@ -8071,9 +14150,15 @@ async fn reconcile_connected_scoped<B: RadioBoundary>(
     peer_id: &str,
     expected_generation: Option<&str>,
 ) {
+    if inner.pending_adapter_reset.load(Ordering::SeqCst) != 0 {
+        return;
+    }
     let peer_key = inner.peers.lock().await.get(peer_id).cloned();
     if let Some(peer_key) = peer_key {
         let mut core = inner.core.lock().await;
+        if inner.pending_adapter_reset.load(Ordering::SeqCst) != 0 {
+            return;
+        }
         if let Some(expected_generation) = expected_generation
             && core.connection_generation(&peer_key).as_deref() != Some(expected_generation)
         {
@@ -8085,6 +14170,783 @@ async fn reconcile_connected_scoped<B: RadioBoundary>(
         }
         let _ = core.note_link_established(&peer_key);
     }
+}
+
+fn spawn_retirement<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    task: impl Future<Output = ()> + Send + 'static,
+) {
+    let mut tasks = lock_std(&inner.retirement_tasks);
+    tasks.retain(|task| !task.is_finished());
+    if !inner.shut_down.load(Ordering::SeqCst) {
+        tasks.push(tokio::spawn(task));
+    }
+}
+
+/// Saturation fails the observation authority once, preserving cleanup admission.
+fn reserve_retirement<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    if inner.shut_down.load(Ordering::SeqCst) {
+        return None;
+    }
+    if let Ok(permit) = Arc::clone(&inner.retirement_slots).try_acquire_owned() {
+        return Some(permit);
+    }
+    if !inner.retirement_overflow.swap(true, Ordering::SeqCst) {
+        let error = contract_error(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Gatt,
+            "gatt.lifecycle.queue",
+        )
+        .with_detail("bounded lifecycle queue overflow; source tail is uncertain")
+        .with_platform(crate::errors::PlatformDetail::new(
+            "ubm",
+            "source-observation-overflow",
+        ));
+        lock_std(&inner.gatt_watch_failure).get_or_insert_with(|| error.clone());
+        let gate = inner
+            .gatt_admission
+            .block_all(BleErrorCode::GattStaleHandle);
+        inner.pending_adapter_reset.fetch_add(1, Ordering::SeqCst);
+        inner
+            .adapter_retirement_epoch
+            .fetch_add(1, Ordering::SeqCst);
+        let (done, next) = tokio::sync::oneshot::channel();
+        let previous = lock_std(&inner.retirement_tail).replace(next);
+        let inner = Arc::clone(inner);
+        spawn_retirement(&Arc::clone(&inner), async move {
+            gate.wait_starting().await;
+            let peers: Vec<_> = inner
+                .subscriptions
+                .lock()
+                .await
+                .keys()
+                .map(|scope| scope.0.clone())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            for peer in peers {
+                fail_peer_source_fence(&inner, &peer, error.clone()).await;
+            }
+            inner.note_compensation_failure();
+            let _ = inner.native_wake.send(());
+            if let Some(previous) = previous {
+                let _ = previous.await;
+            }
+            let peers: Vec<_> = inner
+                .peers
+                .lock()
+                .await
+                .iter()
+                .map(|(id, key)| (id.clone(), key.clone()))
+                .collect();
+            let peers = {
+                let core = inner.core.lock().await;
+                peers
+                    .into_iter()
+                    .map(|(id, key)| {
+                        let generation = Generations::of(&core, &key);
+                        (id, generation)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for (peer, generation) in peers {
+                retire_peer_ordered_groups(
+                    &inner,
+                    &peer,
+                    &generation,
+                    ubm_core::ordered_notifications::EndReason::HostReset(
+                        crate::ordered_notification_groups::failure_from_desktop(&error),
+                    ),
+                )
+                .await;
+            }
+            adapter_reset(
+                &inner,
+                AdapterLossCause::SourceObservationOverflow,
+                None,
+                None,
+            )
+            .await;
+            #[cfg(target_os = "linux")]
+            lock_std(&inner.uncertain_physical_losses).clear();
+            if inner.pending_adapter_reset.fetch_sub(1, Ordering::SeqCst) == 1 {
+                let pending = lock_std(&inner.pending_adapter_power).take();
+                if let Some(state) = pending {
+                    note_power(&inner, state);
+                    let sequence = inner.adapter_sequence.fetch_add(1, Ordering::SeqCst) + 1;
+                    let event = AdapterEvent { sequence, state };
+                    let _ = inner.adapter.send(event);
+                    inner.signal(CentralSignal::Adapter(event));
+                }
+            }
+            inner.retirement_overflow.store(false, Ordering::SeqCst);
+            drop(gate);
+            let _ = done.send(());
+        });
+    }
+    None
+}
+
+/// Fence source delivery off the event loop before applying a link terminal.
+async fn defer_link_end<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: String,
+    errored: bool,
+    physical_generation: Option<(u64, u8)>,
+    expected_generation: Option<String>,
+) -> Option<tokio::sync::oneshot::Receiver<Result<(), DesktopError>>> {
+    let slot = reserve_retirement(inner)?;
+    let peer_key = inner.peers.lock().await.get(&peer_id).cloned();
+    let Some(peer_key) = peer_key else {
+        return None;
+    };
+    let core = inner.core.lock().await;
+    let captured = Generations::of(&core, &peer_key);
+    let Some(generation) = captured.connection.clone() else {
+        return None;
+    };
+    if expected_generation
+        .as_ref()
+        .is_some_and(|expected| expected != &generation)
+    {
+        return None;
+    }
+    let gate = inner.gatt_admission.provisional_peer(&peer_id);
+    drop(core);
+    let (done, next) = tokio::sync::oneshot::channel();
+    let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
+    let previous = lock_std(&inner.retirement_tail).replace(next);
+    let inner = Arc::clone(inner);
+    spawn_retirement(&Arc::clone(&inner), async move {
+        let _slot = slot;
+        if let Some(previous) = previous {
+            let _ = previous.await;
+        }
+        gate.wait_starting().await;
+        {
+            let core = inner.core.lock().await;
+            if core.connection_generation(&peer_key).as_deref() != Some(&generation) {
+                return;
+            }
+            gate.commit(BleErrorCode::ConnectionLost);
+        }
+        retire_peer_ordered_groups(
+            &inner,
+            &peer_id,
+            &captured,
+            ubm_core::ordered_notifications::EndReason::ConnectionLost,
+        )
+        .await;
+        let fenced = tokio::time::timeout(
+            LIVENESS_CLEANUP,
+            inner.boundary.flush_peer_notification_source(&peer_id),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(contract_error(
+                BleErrorCode::OperationTimedOut,
+                BleErrorDomain::Gatt,
+                "gatt.notification.fence",
+            ))
+        });
+        if let Err(error) = &fenced {
+            fail_peer_source_fence(&inner, &peer_id, error.clone()).await;
+        }
+        reconcile_disconnected_scoped(
+            &inner,
+            &peer_id,
+            errored,
+            physical_generation,
+            Some(&generation),
+        )
+        .await;
+        let _ = result_sender.send(fenced);
+        let _ = done.send(());
+    });
+    Some(result_receiver)
+}
+
+#[cfg(target_os = "linux")]
+fn defer_physical_loss<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: String,
+    physical_generation: u64,
+    reason: u8,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+    Box::pin(async move {
+        let Some(slot) = reserve_retirement(inner) else {
+            return;
+        };
+        let peer_key = inner.peers.lock().await.get(&peer_id).cloned();
+        let Some(peer_key) = peer_key else { return };
+        let core = inner.core.lock().await;
+        let captured = Generations::of(&core, &peer_key);
+        let Some(generation) = captured.connection.clone() else {
+            return;
+        };
+        let gate = inner.gatt_admission.provisional_peer(&peer_id);
+        drop(core);
+        let (done, next) = tokio::sync::oneshot::channel();
+        let previous = lock_std(&inner.retirement_tail).replace(next);
+        let inner = Arc::clone(inner);
+        spawn_retirement(&Arc::clone(&inner), async move {
+            let _slot = slot;
+            if let Some(previous) = previous {
+                let _ = previous.await;
+            }
+            gate.wait_starting().await;
+            let fenced =
+                match inner
+                    .boundary
+                    .reserve_physical_loss(&peer_id, physical_generation, reason)
+                {
+                    crate::boundary::PhysicalLossReservation::Stale => {
+                        crate::boundary::PhysicalLossFence::Stale
+                    }
+                    crate::boundary::PhysicalLossReservation::Indeterminate(error) => {
+                        crate::boundary::PhysicalLossFence::Indeterminate(error)
+                    }
+                    crate::boundary::PhysicalLossReservation::Accepted(permit) => {
+                        {
+                            let core = inner.core.lock().await;
+                            if core.connection_generation(&peer_key).as_deref() != Some(&generation)
+                            {
+                                return;
+                            }
+                            gate.commit(BleErrorCode::ConnectionLost);
+                        }
+                        // The native permit pins this exact physical lease across
+                        // renewal recovery and atomically revalidates at barrier admission.
+                        retire_peer_ordered_groups(
+                            &inner,
+                            &peer_id,
+                            &captured,
+                            ubm_core::ordered_notifications::EndReason::ConnectionLost,
+                        )
+                        .await;
+                        tokio::time::timeout(
+                            LIVENESS_CLEANUP,
+                            inner.boundary.fence_reserved_physical_loss(&permit),
+                        )
+                        .await
+                        .unwrap_or_else(|_| {
+                            crate::boundary::PhysicalLossFence::Indeterminate(contract_error(
+                                BleErrorCode::OperationTimedOut,
+                                BleErrorDomain::Gatt,
+                                "gatt.notification.fence",
+                            ))
+                        })
+                    }
+                };
+            let source_error = match fenced {
+                crate::boundary::PhysicalLossFence::Stale => {
+                    lock_std(&inner.uncertain_physical_losses)
+                        .remove(&(peer_id.clone(), physical_generation));
+                    return;
+                }
+                crate::boundary::PhysicalLossFence::Accepted(result) => {
+                    lock_std(&inner.uncertain_physical_losses)
+                        .remove(&(peer_id.clone(), physical_generation));
+                    result.err()
+                }
+                crate::boundary::PhysicalLossFence::Indeterminate(error) => {
+                    let current = inner.core.lock().await.connection_generation(&peer_key);
+                    if current.as_deref() != Some(&generation) {
+                        return;
+                    }
+                    fail_peer_source_fence(&inner, &peer_id, error).await;
+                    let should_schedule = {
+                        let mut retained = lock_std(&inner.uncertain_physical_losses);
+                        let key = (peer_id.clone(), physical_generation);
+                        let scheduled = retained.get(&key).is_some_and(|(_, scheduled)| *scheduled);
+                        retained.insert(key, (gate, true));
+                        !scheduled
+                    };
+                    if should_schedule {
+                        let retry_inner = Arc::clone(&inner);
+                        let retry_peer = peer_id.clone();
+                        spawn_retirement(&Arc::clone(&inner), async move {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            let retry = {
+                                let mut retained = lock_std(&retry_inner.uncertain_physical_losses);
+                                if let Some((_, scheduled)) =
+                                    retained.get_mut(&(retry_peer.clone(), physical_generation))
+                                {
+                                    *scheduled = false;
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+                            if retry {
+                                let operation = defer_physical_loss(
+                                    &retry_inner,
+                                    retry_peer,
+                                    physical_generation,
+                                    reason,
+                                );
+                                operation.await;
+                            }
+                        });
+                    }
+                    return;
+                }
+            };
+            {
+                let core = inner.core.lock().await;
+                if core.connection_generation(&peer_key).as_deref() != Some(&generation) {
+                    return;
+                }
+                gate.commit(BleErrorCode::ConnectionLost);
+            }
+            if let Some(error) = source_error {
+                fail_peer_source_fence(&inner, &peer_id, error).await;
+            }
+            reconcile_disconnected_scoped(
+                &inner,
+                &peer_id,
+                false,
+                Some((physical_generation, reason)),
+                Some(&generation),
+            )
+            .await;
+            let _ = done.send(());
+        });
+    })
+}
+
+async fn defer_gatt_watch_failure<B: RadioBoundary>(inner: &Arc<Inner<B>>, detail: DesktopError) {
+    let Some(slot) = reserve_retirement(inner) else {
+        return;
+    };
+    let gate = inner
+        .gatt_admission
+        .block_all(BleErrorCode::GattStaleHandle);
+    {
+        let mut retained = lock_std(&inner.gatt_watch_failure);
+        if retained.is_none() {
+            *retained = Some(detail.clone());
+        }
+    }
+    let peers: Vec<_> = inner
+        .peers
+        .lock()
+        .await
+        .iter()
+        .map(|(id, key)| (id.clone(), key.clone()))
+        .collect();
+    let captured = {
+        let core = inner.core.lock().await;
+        peers
+            .into_iter()
+            .map(|(id, key)| {
+                let generation = Generations::of(&core, &key);
+                (id, key, generation)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (done, next) = tokio::sync::oneshot::channel();
+    let previous = lock_std(&inner.retirement_tail).replace(next);
+    let inner = Arc::clone(inner);
+    spawn_retirement(&Arc::clone(&inner), async move {
+        let _slot = slot;
+        let _gate = gate;
+        if let Some(previous) = previous {
+            let _ = previous.await;
+        }
+        _gate.wait_starting().await;
+        for (peer_id, peer_key, generation) in captured {
+            retire_peer_ordered_groups(
+                &inner,
+                &peer_id,
+                &generation,
+                ubm_core::ordered_notifications::EndReason::SourceFailed(
+                    crate::ordered_notification_groups::failure_from_desktop(&detail),
+                ),
+            )
+            .await;
+            let fenced = tokio::time::timeout(
+                LIVENESS_CLEANUP,
+                inner.boundary.flush_peer_notification_source(&peer_id),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(contract_error(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.fence",
+                ))
+            });
+            let coordinator = discovery_coordinator(&inner, &peer_id);
+            let mut snapshot = coordinator.snapshot.lock().await;
+            let mut subscriptions = inner.subscriptions.lock().await;
+            let mut failed = inner.failed_disables.lock().await;
+            let mut epochs = inner.epochs.lock().await;
+            let mut core = inner.core.lock().await;
+            let current = Generations::of(&core, &peer_key);
+            if current.connection != generation.connection
+                || current.database != generation.database
+            {
+                continue;
+            }
+            if let Err(error) = fenced {
+                drop(core);
+                drop(epochs);
+                drop(failed);
+                drop(subscriptions);
+                drop(snapshot);
+                fail_peer_source_fence(&inner, &peer_id, error).await;
+                snapshot = coordinator.snapshot.lock().await;
+                subscriptions = inner.subscriptions.lock().await;
+                failed = inner.failed_disables.lock().await;
+                epochs = inner.epochs.lock().await;
+                core = inner.core.lock().await;
+                let current = Generations::of(&core, &peer_key);
+                if current.connection != generation.connection
+                    || current.database != generation.database
+                {
+                    continue;
+                }
+            }
+            // The fence/native work above is deliberately outside this
+            // gate.  From this point, retirement and a recovery receipt
+            // have one linearization point.
+            drop(core);
+            drop(epochs);
+            drop(failed);
+            drop(subscriptions);
+            drop(snapshot);
+            let _recovery_transition = inner.peer_failure_recovery_transition.lock().await;
+            let mut snapshot = coordinator.snapshot.lock().await;
+            let mut subscriptions = inner.subscriptions.lock().await;
+            let mut failed = inner.failed_disables.lock().await;
+            let mut epochs = inner.epochs.lock().await;
+            let mut core = inner.core.lock().await;
+            let current = Generations::of(&core, &peer_key);
+            if current.connection != generation.connection
+                || current.database != generation.database
+            {
+                continue;
+            }
+            inner.acquired.retire(Some(&peer_id), None, detail.clone());
+            retire_database_routing_locked(
+                &inner,
+                &peer_id,
+                &mut subscriptions,
+                &mut failed,
+                &mut epochs,
+            );
+            if matches!(
+                core.database_state(&peer_key),
+                Some(DatabaseState::Current | DatabaseState::Discovering)
+            ) {
+                if let Err(error) = core
+                    .services_changed(&peer_key)
+                    .and_then(|()| core.require_rediscovery(&peer_key))
+                {
+                    inner.note_compensation_failure();
+                    eprintln!(
+                        "{}: local GATT retirement failed: {error}",
+                        inner.identity.log_tag()
+                    );
+                }
+            }
+            *snapshot = DiscoverySnapshot::default();
+        }
+        inner.note_compensation_failure();
+        eprintln!(
+            "{}: GATT control observation failed: {detail}; {:?}",
+            inner.identity.log_tag(),
+            detail.detail()
+        );
+        let _ = inner.native_wake.send(());
+        let _ = done.send(());
+    });
+}
+
+async fn defer_services_changed<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: String,
+    identity: Option<GattSnapshotIdentity>,
+    observation_error: Option<DesktopError>,
+    source_uncertain: bool,
+    graph_retired: bool,
+) {
+    let Some(slot) = reserve_retirement(inner) else {
+        return;
+    };
+    let peer_key = inner.peers.lock().await.get(&peer_id).cloned();
+    let Some(peer_key) = peer_key else { return };
+    let core = inner.core.lock().await;
+    let generation = Generations::of(&core, &peer_key);
+    let gate = inner.gatt_admission.provisional_peer(&peer_id);
+    if identity.is_none() {
+        gate.commit(BleErrorCode::GattStaleHandle);
+        let _ = inner.native_wake.send(());
+    }
+    drop(core);
+    let (done, next) = tokio::sync::oneshot::channel();
+    let previous = lock_std(&inner.retirement_tail).replace(next);
+    let inner = Arc::clone(inner);
+    spawn_retirement(&Arc::clone(&inner), async move {
+        let _slot = slot;
+        if let Some(previous) = previous {
+            let _ = previous.await;
+        }
+        gate.wait_starting().await;
+        // A mobile source barrier cannot drain a paused renewal. Validate the
+        // scoped graph first, then resolve/retire its exact old source before
+        // requesting the peer barrier; stale events never touch replacements.
+        {
+            let coordinator = discovery_coordinator(&inner, &peer_id);
+            let snapshot = if identity.is_some() {
+                Some(coordinator.snapshot.lock().await)
+            } else {
+                None
+            };
+            if identity.as_ref().is_some_and(|identity| {
+                snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.identity.as_ref())
+                    != Some(identity)
+            }) {
+                return;
+            }
+            if observation_error.is_some()
+                && !source_uncertain
+                && matches!(inner.boundary.gatt_snapshot_identity(&peer_id), Ok(Some(_)))
+            {
+                return;
+            }
+            let core = inner.core.lock().await;
+            let current = Generations::of(&core, &peer_key);
+            if current.connection != generation.connection
+                || current.database != generation.database
+                || (observation_error.is_some()
+                    && !graph_retired
+                    && core.database_state(&peer_key) != Some(DatabaseState::Current))
+            {
+                return;
+            }
+            gate.commit(BleErrorCode::GattStaleHandle);
+        }
+        let source_reason = observation_error
+            .as_ref()
+            .filter(|_| !graph_retired)
+            .map_or(
+                ubm_core::ordered_notifications::EndReason::ServiceChanged,
+                |error| {
+                    ubm_core::ordered_notifications::EndReason::SourceFailed(
+                        crate::ordered_notification_groups::failure_from_desktop(error),
+                    )
+                },
+            );
+        retire_peer_ordered_groups(&inner, &peer_id, &generation, source_reason).await;
+        let fenced = tokio::time::timeout(
+            LIVENESS_CLEANUP,
+            inner.boundary.flush_peer_notification_source(&peer_id),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(contract_error(
+                BleErrorCode::OperationTimedOut,
+                BleErrorDomain::Gatt,
+                "gatt.notification.fence",
+            ))
+        });
+        let coordinator = discovery_coordinator(&inner, &peer_id);
+        let mut snapshot = if identity.is_some() {
+            Some(coordinator.snapshot.lock().await)
+        } else {
+            None
+        };
+        if identity.as_ref().is_some_and(|identity| {
+            snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.identity.as_ref())
+                != Some(identity)
+        }) {
+            return;
+        }
+        if observation_error.is_some()
+            && !source_uncertain
+            && matches!(inner.boundary.gatt_snapshot_identity(&peer_id), Ok(Some(_)))
+        {
+            return;
+        }
+        let mut subscriptions = inner.subscriptions.lock().await;
+        let mut failed = inner.failed_disables.lock().await;
+        let mut epochs = inner.epochs.lock().await;
+        let mut core = inner.core.lock().await;
+        let current = Generations::of(&core, &peer_key);
+        if current.connection != generation.connection
+            || current.database != generation.database
+            || (observation_error.is_some()
+                && !graph_retired
+                && core.database_state(&peer_key) != Some(DatabaseState::Current))
+        {
+            return;
+        }
+        gate.commit(BleErrorCode::GattStaleHandle);
+        drop(core);
+        drop(epochs);
+        drop(failed);
+        drop(subscriptions);
+        drop(snapshot);
+        let reason = observation_error
+            .as_ref()
+            .filter(|_| !graph_retired)
+            .map_or(
+                ubm_core::ordered_notifications::EndReason::ServiceChanged,
+                |error| {
+                    ubm_core::ordered_notifications::EndReason::SourceFailed(
+                        crate::ordered_notification_groups::failure_from_desktop(error),
+                    )
+                },
+            );
+        retire_peer_ordered_groups(&inner, &peer_id, &generation, reason).await;
+        snapshot = if identity.is_some() {
+            Some(coordinator.snapshot.lock().await)
+        } else {
+            None
+        };
+        if identity.as_ref().is_some_and(|identity| {
+            snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.identity.as_ref())
+                != Some(identity)
+        }) {
+            return;
+        }
+        subscriptions = inner.subscriptions.lock().await;
+        failed = inner.failed_disables.lock().await;
+        epochs = inner.epochs.lock().await;
+        core = inner.core.lock().await;
+        let current = Generations::of(&core, &peer_key);
+        if current.connection != generation.connection || current.database != generation.database {
+            return;
+        }
+        if let Err(error) = fenced {
+            drop(core);
+            drop(epochs);
+            drop(failed);
+            drop(subscriptions);
+            drop(snapshot);
+            fail_peer_source_fence(&inner, &peer_id, error).await;
+            snapshot = if identity.is_some() {
+                Some(coordinator.snapshot.lock().await)
+            } else {
+                None
+            };
+            if identity.as_ref().is_some_and(|identity| {
+                snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.identity.as_ref())
+                    != Some(identity)
+            }) {
+                return;
+            }
+            if observation_error.is_some()
+                && !source_uncertain
+                && matches!(inner.boundary.gatt_snapshot_identity(&peer_id), Ok(Some(_)))
+            {
+                return;
+            }
+            subscriptions = inner.subscriptions.lock().await;
+            failed = inner.failed_disables.lock().await;
+            epochs = inner.epochs.lock().await;
+            core = inner.core.lock().await;
+            let current = Generations::of(&core, &peer_key);
+            if current.connection != generation.connection
+                || current.database != generation.database
+            {
+                return;
+            }
+        }
+        // All source work and fencing above is outside this short gate.  It
+        // now serializes the generation check's route retirement with a
+        // recovery read/final ACK receipt mutation.
+        drop(core);
+        drop(epochs);
+        drop(failed);
+        drop(subscriptions);
+        drop(snapshot);
+        let _recovery_transition = inner.peer_failure_recovery_transition.lock().await;
+        snapshot = if identity.is_some() {
+            Some(coordinator.snapshot.lock().await)
+        } else {
+            None
+        };
+        if identity.as_ref().is_some_and(|identity| {
+            snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.identity.as_ref())
+                != Some(identity)
+        }) {
+            return;
+        }
+        subscriptions = inner.subscriptions.lock().await;
+        failed = inner.failed_disables.lock().await;
+        epochs = inner.epochs.lock().await;
+        core = inner.core.lock().await;
+        let current = Generations::of(&core, &peer_key);
+        if current.connection != generation.connection || current.database != generation.database {
+            return;
+        }
+        retire_database_routing_locked(
+            &inner,
+            &peer_id,
+            &mut subscriptions,
+            &mut failed,
+            &mut epochs,
+        );
+        let retirement_error = observation_error.clone().unwrap_or_else(|| {
+            contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.acquired",
+            )
+        });
+        if let Some(error) = observation_error.as_ref().filter(|_| !graph_retired) {
+            lock_std(&inner.gatt_observation_failures)
+                .entry(peer_id.clone())
+                .or_insert_with(|| error.clone());
+            inner.note_compensation_failure();
+        }
+        inner
+            .acquired
+            .retire(Some(&peer_id), None, retirement_error);
+        let live = core
+            .connection_state(&peer_key)
+            .is_some_and(|state| !state.is_terminal());
+        let _ = core.services_changed(&peer_key);
+        let _ = core.require_rediscovery(&peer_key);
+        if let Some(snapshot) = &mut snapshot {
+            **snapshot = DiscoverySnapshot::default();
+        }
+        let event = (live && observation_error.is_none()).then(|| {
+            inner.stage_lifecycle(
+                &peer_id,
+                &peer_key,
+                generation,
+                LifecycleKind::ServicesChanged,
+            )
+        });
+        drop(core);
+        drop(epochs);
+        drop(failed);
+        drop(subscriptions);
+        drop(snapshot);
+        if let Some(event) = event {
+            inner.signal(CentralSignal::Lifecycle(event));
+        }
+        if observation_error.is_some() {
+            let _ = inner.native_wake.send(());
+        }
+        let _ = done.send(());
+    });
 }
 
 /// The OS reported the link down (PR210-11). A pending release completes
@@ -8111,8 +14973,28 @@ async fn reconcile_disconnected_scoped<B: RadioBoundary>(
     let Some(peer_key) = peer_key else {
         return;
     };
+    // The Linux boundary may consult native state. Do that before acquiring
+    // any routing/core locks: a stalled or wedged native query must not
+    // serialize unrelated recovery, teardown, or shutdown work.
+    #[cfg(target_os = "linux")]
+    if let Some((generation, reason)) = physical_generation
+        && !inner
+            .boundary
+            .accept_physical_loss(peer_id, generation, reason)
+            .await
+    {
+        // An authenticated observation can still belong to an older
+        // generation. It neither invalidates GATT nor publishes loss.
+        return;
+    }
+    #[cfg(not(target_os = "linux"))]
+    debug_assert!(physical_generation.is_none());
     // Acquire local routing ownership before core admission. No synchronous
-    // guard crosses an await; native cleanup is only enqueued by the boundary.
+    // guard crosses native I/O; native cleanup is only enqueued by the boundary.
+    // The native generation check above ran without local locks. From here,
+    // serialize only route retirement with the short in-memory recovery
+    // transition; no boundary/ledger operation occurs while held.
+    let _recovery_transition = inner.peer_failure_recovery_transition.lock().await;
     let mut subscriptions = inner.subscriptions.lock().await;
     let mut failed = inner.failed_disables.lock().await;
     let mut epochs = inner.epochs.lock().await;
@@ -8127,27 +15009,36 @@ async fn reconcile_disconnected_scoped<B: RadioBoundary>(
             );
             return;
         }
-        #[cfg(target_os = "linux")]
-        if let Some((generation, reason)) = physical_generation
-            && !inner
-                .boundary
-                .accept_physical_loss(peer_id, generation, reason)
-                .await
         {
-            // An authenticated observation can still belong to an older
-            // generation. It neither invalidates GATT nor publishes loss.
-            return;
+            let mut retained = lock_std(&inner.retained_enablements);
+            let mut withdrawn = lock_std(&inner.retained_claims);
+            retained.retain(|index, key| {
+                if key.0 == peer_id {
+                    withdrawn.remove(index);
+                    false
+                } else {
+                    true
+                }
+            });
         }
-        #[cfg(not(target_os = "linux"))]
-        debug_assert!(physical_generation.is_none());
-        lock_std(&inner.retained_enablements).retain(|key| key.0 != peer_id);
+        lock_std(&inner.retained_cleanup_owners).retain(|(peer, _), _| peer != peer_id);
+        {
+            let mut claims = lock_std(&inner.retained_claims);
+            for (key, activation) in subscriptions.iter() {
+                if key.0 == peer_id {
+                    claims.remove(activation);
+                }
+            }
+        }
         subscriptions.retain(|key, _| key.0 != peer_id);
         failed.retain(|key| key.0 != peer_id);
+        lock_std(&inner.predispatch_disables).retain(|key| key.0 != peer_id);
         lock_std(&inner.deliveries).retain(|key, _| key.0 != peer_id);
         let epoch = epochs.entry(peer_id.to_owned()).or_insert(0);
         *epoch = epoch.saturating_add(1);
         let generation = Generations::of(&core, &peer_key);
         note_confirmed_release(inner, peer_id);
+        note_mismatch_generation_release(inner, peer_id, generation.connection.as_deref());
         let consumers: Vec<_> = core
             .held_consumers()
             .into_iter()
@@ -8262,12 +15153,49 @@ async fn deliver_with_receipt<B: RadioBoundary>(
     }
 }
 
+async fn deliver_with_provenance<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    scope: InstanceKey,
+    epoch: u64,
+    value: Vec<u8>,
+    provenance: ubm_core::central::NotificationSource,
+) {
+    let routed = inner.subscriptions.lock().await.get(&scope).copied();
+    let Some((path, current)) = routed else {
+        return;
+    };
+    if epoch != current
+        || lock_std(&inner.notification_failures)
+            .get(&path)
+            .is_some_and(|failure| failure.epoch == epoch)
+    {
+        return;
+    }
+    let delivered = inner
+        .core
+        .lock()
+        .await
+        .deliver_notification_value_with_provenance(path, &value, provenance)
+        .is_ok();
+    if delivered {
+        let _ = inner.native_wake.send(());
+        if inner.observer.is_some() {
+            inner.signal(CentralSignal::Value { scope, value });
+        }
+    }
+}
+
 async fn notification_source_failed<B: RadioBoundary>(
     inner: &Arc<Inner<B>>,
     scope: InstanceKey,
     epoch: u64,
     error: DesktopError,
 ) {
+    // An old platform callback can arrive after its route was retired and the
+    // same path index was reused. Linearize route validation and terminal
+    // publication with every retire/replace transition; do not hold this
+    // short gate across native, ledger, or observer work.
+    let _recovery_transition = inner.peer_failure_recovery_transition.lock().await;
     let routed = inner.subscriptions.lock().await.get(&scope).copied();
     let Some((path_index, routing_epoch)) = routed else {
         return;
@@ -8275,15 +15203,786 @@ async fn notification_source_failed<B: RadioBoundary>(
     if epoch != routing_epoch {
         return;
     }
-    lock_std(&inner.notification_failures)
-        .entry(path_index)
-        .or_insert_with(|| NotificationSourceFailure {
-            peer_id: scope.0,
-            epoch,
-            error,
-            terminal_seen: HashSet::new(),
-        });
+    let mut failures = lock_std(&inner.notification_failures);
+    match failures.entry(path_index) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(NotificationSourceFailure {
+                peer_id: scope.0.clone(),
+                epoch,
+                error,
+                recovery: None,
+                terminal_seen: HashSet::new(),
+            });
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) if entry.get().epoch != epoch => {
+            // The prior failure belongs to the previous owner of this
+            // recyclable path index. It is not a terminal for this route and
+            // must not suppress the current route's first failure.
+            entry.insert(NotificationSourceFailure {
+                peer_id: scope.0.clone(),
+                epoch,
+                error,
+                recovery: None,
+                terminal_seen: HashSet::new(),
+            });
+        }
+        std::collections::hash_map::Entry::Occupied(_) => {}
+    }
+    drop(failures);
+    drop(_recovery_transition);
     let _ = inner.native_wake.send(());
+    inner.signal(CentralSignal::NotificationSourceFailed { scope });
+}
+
+/// Re-offer every retained source head exactly once for this explicit host
+/// action. Failed entries remain capability-bound in the pending map; a retry
+/// never duplicates an acknowledgement or replaces the original evidence.
+async fn retry_pending_peer_failure_recoveries<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+) -> Result<usize, DesktopError> {
+    // A failed cleanup must stay observable independently of whether the
+    // original routes still exist. Retrying only `stage_peer_failure_recovery`
+    // would return before its post-stage cleanup branch on a stale route and
+    // silently strand the sidecar row forever.
+    let cleanup_debt = lock_std(&inner.peer_failure_recovery_release_debt).clone();
+    if !cleanup_debt.is_empty() {
+        let ledger = lock_std(&inner.peer_failure_recovery_ledger)
+            .clone()
+            .ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::CapabilityUnavailable,
+                    BleErrorDomain::Restoration,
+                    "gatt.notification.source-failure-recovery.release-retry",
+                )
+            })?;
+        let mut first_error = None;
+        for (descriptor, prior_error) in cleanup_debt {
+            match ledger.release(&descriptor).await {
+                Ok(()) => {
+                    lock_std(&inner.peer_failure_recovery_release_debt).remove(&descriptor);
+                }
+                Err(_error) => {
+                    // The first failure is the cause which created this
+                    // debt. Do not replace it with a later retry failure:
+                    // callers need the original failed operation, and the
+                    // descriptor remains queued until a successful cleanup.
+                    if first_error.is_none() {
+                        first_error = Some(prior_error);
+                    }
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+    }
+    let pending = {
+        let mut offers = lock_std(&inner.pending_peer_failure_recovery_offers);
+        std::mem::take(&mut *offers)
+    };
+    let mut staged = 0;
+    for (descriptor, offer) in pending {
+        if stage_peer_failure_recovery(
+            inner,
+            descriptor,
+            offer.members.clone(),
+            Some(offer.teardown.clone()),
+        )
+        .await
+        {
+            offer.ack.acknowledge();
+            staged += 1;
+        } else {
+            lock_std(&inner.pending_peer_failure_recovery_offers).insert(descriptor, offer);
+        }
+    }
+    Ok(staged)
+}
+
+fn retain_peer_failure_release_debt<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    error: DesktopError,
+) {
+    lock_std(&inner.peer_failure_recovery_release_debt).insert(descriptor, error);
+}
+
+/// Stage an offered oversized failure for precisely its callback-time routes.
+/// A stale/disconnected route deliberately leaves the producer's transfer
+/// retained: accepting a smaller recipient cut would silently lose evidence.
+async fn stage_peer_failure_recovery<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    members: Vec<(InstanceKey, u64)>,
+    teardown: Option<DesktopErrorEvidence>,
+) -> bool {
+    // A retained source failure must keep its producer's own error evidence.
+    // Historical V1 occurrences did not carry this field and therefore may
+    // be read only; never replace that absence with a plausible generic
+    // terminal while staging a live source head.
+    let Some(teardown) = teardown else {
+        return false;
+    };
+    // First validate the source-time cut. Do not hold this routing lock
+    // while staging arbitrarily large evidence into the host ledger.
+    if !routes_match(inner, &members).await {
+        return false;
+    }
+    // Expand every physical callback route to its exact logical consumers at
+    // the same source-time cut. A shared CCCD is one radio source but never
+    // one durable recipient.
+    let source_members = {
+        let routes = inner.subscriptions.lock().await;
+        let core = inner.core.lock().await;
+        let mut recipients = Vec::new();
+        for (scope, epoch) in &members {
+            let Some((path, current)) = routes.get(scope) else {
+                return false;
+            };
+            if current != epoch {
+                return false;
+            }
+            recipients.extend(core.consumers_for_path(*path).into_iter().map(|consumer| {
+                (
+                    PeerFailureRecoveryRecipientKey {
+                        scope: scope.clone(),
+                        consumer,
+                    },
+                    *epoch,
+                )
+            }));
+        }
+        recipients
+    };
+    if source_members.is_empty() {
+        return false;
+    }
+    let mut receipt_members = HashMap::with_capacity(source_members.len());
+    for (key, epoch) in source_members {
+        let mut lease = [0_u8; 16];
+        if getrandom::fill(&mut lease).is_err() {
+            // A missing entropy source must retain the radio head, not
+            // publish a guessable capability.
+            return false;
+        }
+        receipt_members.insert(
+            key,
+            PeerFailureRecoveryMember {
+                epoch,
+                recipient_lease: lease.iter().map(|byte| format!("{byte:02x}")).collect(),
+                contiguous_read: 0,
+                acknowledged: false,
+            },
+        );
+    }
+    let inserted = match lock_std(&inner.peer_failure_recoveries).entry(descriptor) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(PeerFailureRecoveryReceipt {
+                members: receipt_members,
+                teardown: Some(teardown.clone()),
+                committing: false,
+                source_ack_id: None,
+                source_ack_retired: false,
+                source_ack_confirmed: false,
+                source_ack_native_owner_unavailable: false,
+                durable_restored: false,
+            });
+            true
+        }
+        std::collections::hash_map::Entry::Occupied(_) => false,
+    };
+    if !inserted {
+        return true;
+    }
+
+    let occurrence = {
+        let recoveries = lock_std(&inner.peer_failure_recoveries);
+        recoveries
+            .get(&descriptor)
+            .expect("inserted peer failure recovery")
+            .durable(descriptor)
+    };
+    let Some(ledger) = lock_std(&inner.peer_failure_recovery_ledger).clone() else {
+        // No configured host persistence is not permission to acknowledge or
+        // discard a source. The radio keeps its head and can be retried once
+        // a trusted host binds a durable ledger.
+        lock_std(&inner.peer_failure_recoveries).remove(&descriptor);
+        return false;
+    };
+    if stage_peer_failure_recovery_ledger(inner, &ledger, &occurrence)
+        .await
+        .is_err()
+    {
+        if let Err(error) = ledger.release(&descriptor).await {
+            retain_peer_failure_release_debt(inner, descriptor, error);
+        }
+        lock_std(&inner.peer_failure_recoveries).remove(&descriptor);
+        return false;
+    }
+
+    // The route can retire while durable staging is in progress. In that
+    // case the stored occurrence is deliberately released and the source is
+    // left unacknowledged, rather than publishing only part of its original
+    // recipient cut.
+    if !routes_match(inner, &members).await {
+        if let Err(error) = ledger.release(&descriptor).await {
+            retain_peer_failure_release_debt(inner, descriptor, error);
+        }
+        lock_std(&inner.peer_failure_recoveries).remove(&descriptor);
+        return false;
+    }
+    // Durable staging is complete. The exact callback-time recipients must
+    // still own their routes when this terminal becomes visible. This gate is
+    // deliberately acquired only for the route validation and in-memory
+    // terminal mutation below; ledger work above remains outside it.
+    let _recovery_transition = inner.peer_failure_recovery_transition.lock().await;
+    let routes = inner.subscriptions.lock().await;
+    let routed = members
+        .iter()
+        .map(|(scope, epoch)| {
+            routes
+                .get(scope)
+                .copied()
+                .filter(|(_, current)| current == epoch)
+                .map(|(index, _)| (scope.clone(), *epoch, index))
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(routed) = routed else {
+        drop(routes);
+        drop(_recovery_transition);
+        if let Err(error) = ledger.release(&descriptor).await {
+            retain_peer_failure_release_debt(inner, descriptor, error);
+        }
+        lock_std(&inner.peer_failure_recoveries).remove(&descriptor);
+        return false;
+    };
+    let mut published = Vec::with_capacity(routed.len());
+    for (scope, epoch, index) in routed {
+        // Keep the exact route lifecycle lease through terminal publication.
+        // There is no await in this section, so unsubscribe/service-change
+        // retirement cannot make a staged recipient visible after its route
+        // has become invalid.
+        let mut failures = lock_std(&inner.notification_failures);
+        let failure = failures
+            .entry(index)
+            .or_insert_with(|| NotificationSourceFailure {
+                peer_id: scope.0.clone(),
+                epoch,
+                error: DesktopError::from(teardown.clone()),
+                recovery: None,
+                terminal_seen: HashSet::new(),
+            });
+        if failure.epoch != epoch {
+            *failure = NotificationSourceFailure {
+                peer_id: scope.0.clone(),
+                epoch,
+                error: DesktopError::from(teardown.clone()),
+                recovery: None,
+                terminal_seen: HashSet::new(),
+            };
+        }
+        failure.recovery = Some(descriptor);
+        drop(failures);
+        published.push(scope);
+    }
+    drop(routes);
+    drop(_recovery_transition);
+    // Observers can re-enter central, so notify only after releasing the
+    // route transition and subscriptions locks. The terminal itself was
+    // already published atomically above.
+    for scope in published {
+        let _ = inner.native_wake.send(());
+        inner.signal(CentralSignal::NotificationSourceFailed { scope });
+    }
+    true
+}
+
+/// Persist the complete source-time recipient cut after any monotonic read or
+/// acknowledgement update. The ledger validates the descriptor and each
+/// immutable recipient identity; central deliberately writes a whole snapshot
+/// so a restart cannot combine one member's newer cursor with another
+/// member's older acknowledgement.
+async fn persist_peer_failure_recovery_recipients<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+) -> Result<(), DesktopError> {
+    let _serial = inner.peer_failure_recovery_persistence.lock().await;
+    persist_peer_failure_recovery_recipients_serialized(inner, descriptor).await
+}
+
+/// Persist while the caller already owns the recovery transition serial. This
+/// is intentionally separate from the public helper: acknowledgement needs
+/// to hold the serial from RAM mutation through the sidecar commit so a
+/// failed write cannot clobber a concurrent recipient transition.
+async fn persist_peer_failure_recovery_recipients_serialized<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+) -> Result<(), DesktopError> {
+    let ledger = lock_std(&inner.peer_failure_recovery_ledger)
+        .clone()
+        .ok_or_else(|| {
+            contract_error(
+                BleErrorCode::CapabilityUnavailable,
+                BleErrorDomain::Restoration,
+                "gatt.notification.source-failure-recovery.persist",
+            )
+            .with_detail("no trusted durable peer failure ledger is configured")
+        })?;
+    let occurrence = lock_std(&inner.peer_failure_recoveries)
+        .get(descriptor)
+        .ok_or_else(|| {
+            contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.notification.source-failure-recovery.persist",
+            )
+        })?
+        .durable(descriptor.clone());
+    ledger.update_recipients(&occurrence).await
+}
+
+async fn routes_match<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    members: &[(InstanceKey, u64)],
+) -> bool {
+    let routes = inner.subscriptions.lock().await;
+    members.iter().all(|(scope, epoch)| {
+        routes
+            .get(scope)
+            .is_some_and(|(_, current)| current == epoch)
+    })
+}
+
+async fn stage_peer_failure_recovery_ledger<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    ledger: &Arc<dyn PeerFailureRecoveryLedger>,
+    occurrence: &DurablePeerFailureRecoveryOccurrence,
+) -> Result<(), DesktopError> {
+    ledger.begin_stage(occurrence).await?;
+    let descriptor = &occurrence.descriptor;
+    let mut offset = 0_u64;
+    loop {
+        let chunk = inner
+            .boundary
+            .read_peer_notification_failure_recovery(descriptor, offset)
+            .await?;
+        if chunk.offset != offset
+            || chunk.next_offset < offset
+            || chunk.next_offset > descriptor.encoded_length
+            || (chunk.done && chunk.next_offset != descriptor.encoded_length)
+            || (!chunk.done && chunk.next_offset == offset)
+        {
+            return Err(contract_error(
+                BleErrorCode::ProtocolMalformed,
+                BleErrorDomain::Gatt,
+                "gatt.notification.source-failure-recovery.stage",
+            ));
+        }
+        ledger
+            .append_stage_chunk(descriptor, offset, &chunk.bytes, chunk.done)
+            .await?;
+        offset = chunk.next_offset;
+        if chunk.done {
+            break;
+        }
+    }
+    ledger.commit_stage(descriptor).await
+}
+
+/// A failed fence cannot establish how much of the platform tail arrived.
+async fn fail_peer_source_fence<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    error: DesktopError,
+) {
+    let members: Vec<_> = inner
+        .subscriptions
+        .lock()
+        .await
+        .iter()
+        .filter(|(scope, _)| scope.0 == peer_id)
+        .map(|(scope, (_, epoch))| (scope.clone(), *epoch))
+        .collect();
+    let generation = lock_std(&inner.peer_notification_sources)
+        .get(peer_id)
+        .copied();
+    if let Some(generation) = generation {
+        peer_notification_loss(inner, peer_id, generation, &members, None).await;
+    }
+    for (scope, epoch) in members {
+        notification_source_failed(inner, scope, epoch, error.clone()).await;
+    }
+}
+
+/// Owns a pending old-source recovery independently of its caller. The batch
+/// registry remains the authority for staged records and cleanup on shutdown.
+struct OrderedRecoveryGuard<B> {
+    inner: Arc<Inner<B>>,
+    key: (String, u64),
+}
+impl<B> Drop for OrderedRecoveryGuard<B> {
+    fn drop(&mut self) {
+        lock_std(&self.inner.ordered_recovery_workers).remove(&self.key);
+    }
+}
+
+fn recover_retired_ordered_source<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer: String,
+    collection_id: u64,
+) {
+    let key = (peer.clone(), collection_id);
+    if !lock_std(&inner.ordered_recovery_workers).insert(key.clone()) {
+        return;
+    }
+    let owned = Arc::clone(inner);
+    let guard = OrderedRecoveryGuard {
+        inner: Arc::clone(inner),
+        key,
+    };
+    spawn_retirement(inner, async move {
+        let _guard = guard;
+        loop {
+            if owned.shut_down.load(Ordering::SeqCst)
+                || owned.ordered_batches.get(&peer, collection_id).is_none()
+            {
+                return;
+            }
+            match owned
+                .boundary
+                .recover_ordered_source(&peer, collection_id)
+                .await
+            {
+                Ok(crate::boundary::OrderedSourceRecovery::Ready(lease)) => {
+                    let Some(owner) = owned.ordered_batches.get(&peer, collection_id) else {
+                        return;
+                    };
+                    {
+                        let mut state = owner.lock().await;
+                        if !matches!(
+                            state.source,
+                            Some(crate::boundary::OrderedSourceCleanup::Lease(_))
+                        ) {
+                            state.observed_source_generation =
+                                Some(lease.source_generation.clone());
+                            state.source =
+                                Some(crate::boundary::OrderedSourceCleanup::Lease(lease));
+                        }
+                    }
+                    let central = DesktopCentral {
+                        inner: Arc::clone(&owned),
+                    };
+                    // Cleanup retains the FIFO and any unresolved claim or source debt.
+                    if let Err(error) = central
+                        .retry_retained_ordered_batch(
+                            &peer,
+                            collection_id,
+                            OpControl::budget_ms(5000),
+                        )
+                        .await
+                    {
+                        if let Some(owner) = owned.ordered_batches.get(&peer, collection_id) {
+                            owner.lock().await.fence_error.get_or_insert(error);
+                        }
+                    }
+                    return;
+                }
+                Ok(crate::boundary::OrderedSourceRecovery::NotStarted) => {
+                    let Some(owner) = owned.ordered_batches.get(&peer, collection_id) else {
+                        return;
+                    };
+                    let mut state = owner.lock().await;
+                    if !state.source_open_driver_active {
+                        state.source_prepare_started = false;
+                        state.source = None;
+                        state.starting.take();
+                        drop(state);
+                        let central = DesktopCentral {
+                            inner: Arc::clone(&owned),
+                        };
+                        if let Err(error) = central
+                            .retry_retained_ordered_batch(
+                                &peer,
+                                collection_id,
+                                OpControl::budget_ms(5000),
+                            )
+                            .await
+                        {
+                            if let Some(owner) = owned.ordered_batches.get(&peer, collection_id) {
+                                owner.lock().await.fence_error.get_or_insert(error);
+                            }
+                        }
+                        return;
+                    }
+                }
+                Ok(crate::boundary::OrderedSourceRecovery::Pending) => {}
+                Err(error) => {
+                    if let Some(owner) = owned.ordered_batches.get(&peer, collection_id) {
+                        owner.lock().await.fence_error = Some(error);
+                    } else {
+                        return;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    });
+}
+
+/// Retire exact old-generation group sources after the peer barrier, while
+/// keeping each collection and physical claim available for explicit cleanup.
+async fn retire_peer_ordered_groups<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    generation: &Generations,
+    reason: ubm_core::ordered_notifications::EndReason,
+) {
+    use crate::boundary::{OrderedSourceCleanup, OrderedSourceTransition};
+    use ubm_core::ordered_notifications::{EndReason, Phase};
+    let central = DesktopCentral {
+        inner: Arc::clone(inner),
+    };
+    for owner in inner.ordered_batches.owners_for_peer(peer_id) {
+        let mut state = owner.lock().await;
+        if state.connection_generation != generation.connection
+            || state.database_generation != generation.database
+        {
+            continue;
+        }
+        // A paused renewal owns callbacks which must be rebound and drained
+        // before whole-source retirement. Keep the lifecycle gate while its
+        // exact native registration remains pending.
+        while let Some((&member_id, phase)) = state.renewals.iter().next() {
+            let phase = *phase;
+            let collection_id = state.collection_id;
+            if !matches!(state.source, Some(OrderedSourceCleanup::Lease(_))) {
+                break;
+            }
+            drop(state);
+            if central
+                .renew_ordered_member(
+                    peer_id,
+                    collection_id,
+                    member_id,
+                    OpControl::budget_ms(5000),
+                )
+                .await
+                .is_ok()
+            {
+                state = owner.lock().await;
+                continue;
+            }
+            state = owner.lock().await;
+            let latest = state.renewals.get(&member_id).copied().unwrap_or(phase);
+            let lease = match state.source.clone() {
+                Some(OrderedSourceCleanup::Lease(lease)) => lease,
+                _ => break,
+            };
+            let (old, new) = match latest {
+                ordered_member_renewal::MemberRenewal::Retiring { old }
+                | ordered_member_renewal::MemberRenewal::Registering { old }
+                | ordered_member_renewal::MemberRenewal::Rebinding { old, .. } => (old, None),
+                ordered_member_renewal::MemberRenewal::Resuming { old, new } => (old, Some(new)),
+            };
+            drop(state);
+            let outcome = tokio::time::timeout(
+                LIVENESS_CLEANUP,
+                inner
+                    .boundary
+                    .abandon_ordered_renewal(&lease, member_id, old, new),
+            )
+            .await;
+            state = owner.lock().await;
+            match outcome {
+                Ok(Ok(crate::boundary::OrderedRenewalAbandon::Retired { tail_uncertain })) => {
+                    state.renewals.remove(&member_id);
+                    if tail_uncertain {
+                        state.fence_error.get_or_insert_with(|| {
+                            contract_error(
+                                BleErrorCode::PlatformFailure,
+                                BleErrorDomain::Gatt,
+                                "gatt.ordered.renewal-abandon",
+                            )
+                            .with_detail("native renewal tail is uncertain")
+                        });
+                    }
+                }
+                Ok(Ok(crate::boundary::OrderedRenewalAbandon::Pending)) | Err(_) => {
+                    drop(state);
+                    if inner.shut_down.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    state = owner.lock().await;
+                }
+                Ok(Err(error)) => {
+                    state.fence_error = Some(error);
+                    drop(state);
+                    if inner.shut_down.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    state = owner.lock().await;
+                }
+            }
+        }
+        let Some(OrderedSourceCleanup::Lease(lease)) = state.source.clone() else {
+            if state.source_prepare_started {
+                if state.setup_error.is_none() {
+                    state.setup_error = Some(contract_error(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.retire",
+                    ));
+                }
+                // The lifecycle gate has invalidated this old-generation
+                // admission. The bounded recovery owner retains the source
+                // key and exact claims, so replacement work need not wait for
+                // a late native Open.
+                state.starting.take();
+                state.admission.take();
+                recover_retired_ordered_source(inner, peer_id.to_owned(), state.collection_id);
+            }
+            continue;
+        };
+        state.closing = true;
+        let retirement_reason = state
+            .retirement_reason
+            .get_or_insert_with(|| reason.clone())
+            .clone();
+        let result = if state.retired {
+            Ok(())
+        } else {
+            tokio::time::timeout(
+                LIVENESS_CLEANUP,
+                inner
+                    .boundary
+                    .retire_ordered_source(&lease, retirement_reason.clone()),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(contract_error(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.retire",
+                ))
+            })
+        };
+        if let Err(error) = result {
+            // A failed retirement has not established the source fence. Keep
+            // its exact reason for cleanup retry; do not preempt a later terminal.
+            state.fence_error = Some(error);
+            continue;
+        }
+        state.retired = true;
+        let status = match central.ordered_owner_status(&lease) {
+            Ok(status) => status,
+            Err(error) => {
+                state.fence_error = Some(error);
+                continue;
+            }
+        };
+        if !matches!(status.phase, Phase::Closing | Phase::Terminal) {
+            let reason = if let Some(primary) = &state.setup_error {
+                EndReason::SetupFailed(crate::ordered_notification_groups::failure_from_desktop(
+                    primary,
+                ))
+            } else {
+                retirement_reason
+            };
+            if let Err(error) = central.update_ordered_owner(
+                &lease,
+                OrderedSourceTransition::Close {
+                    reason,
+                    tail_uncertain: true,
+                },
+            ) {
+                state.fence_error = Some(error);
+                continue;
+            }
+        }
+    }
+}
+
+fn notification_entry(entry: ubm_core::central::NotificationEntry) -> NotificationPoll {
+    match entry {
+        ubm_core::central::NotificationEntry::Value {
+            value,
+            receipt,
+            provenance: Some(provenance),
+        } => NotificationPoll::ValueWithProvenance {
+            value,
+            receipt,
+            provenance: provenance.provenance,
+            source_generation: provenance.generation,
+            source_ordinal: provenance.ordinal,
+        },
+        ubm_core::central::NotificationEntry::Value {
+            value,
+            receipt: Some(receipt),
+            provenance: None,
+        } => NotificationPoll::ValueWithReceipt { value, receipt },
+        ubm_core::central::NotificationEntry::Value {
+            value,
+            receipt: None,
+            provenance: None,
+        } => NotificationPoll::Value(value),
+        ubm_core::central::NotificationEntry::PeerSourceLoss {
+            peer_id,
+            generation,
+            skipped_records,
+        } => NotificationPoll::PeerSourceLoss {
+            peer_id,
+            generation,
+            skipped_records,
+        },
+    }
+}
+
+async fn peer_notification_loss<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    generation: u64,
+    members: &[(InstanceKey, u64)],
+    lost: Option<u64>,
+) {
+    if lock_std(&inner.peer_notification_sources)
+        .get(peer_id)
+        .copied()
+        != Some(generation)
+    {
+        return;
+    }
+    let subscriptions = inner.subscriptions.lock().await;
+    let selected: Vec<_> = members
+        .iter()
+        .filter_map(|(scope, epoch)| {
+            (scope.0 == peer_id)
+                .then(|| {
+                    subscriptions
+                        .get(scope)
+                        .filter(|(_, current)| current == epoch)
+                        .map(|(index, _)| (scope.clone(), *index))
+                })
+                .flatten()
+        })
+        .collect();
+    drop(subscriptions);
+    let mut core = inner.core.lock().await;
+    for (_, index) in &selected {
+        if let Err(error) = core.deliver_peer_source_loss(*index, peer_id, generation, lost) {
+            inner.note_compensation_failure();
+            eprintln!(
+                "{}: peer source gap could not be delivered: {error}",
+                inner.identity.log_tag()
+            );
+        }
+    }
+    drop(core);
+    let _ = inner.native_wake.send(());
+    for (scope, _) in selected {
+        inner.signal(CentralSignal::PeerSourceLoss { scope });
+    }
 }
 
 /// Account notifications the OS broadcast lost for one subscription
@@ -8515,26 +16214,38 @@ async fn services_changed_invalidated<B: RadioBoundary>(inner: &Arc<Inner<B>>, p
 async fn retire_database_routing<B>(inner: &Arc<Inner<B>>, peer_id: &str) {
     // Finding 40: the routing goes, but every enabled instance's OS CCCD
     // may still be live — keep each one releasable by its instance.
+    let _recovery_transition = inner.peer_failure_recovery_transition.lock().await;
     let mut subscriptions = inner.subscriptions.lock().await;
     let mut failed = inner.failed_disables.lock().await;
     let mut epochs = inner.epochs.lock().await;
+    retire_database_routing_locked(inner, peer_id, &mut subscriptions, &mut failed, &mut epochs);
+}
+
+fn retire_database_routing_locked<B>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    subscriptions: &mut HashMap<InstanceKey, (usize, u64)>,
+    failed: &mut HashSet<InstanceKey>,
+    epochs: &mut HashMap<String, u64>,
+) {
     lock_std(&inner.service_access).retain(|(peer, _, _), _| peer != peer_id);
     // Acquire every asynchronous guard before changing ownership: deadline
     // or cancellation while waiting cannot discard a partially copied debt.
     let mut retained = lock_std(&inner.retained_enablements);
-    let enabled: Vec<InstanceKey> = subscriptions
-        .keys()
-        .chain(failed.iter())
-        .chain(retained.iter())
-        .filter(|key| key.0 == peer_id)
-        .cloned()
+    let enabled: Vec<(usize, InstanceKey, u64)> = subscriptions
+        .iter()
+        .filter(|(key, _)| key.0 == peer_id)
+        .map(|(key, (index, epoch))| (*index, key.clone(), *epoch))
         .collect();
     if enabled.is_empty() {
         return;
     }
-    retained.extend(enabled);
+    for (index, key, epoch) in enabled {
+        retained.insert((index, epoch), key);
+    }
     subscriptions.retain(|key, _| key.0 != peer_id);
     failed.retain(|key| key.0 != peer_id);
+    lock_std(&inner.predispatch_disables).retain(|key| key.0 != peer_id);
     lock_std(&inner.deliveries).retain(|key, _| key.0 != peer_id);
     let epoch = epochs.entry(peer_id.to_owned()).or_insert(0);
     *epoch = epoch.saturating_add(1);
@@ -8547,6 +16258,555 @@ async fn retire_database_routing<B>(inner: &Arc<Inner<B>>, peer_id: &str) {
 /// evidence source on this host.
 #[cfg(test)]
 mod adapter_tests {
+    #[tokio::test]
+    async fn first_failure_terminal_budget_matches_empty_ingress_without_ack() {
+        use ubm_core::ordered_notifications::{
+            DeliveryMode, EndReason, Failure, Member, Membership, OrderedCollection, Phase, Poll,
+            SourceGeneration,
+        };
+        for bridge in [false, true] {
+            let central = open().await;
+            let key = crate::ordered_notification_groups::SourceKey {
+                peer_id: format!("terminal-budget-{bridge}"),
+                generation: SourceGeneration::Counter(1),
+                native_group: 7,
+            };
+            let id = 44;
+            let group = OrderedCollection::new(
+                "connection".into(),
+                "database".into(),
+                key.generation.clone(),
+                id,
+                vec![Member {
+                    id: 9,
+                    source: Membership {
+                        member: 1,
+                        epoch: 1,
+                    },
+                    delivery: DeliveryMode::Either,
+                }],
+                1,
+                128,
+                1,
+            )
+            .unwrap();
+            {
+                let mut registry = super::lock_std(&central.inner.mobile_ordered_ingress);
+                registry.install(id, key.clone(), group).unwrap();
+            }
+            central
+                .install_empty_ordered_ingress_with_byte_limit(key.clone(), id, 1, 128)
+                .unwrap();
+            let failure = Failure {
+                code: "source".into(),
+                domain: "gatt".into(),
+                operation: "read".into(),
+                detail: Some("x".repeat(256)),
+                platform_domain: None,
+                platform_code: None,
+                platform_message: None,
+                platform_metadata: Default::default(),
+                platform_metadata_entries: None,
+                platform_cleanup: Vec::new(),
+                platform_cleanup_failures: Vec::new(),
+            };
+            let expected = failure.clone();
+            let record = if bridge {
+                super::OrderedIngressRecord::BridgeFailure { failure }
+            } else {
+                super::OrderedIngressRecord::Terminal {
+                    reason: EndReason::SourceFailed(failure),
+                    rejection: None,
+                    failure_member: None,
+                    rejected_loss: None,
+                    uncertain_tail: true,
+                }
+            };
+            let mut source_acknowledged = false;
+            let active = central.try_admit_mobile_ordered_record(id, &key, record.clone());
+            if active.is_ok() {
+                source_acknowledged = true;
+            }
+            let empty = central.try_admit_empty_ordered_record(&key, id, record.clone());
+            assert_eq!(
+                empty.unwrap_err().operation(),
+                "gatt.ordered.ingress.record-too-large"
+            );
+            assert_eq!(
+                active.unwrap_err().operation(),
+                "gatt.ordered.ingress.record-too-large"
+            );
+            assert!(!source_acknowledged);
+            assert_eq!(
+                central
+                    .mobile_ordered_ingress_status(id, &key)
+                    .unwrap()
+                    .phase,
+                Phase::Staging
+            );
+            assert!(matches!(
+                central.poll_mobile_ordered_ingress(id, &key).unwrap(),
+                Poll::Empty
+            ));
+            assert!(matches!(
+                central.poll_empty_ordered_ingress(&key, id).unwrap(),
+                super::empty_ordered_source::EmptyOrderedPoll::Empty
+            ));
+            // The retained source can retry its exact evidence after rejection.
+            assert!(
+                matches!(record, super::OrderedIngressRecord::BridgeFailure { failure: Failure { detail: Some(ref value), .. } } | super::OrderedIngressRecord::Terminal { reason: EndReason::SourceFailed(Failure { detail: Some(ref value), .. }), .. } if value.len() == 256)
+            );
+            let failure = match &record {
+                super::OrderedIngressRecord::BridgeFailure { failure }
+                | super::OrderedIngressRecord::Terminal {
+                    reason: EndReason::SourceFailed(failure),
+                    ..
+                } => failure,
+                _ => unreachable!(),
+            };
+            assert_eq!(failure, &expected);
+            let limit = ubm_core::ordered_notifications::failure_allocation_cost(failure);
+            let accepted_id = 46;
+            let group = OrderedCollection::new(
+                "connection".into(),
+                "database".into(),
+                key.generation.clone(),
+                accepted_id,
+                vec![Member {
+                    id: 9,
+                    source: Membership {
+                        member: 1,
+                        epoch: 1,
+                    },
+                    delivery: DeliveryMode::Either,
+                }],
+                1,
+                limit,
+                1,
+            )
+            .unwrap();
+            super::lock_std(&central.inner.mobile_ordered_ingress)
+                .install(accepted_id, key.clone(), group)
+                .unwrap();
+            central
+                .install_empty_ordered_ingress_with_byte_limit(key.clone(), accepted_id, 1, limit)
+                .unwrap();
+            assert_eq!(
+                central
+                    .try_admit_mobile_ordered_record(accepted_id, &key, record.clone())
+                    .unwrap(),
+                super::OrderedIngressReceipt::Terminalized
+            );
+            assert_eq!(
+                central
+                    .try_admit_empty_ordered_record(&key, accepted_id, record.clone())
+                    .unwrap(),
+                super::OrderedIngressReceipt::Terminalized
+            );
+            assert!(
+                matches!(central.poll_mobile_ordered_ingress(accepted_id, &key).unwrap(), Poll::Terminal(value) if value.reason == EndReason::SourceFailed(failure.clone()))
+            );
+            let empty = central
+                .poll_empty_ordered_ingress(&key, accepted_id)
+                .unwrap();
+            match empty {
+                super::empty_ordered_source::EmptyOrderedPoll::Record(
+                    super::OrderedIngressRecord::BridgeFailure { failure: actual },
+                ) if bridge => assert_eq!(&actual, failure),
+                super::empty_ordered_source::EmptyOrderedPoll::Record(
+                    super::OrderedIngressRecord::Terminal {
+                        reason: EndReason::SourceFailed(actual),
+                        ..
+                    },
+                ) if !bridge => assert_eq!(&actual, failure),
+                _ => panic!("expected exact first terminal"),
+            }
+        }
+    }
+    #[tokio::test]
+    async fn deep_failure_rejection_does_not_clone_ack_or_mutate_either_ingress() {
+        use ubm_core::ordered_notifications::{
+            DeliveryMode, Failure, Member, Membership, OrderedCollection, Phase, Poll,
+            SourceGeneration,
+        };
+        fn deep_failure() -> Failure {
+            let mut failure = Failure {
+                code: "leaf".into(),
+                domain: String::new(),
+                operation: String::new(),
+                detail: None,
+                platform_domain: None,
+                platform_code: None,
+                platform_message: None,
+                platform_metadata: Default::default(),
+                platform_metadata_entries: None,
+                platform_cleanup: Vec::new(),
+                platform_cleanup_failures: Vec::new(),
+            };
+            for _ in 0..20_000 {
+                failure = Failure {
+                    code: String::new(),
+                    domain: String::new(),
+                    operation: String::new(),
+                    detail: None,
+                    platform_domain: None,
+                    platform_code: None,
+                    platform_message: None,
+                    platform_metadata: Default::default(),
+                    platform_metadata_entries: None,
+                    platform_cleanup: Vec::new(),
+                    platform_cleanup_failures: vec![failure],
+                };
+            }
+            failure
+        }
+        let central = open().await;
+        let key = crate::ordered_notification_groups::SourceKey {
+            peer_id: "deep-terminal-budget".into(),
+            generation: SourceGeneration::Counter(1),
+            native_group: 7,
+        };
+        let id = 45;
+        let group = OrderedCollection::new(
+            "connection".into(),
+            "database".into(),
+            key.generation.clone(),
+            id,
+            vec![Member {
+                id: 9,
+                source: Membership {
+                    member: 1,
+                    epoch: 1,
+                },
+                delivery: DeliveryMode::Either,
+            }],
+            1,
+            128,
+            1,
+        )
+        .unwrap();
+        super::lock_std(&central.inner.mobile_ordered_ingress)
+            .install(id, key.clone(), group)
+            .unwrap();
+        central
+            .install_empty_ordered_ingress_with_byte_limit(key.clone(), id, 1, 128)
+            .unwrap();
+        let retained = deep_failure();
+        for active in [true, false] {
+            let record = super::OrderedIngressRecord::BridgeFailure {
+                failure: deep_failure(),
+            };
+            let result = if active {
+                central.try_admit_mobile_ordered_record(id, &key, record)
+            } else {
+                central.try_admit_empty_ordered_record(&key, id, record)
+            };
+            let mut acknowledged = false;
+            if result.is_ok() {
+                acknowledged = true;
+            }
+            assert_eq!(
+                result.unwrap_err().operation(),
+                "gatt.ordered.ingress.record-too-large"
+            );
+            assert!(!acknowledged);
+        }
+        let mut node = &retained;
+        for _ in 0..20_000 {
+            node = &node.platform_cleanup_failures[0];
+        }
+        assert_eq!(node.code, "leaf");
+        assert_eq!(
+            central
+                .mobile_ordered_ingress_status(id, &key)
+                .unwrap()
+                .phase,
+            Phase::Staging
+        );
+        assert!(matches!(
+            central.poll_mobile_ordered_ingress(id, &key).unwrap(),
+            Poll::Empty
+        ));
+        assert!(matches!(
+            central.poll_empty_ordered_ingress(&key, id).unwrap(),
+            super::empty_ordered_source::EmptyOrderedPoll::Empty
+        ));
+    }
+    #[tokio::test]
+    async fn active_observations_replay_and_drain_before_terminal() {
+        use ubm_core::ordered_notifications::{
+            DeliveryMode, EndReason, Member, Membership, OrderedCollection, Poll, Record,
+            SourceGeneration, SourceRejection,
+        };
+        let central = open().await;
+        let peer = "active-observation-replay";
+        let id = central.reserve_ordered_batch(peer).unwrap();
+        let membership = Membership {
+            member: 1,
+            epoch: 2,
+        };
+        let lease = crate::boundary::OrderedSourceLease {
+            peer_id: peer.into(),
+            connection_generation: "connection".into(),
+            collection_id: id,
+            source_generation: SourceGeneration::Counter(4),
+            native_group: 7,
+            members: vec![(9, membership)],
+            ingress: crate::boundary::OrderedSourceIngress::CentralRetainedBatch,
+        };
+        let key = super::ordered_claims::ordered_source_key(&lease);
+        let group = OrderedCollection::new(
+            "connection".into(),
+            "database".into(),
+            key.generation.clone(),
+            id,
+            vec![Member {
+                id: 9,
+                source: membership,
+                delivery: DeliveryMode::Either,
+            }],
+            1,
+            128,
+            1,
+        )
+        .unwrap();
+        {
+            let mut registry = super::lock_std(&central.inner.mobile_ordered_ingress);
+            registry.install(id, key.clone(), group).unwrap();
+            registry
+                .with_collection(id, |owner| owner.begin_enable(9))
+                .unwrap();
+            registry
+                .with_collection(id, |owner| owner.enable_result(9, Some(true)))
+                .unwrap();
+        }
+        {
+            let owner = central.inner.ordered_batches.get(peer, id).unwrap();
+            let mut state = owner.lock().await;
+            state.source = Some(crate::boundary::OrderedSourceCleanup::Lease(lease));
+            state.central_source_installed = true;
+            state.source_host_attached = true;
+        }
+        central
+            .try_admit_mobile_ordered_record(
+                id,
+                &key,
+                super::OrderedIngressRecord::Terminal {
+                    reason: EndReason::Closed,
+                    rejection: None,
+                    failure_member: None,
+                    rejected_loss: None,
+                    uncertain_tail: false,
+                },
+            )
+            .unwrap();
+        let Poll::Terminal(deferred) = central.poll_mobile_ordered_ingress(id, &key).unwrap()
+        else {
+            panic!("expected source terminal");
+        };
+        central
+            .inner
+            .ordered_batches
+            .get(peer, id)
+            .unwrap()
+            .lock()
+            .await
+            .deferred_terminal = Some(deferred);
+        let late = |rejection| super::OrderedIngressRecord::Terminal {
+            reason: EndReason::SourceOverflow,
+            rejection: Some(rejection),
+            failure_member: None,
+            rejected_loss: None,
+            uncertain_tail: true,
+        };
+        let first_rejection = SourceRejection::Value { bytes: 4 };
+        let second_rejection = SourceRejection::Loss { skipped_records: 3 };
+        central
+            .try_admit_mobile_ordered_record(id, &key, late(first_rejection))
+            .unwrap();
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(id, &key, late(second_rejection))
+                .unwrap(),
+            super::OrderedIngressReceipt::PendingCapacity
+        );
+        assert!(
+            central
+                .admit_mobile_ordered_record(id, &key, late(second_rejection))
+                .is_err()
+        );
+        let first = central.poll_ordered_delivery(peer, id).await.unwrap();
+        assert!(
+            matches!(first.poll, Poll::Record(Record::FailureObservation { source_rejection: Some(value), .. }) if value == first_rejection)
+        );
+        assert_eq!(
+            central.poll_ordered_delivery(peer, id).await.unwrap(),
+            first
+        );
+        central
+            .try_admit_mobile_ordered_record(id, &key, late(second_rejection))
+            .unwrap();
+        central
+            .acknowledge_ordered_delivery(peer, id, first.delivery_id.unwrap())
+            .await
+            .unwrap();
+        let second = central.poll_ordered_delivery(peer, id).await.unwrap();
+        assert_ne!(second.delivery_id, first.delivery_id);
+        assert!(
+            matches!(second.poll, Poll::Record(Record::FailureObservation { source_rejection: Some(value), .. }) if value == second_rejection)
+        );
+        central
+            .acknowledge_ordered_delivery(peer, id, first.delivery_id.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            central.poll_ordered_delivery(peer, id).await.unwrap(),
+            second
+        );
+        central
+            .try_admit_mobile_ordered_record(
+                id,
+                &key,
+                super::OrderedIngressRecord::FailureObservationsOmitted,
+            )
+            .unwrap();
+        central
+            .acknowledge_ordered_delivery(peer, id, second.delivery_id.unwrap())
+            .await
+            .unwrap();
+        let omission = central.poll_ordered_delivery(peer, id).await.unwrap();
+        assert!(matches!(
+            omission.poll,
+            Poll::Record(Record::FailureObservationsOmitted { count: None })
+        ));
+        central
+            .acknowledge_ordered_delivery(peer, id, omission.delivery_id.unwrap())
+            .await
+            .unwrap();
+        central
+            .inner
+            .ordered_batches
+            .get(peer, id)
+            .unwrap()
+            .lock()
+            .await
+            .source_sealed = true;
+        let terminal = central.poll_ordered_delivery(peer, id).await.unwrap();
+        assert!(
+            matches!(terminal.poll, Poll::Terminal(ref value) if value.reason == EndReason::Closed && !value.failure_observations_omitted)
+        );
+        assert_eq!(
+            central.poll_ordered_delivery(peer, id).await.unwrap(),
+            terminal
+        );
+    }
+    #[tokio::test]
+    async fn failed_setup_delivery_replays_observations_before_terminal() {
+        use ubm_core::ordered_notifications::{
+            EndReason, Poll, Record, SourceGeneration, SourceRejection,
+        };
+        let central = open().await;
+        let peer = "empty-observations";
+        let id = central.reserve_ordered_batch(peer).unwrap();
+        let lease = crate::boundary::OrderedSourceLease {
+            peer_id: peer.into(),
+            connection_generation: "connection".into(),
+            collection_id: id,
+            source_generation: SourceGeneration::Counter(4),
+            native_group: 7,
+            members: vec![],
+            ingress: crate::boundary::OrderedSourceIngress::BackendOwned,
+        };
+        let key = super::ordered_claims::ordered_source_key(&lease);
+        central
+            .install_empty_ordered_ingress(key.clone(), id, 1)
+            .unwrap();
+        {
+            let owner = central.inner.ordered_batches.get(peer, id).unwrap();
+            let mut state = owner.lock().await;
+            state.source = Some(crate::boundary::OrderedSourceCleanup::Lease(lease));
+            state.empty_sink_installed = true;
+            state.source_sealed = false;
+        }
+        central
+            .try_admit_empty_ordered_record(
+                &key,
+                id,
+                super::OrderedIngressRecord::Terminal {
+                    reason: EndReason::Closed,
+                    rejection: None,
+                    failure_member: None,
+                    rejected_loss: None,
+                    uncertain_tail: false,
+                },
+            )
+            .unwrap();
+        let late = || super::OrderedIngressRecord::Terminal {
+            reason: EndReason::SourceOverflow,
+            rejection: Some(SourceRejection::Marker { marker_id: 17 }),
+            failure_member: None,
+            rejected_loss: None,
+            uncertain_tail: true,
+        };
+        central
+            .try_admit_empty_ordered_record(&key, id, late())
+            .unwrap();
+        assert_eq!(
+            central
+                .try_admit_empty_ordered_record(&key, id, late())
+                .unwrap(),
+            super::OrderedIngressReceipt::PendingCapacity
+        );
+        assert!(
+            central
+                .admit_empty_ordered_record(&key, id, late())
+                .is_err(),
+            "legacy callers must not acknowledge a full lane"
+        );
+        let first = central.poll_ordered_delivery(peer, id).await.unwrap();
+        assert!(matches!(
+            first.poll,
+            Poll::Record(Record::FailureObservation {
+                source_rejection: Some(SourceRejection::Marker { marker_id: 17 }),
+                tail_uncertain: true,
+                ..
+            })
+        ));
+        assert_eq!(
+            central.poll_ordered_delivery(peer, id).await.unwrap(),
+            first
+        );
+        central
+            .try_admit_empty_ordered_record(&key, id, late())
+            .unwrap();
+        central
+            .acknowledge_ordered_delivery(peer, id, first.delivery_id.unwrap())
+            .await
+            .unwrap();
+        let second = central.poll_ordered_delivery(peer, id).await.unwrap();
+        assert_eq!(second.poll, first.poll);
+        assert_ne!(second.delivery_id, first.delivery_id);
+        central
+            .acknowledge_ordered_delivery(peer, id, second.delivery_id.unwrap())
+            .await
+            .unwrap();
+        central
+            .inner
+            .ordered_batches
+            .get(peer, id)
+            .unwrap()
+            .lock()
+            .await
+            .source_sealed = true;
+        let terminal = central.poll_ordered_delivery(peer, id).await.unwrap();
+        assert!(
+            matches!(terminal.poll, Poll::Terminal(ref terminal) if terminal.reason == EndReason::Closed && !terminal.failure_observations_omitted)
+        );
+        assert_eq!(
+            central.poll_ordered_delivery(peer, id).await.unwrap(),
+            terminal
+        );
+    }
     #[tokio::test]
     async fn peer_directory_scripted_gate_holds_only_after_allowed_reads() {
         use std::future::Future;
@@ -8886,6 +17146,13 @@ mod adapter_tests {
         }
     }
 
+    fn writable_hrm_service() -> ServiceSnapshot {
+        let mut service = hrm_service();
+        service.characteristics[0].properties.write = true;
+        service.characteristics[0].properties.write_without_response = true;
+        service
+    }
+
     fn second_hrm_service() -> ServiceSnapshot {
         ServiceSnapshot {
             occurrence: 1,
@@ -8955,6 +17222,354 @@ mod adapter_tests {
             .expect("open central")
     }
 
+    fn recovery_teardown() -> crate::errors::DesktopErrorEvidence {
+        crate::errors::DesktopErrorEvidence::from(
+            DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Platform,
+                "gatt.notification.source-failure",
+            )
+            .with_detail("exact test producer failure"),
+        )
+    }
+
+    #[derive(Default)]
+    struct RecoveryLedgerState {
+        occurrences: std::collections::HashMap<
+            ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+            super::DurablePeerFailureRecoveryOccurrence,
+        >,
+        chunks: std::collections::HashMap<
+            ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+            Vec<u8>,
+        >,
+        update_failures_remaining: usize,
+        begin_failures_remaining: usize,
+        begin_calls: usize,
+        confirm_failures_remaining: usize,
+        confirm_calls: usize,
+        release_failures_remaining: usize,
+        release_calls: usize,
+    }
+
+    #[derive(Default)]
+    struct RecoveryLedger {
+        state: std::sync::Mutex<RecoveryLedgerState>,
+        update_gate: std::sync::Mutex<
+            Option<(
+                std::sync::Arc<tokio::sync::Notify>,
+                std::sync::Arc<tokio::sync::Notify>,
+            )>,
+        >,
+    }
+
+    impl RecoveryLedger {
+        fn fail_next_update(&self) {
+            self.state
+                .lock()
+                .expect("recovery ledger")
+                .update_failures_remaining += 1;
+        }
+
+        fn fail_next_begin(&self) {
+            self.state
+                .lock()
+                .expect("recovery ledger")
+                .begin_failures_remaining += 1;
+        }
+
+        fn fail_next_confirm(&self) {
+            self.state
+                .lock()
+                .expect("recovery ledger")
+                .confirm_failures_remaining += 1;
+        }
+
+        fn fail_next_release(&self) {
+            self.state
+                .lock()
+                .expect("recovery ledger")
+                .release_failures_remaining += 1;
+        }
+
+        fn counts(&self) -> (usize, usize) {
+            let state = self.state.lock().expect("recovery ledger");
+            (state.confirm_calls, state.release_calls)
+        }
+
+        fn block_updates(&self) {
+            *self.update_gate.lock().expect("recovery update gate") = Some((
+                std::sync::Arc::new(tokio::sync::Notify::new()),
+                std::sync::Arc::new(tokio::sync::Notify::new()),
+            ));
+        }
+
+        async fn wait_for_update(&self) {
+            let entered = self
+                .update_gate
+                .lock()
+                .expect("recovery update gate")
+                .as_ref()
+                .expect("update gate installed")
+                .0
+                .clone();
+            entered.notified().await;
+        }
+
+        fn unblock_updates(&self) {
+            if let Some((_, released)) = self
+                .update_gate
+                .lock()
+                .expect("recovery update gate")
+                .take()
+            {
+                released.notify_waiters();
+            }
+        }
+    }
+
+    impl super::PeerFailureRecoveryLedger for RecoveryLedger {
+        fn recover_all<'a>(
+            &'a self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<super::DurablePeerFailureRecoveryOccurrence>,
+                            DesktopError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn read_recovered_chunk<'a>(
+            &'a self,
+            descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+            offset: u64,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            ubm_core::oversized_evidence::PeerSourceFailureChunk,
+                            DesktopError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                let state = self.state.lock().expect("recovery ledger");
+                let bytes = state.chunks.get(descriptor).ok_or_else(|| {
+                    DesktopError::new(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.read",
+                    )
+                })?;
+                let start = usize::try_from(offset).map_err(|_| {
+                    DesktopError::new(
+                        BleErrorCode::ArgumentInvalid,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.read",
+                    )
+                })?;
+                if start > bytes.len() {
+                    return Err(DesktopError::new(
+                        BleErrorCode::ArgumentInvalid,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.read",
+                    ));
+                }
+                let end = start
+                    .saturating_add(descriptor.chunk_bytes as usize)
+                    .min(bytes.len());
+                Ok(ubm_core::oversized_evidence::PeerSourceFailureChunk {
+                    offset,
+                    next_offset: end as u64,
+                    bytes: bytes[start..end].to_vec(),
+                    done: end == bytes.len(),
+                })
+            })
+        }
+
+        fn begin_stage<'a>(
+            &'a self,
+            occurrence: &'a super::DurablePeerFailureRecoveryOccurrence,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), DesktopError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let mut state = self.state.lock().expect("recovery ledger");
+                state.begin_calls += 1;
+                if state.begin_failures_remaining > 0 {
+                    state.begin_failures_remaining -= 1;
+                    return Err(DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.begin-stage",
+                    ));
+                }
+                state
+                    .occurrences
+                    .insert(occurrence.descriptor.clone(), occurrence.clone());
+                state
+                    .chunks
+                    .insert(occurrence.descriptor.clone(), Vec::new());
+                Ok(())
+            })
+        }
+
+        fn append_stage_chunk<'a>(
+            &'a self,
+            descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+            offset: u64,
+            bytes: &'a [u8],
+            _done: bool,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), DesktopError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let mut state = self.state.lock().expect("recovery ledger");
+                let stored = state.chunks.get_mut(descriptor).ok_or_else(|| {
+                    DesktopError::new(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.append",
+                    )
+                })?;
+                if offset != stored.len() as u64 {
+                    return Err(DesktopError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.append",
+                    ));
+                }
+                stored.extend_from_slice(bytes);
+                Ok(())
+            })
+        }
+
+        fn commit_stage<'a>(
+            &'a self,
+            _descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), DesktopError>> + Send + 'a>,
+        > {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn update_recipients<'a>(
+            &'a self,
+            occurrence: &'a super::DurablePeerFailureRecoveryOccurrence,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), DesktopError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let gate = self
+                    .update_gate
+                    .lock()
+                    .expect("recovery update gate")
+                    .clone();
+                if let Some((entered, released)) = gate {
+                    entered.notify_one();
+                    released.notified().await;
+                }
+                let mut state = self.state.lock().expect("recovery ledger");
+                if state.update_failures_remaining > 0 {
+                    state.update_failures_remaining -= 1;
+                    return Err(DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.update",
+                    ));
+                }
+                state
+                    .occurrences
+                    .insert(occurrence.descriptor.clone(), occurrence.clone());
+                Ok(())
+            })
+        }
+
+        fn mark_source_ack_inflight<'a>(
+            &'a self,
+            descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+            source_ack_id: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), DesktopError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let mut state = self.state.lock().expect("recovery ledger");
+                let occurrence = state.occurrences.get_mut(descriptor).ok_or_else(|| {
+                    DesktopError::new(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.begin",
+                    )
+                })?;
+                occurrence.source_ack_id = Some(source_ack_id.to_owned());
+                occurrence.producer_ack = super::DurablePeerFailureProducerAck::InFlight;
+                Ok(())
+            })
+        }
+
+        fn confirm_source_ack<'a>(
+            &'a self,
+            descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+            source_ack_id: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), DesktopError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let mut state = self.state.lock().expect("recovery ledger");
+                state.confirm_calls += 1;
+                if state.confirm_failures_remaining > 0 {
+                    state.confirm_failures_remaining -= 1;
+                    return Err(DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.confirm",
+                    ));
+                }
+                let occurrence = state.occurrences.get_mut(descriptor).ok_or_else(|| {
+                    DesktopError::new(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.confirm",
+                    )
+                })?;
+                occurrence.source_ack_id = Some(source_ack_id.to_owned());
+                occurrence.producer_ack = super::DurablePeerFailureProducerAck::Committed;
+                Ok(())
+            })
+        }
+
+        fn release<'a>(
+            &'a self,
+            descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), DesktopError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let mut state = self.state.lock().expect("recovery ledger");
+                state.release_calls += 1;
+                if state.release_failures_remaining > 0 {
+                    state.release_failures_remaining -= 1;
+                    return Err(DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Restoration,
+                        "test.recovery-ledger.release",
+                    ));
+                }
+                state.occurrences.remove(descriptor);
+                state.chunks.remove(descriptor);
+                Ok(())
+            })
+        }
+    }
+
     async fn wait_peer(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
         for _ in 0..200 {
             if central.peer_key_for(peer_id).await.is_some() {
@@ -9013,7 +17628,10 @@ mod adapter_tests {
             .await
             .expect("start scan");
         assert!(central.has_active_scan().await);
-        central.boundary().push_event(advertisement("peer-1"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-1"))
+            .expect("synthetic event admission failed");
         wait_peer(&central, "peer-1").await;
         stop_owned_scan(&central).await.expect("stop scan");
         assert!(!central.has_active_scan().await);
@@ -9126,7 +17744,8 @@ mod adapter_tests {
         let central = open().await;
         central
             .boundary()
-            .push_event(advertisement("deferred-peer"));
+            .push_event(advertisement("deferred-peer"))
+            .expect("synthetic event admission failed");
         central.boundary().block_op(FaultOp::Connect);
         let error = central
             .connect_when_available("deferred-peer", "lease", OpControl::budget_ms(10))
@@ -9153,7 +17772,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn scoped_old_generation_cannot_mutate_new_link() {
         let central = open().await;
-        central.boundary().push_event(advertisement("scoped-peer"));
+        central
+            .boundary()
+            .push_event(advertisement("scoped-peer"))
+            .expect("synthetic event admission failed");
         let old = central
             .connect("scoped-peer", "lease-a", OpControl::unbounded())
             .await
@@ -9218,7 +17840,10 @@ mod adapter_tests {
         // FX1B: sharing is the default — a second connect leases the live
         // link instead of failing `connection.already-owned`.
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-1"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-1"))
+            .expect("synthetic event admission failed");
         let handle = central
             .connect("peer-1", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -9254,7 +17879,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn connect_failure_marks_loss_and_cleans_half_open_link() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-9"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-9"))
+            .expect("synthetic event admission failed");
         central.boundary().fail_next(FaultOp::Connect, "os refused");
         let error = central
             .connect("peer-9", "lease-a", OpControl::budget_ms(5000))
@@ -9944,7 +18572,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn disconnect_radio_failure_stays_disconnecting() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-2"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-2"))
+            .expect("synthetic event admission failed");
         let handle = central
             .connect("peer-2", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -10019,7 +18650,10 @@ mod adapter_tests {
         use crate::central::{LifecycleKind, LinkRelease};
 
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-9"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-9"))
+            .expect("synthetic event admission failed");
         wait_peer(&central, "peer-9").await;
         let handle = central
             .connect("peer-9", "lease-a", OpControl::budget_ms(5000))
@@ -10052,7 +18686,8 @@ mod adapter_tests {
         // The OS completes the release behind the abandoned call.
         central
             .boundary()
-            .push_event(RadioEvent::Disconnected("peer-9".to_owned()));
+            .push_event(RadioEvent::Disconnected("peer-9".to_owned()))
+            .expect("synthetic event admission failed");
         let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
             .await
             .expect("lifecycle event arrives")
@@ -10187,7 +18822,8 @@ mod adapter_tests {
         let central = open().await;
         central
             .boundary()
-            .push_event(advertisement("release-reconnect"));
+            .push_event(advertisement("release-reconnect"))
+            .expect("synthetic event admission failed");
         central
             .connect("release-reconnect", "old", OpControl::unbounded())
             .await
@@ -10256,7 +18892,8 @@ mod adapter_tests {
         let central = open().await;
         central
             .boundary()
-            .push_event(advertisement("release-newer-pending"));
+            .push_event(advertisement("release-newer-pending"))
+            .expect("synthetic event admission failed");
         central
             .connect("release-newer-pending", "old", OpControl::unbounded())
             .await
@@ -10302,7 +18939,8 @@ mod adapter_tests {
         let central = open().await;
         central
             .boundary()
-            .push_event(advertisement("release-stage"));
+            .push_event(advertisement("release-stage"))
+            .expect("synthetic event admission failed");
         central
             .connect("release-stage", "lease", OpControl::unbounded())
             .await
@@ -10341,7 +18979,8 @@ mod adapter_tests {
         let central = open().await;
         central
             .boundary()
-            .push_event(advertisement("retired-report"));
+            .push_event(advertisement("retired-report"))
+            .expect("synthetic event admission failed");
         let original = central
             .connect("retired-report", "old", OpControl::unbounded())
             .await
@@ -10402,7 +19041,8 @@ mod adapter_tests {
         let central = open().await;
         central
             .boundary()
-            .push_event(advertisement("release-report"));
+            .push_event(advertisement("release-report"))
+            .expect("synthetic event admission failed");
         let connected = central
             .connect("release-report", "lease", OpControl::unbounded())
             .await
@@ -10429,7 +19069,8 @@ mod adapter_tests {
         let central = open().await;
         central
             .boundary()
-            .push_event(advertisement("release-observation"));
+            .push_event(advertisement("release-observation"))
+            .expect("synthetic event admission failed");
         central
             .connect("release-observation", "lease", OpControl::unbounded())
             .await
@@ -10537,7 +19178,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn disconnect_timeout_with_live_link_reports_timeout() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-10"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-10"))
+            .expect("synthetic event admission failed");
         let handle = central
             .connect("peer-10", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -10822,7 +19466,8 @@ mod adapter_tests {
             let mut lifecycle = central.lifecycle_events();
             central
                 .boundary()
-                .push_event(RadioEvent::ServicesChanged("peer".into()));
+                .push_event(RadioEvent::ServicesChanged("peer".into()))
+                .expect("synthetic event admission failed");
             lifecycle.recv().await.unwrap();
             central
                 .discover("peer", "b", OpControl::unbounded())
@@ -10838,12 +19483,16 @@ mod adapter_tests {
                 )
                 .await
                 .unwrap();
-            let before = central
-                .boundary()
-                .calls()
-                .iter()
-                .filter(|call| *call == "set_notifications")
-                .count();
+            let activations = central.boundary().enable_epochs();
+            let old_activation = activations[activations.len() - 2].clone();
+            let replacement = activations[activations.len() - 1].clone();
+            assert_ne!(old_activation.1, replacement.1);
+            assert!(
+                central
+                    .boundary()
+                    .live_notification_activations()
+                    .contains(&replacement)
+            );
             if drain_first {
                 let observed = std::sync::Mutex::new(Vec::new());
                 let drain = |item| {
@@ -10882,19 +19531,1145 @@ mod adapter_tests {
                 "old consumer cannot disappear behind current-path resolution"
             );
             assert_eq!(
-                central
-                    .boundary()
-                    .calls()
-                    .iter()
-                    .filter(|call| *call == "set_notifications")
-                    .count(),
-                before,
-                "a new generation's enablement belongs to B"
+                central.boundary().disable_epochs(),
+                vec![old_activation.clone()],
+                "cleanup must release the old activation exactly once"
+            );
+            let remaining = central.boundary().live_notification_activations();
+            assert!(!remaining.contains(&old_activation));
+            assert!(
+                remaining.contains(&replacement),
+                "replacement activation must remain owned"
             );
             central.boundary().unblock_op(FaultOp::Read);
             assert!(held_read.await.is_err());
             central.shutdown().await;
         }
+    }
+
+    #[tokio::test]
+    async fn peer_source_gap_and_failure_preserve_order_for_exact_members() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .set_services("peer", vec![hrm_service(), second_hrm_service()]);
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        for (occurrence, consumer) in [(0, "one"), (1, "two")] {
+            central
+                .subscribe(
+                    "peer",
+                    &hrm_selector(occurrence),
+                    consumer,
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+        }
+        // Two logical consumers intentionally share the first physical CCCD.
+        // Their recovery leases must remain separate despite one source route.
+        central
+            .subscribe(
+                "peer",
+                &hrm_selector(0),
+                "one-b",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let members = central.boundary().enable_epochs();
+        assert_eq!(members.len(), 2);
+        super::lock_std(&central.inner.peer_notification_sources).insert("peer".into(), 8);
+        for (index, (scope, epoch)) in members.iter().enumerate() {
+            super::deliver_with_provenance(
+                &central.inner,
+                scope.clone(),
+                *epoch,
+                vec![1],
+                ubm_core::central::NotificationSource {
+                    provenance: ubm_core::central::NotificationProvenance::ReadOrNotification,
+                    generation: 8,
+                    ordinal: index as u64 + 1,
+                },
+            )
+            .await;
+        }
+        super::peer_notification_loss(&central.inner, "peer", 7, &members, Some(99)).await;
+        super::peer_notification_loss(&central.inner, "peer", 8, &members, Some(3)).await;
+        for (scope, epoch) in &members {
+            super::deliver(&central.inner, scope.clone(), *epoch, vec![2]).await;
+        }
+        let failure = super::contract_error(
+            ubm_core::contracts::BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Gatt,
+            "gatt.notification",
+        )
+        .with_platform(crate::errors::PlatformDetail::new("bluez-dbus", "closed"));
+        for (scope, epoch) in &members {
+            super::notification_source_failed(
+                &central.inner,
+                scope.clone(),
+                *epoch,
+                failure.clone(),
+            )
+            .await;
+        }
+        for (occurrence, consumer) in [(0, "one"), (1, "two")] {
+            let selector = hrm_selector(occurrence);
+            assert!(
+                matches!(central.poll_notification("peer", &selector, consumer).await.unwrap(), super::NotificationPoll::ValueWithProvenance { value, provenance: ubm_core::central::NotificationProvenance::ReadOrNotification, source_generation: 8, source_ordinal: _, receipt: None } if value == [1])
+            );
+            assert!(matches!(
+                central
+                    .poll_notification("peer", &selector, consumer)
+                    .await
+                    .unwrap(),
+                super::NotificationPoll::PeerSourceLoss {
+                    generation: 8,
+                    skipped_records: Some(3),
+                    ..
+                }
+            ));
+            assert!(
+                matches!(central.poll_notification("peer", &selector, consumer).await.unwrap(), super::NotificationPoll::Value(value) if value == [2])
+            );
+            assert!(
+                matches!(central.poll_notification("peer", &selector, consumer).await.unwrap(), super::NotificationPoll::SourceFailed(error) if error.platform() == failure.platform())
+            );
+        }
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn retained_peer_failure_survives_legacy_style_poll_and_refuses_stale_ack() {
+        let central = open().await;
+        // This is a real retained-source scenario: staging is only valid
+        // once the host has selected durable ownership and the boundary can
+        // supply every descriptor byte.  A bare descriptor must remain held
+        // at the native source rather than manufacture a recovery offer.
+        central
+            .attach_peer_failure_recovery_ledger(std::sync::Arc::new(RecoveryLedger::default()))
+            .await
+            .unwrap();
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .set_services("peer", vec![hrm_service(), second_hrm_service()]);
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        for (occurrence, consumer) in [(0, "one"), (1, "two")] {
+            central
+                .subscribe(
+                    "peer",
+                    &hrm_selector(occurrence),
+                    consumer,
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+        }
+        let members = central.boundary().enable_epochs();
+        let descriptor = ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [1; 16],
+                peer: [2; 16],
+                source_generation: [3; 16],
+                native_group: [4; 16],
+                transfer: [5; 16],
+                recovery: [6; 16],
+            },
+            encoded_length: 128,
+            chunk_bytes: 64,
+        };
+        central
+            .boundary()
+            .set_peer_failure_recovery(descriptor, vec![0x5a; 128]);
+        assert!(
+            super::stage_peer_failure_recovery(
+                &central.inner,
+                descriptor,
+                members,
+                Some(recovery_teardown()),
+            )
+            .await
+        );
+        // A legacy transport maps this V2-only outcome to source-failed. The
+        // poll itself must not acknowledge or discard the retained evidence.
+        let first_lease = match central
+            .poll_notification("peer", &hrm_selector(0), "one")
+            .await
+            .unwrap()
+        {
+            super::NotificationPoll::SourceFailureRecovery(actual)
+                if actual.descriptor == descriptor && !actual.recipient_lease.is_empty() =>
+            {
+                actual.recipient_lease
+            }
+            other => panic!("expected retained recovery, got {other:?}"),
+        };
+        let second_lease = match central
+            .poll_notification("peer", &hrm_selector(1), "two")
+            .await
+            .unwrap()
+        {
+            super::NotificationPoll::SourceFailureRecovery(actual)
+                if actual.descriptor == descriptor && !actual.recipient_lease.is_empty() =>
+            {
+                actual.recipient_lease
+            }
+            other => panic!("expected retained recovery, got {other:?}"),
+        };
+        assert_ne!(
+            first_lease, second_lease,
+            "each recipient needs an exact opaque lease"
+        );
+        assert!(super::lock_std(&central.inner.peer_failure_recoveries).contains_key(&descriptor));
+        // Replacing a recipient invalidates the exact source-time route.
+        central
+            .unsubscribe("peer", &hrm_selector(0), "one", OpControl::unbounded())
+            .await
+            .unwrap();
+        let error = central
+            .ack_peer_notification_failure_recovery(
+                &descriptor,
+                "peer",
+                &hrm_selector(0),
+                "one",
+                &first_lease,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), BleErrorCode::GattStaleHandle);
+        assert!(super::lock_std(&central.inner.peer_failure_recoveries).contains_key(&descriptor));
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn explicit_pending_peer_failure_retry_reoffers_exactly_once_after_transient_stage_failure()
+     {
+        let central = open().await;
+        let ledger = std::sync::Arc::new(RecoveryLedger::default());
+        central
+            .attach_peer_failure_recovery_ledger(ledger.clone())
+            .await
+            .unwrap();
+        ready_peer(&central, "retry-pending", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "retry-pending",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let descriptor = ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [71; 16],
+                peer: [72; 16],
+                source_generation: [73; 16],
+                native_group: [74; 16],
+                transfer: [75; 16],
+                recovery: [76; 16],
+            },
+            encoded_length: 2,
+            chunk_bytes: 2,
+        };
+        central
+            .boundary()
+            .set_peer_failure_recovery(descriptor, vec![1, 2]);
+        ledger.fail_next_begin();
+        // One failure is recorded while the event loop retains the source
+        // offer; the next one is surfaced by the explicit retry caller.
+        ledger.fail_next_release();
+        ledger.fail_next_release();
+        let (ack, acknowledged) = crate::boundary::PeerSourceFailureAck::new();
+        central
+            .boundary()
+            .push_event(
+                crate::boundary::RadioEvent::PeerNotificationFailureRecoveryOffered {
+                    descriptor,
+                    members: central.boundary().enable_epochs(),
+                    teardown: recovery_teardown(),
+                    ack,
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if super::lock_std(&central.inner.pending_peer_failure_recovery_offers)
+                    .contains_key(&descriptor)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("event-loop retained the exact offer after its transient durable-stage refusal");
+        let cleanup_error = central
+            .retry_pending_peer_failure_recoveries()
+            .await
+            .expect_err("explicit retry surfaces the retained cleanup failure");
+        assert_eq!(cleanup_error.code(), BleErrorCode::PlatformFailure);
+        assert_eq!(cleanup_error.operation(), "test.recovery-ledger.release");
+        assert!(
+            super::lock_std(&central.inner.pending_peer_failure_recovery_offers)
+                .contains_key(&descriptor),
+            "a failed cleanup cannot discard the original offer"
+        );
+        assert!(
+            super::lock_std(&central.inner.peer_failure_recovery_release_debt)
+                .contains_key(&descriptor),
+            "failed cleanup remains explicit retry debt"
+        );
+
+        assert_eq!(
+            central
+                .retry_pending_peer_failure_recoveries()
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(super::lock_std(&central.inner.peer_failure_recovery_release_debt).is_empty());
+        tokio::time::timeout(std::time::Duration::from_secs(2), acknowledged)
+            .await
+            .expect("explicit retry acknowledges the retained native producer")
+            .unwrap();
+        assert_eq!(
+            central
+                .retry_pending_peer_failure_recoveries()
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(ledger.state.lock().unwrap().begin_calls, 2);
+        let lease = match central
+            .poll_notification("retry-pending", &hrm_selector(0), "consumer")
+            .await
+            .unwrap()
+        {
+            super::NotificationPoll::SourceFailureRecovery(offer) => {
+                assert_eq!(offer.descriptor, descriptor);
+                assert_eq!(offer.error, Some(DesktopError::from(recovery_teardown())));
+                offer.recipient_lease
+            }
+            other => panic!("expected retried retained recovery, got {other:?}"),
+        };
+        let chunk = central
+            .read_peer_notification_failure_recovery(
+                &descriptor,
+                "retry-pending",
+                &hrm_selector(0),
+                "consumer",
+                &lease,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(chunk.bytes, vec![1, 2]);
+        assert!(chunk.done);
+        central
+            .ack_peer_notification_failure_recovery(
+                &descriptor,
+                "retry-pending",
+                &hrm_selector(0),
+                "consumer",
+                &lease,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !super::lock_std(&central.inner.peer_failure_recoveries).contains_key(&descriptor),
+            "the final recipient acknowledgement retires the exact native producer evidence"
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "peer_failure_recovery_retire")
+                .count(),
+            1,
+            "retrying the durable stage does not duplicate native producer retirement"
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn recovery_retirement_and_confirmation_retries_keep_one_retained_winrt_source() {
+        let central = open().await;
+        let ledger = std::sync::Arc::new(RecoveryLedger::default());
+        ledger.fail_next_confirm();
+        central
+            .attach_peer_failure_recovery_ledger(ledger.clone())
+            .await
+            .unwrap();
+        ready_peer(&central, "recovery-confirm", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "recovery-confirm",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let descriptor = ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [1; 16],
+                peer: [2; 16],
+                source_generation: [3; 16],
+                native_group: [4; 16],
+                transfer: [5; 16],
+                recovery: [7; 16],
+            },
+            encoded_length: 4,
+            chunk_bytes: 2,
+        };
+        central
+            .boundary()
+            .set_peer_failure_recovery(descriptor, vec![9, 8, 7, 6]);
+        // Model the configured WinRT evidence owner's first deletion/retire
+        // failure. The source remains retained; a second acknowledgement must
+        // retry the same native retirement before durable confirmation.
+        central.boundary().fail_next_peer_failure_recovery_retire();
+        let members = central.boundary().enable_epochs();
+        assert!(
+            super::stage_peer_failure_recovery(
+                &central.inner,
+                descriptor,
+                members,
+                Some(recovery_teardown()),
+            )
+            .await
+        );
+        let lease = match central
+            .poll_notification("recovery-confirm", &hrm_selector(0), "consumer")
+            .await
+            .unwrap()
+        {
+            super::NotificationPoll::SourceFailureRecovery(recovery) => recovery.recipient_lease,
+            other => panic!("expected retained recovery, got {other:?}"),
+        };
+        for offset in [0, 2] {
+            let chunk = central
+                .read_peer_notification_failure_recovery(
+                    &descriptor,
+                    "recovery-confirm",
+                    &hrm_selector(0),
+                    "consumer",
+                    &lease,
+                    offset,
+                )
+                .await
+                .unwrap();
+            assert_eq!(chunk.offset, offset);
+        }
+        assert!(
+            central
+                .ack_peer_notification_failure_recovery(
+                    &descriptor,
+                    "recovery-confirm",
+                    &hrm_selector(0),
+                    "consumer",
+                    &lease,
+                )
+                .await
+                .is_err()
+        );
+        assert!(super::lock_std(&central.inner.peer_failure_recoveries).contains_key(&descriptor));
+        assert_eq!(
+            ledger.counts(),
+            (0, 0),
+            "a failed native evidence retirement must not advance durable confirmation or release"
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "peer_failure_recovery_retire")
+                .count(),
+            1,
+            "the first failed evidence retirement is retained exactly once"
+        );
+        // The next attempt retires the still-retained native evidence, but
+        // the injected durable confirmation failure must keep that completed
+        // native retirement rather than replay it on the final retry.
+        assert!(
+            central
+                .ack_peer_notification_failure_recovery(
+                    &descriptor,
+                    "recovery-confirm",
+                    &hrm_selector(0),
+                    "consumer",
+                    &lease,
+                )
+                .await
+                .is_err()
+        );
+        assert!(super::lock_std(&central.inner.peer_failure_recoveries).contains_key(&descriptor));
+        assert_eq!(ledger.counts(), (1, 0));
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "peer_failure_recovery_retire")
+                .count(),
+            2,
+            "native retirement retries once after its own deletion failure"
+        );
+        central
+            .ack_peer_notification_failure_recovery(
+                &descriptor,
+                "recovery-confirm",
+                &hrm_selector(0),
+                "consumer",
+                &lease,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ledger.counts(), (2, 1));
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "peer_failure_recovery_retire")
+                .count(),
+            2,
+            "a retry after durable confirmation failure must not delete native evidence twice",
+        );
+        assert!(!super::lock_std(&central.inner.peer_failure_recoveries).contains_key(&descriptor));
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn final_durable_recipient_ack_retries_native_prepare_without_a_second_ack() {
+        let central = open().await;
+        let ledger = std::sync::Arc::new(RecoveryLedger::default());
+        central
+            .attach_peer_failure_recovery_ledger(ledger)
+            .await
+            .unwrap();
+        ready_peer(&central, "recovery-prepare", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "recovery-prepare",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let descriptor = ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [21; 16],
+                peer: [22; 16],
+                source_generation: [23; 16],
+                native_group: [24; 16],
+                transfer: [25; 16],
+                recovery: [26; 16],
+            },
+            encoded_length: 2,
+            chunk_bytes: 2,
+        };
+        central
+            .boundary()
+            .set_peer_failure_recovery(descriptor, vec![1, 2]);
+        central.boundary().fail_next_peer_failure_recovery_prepare();
+        assert!(
+            super::stage_peer_failure_recovery(
+                &central.inner,
+                descriptor,
+                central.boundary().enable_epochs(),
+                None,
+            )
+            .await
+        );
+        let lease = match central
+            .poll_notification("recovery-prepare", &hrm_selector(0), "consumer")
+            .await
+            .unwrap()
+        {
+            super::NotificationPoll::SourceFailureRecovery(recovery) => recovery.recipient_lease,
+            other => panic!("expected retained recovery, got {other:?}"),
+        };
+        central
+            .read_peer_notification_failure_recovery(
+                &descriptor,
+                "recovery-prepare",
+                &hrm_selector(0),
+                "consumer",
+                &lease,
+                0,
+            )
+            .await
+            .unwrap();
+        assert!(
+            central
+                .ack_peer_notification_failure_recovery(
+                    &descriptor,
+                    "recovery-prepare",
+                    &hrm_selector(0),
+                    "consumer",
+                    &lease,
+                )
+                .await
+                .is_err()
+        );
+        central
+            .ack_peer_notification_failure_recovery(
+                &descriptor,
+                "recovery-prepare",
+                &hrm_selector(0),
+                "consumer",
+                &lease,
+            )
+            .await
+            .expect("the durable final ACK retries preparation");
+        let calls = central.boundary().calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.as_str() == "peer_failure_recovery_prepare")
+                .count(),
+            2
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.as_str() == "peer_failure_recovery_begin")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.as_str() == "peer_failure_recovery_retire")
+                .count(),
+            1
+        );
+        central.shutdown().await;
+    }
+
+    #[test]
+    fn restored_not_started_final_recipient_ack_remains_a_pending_commit() {
+        let descriptor = ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [31; 16],
+                peer: [32; 16],
+                source_generation: [33; 16],
+                native_group: [34; 16],
+                transfer: [35; 16],
+                recovery: [36; 16],
+            },
+            encoded_length: 2,
+            chunk_bytes: 2,
+        };
+        let restored = super::PeerFailureRecoveryReceipt::from_durable(
+            &super::DurablePeerFailureRecoveryOccurrence {
+                descriptor,
+                source_ack_id: None,
+                recipients: vec![super::DurablePeerFailureRecoveryRecipient {
+                    scope: (
+                        "peer".to_owned(),
+                        HRM_SERVICE.to_owned(),
+                        0,
+                        HRM_MEASUREMENT.to_owned(),
+                        0,
+                    ),
+                    consumer: "consumer".to_owned(),
+                    epoch: 1,
+                    recipient_lease: "lease".to_owned(),
+                    contiguous_read: 2,
+                    acknowledged: true,
+                }],
+                producer_ack: super::DurablePeerFailureProducerAck::NotStarted,
+                teardown: None,
+            },
+        );
+        assert!(restored.committing);
+        assert!(restored.source_ack_native_owner_unavailable);
+    }
+
+    #[tokio::test]
+    async fn failed_recipient_read_snapshot_cannot_authorize_ack_before_retry() {
+        let central = open().await;
+        let ledger = std::sync::Arc::new(RecoveryLedger::default());
+        ledger.fail_next_update();
+        central
+            .attach_peer_failure_recovery_ledger(ledger.clone())
+            .await
+            .unwrap();
+        ready_peer(&central, "recovery-read-persist", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "recovery-read-persist",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let descriptor = ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [9; 16],
+                peer: [8; 16],
+                source_generation: [7; 16],
+                native_group: [6; 16],
+                transfer: [5; 16],
+                recovery: [4; 16],
+            },
+            encoded_length: 4,
+            chunk_bytes: 4,
+        };
+        central
+            .boundary()
+            .set_peer_failure_recovery(descriptor, vec![1, 2, 3, 4]);
+        let members = central.boundary().enable_epochs();
+        assert!(
+            super::stage_peer_failure_recovery(
+                &central.inner,
+                descriptor,
+                members,
+                Some(recovery_teardown()),
+            )
+            .await
+        );
+        let lease = match central
+            .poll_notification("recovery-read-persist", &hrm_selector(0), "consumer")
+            .await
+            .unwrap()
+        {
+            super::NotificationPoll::SourceFailureRecovery(recovery) => recovery.recipient_lease,
+            other => panic!("expected retained recovery, got {other:?}"),
+        };
+        let error = central
+            .read_peer_notification_failure_recovery(
+                &descriptor,
+                "recovery-read-persist",
+                &hrm_selector(0),
+                "consumer",
+                &lease,
+                0,
+            )
+            .await
+            .expect_err("injected recipient snapshot failure must fail the read");
+        assert_eq!(error.domain(), BleErrorDomain::Restoration);
+        let error = central
+            .ack_peer_notification_failure_recovery(
+                &descriptor,
+                "recovery-read-persist",
+                &hrm_selector(0),
+                "consumer",
+                &lease,
+            )
+            .await
+            .expect_err("failed read progress must not authorize acknowledgement");
+        assert_eq!(error.code(), BleErrorCode::LifecycleInvalidState);
+        let calls = central.boundary().calls();
+        for forbidden in [
+            "peer_failure_recovery_prepare",
+            "peer_failure_recovery_begin",
+            "peer_failure_recovery_retire",
+        ] {
+            assert!(
+                !calls.iter().any(|call| call == forbidden),
+                "the rejected ACK must not call {forbidden}"
+            );
+        }
+        let chunk = central
+            .read_peer_notification_failure_recovery(
+                &descriptor,
+                "recovery-read-persist",
+                &hrm_selector(0),
+                "consumer",
+                &lease,
+                0,
+            )
+            .await
+            .expect("same page retries after durable progress succeeds");
+        assert_eq!(chunk.bytes, vec![1, 2, 3, 4]);
+        // A final ACK has crossed the exact in-memory transition, but its
+        // durable write may never answer. Shutdown must not wait for that
+        // external ledger future; the retained receipt may settle later.
+        ledger.block_updates();
+        let ack_central = central.clone();
+        let ack_descriptor = descriptor.clone();
+        let ack_lease = lease.clone();
+        let ack = tokio::spawn(async move {
+            ack_central
+                .ack_peer_notification_failure_recovery(
+                    &ack_descriptor,
+                    "recovery-read-persist",
+                    &hrm_selector(0),
+                    "consumer",
+                    &ack_lease,
+                )
+                .await
+        });
+        ledger.wait_for_update().await;
+        let report = tokio::time::timeout(Duration::from_secs(1), central.shutdown())
+            .await
+            .expect("shutdown must not wait for a stalled recovery ledger");
+        assert!(
+            !report.is_released(),
+            "a stalled exact ACK remains a reported durable shutdown obligation"
+        );
+        assert!(report.transport_close_failures.iter().any(|error| {
+            error.operation() == "gatt.notification.source-failure-recovery.shutdown"
+        }));
+        assert_eq!(report.peer_failure_recovery_debts.len(), 1);
+        let debt = &report.peer_failure_recovery_debts[0];
+        assert_eq!(debt.descriptor, descriptor);
+        assert!(debt.source_ack_inflight);
+        assert_eq!(debt.recipients.len(), 1);
+        assert_eq!(debt.recipients[0].peer_id, "recovery-read-persist");
+        assert_eq!(debt.recipients[0].consumer, "consumer");
+        assert_eq!(debt.recipients[0].recipient_lease, lease);
+        assert!(debt.recipients[0].acknowledged);
+        ledger.unblock_updates();
+        ack.await
+            .expect("ACK task joins")
+            .expect("the exact durable ACK debt settles after shutdown");
+        let settled = central.shutdown().await;
+        assert!(
+            settled.is_released(),
+            "a later shutdown observes that the exact durable ACK debt settled"
+        );
+        assert!(settled.peer_failure_recovery_debts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stalled_recovery_read_does_not_block_unsubscribe_and_late_result_is_stale() {
+        let central = open().await;
+        let ledger = std::sync::Arc::new(RecoveryLedger::default());
+        central
+            .attach_peer_failure_recovery_ledger(ledger)
+            .await
+            .unwrap();
+        ready_peer(&central, "recovery-route-fence", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "recovery-route-fence",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let descriptor = ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [41; 16],
+                peer: [42; 16],
+                source_generation: [43; 16],
+                native_group: [44; 16],
+                transfer: [45; 16],
+                recovery: [46; 16],
+            },
+            encoded_length: 2,
+            chunk_bytes: 2,
+        };
+        central
+            .boundary()
+            .set_peer_failure_recovery(descriptor, vec![1, 2]);
+        assert!(
+            super::stage_peer_failure_recovery(
+                &central.inner,
+                descriptor,
+                central.boundary().enable_epochs(),
+                Some(recovery_teardown()),
+            )
+            .await
+        );
+        let lease = match central
+            .poll_notification("recovery-route-fence", &hrm_selector(0), "consumer")
+            .await
+            .unwrap()
+        {
+            super::NotificationPoll::SourceFailureRecovery(recovery) => recovery.recipient_lease,
+            other => panic!("expected retained recovery, got {other:?}"),
+        };
+        central
+            .boundary()
+            .block_op(FaultOp::PeerFailureRecoveryRead);
+        let reader_central = central.clone();
+        let reader = tokio::spawn(async move {
+            reader_central
+                .read_peer_notification_failure_recovery(
+                    &descriptor,
+                    "recovery-route-fence",
+                    &hrm_selector(0),
+                    "consumer",
+                    &lease,
+                    0,
+                )
+                .await
+        });
+        central
+            .boundary()
+            .wait_for_calls("peer_failure_recovery_read", 1)
+            .await;
+        let unsubscribe_central = central.clone();
+        let unsubscribe = async move {
+            unsubscribe_central
+                .unsubscribe(
+                    "recovery-route-fence",
+                    &hrm_selector(0),
+                    "consumer",
+                    OpControl::unbounded(),
+                )
+                .await
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), unsubscribe)
+                .await
+                .expect("unsubscribe must not wait for a stalled recovery read")
+                .unwrap()
+        );
+        central
+            .boundary()
+            .unblock_op(FaultOp::PeerFailureRecoveryRead);
+        let error = reader
+            .await
+            .unwrap()
+            .expect_err("a late native read cannot advance a retired route");
+        assert_eq!(error.code(), BleErrorCode::GattStaleHandle);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn service_change_retires_route_while_recovery_read_is_stalled() {
+        let central = open().await;
+        central
+            .attach_peer_failure_recovery_ledger(std::sync::Arc::new(RecoveryLedger::default()))
+            .await
+            .unwrap();
+        ready_peer(&central, "recovery-service-fence", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "recovery-service-fence",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let descriptor = ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [51; 16],
+                peer: [52; 16],
+                source_generation: [53; 16],
+                native_group: [54; 16],
+                transfer: [55; 16],
+                recovery: [56; 16],
+            },
+            encoded_length: 2,
+            chunk_bytes: 2,
+        };
+        central
+            .boundary()
+            .set_peer_failure_recovery(descriptor, vec![1, 2]);
+        assert!(
+            super::stage_peer_failure_recovery(
+                &central.inner,
+                descriptor,
+                central.boundary().enable_epochs(),
+                None,
+            )
+            .await
+        );
+        let lease = match central
+            .poll_notification("recovery-service-fence", &hrm_selector(0), "consumer")
+            .await
+            .unwrap()
+        {
+            super::NotificationPoll::SourceFailureRecovery(recovery) => recovery.recipient_lease,
+            other => panic!("expected retained recovery, got {other:?}"),
+        };
+        central
+            .boundary()
+            .block_op(FaultOp::PeerFailureRecoveryRead);
+        let reader_central = central.clone();
+        let reader = tokio::spawn(async move {
+            reader_central
+                .read_peer_notification_failure_recovery(
+                    &descriptor,
+                    "recovery-service-fence",
+                    &hrm_selector(0),
+                    "consumer",
+                    &lease,
+                    0,
+                )
+                .await
+        });
+        central
+            .boundary()
+            .wait_for_calls("peer_failure_recovery_read", 1)
+            .await;
+        super::defer_services_changed(
+            &central.inner,
+            "recovery-service-fence".into(),
+            None,
+            None,
+            false,
+            false,
+        )
+        .await;
+        let retired = super::lock_std(&central.inner.retirement_tail)
+            .take()
+            .expect("service change schedules retirement");
+        tokio::time::timeout(Duration::from_secs(1), retired)
+            .await
+            .expect("service retirement must not wait for the stalled recovery read")
+            .expect("retirement worker must complete");
+        central
+            .boundary()
+            .unblock_op(FaultOp::PeerFailureRecoveryRead);
+        let error = reader
+            .await
+            .unwrap()
+            .expect_err("late recovery read cannot advance a service-retired route");
+        assert_eq!(error.code(), BleErrorCode::GattStaleHandle);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn global_gatt_failure_retires_route_while_recovery_read_is_stalled() {
+        let central = open().await;
+        central
+            .attach_peer_failure_recovery_ledger(std::sync::Arc::new(RecoveryLedger::default()))
+            .await
+            .unwrap();
+        ready_peer(&central, "recovery-watch-fence", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "recovery-watch-fence",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let descriptor = ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+            protocol: 1,
+            representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+            identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+                host: [61; 16],
+                peer: [62; 16],
+                source_generation: [63; 16],
+                native_group: [64; 16],
+                transfer: [65; 16],
+                recovery: [66; 16],
+            },
+            encoded_length: 2,
+            chunk_bytes: 2,
+        };
+        central
+            .boundary()
+            .set_peer_failure_recovery(descriptor, vec![1, 2]);
+        assert!(
+            super::stage_peer_failure_recovery(
+                &central.inner,
+                descriptor,
+                central.boundary().enable_epochs(),
+                None,
+            )
+            .await
+        );
+        let lease = match central
+            .poll_notification("recovery-watch-fence", &hrm_selector(0), "consumer")
+            .await
+            .unwrap()
+        {
+            super::NotificationPoll::SourceFailureRecovery(recovery) => recovery.recipient_lease,
+            other => panic!("expected retained recovery, got {other:?}"),
+        };
+        central
+            .boundary()
+            .block_op(FaultOp::PeerFailureRecoveryRead);
+        let reader_central = central.clone();
+        let reader = tokio::spawn(async move {
+            reader_central
+                .read_peer_notification_failure_recovery(
+                    &descriptor,
+                    "recovery-watch-fence",
+                    &hrm_selector(0),
+                    "consumer",
+                    &lease,
+                    0,
+                )
+                .await
+        });
+        central
+            .boundary()
+            .wait_for_calls("peer_failure_recovery_read", 1)
+            .await;
+        super::defer_gatt_watch_failure(
+            &central.inner,
+            super::contract_error(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Gatt,
+                "gatt.watch",
+            ),
+        )
+        .await;
+        let retired = super::lock_std(&central.inner.retirement_tail)
+            .take()
+            .expect("global GATT failure schedules retirement");
+        tokio::time::timeout(Duration::from_secs(1), retired)
+            .await
+            .expect("global retirement must not wait for the stalled recovery read")
+            .expect("retirement worker must complete");
+        central
+            .boundary()
+            .unblock_op(FaultOp::PeerFailureRecoveryRead);
+        let error = reader
+            .await
+            .unwrap()
+            .expect_err("late recovery read cannot advance a globally retired route");
+        assert_eq!(error.code(), BleErrorCode::GattStaleHandle);
+        central.shutdown().await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -10922,17 +20697,21 @@ mod adapter_tests {
             .await
             .unwrap();
         let key = central.peer_key_for("peer").await.unwrap();
-        let scope = super::instance_key(
-            "peer",
-            &central
-                .with_core(|core| {
-                    let index = core.resolve_path(&key, &hrm_selector(0)).unwrap();
-                    core.stored_path(index).unwrap().clone()
-                })
-                .await,
-            "00002a37-0000-1000-8000-00805f9b34fb",
-        );
-        let epoch = central.routing_epoch("peer").await;
+        let (path, original_index) = central
+            .with_core(|core| {
+                let index = core.resolve_path(&key, &hrm_selector(0)).unwrap();
+                (core.stored_path(index).unwrap().clone(), index)
+            })
+            .await;
+        let scope = super::instance_key("peer", &path, "00002a37-0000-1000-8000-00805f9b34fb");
+        let epoch = central
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .get(&scope)
+            .expect("initial route")
+            .1;
         super::deliver(&central.inner, scope.clone(), epoch, vec![42]).await;
         let failure = super::contract_error(
             ubm_core::contracts::BleErrorCode::PlatformFailure,
@@ -10955,8 +20734,10 @@ mod adapter_tests {
         let observed = central
             .poll_notification("peer", &hrm_selector(0), "consumer-a")
             .await
-            .unwrap_err();
-        assert_eq!(observed.platform(), failure.platform());
+            .unwrap();
+        assert!(
+            matches!(observed, super::NotificationPoll::SourceFailed(error) if error.platform() == failure.platform())
+        );
         assert!(matches!(
             central
                 .poll_notification("peer", &hrm_selector(0), "consumer-a")
@@ -10974,6 +20755,19 @@ mod adapter_tests {
             .await
             .unwrap();
         central
+            .disconnect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .connect("peer", "replacement", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central
+            .discover("peer", "replacement", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
             .subscribe_buffered(
                 "peer",
                 &hrm_selector(0),
@@ -10981,11 +20775,30 @@ mod adapter_tests {
                 None,
                 ubm_core::streams::OverflowPolicy::Error,
                 (64, 8192),
-                OpControl::unbounded().with_connection_lease("a".to_owned()),
+                OpControl::unbounded().with_connection_lease("replacement".to_owned()),
             )
             .await
             .unwrap();
-        super::notification_source_failed(&central.inner, scope, epoch.saturating_sub(1), failure)
+        let replacement_epoch = central
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .get(&scope)
+            .expect("replacement route")
+            .1;
+        let replacement_index = central
+            .with_core(|core| {
+                core.consumer_path(&key, &hrm_selector(0), "consumer-new")
+                    .expect("replacement consumer path")
+            })
+            .await;
+        // This simulates a platform callback which was paused while the old
+        // subscription retired, then arrives after rediscovery has reused its
+        // core path index. Its captured epoch is the sole authority.
+        assert_eq!(replacement_index, original_index);
+        assert_ne!(replacement_epoch, epoch);
+        super::notification_source_failed(&central.inner, scope.clone(), epoch, failure.clone())
             .await;
         assert!(matches!(
             central
@@ -10993,6 +20806,16 @@ mod adapter_tests {
                 .await
                 .unwrap(),
             super::NotificationPoll::Empty
+        ));
+        // The replacement route's own callback is still delivered; stale
+        // suppression cannot turn into an index-wide terminal mask.
+        super::notification_source_failed(&central.inner, scope, replacement_epoch, failure).await;
+        assert!(matches!(
+            central
+                .poll_notification("peer", &hrm_selector(0), "consumer-new")
+                .await
+                .unwrap(),
+            super::NotificationPoll::SourceFailed(_)
         ));
         central.shutdown().await;
     }
@@ -11064,7 +20887,6 @@ mod adapter_tests {
 
     #[tokio::test(start_paused = true)]
     async fn shared_lease_release_deadline_retains_child_and_fences_only_its_owner() {
-        use std::{future::Future, task::Poll};
         let central = open().await;
         for lease in ["a", "b"] {
             central
@@ -11090,11 +20912,18 @@ mod adapter_tests {
             .await
             .unwrap();
         central.boundary().block_op(FaultOp::Unsubscribe);
-        let release = central.release_connection_lease("peer", "a", OpControl::budget_ms(100));
-        tokio::pin!(release);
-        assert!(
-            std::future::poll_fn(|cx| Poll::Ready(release.as_mut().poll(cx).is_pending())).await
-        );
+        let release = tokio::spawn({
+            let central = central.clone();
+            async move {
+                central
+                    .release_connection_lease("peer", "a", OpControl::budget_ms(100))
+                    .await
+            }
+        });
+        central
+            .boundary()
+            .wait_for_calls("set_notifications", 2)
+            .await;
         assert_eq!(
             central
                 .read(
@@ -11120,7 +20949,10 @@ mod adapter_tests {
             vec![0x42]
         );
         tokio::time::advance(Duration::from_millis(101)).await;
-        assert_eq!(release.await.unwrap_err().code_str(), "operation.timed-out");
+        assert_eq!(
+            release.await.unwrap().unwrap_err().code_str(),
+            "operation.timed-out"
+        );
         assert_eq!(central.resource_counters().await.pending_disables, 1);
         central.boundary().unblock_op(FaultOp::Unsubscribe);
         assert!(
@@ -11452,10 +21284,12 @@ mod adapter_tests {
                 peer_id: "peer".into(),
                 identity: snapshot_identity(1),
                 error: cause.clone(),
-            });
+            })
+            .expect("synthetic event admission failed");
         central
             .boundary()
-            .push_event(notification("other", 0, vec![2]));
+            .push_event(notification("other", 0, vec![2]))
+            .expect("synthetic event admission failed");
         assert_eq!(
             await_positive_notification(&central, "other", &selector, "other").await,
             vec![2]
@@ -11551,10 +21385,12 @@ mod adapter_tests {
                     peer_id: "peer".into(),
                     identity: snapshot_identity(1),
                     error: cause.clone(),
-                });
+                })
+                .expect("synthetic event admission failed");
             central
                 .boundary()
-                .push_event(notification("peer", 0, vec![3]));
+                .push_event(notification("peer", 0, vec![3]))
+                .expect("synthetic event admission failed");
             assert_eq!(
                 await_positive_notification(&central, "peer", &selector, "new").await,
                 vec![3]
@@ -11856,10 +21692,27 @@ mod adapter_tests {
             .unwrap();
         central.boundary().set_services("peer", vec![hrm_service()]);
         central.boundary().block_op(FaultOp::Discover);
-        let discovery = central.discover("peer", "a", OpControl::unbounded());
-        tokio::pin!(discovery);
+        let discovery = tokio::spawn({
+            let central = central.clone();
+            async move { central.discover("peer", "a", OpControl::unbounded()).await }
+        });
+        for _ in 0..200 {
+            if central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "discover")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         assert!(
-            std::future::poll_fn(|cx| Poll::Ready(discovery.as_mut().poll(cx).is_pending())).await
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "discover")
         );
         let cause = crate::errors::DesktopError::adapter_unavailable("gatt.watch")
             .with_detail("observation ended during traversal");
@@ -11870,7 +21723,7 @@ mod adapter_tests {
         );
         central.boundary().unblock_op(FaultOp::Discover);
         let (result, ()) = tokio::join!(discovery, failure);
-        assert_eq!(result.unwrap_err().detail(), cause.detail());
+        assert_eq!(result.unwrap().unwrap_err().detail(), cause.detail());
         let key = central.peer_key_for("peer").await.unwrap();
         assert_ne!(
             central.with_core(|core| core.database_state(&key)).await,
@@ -11927,6 +21780,110 @@ mod adapter_tests {
                 .unwrap(),
             super::NotificationPoll::Invalidated(super::InvalidationCause::ServicesChanged)
         );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn old_database_cleanup_preserves_replacement_routing() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        central
+            .subscribe("peer", &selector, "old", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .subscribe("peer", &selector, "old-2", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        discover_with_identity(&central, 2).await;
+        central
+            .subscribe("peer", &selector, "new", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        let before = central.inner.subscriptions.lock().await.clone();
+        assert_eq!(
+            super::lock_std(&central.inner.retained_enablements).len(),
+            1
+        );
+        assert!(
+            !central
+                .unsubscribe("peer", &selector, "old-2", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            super::lock_std(&central.inner.retained_enablements).len(),
+            1
+        );
+        assert_eq!(*central.inner.subscriptions.lock().await, before);
+        let calls_before_duplicate = central.boundary().calls().len();
+        let _ = central
+            .unsubscribe("peer", &selector, "old-2", OpControl::unbounded())
+            .await;
+        assert_eq!(
+            central.boundary().calls().len(),
+            calls_before_duplicate,
+            "duplicate old owner must not release another claim"
+        );
+        discover_with_identity(&central, 3).await;
+        central
+            .subscribe("peer", &selector, "newest", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        let before = central.inner.subscriptions.lock().await.clone();
+        assert_eq!(
+            super::lock_std(&central.inner.retained_enablements).len(),
+            2
+        );
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "old cleanup fails once");
+        assert!(
+            central
+                .unsubscribe("peer", &selector, "old", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        assert_eq!(*central.inner.subscriptions.lock().await, before);
+        assert_eq!(
+            central
+                .subscription_epoch_for_consumer("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0, "old")
+                .await,
+            Some(super::ConsumerActivation::Active(0))
+        );
+        central
+            .unsubscribe("peer", &selector, "old", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert_eq!(*central.inner.subscriptions.lock().await, before);
+        assert_eq!(
+            super::lock_std(&central.inner.retained_enablements).len(),
+            1
+        );
+        central
+            .unsubscribe("peer", &selector, "new", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert!(super::lock_std(&central.inner.retained_enablements).is_empty());
+        assert_eq!(*central.inner.subscriptions.lock().await, before);
+        central
+            .unsubscribe("peer", &selector, "newest", OpControl::unbounded())
+            .await
+            .unwrap();
         central.shutdown().await;
     }
 
@@ -12123,10 +22080,12 @@ mod adapter_tests {
             .push_event(RadioEvent::ServicesChangedScoped {
                 peer_id: "peer".into(),
                 identity: snapshot_identity(1),
-            });
+            })
+            .expect("synthetic event admission failed");
         central
             .boundary()
-            .push_event(notification("peer", 0, vec![0x42]));
+            .push_event(notification("peer", 0, vec![0x42]))
+            .expect("synthetic event admission failed");
         // The fake's FIFO delivers the value only after the scoped event;
         // a positive receipt proves the event did not retire R2 routing.
         let value = tokio::time::timeout(Duration::from_secs(2), async {
@@ -12265,7 +22224,8 @@ mod adapter_tests {
         let mut lifecycle = central.lifecycle_events();
         central
             .boundary()
-            .push_event(RadioEvent::ServicesChanged("peer".into()));
+            .push_event(RadioEvent::ServicesChanged("peer".into()))
+            .expect("synthetic event admission failed");
         tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
             .await
             .unwrap()
@@ -12308,7 +22268,8 @@ mod adapter_tests {
         let mut lifecycle = central.lifecycle_events();
         central
             .boundary()
-            .push_event(RadioEvent::ServicesChanged("peer".into()));
+            .push_event(RadioEvent::ServicesChanged("peer".into()))
+            .expect("synthetic event admission failed");
         let changed = tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
             .await
             .unwrap()
@@ -12359,7 +22320,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn discovery_registers_duplicate_uuids_by_occurrence() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-3"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-3"))
+            .expect("synthetic event admission failed");
         central
             .connect("peer-3", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -12426,7 +22390,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn read_after_peer_loss_fails_without_radio() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-4"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-4"))
+            .expect("synthetic event admission failed");
         central
             .connect("peer-4", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -12469,7 +22436,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn write_without_measured_mtu_fails_closed() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-8"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-8"))
+            .expect("synthetic event admission failed");
         central
             .connect("peer-8", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -12514,7 +22484,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn long_write_is_rejected_up_front() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-5"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-5"))
+            .expect("synthetic event admission failed");
         central
             .connect("peer-5", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -12570,7 +22543,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn subscription_sharing_keeps_one_cccd() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-6"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-6"))
+            .expect("synthetic event admission failed");
         central
             .connect("peer-6", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -12881,7 +22857,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn notifications_reach_the_hub_stream() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-10"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-10"))
+            .expect("synthetic event admission failed");
         central
             .connect("peer-10", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -12916,7 +22895,8 @@ mod adapter_tests {
         for _ in 0..70 {
             central
                 .boundary()
-                .push_event(notification("peer-10", 0, vec![0x06, 0x40]));
+                .push_event(notification("peer-10", 0, vec![0x06, 0x40]))
+                .expect("synthetic event admission failed");
         }
         for _ in 0..400 {
             let terminal = central
@@ -12969,7 +22949,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn failed_subscribe_leaves_no_live_cccd() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-7"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-7"))
+            .expect("synthetic event admission failed");
         central
             .connect("peer-7", "lease-a", OpControl::budget_ms(5000))
             .await
@@ -13029,7 +23012,10 @@ mod adapter_tests {
         peer_id: &str,
         services: Vec<ServiceSnapshot>,
     ) {
-        central.boundary().push_event(advertisement(peer_id));
+        central
+            .boundary()
+            .push_event(advertisement(peer_id))
+            .expect("synthetic event admission failed");
         central
             .connect(peer_id, "lease-a", OpControl::budget_ms(5000))
             .await
@@ -13039,6 +23025,127 @@ mod adapter_tests {
             .discover(peer_id, "lease-a", OpControl::unbounded())
             .await
             .expect("discover");
+    }
+
+    #[tokio::test]
+    async fn retain_connection_lease_is_exact_retryable_and_never_reconnects() {
+        let central = open().await;
+        ready_peer(&central, "retain-peer", vec![hrm_service()]).await;
+        let peer_key = central.peer_key_for("retain-peer").await.unwrap();
+        let generation = central
+            .with_core(|core| core.connection_generation(&peer_key))
+            .await
+            .unwrap();
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "connect")
+            .count();
+        assert!(
+            central
+                .retain_connection_lease("retain-peer", "lease-a", "recording", "stale")
+                .await
+                .is_err()
+        );
+        central
+            .retain_connection_lease("retain-peer", "lease-a", "recording", &generation)
+            .await
+            .unwrap();
+        central
+            .retain_connection_lease("retain-peer", "lease-a", "recording", &generation)
+            .await
+            .unwrap();
+        assert!(
+            central
+                .retain_connection_lease("retain-peer", "foreign", "recording", &generation)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "connect")
+                .count(),
+            calls
+        );
+        central
+            .release_connection_lease("retain-peer", "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        assert!(
+            central
+                .retain_connection_lease("retain-peer", "lease-a", "other", &generation)
+                .await
+                .is_err()
+        );
+        assert!(
+            central
+                .with_core(|core| core.holds_lease(&peer_key, "recording"))
+                .await
+        );
+        central
+            .release_connection_lease("retain-peer", "recording", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state(&peer_key))
+                .await,
+            Some(ubm_core::central::ConnectionState::Disconnected)
+        );
+    }
+
+    #[tokio::test]
+    async fn retain_connection_cannot_overtake_final_release_fence() {
+        let central = open().await;
+        ready_peer(&central, "retain-race", vec![hrm_service()]).await;
+        let key = central.peer_key_for("retain-race").await.unwrap();
+        let generation = central
+            .with_core(|core| core.connection_generation(&key))
+            .await
+            .unwrap();
+        let fences = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        let release = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .release_connection_lease("retain-race", "lease-a", OpControl::budget_ms(5000))
+                    .await
+            })
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("notification_fence", fences + 1),
+        )
+        .await
+        .unwrap();
+        let retain = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .retain_connection_lease("retain-race", "lease-a", "recorder", &generation)
+                    .await
+            })
+        };
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        release.await.unwrap().unwrap();
+        assert!(retain.await.unwrap().is_err());
+        assert!(
+            !central
+                .with_core(|core| core.holds_lease(&key, "recorder"))
+                .await
+        );
     }
 
     #[tokio::test]
@@ -13120,10 +23227,12 @@ mod adapter_tests {
         );
         central
             .boundary()
-            .push_event(notification("peer-h1", 0, vec![0x01]));
+            .push_event(notification("peer-h1", 0, vec![0x01]))
+            .expect("synthetic event admission failed");
         central
             .boundary()
-            .push_event(notification("peer-h1", 1, vec![0x02]));
+            .push_event(notification("peer-h1", 1, vec![0x02]))
+            .expect("synthetic event admission failed");
         let mut wrist_value = None;
         let mut chest_value = None;
         for _ in 0..200 {
@@ -13245,10 +23354,12 @@ mod adapter_tests {
         );
         central
             .boundary()
-            .push_event(notification("peer-m2", 0, vec![0xde, 0xad]));
+            .push_event(notification("peer-m2", 0, vec![0xde, 0xad]))
+            .expect("synthetic event admission failed");
         central
             .boundary()
-            .push_event(notification("peer-m2", 0, vec![0xbe, 0xef]));
+            .push_event(notification("peer-m2", 0, vec![0xbe, 0xef]))
+            .expect("synthetic event admission failed");
         let mut first = None;
         let mut second = None;
         for _ in 0..200 {
@@ -13514,7 +23625,10 @@ mod adapter_tests {
     #[tokio::test]
     async fn l5_connect_failure_cleanup_is_bounded() {
         let central = open().await;
-        central.boundary().push_event(advertisement("peer-l5"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-l5"))
+            .expect("synthetic event admission failed");
         central.boundary().block_op(FaultOp::Disconnect);
         central.boundary().fail_next(FaultOp::Connect, "os refused");
         let started = std::time::Instant::now();
@@ -13562,7 +23676,8 @@ mod adapter_tests {
             .expect("read before change");
         central
             .boundary()
-            .push_event(RadioEvent::ServicesChanged("peer-l6".to_owned()));
+            .push_event(RadioEvent::ServicesChanged("peer-l6".to_owned()))
+            .expect("synthetic event admission failed");
         let peer_key = central.peer_key_for("peer-l6").await.expect("peer");
         let mut invalidated = false;
         for _ in 0..200 {
@@ -13622,15 +23737,18 @@ mod adapter_tests {
         for _ in 0..100 {
             central
                 .boundary()
-                .push_event(notification("peer-flood", 0, vec![0x01]));
+                .push_event(notification("peer-flood", 0, vec![0x01]))
+                .expect("synthetic event admission failed");
         }
         central
             .boundary()
-            .push_event(RadioEvent::Disconnected("peer-flood".to_owned()));
+            .push_event(RadioEvent::Disconnected("peer-flood".to_owned()))
+            .expect("synthetic event admission failed");
         for _ in 0..100 {
             central
                 .boundary()
-                .push_event(notification("peer-flood", 0, vec![0x02]));
+                .push_event(notification("peer-flood", 0, vec![0x02]))
+                .expect("synthetic event admission failed");
         }
         // The disconnect reconciles even though notifications surround it.
         let peer_key = central.peer_key_for("peer-flood").await.expect("peer");
@@ -13731,7 +23849,8 @@ mod adapter_tests {
         // delivering or dropping.
         central
             .boundary()
-            .push_event(notification("peer-q", 0, vec![0x09]));
+            .push_event(notification("peer-q", 0, vec![0x09]))
+            .expect("synthetic event admission failed");
         tokio::time::sleep(Duration::from_millis(100)).await;
         let peer_key = central.peer_key_for("peer-q").await.expect("peer");
         let path_index = central
@@ -13767,6 +23886,6873 @@ mod adapter_tests {
             Some(ConsumerState::Ready),
             "consumer ready after enable settles"
         );
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_fence_drains_queued_value_before_retirement() {
+        let central = open().await;
+        ready_peer(&central, "fence-peer", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "fence-peer",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .push_event(notification("fence-peer", 0, vec![7]))
+            .expect("synthetic event admission failed");
+        let captured = std::sync::Mutex::new(Vec::new());
+        let drain = |item| captured.lock().unwrap().push(item);
+        central
+            .unsubscribe_draining(
+                "fence-peer",
+                &hrm_selector(0),
+                "consumer",
+                OpControl::unbounded(),
+                Some(&drain),
+            )
+            .await
+            .unwrap();
+        assert!(
+            captured
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|item| matches!(item, super::NotificationPoll::Value(value) if value == &[7]))
+        );
+    }
+
+    #[tokio::test]
+    async fn ordered_claim_rollback_removes_join_without_disabling_other_owner() {
+        use super::ordered_claims::{OrderedClaim, OrderedClaimPhase};
+        let central = open().await;
+        ready_peer(&central, "join-rollback", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe(
+                "join-rollback",
+                &selector,
+                "existing",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let peer_key = central.peer_key_for("join-rollback").await.unwrap();
+        let (scope, path_index, epoch) = {
+            let routes = central.inner.subscriptions.lock().await;
+            let (scope, (index, epoch)) = routes
+                .iter()
+                .find(|(scope, _)| scope.0 == "join-rollback")
+                .unwrap();
+            (scope.clone(), *index, *epoch)
+        };
+        let operation = {
+            let mut core = central.inner.core.lock().await;
+            let mut effects = super::batch();
+            let id = core
+                .subscribe(
+                    path_index,
+                    "error",
+                    16,
+                    1024,
+                    "ordered",
+                    5000,
+                    super::now_ms(),
+                    &mut effects,
+                )
+                .unwrap();
+            let _ = effects.drain();
+            assert_eq!(
+                core.consumer_path(&peer_key, &selector, "ordered"),
+                Some(path_index)
+            );
+            id
+        };
+        super::lock_std(&central.inner.retained_claims)
+            .entry((path_index, epoch))
+            .or_default()
+            .insert("ordered".into());
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        let mut claim = OrderedClaim {
+            member_id: 1,
+            selector: selector.clone(),
+            consumer: "ordered".into(),
+            scope,
+            path_index,
+            epoch,
+            operation,
+            ticket: super::OpTicket::new(),
+            drive_enable: false,
+            delivery: None,
+            preference: None,
+            activation: None,
+            phase: OrderedClaimPhase::Prepared,
+        };
+        let ticket = super::OpTicket::new();
+        central
+            .rollback_ordered_claim(
+                "join-rollback",
+                &mut claim,
+                &ticket,
+                super::Budget::unbounded().window(super::LIVENESS_CLEANUP),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        assert!(
+            central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_path(&peer_key, &selector, "existing")
+                .is_some()
+        );
+        assert_eq!(claim.phase, OrderedClaimPhase::Released);
+    }
+
+    #[tokio::test]
+    async fn mobile_ordered_preclose_pending_value_drains_before_terminal() {
+        use super::{OrderedIngressReceipt as Receipt, OrderedIngressRecord as Ingress};
+        use ubm_core::central::NotificationProvenance;
+        use ubm_core::ordered_notifications::{
+            DeliveryMode, EndReason, Member, Membership, ObservedDelivery, OrderedCollection, Poll,
+            Record, RetainedRecord, SourceGeneration,
+        };
+        let central = open().await;
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: "close-pending".into(),
+            generation: SourceGeneration::Counter(4),
+            native_group: 8,
+        };
+        let membership = Membership {
+            member: 3,
+            epoch: 9,
+        };
+        let owner = OrderedCollection::new(
+            "connection".into(),
+            "database".into(),
+            source.generation.clone(),
+            101,
+            vec![Member {
+                id: 5,
+                source: membership,
+                delivery: DeliveryMode::Either,
+            }],
+            1,
+            8,
+            1,
+        )
+        .unwrap();
+        {
+            let mut registry = super::lock_std(&central.inner.mobile_ordered_ingress);
+            registry.install(101, source.clone(), owner).unwrap();
+            registry
+                .with_collection(101, |owner| {
+                    owner.begin_enable(5)?;
+                    owner.enable_result(5, Some(true))
+                })
+                .unwrap();
+        }
+        let value = |ordinal| Ingress::Value {
+            member_id: 5,
+            membership,
+            ordinal,
+            value: vec![ordinal as u8],
+            delivery: ObservedDelivery::Notification,
+            provenance: NotificationProvenance::Notification,
+        };
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(101, &source, value(1))
+                .unwrap(),
+            Receipt::Admitted
+        );
+        let mut retained = central
+            .retain_mobile_ordered_occurrence(
+                101,
+                &source,
+                RetainedRecord::Value {
+                    membership,
+                    ordinal: 2,
+                    value: vec![2; 9],
+                    delivery: ObservedDelivery::Notification,
+                    provenance: NotificationProvenance::Notification,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            central
+                .retry_mobile_ordered_occurrence(101, &source, &mut retained)
+                .unwrap(),
+            Receipt::PendingCapacity
+        );
+        central
+            .update_mobile_ordered_ingress(
+                101,
+                &source,
+                crate::boundary::OrderedSourceTransition::Close {
+                    reason: EndReason::Closed,
+                    tail_uncertain: false,
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            central.poll_mobile_ordered_ingress(101, &source).unwrap(),
+            Poll::Record(Record::Value { ordinal: 1, .. })
+        ));
+        assert_eq!(
+            central.poll_mobile_ordered_ingress(101, &source).unwrap(),
+            Poll::Empty
+        );
+        assert_eq!(
+            central
+                .retry_mobile_ordered_occurrence(101, &source, &mut retained)
+                .unwrap(),
+            Receipt::PendingCapacity
+        );
+        central
+            .increase_mobile_ordered_byte_capacity(101, &source, 9)
+            .unwrap();
+        assert_eq!(
+            central
+                .retry_mobile_ordered_occurrence(101, &source, &mut retained)
+                .unwrap(),
+            Receipt::Admitted
+        );
+        assert!(
+            matches!(central.poll_mobile_ordered_ingress(101, &source).unwrap(), Poll::Record(Record::Value { ordinal: 2, value, .. }) if value == vec![2; 9])
+        );
+        assert!(
+            matches!(central.poll_mobile_ordered_ingress(101, &source).unwrap(), Poll::Terminal(terminal) if terminal.reason == EndReason::Closed && !terminal.tail_uncertain)
+        );
+    }
+
+    #[tokio::test]
+    async fn mobile_ordered_preclose_loss_claim_is_source_fenced_and_single_use() {
+        use super::{OrderedIngressReceipt as Receipt, OrderedIngressRecord as Ingress};
+        use ubm_core::ordered_notifications::{
+            DeliveryMode, EndReason, LossScope, LossUnit, Member, Membership, OrderedCollection,
+            Poll, Record, RetainedRecord, SourceGeneration,
+        };
+        let central = open().await;
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: "loss-close".into(),
+            generation: SourceGeneration::Counter(4),
+            native_group: 8,
+        };
+        let stale = crate::ordered_notification_groups::SourceKey {
+            generation: SourceGeneration::Counter(5),
+            ..source.clone()
+        };
+        let membership = Membership {
+            member: 3,
+            epoch: 9,
+        };
+        let owner = OrderedCollection::new(
+            "connection".into(),
+            "database".into(),
+            source.generation.clone(),
+            101,
+            vec![Member {
+                id: 5,
+                source: membership,
+                delivery: DeliveryMode::Either,
+            }],
+            1,
+            8,
+            1,
+        )
+        .unwrap();
+        {
+            let mut registry = super::lock_std(&central.inner.mobile_ordered_ingress);
+            registry.install(101, source.clone(), owner).unwrap();
+            registry
+                .with_collection(101, |owner| {
+                    owner.begin_enable(5)?;
+                    owner.enable_result(5, Some(true))
+                })
+                .unwrap();
+        }
+        let loss = |count| RetainedRecord::Loss {
+            scope: LossScope::Group,
+            unit: LossUnit::SourceRecords,
+            count: Some(count),
+            bytes: Some(7),
+        };
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(
+                    101,
+                    &source,
+                    Ingress::Loss {
+                        scope: LossScope::Group,
+                        unit: LossUnit::SourceRecords,
+                        count: Some(1),
+                        bytes: Some(7)
+                    }
+                )
+                .unwrap(),
+            Receipt::Admitted
+        );
+        let mut lease = central
+            .retain_mobile_ordered_occurrence(101, &source, loss(2))
+            .unwrap();
+        let mut canceled = central
+            .retain_mobile_ordered_occurrence(101, &source, loss(4))
+            .unwrap();
+        assert_eq!(
+            central
+                .retry_mobile_ordered_occurrence(101, &source, &mut lease)
+                .unwrap(),
+            Receipt::PendingCapacity
+        );
+        assert_eq!(
+            central
+                .retry_mobile_ordered_occurrence(101, &source, &mut canceled)
+                .unwrap(),
+            Receipt::PendingCapacity
+        );
+        assert!(
+            central
+                .retry_mobile_ordered_occurrence(101, &stale, &mut lease)
+                .is_err()
+        );
+        central
+            .update_mobile_ordered_ingress(
+                101,
+                &source,
+                crate::boundary::OrderedSourceTransition::Close {
+                    reason: EndReason::Closed,
+                    tail_uncertain: false,
+                },
+            )
+            .unwrap();
+        assert!(
+            central
+                .retain_mobile_ordered_occurrence(101, &source, loss(3))
+                .is_err()
+        );
+        assert!(
+            central
+                .try_admit_mobile_ordered_record(
+                    101,
+                    &source,
+                    Ingress::Loss {
+                        scope: LossScope::Group,
+                        unit: LossUnit::SourceRecords,
+                        count: Some(3),
+                        bytes: Some(7)
+                    }
+                )
+                .is_err()
+        );
+        assert!(matches!(
+            central.poll_mobile_ordered_ingress(101, &source).unwrap(),
+            Poll::Record(Record::Loss { count: Some(1), .. })
+        ));
+        assert_eq!(
+            central.poll_mobile_ordered_ingress(101, &source).unwrap(),
+            Poll::Empty
+        );
+        assert_eq!(
+            central
+                .retry_mobile_ordered_occurrence(101, &source, &mut lease)
+                .unwrap(),
+            Receipt::Admitted
+        );
+        assert!(
+            central
+                .retry_mobile_ordered_occurrence(101, &source, &mut lease)
+                .is_err()
+        );
+        assert!(
+            central
+                .cancel_mobile_ordered_occurrence(101, &source, &mut lease)
+                .is_err()
+        );
+        assert!(matches!(
+            central.cancel_mobile_ordered_occurrence(101, &source, &mut canceled),
+            Ok(RetainedRecord::Loss {
+                count: Some(4),
+                bytes: Some(7),
+                ..
+            })
+        ));
+        assert!(
+            central
+                .cancel_mobile_ordered_occurrence(101, &source, &mut canceled)
+                .is_err()
+        );
+        assert!(
+            central
+                .retry_mobile_ordered_occurrence(101, &source, &mut canceled)
+                .is_err()
+        );
+        assert!(matches!(
+            central.poll_mobile_ordered_ingress(101, &source).unwrap(),
+            Poll::Record(Record::Loss {
+                count: Some(2),
+                bytes: Some(7),
+                ..
+            })
+        ));
+        assert!(
+            matches!(central.poll_mobile_ordered_ingress(101, &source).unwrap(), Poll::Terminal(terminal) if terminal.reason == EndReason::Closed && !terminal.tail_uncertain)
+        );
+    }
+
+    #[tokio::test]
+    async fn mobile_ordered_value_loss_capacity_retry_preserves_each_collection() {
+        use super::{OrderedIngressReceipt as Receipt, OrderedIngressRecord as Ingress};
+        use ubm_core::central::NotificationProvenance;
+        use ubm_core::ordered_notifications::{
+            DeliveryMode, EndReason, LossScope, LossUnit, Member, Membership, ObservedDelivery,
+            OrderedCollection, Phase, Poll, Record, SourceGeneration,
+        };
+        let central = open().await;
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: "capacity-retry".into(),
+            generation: SourceGeneration::Counter(71),
+            native_group: 8,
+        };
+        let membership = Membership {
+            member: 3,
+            epoch: 9,
+        };
+        let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+        {
+            let mut registry = super::lock_std(&central.inner.mobile_ordered_ingress);
+            for (id, bytes) in [(101, 2), (102, 8)] {
+                let owner = OrderedCollection::new(
+                    "connection".into(),
+                    "database".into(),
+                    source.generation.clone(),
+                    id,
+                    vec![Member {
+                        id: 5,
+                        source: membership,
+                        delivery: DeliveryMode::Either,
+                    }],
+                    4,
+                    bytes,
+                    1,
+                )
+                .unwrap();
+                registry.install(id, source.clone(), owner).unwrap();
+                registry
+                    .with_collection(id, |owner| {
+                        owner.begin_enable(5)?;
+                        owner.enable_result(5, Some(true))
+                    })
+                    .unwrap();
+            }
+            registry.set_wake(101, &source, wake.clone()).unwrap();
+        }
+        wake.notified().await;
+        let value = |ordinal, bytes: Vec<u8>| Ingress::Value {
+            member_id: 5,
+            membership,
+            ordinal,
+            value: bytes,
+            delivery: ObservedDelivery::Indication,
+            provenance: NotificationProvenance::Notification,
+        };
+        let first = value(4, vec![1, 2]);
+        let second = value(9, vec![3, 4]);
+        for id in [101, 102] {
+            assert_eq!(
+                central
+                    .try_admit_mobile_ordered_record(id, &source, first.clone())
+                    .unwrap(),
+                Receipt::Admitted
+            );
+        }
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(102, &source, second.clone())
+                .unwrap(),
+            Receipt::Admitted
+        );
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(101, &source, second.clone())
+                .unwrap(),
+            Receipt::PendingCapacity
+        );
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(101, &source, second.clone())
+                .unwrap(),
+            Receipt::PendingCapacity
+        );
+        assert_eq!(
+            central
+                .mobile_ordered_ingress_status(101, &source)
+                .unwrap()
+                .phase,
+            Phase::Active
+        );
+        wake.notified().await;
+        assert!(
+            central
+                .increase_mobile_ordered_byte_capacity(
+                    101,
+                    &crate::ordered_notification_groups::SourceKey {
+                        generation: SourceGeneration::Counter(72),
+                        ..source.clone()
+                    },
+                    4
+                )
+                .is_err()
+        );
+        central
+            .increase_mobile_ordered_byte_capacity(101, &source, 4)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), wake.notified())
+            .await
+            .expect("capacity increase notifies collection");
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(101, &source, second)
+                .unwrap(),
+            Receipt::Admitted
+        );
+        let loss = |count| Ingress::Loss {
+            scope: LossScope::Group,
+            unit: LossUnit::SourceRecords,
+            count: Some(count),
+            bytes: Some(13),
+        };
+        for id in [101, 102] {
+            assert_eq!(
+                central
+                    .try_admit_mobile_ordered_record(id, &source, loss(2))
+                    .unwrap(),
+                Receipt::Admitted
+            );
+        }
+        for id in [101, 102] {
+            assert_eq!(
+                central
+                    .try_admit_mobile_ordered_record(id, &source, loss(7))
+                    .unwrap(),
+                Receipt::PendingCapacity
+            );
+        }
+        let fence = Ingress::Fence {
+            member_id: 5,
+            membership,
+            uncertain_tail: true,
+        };
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(101, &source, fence.clone())
+                .unwrap(),
+            Receipt::PendingCapacity
+        );
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(
+                    101,
+                    &source,
+                    Ingress::Barrier {
+                        id: 99,
+                        uncertain_tail: true
+                    }
+                )
+                .unwrap(),
+            Receipt::PendingCapacity
+        );
+        for id in [101, 102] {
+            for (ordinal, expected) in [(4, vec![1, 2]), (9, vec![3, 4])] {
+                assert!(
+                    matches!(central.poll_mobile_ordered_ingress(id, &source).unwrap(), Poll::Record(Record::Value { ordinal: actual, member: 5, membership: actual_member, value, delivery: ObservedDelivery::Indication, provenance: NotificationProvenance::Notification }) if actual == ordinal && actual_member == membership && value == expected)
+                );
+            }
+            assert!(matches!(
+                central.poll_mobile_ordered_ingress(id, &source).unwrap(),
+                Poll::Record(Record::Loss {
+                    count: Some(2),
+                    bytes: Some(13),
+                    ..
+                })
+            ));
+            assert_eq!(
+                central
+                    .try_admit_mobile_ordered_record(id, &source, loss(7))
+                    .unwrap(),
+                Receipt::Admitted
+            );
+            assert!(matches!(
+                central.poll_mobile_ordered_ingress(id, &source).unwrap(),
+                Poll::Record(Record::Loss {
+                    count: Some(7),
+                    bytes: Some(13),
+                    ..
+                })
+            ));
+            assert_eq!(
+                central.poll_mobile_ordered_ingress(id, &source).unwrap(),
+                Poll::Empty
+            );
+            if id == 101 {
+                assert_eq!(
+                    central
+                        .try_admit_mobile_ordered_record(id, &source, fence.clone())
+                        .unwrap(),
+                    Receipt::Admitted
+                );
+                assert!(matches!(
+                    central.poll_mobile_ordered_ingress(id, &source).unwrap(),
+                    Poll::Record(Record::Loss {
+                        scope: LossScope::Member(5),
+                        count: None,
+                        bytes: None,
+                        ..
+                    })
+                ));
+            }
+            assert_eq!(
+                central
+                    .try_admit_mobile_ordered_record(
+                        id,
+                        &source,
+                        Ingress::Terminal {
+                            reason: EndReason::SourceOverflow,
+                            rejection: None,
+                            failure_member: None,
+                            rejected_loss: None,
+                            uncertain_tail: true
+                        }
+                    )
+                    .unwrap(),
+                Receipt::Terminalized
+            );
+            assert!(
+                matches!(central.poll_mobile_ordered_ingress(id, &source).unwrap(), Poll::Terminal(terminal) if terminal.reason == EndReason::SourceOverflow && terminal.tail_uncertain)
+            );
+            assert_eq!(
+                central.poll_mobile_ordered_ingress(id, &source).unwrap(),
+                Poll::Closed
+            );
+            central
+                .update_mobile_ordered_ingress(
+                    id,
+                    &source,
+                    crate::boundary::OrderedSourceTransition::BeginRelease { member_id: 5 },
+                )
+                .unwrap();
+            central
+                .update_mobile_ordered_ingress(
+                    id,
+                    &source,
+                    crate::boundary::OrderedSourceTransition::ReleaseResult {
+                        member_id: 5,
+                        result: Ok(()),
+                    },
+                )
+                .unwrap();
+            assert!(
+                central
+                    .mobile_ordered_ingress_status(id, &source)
+                    .unwrap()
+                    .cleanup_complete
+            );
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(1), wake.notified())
+            .await
+            .expect("collection changes notify its listener");
+    }
+
+    #[tokio::test]
+    async fn mobile_ordered_ingress_preserves_opaque_generation_and_fifo_controls() {
+        use ubm_core::ordered_notifications::{
+            DeliveryMode, LossScope, LossUnit, Member, Membership, OrderedCollection, Poll, Record,
+            SourceGeneration,
+        };
+        let central = open().await;
+        ready_peer(&central, "mobile-peer", vec![hrm_service()]).await;
+        let peer_key = central.peer_key_for("mobile-peer").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: "mobile-peer".into(),
+            generation: SourceGeneration::Opaque("source-uuid".into()),
+            native_group: 7,
+        };
+        let membership = Membership {
+            member: 3,
+            epoch: 9,
+        };
+        let owner = OrderedCollection::new(
+            connection.clone(),
+            database.clone(),
+            source.generation.clone(),
+            11,
+            vec![Member {
+                id: 5,
+                source: membership,
+                delivery: DeliveryMode::Either,
+            }],
+            4,
+            256,
+            4,
+        )
+        .unwrap();
+        let admission = central.admit_gatt("mobile-peer").unwrap();
+        admission.wait().await.unwrap();
+        central
+            .install_mobile_ordered_ingress(source.clone(), owner, &admission)
+            .await
+            .unwrap();
+        central
+            .update_mobile_ordered_ingress(
+                11,
+                &source,
+                crate::boundary::OrderedSourceTransition::BeginEnable { member_id: 5 },
+            )
+            .unwrap();
+        central
+            .update_mobile_ordered_ingress(
+                11,
+                &source,
+                crate::boundary::OrderedSourceTransition::EnableResult {
+                    member_id: 5,
+                    outcome: Some(true),
+                },
+            )
+            .unwrap();
+        let stale = crate::ordered_notification_groups::SourceKey {
+            generation: SourceGeneration::Opaque("stale".into()),
+            ..source.clone()
+        };
+        assert!(
+            central
+                .admit_mobile_ordered_record(
+                    11,
+                    &stale,
+                    super::OrderedIngressRecord::Loss {
+                        scope: LossScope::Unknown,
+                        unit: LossUnit::SourceRecords,
+                        count: None,
+                        bytes: None
+                    }
+                )
+                .is_err()
+        );
+        let oversized = || super::OrderedIngressRecord::Value {
+            member_id: 5,
+            membership,
+            ordinal: 1,
+            value: vec![7; 257],
+            delivery: ubm_core::ordered_notifications::ObservedDelivery::Unknown,
+            provenance: ubm_core::central::NotificationProvenance::Notification,
+        };
+        assert_eq!(
+            central
+                .try_admit_mobile_ordered_record(11, &source, oversized())
+                .unwrap(),
+            super::OrderedIngressReceipt::PendingCapacity
+        );
+        assert!(matches!(
+            central.poll_mobile_ordered_ingress(11, &source).unwrap(),
+            Poll::Empty
+        ));
+        assert!(
+            central
+                .increase_mobile_ordered_byte_capacity(11, &stale, 512)
+                .is_err()
+        );
+        assert_eq!(
+            central
+                .increase_mobile_ordered_byte_capacity(11, &source, 512)
+                .unwrap(),
+            256
+        );
+        central
+            .try_admit_mobile_ordered_record(11, &source, oversized())
+            .unwrap();
+        assert!(
+            matches!(central.poll_mobile_ordered_ingress(11, &source).unwrap(), Poll::Record(Record::Value { ordinal: 1, value, .. }) if value == vec![7; 257])
+        );
+        central
+            .admit_mobile_ordered_record(
+                11,
+                &source,
+                super::OrderedIngressRecord::Value {
+                    member_id: 5,
+                    membership,
+                    ordinal: u64::MAX,
+                    value: vec![7],
+                    delivery: ubm_core::ordered_notifications::ObservedDelivery::Unknown,
+                    provenance: ubm_core::central::NotificationProvenance::Notification,
+                },
+            )
+            .unwrap();
+        central
+            .admit_mobile_ordered_record(
+                11,
+                &source,
+                super::OrderedIngressRecord::Fence {
+                    member_id: 5,
+                    membership,
+                    uncertain_tail: true,
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(central.poll_mobile_ordered_ingress(11, &source).unwrap(), Poll::Record(Record::Value { ordinal: u64::MAX, value, .. }) if value == vec![7])
+        );
+        assert!(matches!(
+            central.poll_mobile_ordered_ingress(11, &source).unwrap(),
+            Poll::Record(Record::Loss {
+                scope: LossScope::Member(5),
+                count: None,
+                bytes: None,
+                ..
+            })
+        ));
+        central
+            .admit_mobile_ordered_record(
+                11,
+                &source,
+                super::OrderedIngressRecord::Barrier {
+                    id: 42,
+                    uncertain_tail: true,
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            central.poll_mobile_ordered_ingress(11, &source).unwrap(),
+            Poll::Record(Record::Loss {
+                scope: LossScope::Unknown,
+                count: None,
+                bytes: None,
+                ..
+            })
+        ));
+        let rejected = ubm_core::ordered_notifications::RejectedLoss {
+            scope: LossScope::Unknown,
+            unit: LossUnit::SourceRecords,
+            count: None,
+            bytes: None,
+        };
+        central
+            .admit_mobile_ordered_record(
+                11,
+                &source,
+                super::OrderedIngressRecord::Terminal {
+                    reason: ubm_core::ordered_notifications::EndReason::SourceOverflow,
+                    rejection: None,
+                    failure_member: None,
+                    rejected_loss: Some(rejected),
+                    uncertain_tail: true,
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(central.poll_mobile_ordered_ingress(11, &source).unwrap(), Poll::Terminal(terminal) if terminal.rejected_loss == Some(rejected))
+        );
+        let failure = crate::ordered_notification_groups::failure_from_desktop(
+            &crate::errors::DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Gatt,
+                "mobile.bridge",
+            ),
+        );
+        central
+            .admit_mobile_ordered_record(
+                11,
+                &source,
+                super::OrderedIngressRecord::BridgeFailure {
+                    failure: failure.clone(),
+                },
+            )
+            .unwrap();
+        central
+            .admit_mobile_ordered_record(
+                11,
+                &source,
+                super::OrderedIngressRecord::BridgeFailure {
+                    failure: failure.clone(),
+                },
+            )
+            .unwrap();
+        central
+            .admit_mobile_ordered_record(
+                11,
+                &source,
+                super::OrderedIngressRecord::FailureObservationsOmitted,
+            )
+            .unwrap();
+        for _ in 0..2 {
+            assert!(
+                matches!(central.poll_mobile_ordered_ingress(11, &source).unwrap(), Poll::Record(Record::FailureObservation { failure: Some(observed), .. }) if observed == failure)
+            );
+        }
+        assert!(matches!(
+            central.poll_mobile_ordered_ingress(11, &source).unwrap(),
+            Poll::Record(Record::FailureObservationsOmitted { count: None })
+        ));
+        assert!(
+            central
+                .take_mobile_ordered_bridge_failure(&source, 11)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_mobile_source_install_rejects_changed_database() {
+        use ubm_core::ordered_notifications::{
+            DeliveryMode, Member, Membership, OrderedCollection, SourceGeneration,
+        };
+        let central = open().await;
+        ready_peer(&central, "mobile-stale", vec![hrm_service()]).await;
+        let peer = central.peer_key_for("mobile-stale").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer).unwrap(),
+                core.database_generation(&peer).unwrap(),
+            )
+        };
+        let admission = central.admit_gatt("mobile-stale").unwrap();
+        admission.wait().await.unwrap();
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: "mobile-stale".into(),
+            generation: SourceGeneration::Opaque("old".into()),
+            native_group: 2,
+        };
+        let owner = OrderedCollection::new(
+            connection.clone(),
+            database.clone(),
+            source.generation.clone(),
+            17,
+            vec![Member {
+                id: 1,
+                source: Membership {
+                    member: 1,
+                    epoch: 1,
+                },
+                delivery: DeliveryMode::Either,
+            }],
+            4,
+            64,
+            4,
+        )
+        .unwrap();
+        super::services_changed_invalidated(&central.inner, "mobile-stale").await;
+        assert_eq!(
+            central
+                .install_mobile_ordered_ingress(source.clone(), owner, &admission)
+                .await
+                .unwrap_err()
+                .code(),
+            BleErrorCode::GattStaleHandle
+        );
+        assert!(!super::lock_std(&central.inner.mobile_ordered_ingress).owns_source(17, &source));
+        drop(admission);
+        central
+            .discover("mobile-stale", "lease-a", OpControl::unbounded())
+            .await
+            .unwrap();
+        let replacement = central
+            .inner
+            .core
+            .lock()
+            .await
+            .database_generation(&peer)
+            .unwrap();
+        let membership = Membership {
+            member: 1,
+            epoch: 1,
+        };
+        let quarantine = OrderedCollection::new(
+            connection,
+            database,
+            source.generation.clone(),
+            17,
+            vec![Member {
+                id: 1,
+                source: membership,
+                delivery: DeliveryMode::Either,
+            }],
+            4,
+            64,
+            4,
+        )
+        .unwrap();
+        central
+            .quarantine_mobile_ordered_ingress(source.clone(), quarantine)
+            .unwrap();
+        assert!(
+            central
+                .update_mobile_ordered_ingress(
+                    17,
+                    &source,
+                    crate::boundary::OrderedSourceTransition::BeginEnable { member_id: 1 }
+                )
+                .is_err()
+        );
+        central
+            .admit_mobile_ordered_record(
+                17,
+                &source,
+                super::OrderedIngressRecord::Value {
+                    member_id: 1,
+                    membership,
+                    ordinal: 1,
+                    value: vec![9],
+                    delivery: ubm_core::ordered_notifications::ObservedDelivery::Unknown,
+                    provenance: ubm_core::central::NotificationProvenance::Notification,
+                },
+            )
+            .unwrap();
+        let failure =
+            crate::ordered_notification_groups::failure_from_desktop(&super::contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.install",
+            ));
+        central
+            .update_mobile_ordered_ingress(
+                17,
+                &source,
+                crate::boundary::OrderedSourceTransition::Close {
+                    reason: ubm_core::ordered_notifications::EndReason::SetupFailed(failure),
+                    tail_uncertain: true,
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(central.poll_mobile_ordered_ingress(17, &source).unwrap(), ubm_core::ordered_notifications::Poll::Record(ubm_core::ordered_notifications::Record::Value { value, .. }) if value == vec![9])
+        );
+        assert_eq!(
+            central.inner.core.lock().await.database_generation(&peer),
+            Some(replacement)
+        );
+    }
+
+    #[tokio::test]
+    async fn ordered_claim_rollback_before_native_prepare_releases_unstarted_enable() {
+        use super::ordered_claims::{OrderedClaim, OrderedClaimPhase};
+        let central = open().await;
+        ready_peer(&central, "fresh-rollback", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        let peer_key = central.peer_key_for("fresh-rollback").await.unwrap();
+        let (path_index, scope, operation) = {
+            let mut core = central.inner.core.lock().await;
+            let (index, scope, _) = central
+                .resolve_instance(
+                    &core,
+                    &peer_key,
+                    "fresh-rollback",
+                    &selector,
+                    "gatt.subscribe",
+                    false,
+                )
+                .unwrap();
+            let mut effects = super::batch();
+            let operation = core
+                .subscribe(
+                    index,
+                    "error",
+                    16,
+                    1024,
+                    "ordered",
+                    5000,
+                    super::now_ms(),
+                    &mut effects,
+                )
+                .unwrap();
+            let _ = effects.drain();
+            (index, scope, operation)
+        };
+        let epoch = central.routing_epoch("fresh-rollback").await;
+        central
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .insert(scope.clone(), (path_index, epoch));
+        super::lock_std(&central.inner.retained_claims)
+            .entry((path_index, epoch))
+            .or_default()
+            .insert("ordered".into());
+        let mut claim = OrderedClaim {
+            member_id: 1,
+            selector: selector.clone(),
+            consumer: "ordered".into(),
+            scope,
+            path_index,
+            epoch,
+            operation,
+            ticket: super::OpTicket::new(),
+            drive_enable: true,
+            delivery: None,
+            preference: None,
+            activation: None,
+            phase: OrderedClaimPhase::Admitted,
+        };
+        central
+            .rollback_ordered_claim(
+                "fresh-rollback",
+                &mut claim,
+                &super::OpTicket::new(),
+                super::Budget::unbounded().window(super::LIVENESS_CLEANUP),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claim.phase, OrderedClaimPhase::Released);
+        assert!(central.inner.subscriptions.lock().await.is_empty());
+        central
+            .subscribe(
+                "fresh-rollback",
+                &selector,
+                "retry",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordered_claim_prepare_cancellation_retains_exact_cleanup_for_retry() {
+        use super::ordered_claims::{OrderedClaim, OrderedClaimPhase};
+        let central = open().await;
+        ready_peer(&central, "prepare-rollback", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        let peer_key = central.peer_key_for("prepare-rollback").await.unwrap();
+        let (path_index, scope, operation) = {
+            let mut core = central.inner.core.lock().await;
+            let (index, scope, _) = central
+                .resolve_instance(
+                    &core,
+                    &peer_key,
+                    "prepare-rollback",
+                    &selector,
+                    "gatt.subscribe",
+                    false,
+                )
+                .unwrap();
+            let mut effects = super::batch();
+            let operation = core
+                .subscribe(
+                    index,
+                    "error",
+                    16,
+                    1024,
+                    "ordered",
+                    5000,
+                    super::now_ms(),
+                    &mut effects,
+                )
+                .unwrap();
+            let _ = effects.drain();
+            (index, scope, operation)
+        };
+        let epoch = central.routing_epoch("prepare-rollback").await;
+        central
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .insert(scope.clone(), (path_index, epoch));
+        super::lock_std(&central.inner.retained_claims)
+            .entry((path_index, epoch))
+            .or_default()
+            .insert("ordered".into());
+        let mut claim = OrderedClaim {
+            member_id: 1,
+            selector: selector.clone(),
+            consumer: "ordered".into(),
+            scope,
+            path_index,
+            epoch,
+            operation,
+            ticket: super::OpTicket::new(),
+            drive_enable: true,
+            delivery: None,
+            preference: None,
+            activation: None,
+            phase: OrderedClaimPhase::Preparing,
+        };
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "cleanup refused");
+        let window = super::Budget::unbounded().window(super::LIVENESS_CLEANUP);
+        assert!(
+            central
+                .rollback_ordered_claim(
+                    "prepare-rollback",
+                    &mut claim,
+                    &super::OpTicket::new(),
+                    window
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            super::lock_std(&central.inner.retained_cleanup_owners)
+                .get(&("prepare-rollback".into(), "ordered".into())),
+            Some(&(path_index, epoch))
+        );
+        central
+            .rollback_ordered_claim(
+                "prepare-rollback",
+                &mut claim,
+                &super::OpTicket::new(),
+                window,
+            )
+            .await
+            .unwrap();
+        assert_eq!(claim.phase, OrderedClaimPhase::Released);
+        assert!(super::lock_std(&central.inner.retained_cleanup_owners).is_empty());
+        central
+            .subscribe(
+                "prepare-rollback",
+                &selector,
+                "retry",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordered_claim_indeterminate_late_success_disables_exact_activation() {
+        use super::ordered_claims::{OrderedClaim, OrderedClaimPhase};
+        let central = open().await;
+        ready_peer(&central, "late-rollback", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        let peer_key = central.peer_key_for("late-rollback").await.unwrap();
+        let (path_index, scope, operation) = {
+            let mut core = central.inner.core.lock().await;
+            let (index, scope, _) = central
+                .resolve_instance(
+                    &core,
+                    &peer_key,
+                    "late-rollback",
+                    &selector,
+                    "gatt.subscribe",
+                    false,
+                )
+                .unwrap();
+            let mut effects = super::batch();
+            let operation = core
+                .subscribe(
+                    index,
+                    "error",
+                    16,
+                    1024,
+                    "ordered",
+                    5000,
+                    super::now_ms(),
+                    &mut effects,
+                )
+                .unwrap();
+            core.settle_subscribe_enable(index, true, super::now_ms(), &mut effects)
+                .unwrap();
+            let _ = effects.drain();
+            (index, scope, operation)
+        };
+        let epoch = central.routing_epoch("late-rollback").await;
+        central
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .insert(scope.clone(), (path_index, epoch));
+        super::lock_std(&central.inner.retained_claims)
+            .entry((path_index, epoch))
+            .or_default()
+            .insert("ordered".into());
+        let mut claim = OrderedClaim {
+            member_id: 1,
+            selector: selector.clone(),
+            consumer: "ordered".into(),
+            scope,
+            path_index,
+            epoch,
+            operation,
+            ticket: super::OpTicket::new(),
+            drive_enable: true,
+            delivery: None,
+            preference: None,
+            activation: None,
+            phase: OrderedClaimPhase::Indeterminate,
+        };
+        central
+            .rollback_ordered_claim(
+                "late-rollback",
+                &mut claim,
+                &super::OpTicket::new(),
+                super::Budget::unbounded().window(super::LIVENESS_CLEANUP),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claim.phase, OrderedClaimPhase::Released);
+        assert!(
+            !central
+                .inner
+                .core
+                .lock()
+                .await
+                .physical_cccd_enabled(path_index)
+        );
+        assert!(central.inner.subscriptions.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn link_end_fence_preserves_queued_value_and_source_loss() {
+        let central = open().await;
+        ready_peer(&central, "loss-fence", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "loss-fence",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let members: Vec<_> = central
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .iter()
+            .filter(|(scope, _)| scope.0 == "loss-fence")
+            .map(|(scope, (_, epoch))| (scope.clone(), *epoch))
+            .collect();
+        let mut lifecycle = central.lifecycle_events();
+        central
+            .boundary()
+            .push_event(RadioEvent::PeerNotificationSourceStarted {
+                peer_id: "loss-fence".into(),
+                generation: 1,
+            })
+            .expect("synthetic event admission failed");
+        central
+            .boundary()
+            .push_event(notification("loss-fence", 0, vec![7]))
+            .expect("synthetic event admission failed");
+        central
+            .boundary()
+            .push_event(RadioEvent::PeerNotificationsLost {
+                peer_id: "loss-fence".into(),
+                generation: 1,
+                members,
+                lost: Some(2),
+            })
+            .expect("synthetic event admission failed");
+        central
+            .boundary()
+            .push_event(RadioEvent::Lost("loss-fence".into()))
+            .expect("synthetic event admission failed");
+        tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(central.poll_notification("loss-fence", &hrm_selector(0), "consumer").await.unwrap(), super::NotificationPoll::Value(value) if value == vec![7])
+        );
+        assert!(matches!(
+            central
+                .poll_notification("loss-fence", &hrm_selector(0), "consumer")
+                .await
+                .unwrap(),
+            super::NotificationPoll::PeerSourceLoss {
+                skipped_records: Some(2),
+                ..
+            }
+        ));
+        assert!(matches!(
+            central
+                .poll_notification("loss-fence", &hrm_selector(0), "consumer")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Invalidated(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn overlapping_link_ends_keep_admission_blocked_until_both_fences() {
+        let central = open().await;
+        ready_peer(&central, "overlap-fence", vec![hrm_service()]).await;
+        let baseline = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        central
+            .boundary()
+            .push_event(RadioEvent::Lost("overlap-fence".into()))
+            .expect("synthetic event admission failed");
+        for _ in 0..200 {
+            if central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "notification_fence")
+                .count()
+                > baseline
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let waiting = central.admit_gatt("overlap-fence").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), waiting.wait())
+                .await
+                .is_err()
+        );
+        central
+            .boundary()
+            .push_event(RadioEvent::Lost("overlap-fence".into()))
+            .expect("synthetic event admission failed");
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        for _ in 0..200 {
+            if central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "notification_fence")
+                .count()
+                >= baseline + 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "notification_fence")
+                .count()
+                >= baseline + 2
+        );
+    }
+
+    #[tokio::test]
+    async fn service_event_does_not_hold_event_loop_on_snapshot_lock() {
+        use crate::boundary::RadioBoundary;
+        let central = open().await;
+        ready_peer(&central, "snapshot-fence", vec![hrm_service()]).await;
+        let coordinator = super::discovery_coordinator(&central.inner, "snapshot-fence");
+        let held = coordinator.snapshot.lock().await;
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChanged("snapshot-fence".into()))
+            .expect("synthetic event admission failed");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .flush_peer_notification_source("snapshot-fence"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn adapter_reset_holds_power_on_and_connection_admission_until_fence() {
+        let central = open().await;
+        ready_peer(&central, "reset-fence", vec![hrm_service()]).await;
+        let baseline = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        super::note_power(
+            &central.inner,
+            crate::boundary::AdapterPowerState::PoweredOff,
+        );
+        let mut resets = central.adapter_reset_events();
+        super::defer_adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::PoweredOff,
+            Some(crate::boundary::AdapterPowerState::PoweredOff),
+            None,
+        )
+        .await;
+        for _ in 0..200 {
+            if central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "notification_fence")
+                .count()
+                > baseline
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        central
+            .boundary()
+            .push_event(RadioEvent::AdapterState(
+                crate::boundary::AdapterPowerState::PoweredOn,
+            ))
+            .expect("synthetic event admission failed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_ne!(
+            central.adapter_status().power,
+            Some(crate::boundary::AdapterPowerState::PoweredOn)
+        );
+        assert_eq!(
+            central
+                .connect("replacement", "new", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .code(),
+            BleErrorCode::AdapterResetting
+        );
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        tokio::time::timeout(Duration::from_secs(2), resets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..200 {
+            if central.adapter_status().power == Some(crate::boundary::AdapterPowerState::PoweredOn)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            central.adapter_status().power,
+            Some(crate::boundary::AdapterPowerState::PoweredOn)
+        );
+    }
+
+    #[tokio::test]
+    async fn adapter_reset_rejects_inflight_connect_success_from_old_epoch() {
+        let central = open().await;
+        central.boundary().block_op(FaultOp::Connect);
+        let pending = tokio::spawn({
+            let central = central.clone();
+            async move {
+                central
+                    .connect("connecting", "owner", OpControl::unbounded())
+                    .await
+            }
+        });
+        for _ in 0..200 {
+            if central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "connect")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "connect")
+        );
+        let mut resets = central.adapter_reset_events();
+        super::defer_adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::PoweredOff,
+            Some(crate::boundary::AdapterPowerState::PoweredOff),
+            None,
+        )
+        .await;
+        central.boundary().unblock_op(FaultOp::Connect);
+        let result = tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "old acquisition must not publish a new connection"
+        );
+        tokio::time::timeout(Duration::from_secs(2), resets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn saturated_disconnect_reports_host_reset_and_allows_cleanup() {
+        let central = open().await;
+        ready_peer(&central, "overflow-peer", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "overflow-peer",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let held = central
+            .inner
+            .retirement_slots
+            .clone()
+            .acquire_many_owned(256)
+            .await
+            .unwrap();
+        let mut lifecycle = central.lifecycle_events();
+        let mut resets = central.adapter_reset_events();
+        central
+            .boundary()
+            .push_event(RadioEvent::Lost("overflow-peer".into()))
+            .expect("synthetic event admission failed");
+        let event = tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.kind, super::LifecycleKind::HostReset);
+        let reset = tokio::time::timeout(Duration::from_secs(2), resets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reset.cause,
+            crate::boundary::AdapterLossCause::SourceObservationOverflow
+        );
+        assert!(matches!(
+            central
+                .poll_notification("overflow-peer", &hrm_selector(0), "consumer")
+                .await
+                .unwrap(),
+            super::NotificationPoll::SourceFailed(_)
+        ));
+        drop(held);
+        assert!(
+            !central
+                .unsubscribe(
+                    "overflow-peer",
+                    &hrm_selector(0),
+                    "consumer",
+                    OpControl::unbounded()
+                )
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn ordered_recorder_owns_and_journals_real_group_delivery() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, RecordingClose, RecordingError, RecordingOpen, RecordingStep,
+        };
+        let central = std::sync::Arc::new(open().await);
+        ready_peer(&central, "recording-peer", vec![hrm_service()]).await;
+        let peer_key = central.peer_key_for("recording-peer").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-recording-integration-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&path).unwrap();
+        let journal = registry
+            .open(
+                "recorder-integration",
+                &serde_json::json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 1,
+                },
+            )
+            .unwrap();
+        let recorder = OrderedRecording::reserve(
+            central.clone(),
+            journal.clone(),
+            "recorder-integration".into(),
+            "producer-integration".into(),
+            "recording-peer".into(),
+        )
+        .unwrap();
+        let id = recorder.collection_id();
+        assert!(
+            registry
+                .ordered_owner("recorder-integration", &central.as_ref().clone())
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            registry
+                .ordered_owner("recorder-integration", &open().await)
+                .is_err()
+        );
+        assert!(
+            central
+                .claim_ordered_recording("recording-peer", id)
+                .await
+                .is_err()
+        );
+        assert!(
+            central
+                .acknowledge_ordered_recording("recording-peer", id, u64::MAX, 1)
+                .await
+                .is_err()
+        );
+        let request = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "recorder-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        assert!(
+            central
+                .open_reserved_ordered_batch(
+                    "recording-peer",
+                    id,
+                    &connection,
+                    &database,
+                    std::slice::from_ref(&request),
+                    8,
+                    128,
+                    8,
+                    OpControl::budget_ms(5000)
+                )
+                .await
+                .is_err()
+        );
+        central.boundary().block_op(FaultOp::OrderedOpen);
+        let opening = {
+            let recorder = recorder.clone();
+            tokio::spawn(async move {
+                recorder
+                    .open(RecordingOpen {
+                        connection_generation: connection,
+                        database_generation: database,
+                        requests: vec![request],
+                        max_items: 8,
+                        max_bytes: 128,
+                        max_controls: 8,
+                        control: OpControl::budget_ms(5000),
+                    })
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "ordered_open")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        opening.abort();
+        central.boundary().unblock_op(FaultOp::OrderedOpen);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), recorder.step())
+                .await
+                .unwrap()
+                .unwrap(),
+            RecordingStep::Empty
+        );
+        assert!(
+            central
+                .poll_ordered_delivery("recording-peer", id)
+                .await
+                .is_err()
+        );
+        let owner = central
+            .inner
+            .ordered_batches
+            .get("recording-peer", id)
+            .unwrap();
+        let (scope, epoch) = {
+            let state = owner.lock().await;
+            (state.claims[0].scope.clone(), state.claims[0].epoch)
+        };
+        let wake = central
+            .ordered_recording_wake("recording-peer", id, {
+                let state = owner.lock().await;
+                super::lock_std(&state.delivery_state)
+                    .recording_owner
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+        // Consume the installation wake, then verify source admission wakes the owner.
+        wake.notified().await;
+        let notified = wake.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        for value in [0x42, 0x43] {
+            central
+                .boundary()
+                .push_event(RadioEvent::Notification {
+                    peer_id: scope.0.clone(),
+                    service_uuid: scope.1.clone(),
+                    service_occurrence: scope.2,
+                    characteristic_uuid: scope.3.clone(),
+                    characteristic_occurrence: scope.4,
+                    epoch,
+                    value: vec![value],
+                })
+                .expect("synthetic event admission failed");
+        }
+        tokio::time::timeout(Duration::from_secs(2), notified)
+            .await
+            .unwrap();
+        assert_eq!(recorder.step().await.unwrap(), RecordingStep::Committed);
+        assert!(
+            matches!(recorder.step().await, Err(RecordingError::Storage(error)) if error.kind == "storage.full")
+        );
+        {
+            let state = owner.lock().await;
+            assert!(
+                state.fenced && state.retired,
+                "quota refusal must fence and retire source before returning"
+            );
+            assert!(
+                super::lock_std(&state.delivery_state).pending.is_some(),
+                "uncommitted delivery remains retained"
+            );
+        }
+        assert_eq!(journal.status().unwrap()["records"], 1);
+        let page = journal.prepare(16, 4096).unwrap();
+        assert_eq!(page["records"].as_array().unwrap().len(), 1);
+        journal
+            .acknowledge(page["token"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(recorder.step().await.unwrap(), RecordingStep::Committed);
+        let page = journal.prepare(16, 4096).unwrap();
+        assert_eq!(page["records"].as_array().unwrap().len(), 1);
+        journal
+            .acknowledge(page["token"].as_str().unwrap())
+            .unwrap();
+        for _ in 0..20 {
+            if recorder.close(OpControl::budget_ms(5000)).await.unwrap() == RecordingClose::Finished
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            recorder.close(OpControl::budget_ms(5000)).await.unwrap(),
+            RecordingClose::Finished
+        );
+        assert!(
+            central
+                .ordered_batch_member_status("recording-peer", id)
+                .await
+                .is_err()
+        );
+        drop(recorder);
+        drop(journal);
+        drop(central);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[tokio::test]
+    async fn reclaim_cannot_strand_a_retained_recorder_delivery_acknowledgment() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{OrderedRecording, RecordingOpen};
+        let central = std::sync::Arc::new(open().await);
+        let peer = "reclaim-pending-ack";
+        central.boundary().set_gatt_snapshot_identity(
+            peer,
+            crate::boundary::GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let key = central.peer_key_for(peer).await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-reclaim-ack-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&path).unwrap();
+        let journal = registry
+            .open(
+                peer,
+                &serde_json::json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 16,
+                },
+            )
+            .unwrap();
+        let recorder = OrderedRecording::reserve(
+            central.clone(),
+            journal.clone(),
+            peer.into(),
+            "reclaim-ack-producer".into(),
+            peer.into(),
+        )
+        .unwrap();
+        let request = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "reclaim-ack-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        recorder
+            .open(RecordingOpen {
+                connection_generation: connection,
+                database_generation: database,
+                requests: vec![request],
+                max_items: 8,
+                max_bytes: 128,
+                max_controls: 8,
+                control: OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            })
+            .await
+            .unwrap();
+        let batch = central
+            .inner
+            .ordered_batches
+            .get(peer, recorder.collection_id())
+            .unwrap();
+        let (scope, epoch, token) = {
+            let state = batch.lock().await;
+            (
+                state.claims[0].scope.clone(),
+                state.claims[0].epoch,
+                super::lock_std(&state.delivery_state)
+                    .recording_owner
+                    .unwrap(),
+            )
+        };
+        central
+            .boundary()
+            .push_event(RadioEvent::Notification {
+                peer_id: scope.0.clone(),
+                service_uuid: scope.1.clone(),
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3.clone(),
+                characteristic_occurrence: scope.4,
+                epoch,
+                value: vec![0x35],
+            })
+            .expect("synthetic event admission failed");
+        let delivery = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let delivery = central
+                    .poll_ordered_recording(peer, recorder.collection_id(), token)
+                    .await
+                    .unwrap();
+                if delivery.delivery_id.is_some() {
+                    break delivery;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let capability = recorder.issue_recovery_capability().unwrap();
+        let result = recorder.acquire_reclaim(&capability, "lease-a").await;
+        match result {
+            Err(crate::ordered_recording::RecordingError::Source(error)) => {
+                assert_eq!(
+                    error.commit(),
+                    Some(ubm_core::contracts::CommitState::NotDispatched)
+                );
+                assert_eq!(error.retryability(), crate::Retryability::CallerDecides);
+            }
+            _ => panic!(
+                "reclaim must refuse without dispatch while a delivery acknowledgment is pending"
+            ),
+        }
+        assert_eq!(
+            central
+                .poll_ordered_recording(peer, recorder.collection_id(), token)
+                .await
+                .unwrap(),
+            delivery,
+            "the original delivery remains replayable"
+        );
+        central
+            .acknowledge_ordered_recording(
+                peer,
+                recorder.collection_id(),
+                token,
+                delivery.delivery_id.unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut permit = recorder
+            .acquire_reclaim(&capability, "lease-a")
+            .await
+            .unwrap();
+        permit.release().await.unwrap();
+        for _ in 0..20 {
+            if matches!(
+                recorder.close(OpControl::budget_ms(5000)).await.unwrap(),
+                crate::ordered_recording::RecordingClose::Finished
+            ) {
+                break;
+            }
+        }
+        drop(recorder);
+        drop(journal);
+        drop(central);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn recorder_stop_reports_pending_while_reclaim_holds_delivery_gate() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, OrderedRecordingDeclaration, OrderedRecordingMember,
+            RecordingDriverStatus,
+        };
+        let central = std::sync::Arc::new(open().await);
+        let peer = "reclaim-stop";
+        central.boundary().set_gatt_snapshot_identity(
+            peer,
+            crate::boundary::GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let key = central.peer_key_for(peer).await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-reclaim-stop-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = std::sync::Arc::new(JournalRegistry::default());
+        registry.configure_directory(&path).unwrap();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: peer.into(),
+            connection_generation: connection,
+            database_generation: database,
+            members: vec![OrderedRecordingMember {
+                member_id: 1,
+                public_member_id: "heart".into(),
+                selector: hrm_selector(0),
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let recorder = OrderedRecording::prepare(
+            central.clone(),
+            registry.clone(),
+            peer.into(),
+            JournalQuota {
+                max_bytes: 1 << 20,
+                max_records: 16,
+            },
+            declaration,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            recorder
+                .start_receipt(OpControl::budget_ms(5000).with_connection_lease("lease-a".into()))
+                .await
+                .unwrap()["state"],
+            "active"
+        );
+        let capability = recorder.issue_recovery_capability().unwrap();
+        let mut old = recorder
+            .acquire_reclaim(&capability, "lease-a")
+            .await
+            .unwrap();
+        old.release().await.unwrap();
+        let mut permit = recorder
+            .acquire_reclaim(&capability, "lease-a")
+            .await
+            .unwrap();
+        old.release().await.unwrap();
+        let batch = central
+            .inner
+            .ordered_batches
+            .get(peer, recorder.collection_id())
+            .unwrap();
+        let (scope, epoch, gate) = {
+            let state = batch.lock().await;
+            (
+                state.claims[0].scope.clone(),
+                state.claims[0].epoch,
+                state.delivery_lock.clone(),
+            )
+        };
+        assert!(
+            gate.try_lock().is_err(),
+            "a late release must not unlock the later permit"
+        );
+        central
+            .boundary()
+            .push_event(RadioEvent::Notification {
+                peer_id: scope.0.clone(),
+                service_uuid: scope.1.clone(),
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3.clone(),
+                characteristic_occurrence: scope.4,
+                epoch,
+                value: vec![0x42],
+            })
+            .expect("synthetic event admission failed");
+        // Let the live driver reach the real retained delivery gate.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let receipt = tokio::time::timeout(Duration::from_secs(2), recorder.shutdown())
+            .await
+            .expect("stop must not wait for the caller's retained reclaim")
+            .unwrap();
+        assert!(
+            matches!(
+                receipt,
+                RecordingDriverStatus::WaitingSource | RecordingDriverStatus::WaitingDrain
+            ),
+            "stop must report pending, got {receipt:?}"
+        );
+        assert!(
+            gate.try_lock().is_err(),
+            "pending stop must not revoke the reclaim"
+        );
+        let host_receipt =
+            tokio::time::timeout(Duration::from_secs(2), recorder.shutdown_host_receipt())
+                .await
+                .expect("host stop must also return pending");
+        assert_eq!(host_receipt["recording"]["state"], "waiting-source");
+        assert_eq!(host_receipt["hostCleanup"]["state"], "pending");
+        central.boundary().block_op(FaultOp::ReclaimRelease);
+        let releasing = tokio::spawn(async move { permit.release().await });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("reclaim_release", 2),
+        )
+        .await
+        .unwrap();
+        releasing.abort(); // Cancellation of the waiter must not cancel native cleanup.
+        assert!(
+            gate.try_lock().is_err(),
+            "the gate stays retained until native release settles"
+        );
+        let receipt = tokio::time::timeout(Duration::from_secs(2), recorder.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            receipt,
+            RecordingDriverStatus::WaitingSource | RecordingDriverStatus::WaitingDrain
+        ));
+        central.boundary().unblock_op(FaultOp::ReclaimRelease);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if matches!(recorder.driver_status(), RecordingDriverStatus::Finished) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("driver must resume after the exact native release");
+        let journal = registry.get(peer).unwrap();
+        let page = journal.prepare(16, 4096).unwrap();
+        let records = page["records"].as_array().unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|entry| entry["record"]["bytes"] == serde_json::json!([0x42])),
+            "the admitted value must survive stop and reclaim: {records:?}"
+        );
+        assert!(
+            records
+                .iter()
+                .any(|entry| entry["record"]["kind"] == "terminal"),
+            "terminal must be durably recorded: {records:?}"
+        );
+        central
+            .release_connection_lease(peer, "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        drop(recorder);
+        drop(registry);
+        drop(central);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn reclaim_refuses_real_recorder_delivery_retained_through_durable_commit() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, RecordingClose, RecordingOpen, RecordingStep,
+        };
+        let peer = "reclaim-durable-ack";
+        let central = std::sync::Arc::new(open().await);
+        central.boundary().set_gatt_snapshot_identity(
+            peer,
+            crate::boundary::GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let key = central.peer_key_for(peer).await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-522-ack-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&path).unwrap();
+        let journal = registry
+            .open(
+                peer,
+                &serde_json::json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 16,
+                },
+            )
+            .unwrap();
+        let recorder = OrderedRecording::reserve(
+            central.clone(),
+            journal.clone(),
+            peer.into(),
+            "ack-producer".into(),
+            peer.into(),
+        )
+        .unwrap();
+        let request = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "ack-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        recorder
+            .open(RecordingOpen {
+                connection_generation: connection,
+                database_generation: database,
+                requests: vec![request],
+                max_items: 8,
+                max_bytes: 128,
+                max_controls: 8,
+                control: OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(recorder.step().await.unwrap(), RecordingStep::Empty); // Bind generation before holding the writer.
+        let batch = central
+            .inner
+            .ordered_batches
+            .get(peer, recorder.collection_id())
+            .unwrap();
+        let (scope, epoch, token, gate, delivery_state) = {
+            let state = batch.lock().await;
+            (
+                state.claims[0].scope.clone(),
+                state.claims[0].epoch,
+                super::lock_std(&state.delivery_state)
+                    .recording_owner
+                    .unwrap(),
+                state.delivery_lock.clone(),
+                state.delivery_state.clone(),
+            )
+        };
+        let writer = journal.test_lock_connection();
+        central
+            .boundary()
+            .push_event(RadioEvent::Notification {
+                peer_id: scope.0.clone(),
+                service_uuid: scope.1.clone(),
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3.clone(),
+                characteristic_occurrence: scope.4,
+                epoch,
+                value: vec![0x53],
+            })
+            .expect("synthetic event admission failed");
+        let step = {
+            let recorder = recorder.clone();
+            tokio::spawn(async move { recorder.step().await })
+        };
+        let delivery_id = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some((id, _)) = &super::lock_std(&delivery_state).pending {
+                    break *id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let failure = match central
+            .acquire_ordered_recording_reclaim(peer, recorder.collection_id(), token, "lease-a")
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("pending delivery must refuse reclaim"),
+        };
+        assert_eq!(
+            failure.commit(),
+            Some(ubm_core::contracts::CommitState::NotDispatched)
+        );
+        assert_eq!(failure.retryability(), crate::Retryability::CallerDecides);
+        let held = gate.lock().await;
+        drop(writer); // The real recorder may now commit, but cannot acquire the ACK gate.
+        let journal_for_status = journal.clone();
+        let count = tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(move || {
+                loop {
+                    let count = journal_for_status.status().unwrap()["records"]
+                        .as_u64()
+                        .unwrap();
+                    if count != 0 {
+                        break count;
+                    }
+                    std::thread::yield_now();
+                }
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(count, 1, "the value is durable before its source ACK");
+        assert_eq!(
+            super::lock_std(&delivery_state)
+                .pending
+                .as_ref()
+                .map(|(id, _)| *id),
+            Some(delivery_id)
+        );
+        assert!(
+            !step.is_finished(),
+            "the recorder must wait for the real delivery gate"
+        );
+        drop(held);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), step)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            RecordingStep::Committed
+        );
+        assert!(super::lock_std(&delivery_state).pending.is_none());
+        let page = journal.prepare(16, 4096).unwrap();
+        let records = page["records"].as_array().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["record"]["bytes"], serde_json::json!([0x53]));
+        let capability = recorder.issue_recovery_capability().unwrap();
+        let mut permit = recorder
+            .acquire_reclaim(&capability, "lease-a")
+            .await
+            .unwrap();
+        permit.release().await.unwrap();
+        for _ in 0..20 {
+            if recorder.close(OpControl::budget_ms(5000)).await.unwrap() == RecordingClose::Finished
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            recorder.close(OpControl::budget_ms(5000)).await.unwrap(),
+            RecordingClose::Finished
+        );
+        assert!(
+            central
+                .inner
+                .ordered_batches
+                .get(peer, recorder.collection_id())
+                .is_none()
+        );
+        central
+            .release_connection_lease(peer, "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        drop(recorder);
+        drop(journal);
+        drop(registry);
+        drop(central);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    async fn reclaim_stop_fixture(
+        peer: &str,
+        max_items: usize,
+    ) -> (
+        std::sync::Arc<DesktopCentral<FakeRadio>>,
+        std::sync::Arc<crate::continuation_journal::JournalRegistry>,
+        std::sync::Arc<crate::ordered_recording::OrderedRecording<FakeRadio>>,
+        std::path::PathBuf,
+    ) {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, OrderedRecordingDeclaration, OrderedRecordingMember,
+        };
+        let central = std::sync::Arc::new(open().await);
+        central.boundary().set_gatt_snapshot_identity(
+            peer,
+            crate::boundary::GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let key = central.peer_key_for(peer).await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-522-{peer}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = std::sync::Arc::new(JournalRegistry::default());
+        registry.configure_directory(&path).unwrap();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: peer.into(),
+            connection_generation: connection,
+            database_generation: database,
+            members: vec![OrderedRecordingMember {
+                member_id: 1,
+                public_member_id: "heart".into(),
+                selector: hrm_selector(0),
+                delivery: None,
+                preference: None,
+            }],
+            max_items,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let recorder = OrderedRecording::prepare(
+            central.clone(),
+            registry.clone(),
+            peer.into(),
+            JournalQuota {
+                max_bytes: 1 << 20,
+                max_records: 32,
+            },
+            declaration,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            recorder
+                .start_receipt(OpControl::budget_ms(5000).with_connection_lease("lease-a".into()))
+                .await
+                .unwrap()["state"],
+            "active"
+        );
+        (central, registry, recorder, path)
+    }
+
+    async fn reclaim_stop_failure_case(fault: FaultOp, peer: &str) {
+        use crate::ordered_recording::RecordingDriverStatus;
+        let (central, registry, recorder, path) = reclaim_stop_fixture(peer, 8).await;
+        let capability = recorder.issue_recovery_capability().unwrap();
+        let mut permit = recorder
+            .acquire_reclaim(&capability, "lease-a")
+            .await
+            .unwrap();
+        let original_keys = central.boundary().reclaim_test_keys();
+        assert_eq!(original_keys.0.len(), 1);
+        assert_eq!(original_keys.1.len(), 1);
+        let batch = central
+            .inner
+            .ordered_batches
+            .get(peer, recorder.collection_id())
+            .unwrap();
+        let (scope, epoch, gate) = {
+            let state = batch.lock().await;
+            (
+                state.claims[0].scope.clone(),
+                state.claims[0].epoch,
+                state.delivery_lock.clone(),
+            )
+        };
+        central
+            .boundary()
+            .push_event(RadioEvent::Notification {
+                peer_id: scope.0.clone(),
+                service_uuid: scope.1.clone(),
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3.clone(),
+                characteristic_occurrence: scope.4,
+                epoch,
+                value: vec![0x52],
+            })
+            .expect("synthetic event admission failed");
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), recorder.shutdown())
+                .await
+                .unwrap()
+                .unwrap(),
+            RecordingDriverStatus::WaitingSource | RecordingDriverStatus::WaitingDrain
+        ));
+        central
+            .boundary()
+            .fail_next(fault, "injected reclaim cleanup failure");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), permit.release())
+                .await
+                .unwrap()
+                .is_err()
+        );
+        central.boundary().block_op(fault);
+        let (call, expected) = match fault {
+            FaultOp::ReclaimRelease => ("reclaim_release", original_keys.clone()),
+            FaultOp::ReclaimForget => ("reclaim_forget", (Vec::new(), original_keys.1.clone())),
+            _ => unreachable!(),
+        };
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            central.boundary().wait_for_calls(call, 2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            central.boundary().reclaim_test_keys(),
+            expected,
+            "failed cleanup must retain the exact outstanding native debt"
+        );
+        assert!(
+            gate.try_lock().is_err(),
+            "cleanup failure must retain the delivery gate"
+        );
+        assert!(matches!(
+            recorder.shutdown().await.unwrap(),
+            RecordingDriverStatus::WaitingSource | RecordingDriverStatus::WaitingDrain
+        ));
+        assert!(
+            central
+                .inner
+                .ordered_batches
+                .get(peer, recorder.collection_id())
+                .is_some()
+        );
+        central.boundary().unblock_op(fault);
+        tokio::time::timeout(Duration::from_secs(3), permit.release())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !matches!(recorder.driver_status(), RecordingDriverStatus::Finished) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("stop must resume from the gate wake after retry");
+        assert_eq!(
+            central.boundary().reclaim_test_keys(),
+            (Vec::new(), Vec::new())
+        );
+        assert!(gate.try_lock().is_ok());
+        assert!(
+            central
+                .inner
+                .ordered_batches
+                .get(peer, recorder.collection_id())
+                .is_none()
+        );
+        let calls = central.boundary().calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|name| name.as_str() == "reclaim_release")
+                .count(),
+            if matches!(fault, FaultOp::ReclaimRelease) {
+                2
+            } else {
+                1
+            }
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|name| name.as_str() == "reclaim_forget")
+                .count(),
+            if matches!(fault, FaultOp::ReclaimForget) {
+                2
+            } else {
+                1
+            }
+        );
+        let journal = registry.get(peer).unwrap();
+        let page = journal.prepare(32, 65536).unwrap();
+        let records = page["records"].as_array().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|entry| entry["record"]["bytes"] == serde_json::json!([0x52]))
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|entry| entry["record"]["kind"] == "terminal")
+                .count(),
+            1
+        );
+        central
+            .release_connection_lease(peer, "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        drop(journal);
+        drop(recorder);
+        drop(registry);
+        drop(central);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn recorder_stop_recovers_after_failed_native_reclaim_release() {
+        reclaim_stop_failure_case(FaultOp::ReclaimRelease, "reclaim-release-failure").await;
+    }
+
+    #[tokio::test]
+    async fn recorder_stop_recovers_after_failed_reclaim_receipt_retirement() {
+        reclaim_stop_failure_case(FaultOp::ReclaimForget, "reclaim-forget-failure").await;
+    }
+
+    #[tokio::test]
+    async fn recorder_gate_wakes_across_registration_and_reacquisition_interleavings() {
+        use super::ordered_batch_cleanup::recorder_delivery_gate;
+        use std::sync::Arc;
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        let wake = Arc::new(tokio::sync::Notify::new());
+        // Register before the failed poll; coalesced polls must not lose the wake.
+        let held = gate.lock().await;
+        let before_poll = wake.notified();
+        tokio::pin!(before_poll);
+        before_poll.as_mut().enable();
+        assert!(recorder_delivery_gate(&gate, &wake, true).await.is_none());
+        assert!(recorder_delivery_gate(&gate, &wake, true).await.is_none());
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(2), before_poll)
+            .await
+            .unwrap();
+        // Poll first, then register only after the gate waiter has notified: Notify's
+        // stored permit must still wake the recorder.
+        let held = gate.lock().await;
+        assert!(recorder_delivery_gate(&gate, &wake, true).await.is_none());
+        drop(held);
+        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_secs(2), wake.notified())
+            .await
+            .unwrap();
+        // If another owner reacquires before the driver polls, the next failed
+        // poll must install a fresh waiter after the first one has retired.
+        let held = gate.lock().await;
+        let ready = wake.notified();
+        tokio::pin!(ready);
+        ready.as_mut().enable();
+        assert!(recorder_delivery_gate(&gate, &wake, true).await.is_none());
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(2), ready)
+            .await
+            .unwrap();
+        assert!(recorder_delivery_gate(&gate, &wake, true).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn reclaim_is_denied_after_cleanup_fence_fails() {
+        let peer = "reclaim-failed-fence";
+        let (central, registry, recorder, path) = reclaim_stop_fixture(peer, 8).await;
+        let batch = central
+            .inner
+            .ordered_batches
+            .get(peer, recorder.collection_id())
+            .unwrap();
+        let token = {
+            let state = batch.lock().await;
+            super::lock_std(&state.delivery_state)
+                .recording_owner
+                .unwrap()
+        };
+        central
+            .boundary()
+            .fail_next(FaultOp::OrderedSourceFence, "fence failed");
+        assert!(
+            central
+                .retry_ordered_recording_cleanup(
+                    peer,
+                    recorder.collection_id(),
+                    token,
+                    OpControl::budget_ms(5000)
+                )
+                .await
+                .is_err()
+        );
+        let capability = recorder.issue_recovery_capability().unwrap();
+        assert!(
+            recorder
+                .acquire_reclaim(&capability, "lease-a")
+                .await
+                .is_err(),
+            "failed cleanup still fences new reclaim"
+        );
+        recorder.request_driver_close();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if matches!(
+                    recorder.driver_status(),
+                    crate::ordered_recording::RecordingDriverStatus::Finished
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retry should finish after the transient failure");
+        central
+            .release_connection_lease(peer, "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        drop(recorder);
+        drop(registry);
+        drop(central);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn recorder_long_held_reclaim_drains_values_within_source_capacity() {
+        use crate::ordered_recording::RecordingDriverStatus;
+        let peer = "reclaim-overflow";
+        let (central, registry, recorder, path) = reclaim_stop_fixture(peer, 2).await;
+        let capability = recorder.issue_recovery_capability().unwrap();
+        let mut permit = recorder
+            .acquire_reclaim(&capability, "lease-a")
+            .await
+            .unwrap();
+        let batch = central
+            .inner
+            .ordered_batches
+            .get(peer, recorder.collection_id())
+            .unwrap();
+        let (scope, epoch) = {
+            let state = batch.lock().await;
+            (state.claims[0].scope.clone(), state.claims[0].epoch)
+        };
+        for value in 0..5 {
+            central
+                .boundary()
+                .push_event(RadioEvent::Notification {
+                    peer_id: scope.0.clone(),
+                    service_uuid: scope.1.clone(),
+                    service_occurrence: scope.2,
+                    characteristic_uuid: scope.3.clone(),
+                    characteristic_occurrence: scope.4,
+                    epoch,
+                    value: vec![value],
+                })
+                .expect("synthetic event admission failed");
+        }
+        assert!(matches!(
+            recorder.shutdown().await.unwrap(),
+            RecordingDriverStatus::WaitingSource | RecordingDriverStatus::WaitingDrain
+        ));
+        permit.release().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !matches!(
+                recorder.driver_status(),
+                RecordingDriverStatus::Finished | RecordingDriverStatus::Failed(_)
+            ) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("recorder must settle after reclaim release");
+        assert!(
+            matches!(recorder.driver_status(), RecordingDriverStatus::Finished),
+            "recorder failed after reclaim release: {:?}",
+            recorder.driver_status()
+        );
+        let journal = registry.get(peer).unwrap();
+        let page = journal.prepare(32, 65536).unwrap();
+        let records = page["records"].as_array().unwrap();
+        let values: Vec<_> = records
+            .iter()
+            .filter(|entry| entry["record"]["kind"] == "value")
+            .collect();
+        // The two-item downstream collection is distinct from the synthetic
+        // source's ten retained slots (max_items + max_controls). Holding the
+        // reclaim permit creates pressure, but these five fit upstream.
+        assert_eq!(
+            values.len(),
+            5,
+            "all accepted values must drain: {records:?}"
+        );
+        for (index, value) in values.iter().enumerate() {
+            assert_eq!(value["record"]["bytes"], serde_json::json!([index]));
+        }
+        let terminals: Vec<_> = records
+            .iter()
+            .filter(|entry| entry["record"]["kind"] == "terminal")
+            .collect();
+        assert_eq!(terminals.len(), 1, "{records:?}");
+        assert_eq!(terminals[0]["record"]["reason"]["kind"], "closed");
+        assert_eq!(terminals[0]["record"]["tailUncertain"], true);
+        central
+            .release_connection_lease(peer, "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        drop(journal);
+        drop(recorder);
+        drop(registry);
+        drop(central);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn recorder_driver_wakes_for_source_and_reader_ack() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{OrderedRecording, RecordingDriverStatus, RecordingOpen};
+        let central = std::sync::Arc::new(open().await);
+        ready_peer(&central, "driver-peer", vec![hrm_service()]).await;
+        let key = central.peer_key_for("driver-peer").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-driver-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&path).unwrap();
+        let journal = registry
+            .open(
+                "driver",
+                &serde_json::json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 1,
+                },
+            )
+            .unwrap();
+        let recorder = OrderedRecording::reserve(
+            central.clone(),
+            journal.clone(),
+            "driver".into(),
+            "driver-producer".into(),
+            "driver-peer".into(),
+        )
+        .unwrap();
+        let id = recorder.collection_id();
+        let request = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "driver-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        recorder
+            .open(RecordingOpen {
+                connection_generation: connection,
+                database_generation: database,
+                requests: vec![request],
+                max_items: 8,
+                max_bytes: 128,
+                max_controls: 8,
+                control: OpControl::budget_ms(5000),
+            })
+            .await
+            .unwrap();
+        recorder.start_driver().await.unwrap();
+        let owner = central
+            .inner
+            .ordered_batches
+            .get("driver-peer", id)
+            .unwrap();
+        let (scope, epoch) = {
+            let state = owner.lock().await;
+            (state.claims[0].scope.clone(), state.claims[0].epoch)
+        };
+        for value in [1, 2] {
+            central
+                .boundary()
+                .push_event(RadioEvent::Notification {
+                    peer_id: scope.0.clone(),
+                    service_uuid: scope.1.clone(),
+                    service_occurrence: scope.2,
+                    characteristic_uuid: scope.3.clone(),
+                    characteristic_occurrence: scope.4,
+                    epoch,
+                    value: vec![value],
+                })
+                .expect("synthetic event admission failed");
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    recorder.driver_status(),
+                    RecordingDriverStatus::WaitingCapacity
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let page = journal.prepare(16, 4096).unwrap();
+        journal
+            .acknowledge(page["token"].as_str().unwrap())
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if journal.status().unwrap()["records"] == 1
+                    && matches!(
+                        recorder.driver_status(),
+                        RecordingDriverStatus::WaitingCapacity
+                    )
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let page = journal.prepare(16, 4096).unwrap();
+        journal
+            .acknowledge(page["token"].as_str().unwrap())
+            .unwrap();
+        let _ = recorder.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(recorder.driver_status(), RecordingDriverStatus::Finished) {
+                    break;
+                }
+                if journal.status().unwrap()["records"] != 0 {
+                    let page = journal.prepare(16, 4096).unwrap();
+                    journal
+                        .acknowledge(page["token"].as_str().unwrap())
+                        .unwrap();
+                }
+                recorder.retry_driver();
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shutdown must settle its source and journal");
+        drop(recorder);
+        drop(journal);
+        drop(central);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    include!("central/reclaim_authority_regression_tests.rs");
+
+    #[tokio::test]
+    async fn recorder_start_receipt_replays_after_waiter_cancellation() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, OrderedRecordingDeclaration, OrderedRecordingMember,
+            RecordingDriverStatus,
+        };
+        use std::sync::atomic::Ordering;
+        let central = std::sync::Arc::new(open().await);
+        central.boundary().set_gatt_snapshot_identity(
+            "start-replay",
+            crate::boundary::GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, "start-replay", vec![hrm_service()]).await;
+        let key = central.peer_key_for("start-replay").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-start-replay-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = std::sync::Arc::new(JournalRegistry::default());
+        registry.configure_directory(&path).unwrap();
+        let expected_connection = connection.clone();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: "start-replay".into(),
+            connection_generation: connection,
+            database_generation: database,
+            members: vec![OrderedRecordingMember {
+                member_id: 1,
+                public_member_id: "heart".into(),
+                selector: hrm_selector(0),
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let quota = JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 16,
+        };
+        let recorder = OrderedRecording::prepare(
+            central.clone(),
+            registry.clone(),
+            "start-replay".into(),
+            quota.clone(),
+            declaration.clone(),
+        )
+        .await
+        .unwrap();
+        let retry = OrderedRecording::prepare(
+            central.clone(),
+            registry.clone(),
+            "start-replay".into(),
+            quota.clone(),
+            declaration.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&recorder, &retry));
+        assert_eq!(
+            JournalRegistry::supervised_ordered_for_central(&central)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            JournalRegistry::supervised_ordered_for_central(&open().await)
+                .unwrap()
+                .is_empty()
+        );
+        let mut altered = declaration.clone();
+        altered.max_items += 1;
+        assert!(
+            OrderedRecording::prepare(
+                central.clone(),
+                registry.clone(),
+                "start-replay".into(),
+                quota.clone(),
+                altered
+            )
+            .await
+            .is_err()
+        );
+        let mut changed_quota = quota.clone();
+        changed_quota.max_records += 1;
+        assert!(
+            OrderedRecording::prepare(
+                central.clone(),
+                registry.clone(),
+                "start-replay".into(),
+                changed_quota,
+                declaration
+            )
+            .await
+            .is_err()
+        );
+        let capability = recorder.issue_recovery_capability().unwrap();
+        assert!(retry.issue_recovery_capability().unwrap() == capability);
+        central.boundary().block_op(FaultOp::OrderedOpen);
+        let abandoned = {
+            let recorder = recorder.clone();
+            tokio::spawn(async move {
+                recorder
+                    .start_receipt(
+                        OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("ordered_open", 1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(recorder.start_status()["state"], "pending");
+        assert!(matches!(
+            recorder.connection_lease_status(),
+            crate::ordered_recording::RecordingConnectionLeaseStatus::Pending
+        ));
+        abandoned.abort();
+        let first = {
+            let recorder = recorder.clone();
+            tokio::spawn(async move {
+                recorder
+                    .start_receipt(
+                        OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+                    )
+                    .await
+            })
+        };
+        let second = {
+            let recorder = recorder.clone();
+            tokio::spawn(async move {
+                recorder
+                    .start_receipt(
+                        OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+                    )
+                    .await
+            })
+        };
+        central.boundary().unblock_op(FaultOp::OrderedOpen);
+        let a = first.await.unwrap().unwrap();
+        let b = second.await.unwrap().unwrap();
+        assert_eq!(a, b);
+        assert!(
+            matches!(recorder.connection_lease_status(), crate::ordered_recording::RecordingConnectionLeaseStatus::Retained { generation } if generation == expected_connection)
+        );
+        assert!(recorder.issue_recovery_capability().unwrap() == capability);
+        assert!(recorder.reclaim_reservation_owner("foreign").await.is_err());
+        central
+            .boundary()
+            .refuse_reclaim_authority_before_dispatch();
+        assert!(
+            recorder
+                .acquire_reclaim(&capability, "lease-a")
+                .await
+                .is_err(),
+            "definitive no-effect authority refusal must be surfaced"
+        );
+        central
+            .boundary()
+            .lose_reclaim_authority_replies(true, false);
+        let mut opened = tokio::time::timeout(
+            Duration::from_secs(3),
+            recorder.acquire_reclaim(&capability, "lease-a"),
+        )
+        .await
+        .expect("same operation reconciles lost authority reply")
+        .unwrap();
+        opened.release().await.unwrap();
+        central.boundary().lose_reclaim_permit_reserve_reply();
+        let mut recovered = tokio::time::timeout(
+            Duration::from_secs(3),
+            recorder.acquire_reclaim(&capability, "lease-a"),
+        )
+        .await
+        .expect("same operation reconciles lost source reservation")
+        .unwrap();
+        recovered.release().await.unwrap();
+        central.boundary().refuse_reclaim_permit_capacity();
+        match recorder.acquire_reclaim(&capability, "lease-a").await {
+            Err(crate::ordered_recording::RecordingError::Source(error)) => {
+                assert_eq!(
+                    error.commit(),
+                    Some(ubm_core::contracts::CommitState::NotDispatched)
+                );
+                assert_eq!(error.retryability(), crate::Retryability::CallerDecides);
+            }
+            _ => panic!("capacity refusal must report retryable no-effect"),
+        }
+        // A pre-bound earlier FIFO ticket must reach the group before a later
+        // reclaim; reclaim may not hold the group while waiting behind it.
+        let earlier = central.admit_gatt("start-replay").unwrap();
+        let reclaiming = {
+            let recorder = recorder.clone();
+            let capability = capability.clone();
+            tokio::spawn(async move { recorder.acquire_reclaim(&capability, "lease-a").await })
+        };
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while central.inner.gatt_admission.queued_for_peer("start-replay") < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let token = {
+            let owner = central
+                .inner
+                .ordered_batches
+                .get("start-replay", recorder.collection_id())
+                .unwrap();
+            let state = owner.lock().await;
+            let delivery = super::lock_std(&state.delivery_state);
+            delivery.recording_owner.unwrap()
+        };
+        let duplicate_request = [super::ordered_claims::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "duplicate".into(),
+            delivery: None,
+            preference: None,
+        }];
+        let duplicate_open = central
+            .open_ordered_recording(
+                "start-replay",
+                recorder.collection_id(),
+                token,
+                &connection,
+                &database,
+                &duplicate_request,
+                8,
+                128,
+                8,
+                OpControl::budget_ms(3000).with_gatt_admission(earlier),
+            )
+            .await;
+        assert!(
+            duplicate_open.is_err(),
+            "duplicate open must be refused after its FIFO turn"
+        );
+        let mut first_reclaim = tokio::time::timeout(Duration::from_secs(3), reclaiming)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        first_reclaim.release().await.unwrap();
+        let reservation = recorder
+            .reclaim_reservation_owner(&capability)
+            .await
+            .unwrap();
+        let duplicate = recorder
+            .reclaim_reservation_owner(&capability)
+            .await
+            .unwrap();
+        reservation
+            .reserve(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        duplicate
+            .reserve(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        assert!(
+            duplicate
+                .status(1, &capability, "foreign-lease", "caller-1")
+                .is_err()
+        );
+        assert!(
+            duplicate
+                .start(1, &capability, "lease-a", "other-caller")
+                .is_err()
+        );
+        assert!(
+            duplicate
+                .reserve(1, &capability, "lease-a", "other-caller")
+                .is_err(),
+            "distinct concurrent handles must not alias"
+        );
+        assert!(
+            duplicate
+                .reserve(1, "foreign", "lease-a", "foreign-caller")
+                .is_err()
+        );
+        central.boundary().lose_reclaim_commit_reply();
+        reservation
+            .start(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        duplicate
+            .start(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if matches!(
+                    reservation
+                        .status(1, &capability, "lease-a", "caller-1")
+                        .unwrap(),
+                    crate::reclaim_reservation::ReclaimReservationStatus::Ready
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            reservation
+                .commit(1, &capability, "lease-a", "caller-1", || Err(
+                    DesktopError::subscribe_failed("mapping refused")
+                ))
+                .is_err()
+        );
+        let commits = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                reservation.commit(1, &capability, "lease-a", "caller-1", || {
+                    commits.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            });
+            let second = scope.spawn(|| {
+                duplicate.commit(1, &capability, "lease-a", "caller-1", || {
+                    commits.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            });
+            first.join().unwrap().unwrap();
+            second.join().unwrap().unwrap();
+        });
+        assert_eq!(
+            commits.load(Ordering::SeqCst),
+            1,
+            "lost commit response must not republish"
+        );
+        reservation
+            .release(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if matches!(
+                    reservation
+                        .status(1, &capability, "lease-a", "caller-1")
+                        .unwrap(),
+                    crate::reclaim_reservation::ReclaimReservationStatus::Released {
+                        mapping_committed: true
+                    }
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        reservation
+            .commit(1, &capability, "lease-a", "caller-1", || {
+                commits.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            commits.load(Ordering::SeqCst),
+            1,
+            "released committed receipt must replay without republishing"
+        );
+        reservation
+            .retire(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        assert!(matches!(
+            reservation
+                .status(1, &capability, "lease-a", "caller-1")
+                .unwrap(),
+            crate::reclaim_reservation::ReclaimReservationStatus::Retired {
+                mapping_committed: true
+            }
+        ));
+        reservation
+            .retire(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        assert!(
+            reservation
+                .retire(1, "foreign", "lease-a", "caller-1")
+                .is_err()
+        );
+        assert!(
+            reservation.next_request_id(&capability).is_err(),
+            "lost retire response must block a new handle"
+        );
+        reservation
+            .acknowledge_retirement(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        reservation
+            .acknowledge_retirement(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        assert!(
+            reservation.next_request_id(&capability).is_err(),
+            "acknowledged receipt remains until forget"
+        );
+        reservation
+            .forget_retirement(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        reservation
+            .reserve(2, &capability, "lease-a", "caller-2")
+            .unwrap();
+        reservation
+            .acknowledge_retirement(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        reservation
+            .forget_retirement(1, &capability, "lease-a", "caller-1")
+            .unwrap();
+        let gate = {
+            let owner = central
+                .inner
+                .ordered_batches
+                .get("start-replay", recorder.collection_id())
+                .unwrap();
+            let state = owner.lock().await;
+            std::sync::Arc::clone(&state.marker_reservation.as_ref().unwrap().2)
+        };
+        assert_eq!(
+            gate.load(Ordering::Acquire),
+            1,
+            "late duplicate retirement ACK/forget cannot unpin the next reclaim"
+        );
+        central.boundary().block_op(FaultOp::ReclaimAcquire);
+        reservation
+            .start(2, &capability, "lease-a", "caller-2")
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            central.boundary().wait_for_calls("reclaim_acquire", 5),
+        )
+        .await
+        .unwrap();
+        reservation
+            .cancel(2, &capability, "lease-a", "caller-2")
+            .unwrap();
+        central.boundary().unblock_op(FaultOp::ReclaimAcquire);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if matches!(
+                    reservation
+                        .status(2, &capability, "lease-a", "caller-2")
+                        .unwrap(),
+                    crate::reclaim_reservation::ReclaimReservationStatus::Released {
+                        mapping_committed: false
+                    }
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            reservation
+                .commit(2, &capability, "lease-a", "caller-2", || Ok(()))
+                .is_err(),
+            "cancelled reclaim must not report publication"
+        );
+        reservation
+            .retire(2, &capability, "lease-a", "caller-2")
+            .unwrap();
+        assert!(matches!(
+            reservation
+                .status(2, &capability, "lease-a", "caller-2")
+                .unwrap(),
+            crate::reclaim_reservation::ReclaimReservationStatus::Retired {
+                mapping_committed: false
+            }
+        ));
+        reservation
+            .acknowledge_retirement(2, &capability, "lease-a", "caller-2")
+            .unwrap();
+        reservation
+            .forget_retirement(2, &capability, "lease-a", "caller-2")
+            .unwrap();
+        let caller_known = reservation.next_request_id(&capability).unwrap();
+        assert_eq!(caller_known, 3);
+        reservation
+            .reserve(caller_known, &capability, "lease-a", "caller-3")
+            .unwrap();
+        duplicate
+            .reserve(caller_known, &capability, "lease-a", "caller-3")
+            .unwrap(); // lost reserve response
+        reservation
+            .cancel(caller_known, &capability, "lease-a", "caller-3")
+            .unwrap();
+        reservation
+            .retire(caller_known, &capability, "lease-a", "caller-3")
+            .unwrap();
+        reservation
+            .retire(caller_known, &capability, "lease-a", "caller-3")
+            .unwrap(); // lost retire response
+        assert!(
+            reservation
+                .retire(caller_known, "foreign", "lease-a", "caller-3")
+                .is_err()
+        );
+        reservation
+            .acknowledge_retirement(caller_known, &capability, "lease-a", "caller-3")
+            .unwrap();
+        reservation
+            .forget_retirement(caller_known, &capability, "lease-a", "caller-3")
+            .unwrap();
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                reservation
+                    .reserve(4, &capability, "lease-a", "race-a")
+                    .is_ok()
+            });
+            let second = scope.spawn(|| {
+                duplicate
+                    .reserve(4, &capability, "lease-a", "race-b")
+                    .is_ok()
+            });
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_ne!(first, second, "distinct simultaneous handles cannot alias");
+        let winner = if first { "race-a" } else { "race-b" };
+        reservation
+            .cancel(4, &capability, "lease-a", winner)
+            .unwrap();
+        reservation
+            .retire(4, &capability, "lease-a", winner)
+            .unwrap();
+        reservation
+            .acknowledge_retirement(4, &capability, "lease-a", winner)
+            .unwrap();
+        reservation
+            .forget_retirement(4, &capability, "lease-a", winner)
+            .unwrap();
+        central.boundary().lose_reclaim_replies(true, false);
+        let mut reconciled = tokio::time::timeout(
+            Duration::from_secs(3),
+            recorder.acquire_reclaim(&capability, "lease-a"),
+        )
+        .await
+        .expect("same operation reconciles lost acquire reply")
+        .unwrap();
+        reconciled.release().await.unwrap();
+        central.boundary().block_op(FaultOp::ReclaimAcquire);
+        let reclaiming = {
+            let recorder = recorder.clone();
+            let capability = capability.clone();
+            tokio::spawn(async move { recorder.acquire_reclaim(&capability, "lease-a").await })
+        };
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            central.boundary().wait_for_calls("reclaim_acquire", 8),
+        )
+        .await
+        .unwrap();
+        let disposing = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .release_connection_lease("start-replay", "lease-a", OpControl::budget_ms(5000))
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(
+            !disposing.is_finished(),
+            "session disposal must wait for blocked native acquisition"
+        );
+        central.boundary().unblock_op(FaultOp::ReclaimAcquire);
+        let mut permit = tokio::time::timeout(Duration::from_secs(3), reclaiming)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        central.boundary().lose_reclaim_replies(false, true);
+        assert!(
+            !disposing.is_finished(),
+            "session disposal must wait for reclaim publication"
+        );
+        assert!(
+            permit.release().await.is_err(),
+            "lost release response remains explicit"
+        );
+        tokio::time::timeout(Duration::from_secs(3), permit.release())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), disposing)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_lease_count(&key))
+                .await,
+            1,
+            "supervisor lease outlives original client"
+        );
+        assert_eq!(recorder.start_status()["state"], "ready");
+        assert_eq!(
+            recorder.retire_start_receipt().await.unwrap()["retired"],
+            true
+        );
+        assert_eq!(
+            recorder.retire_start_receipt().await.unwrap()["retired"],
+            true
+        );
+        assert_eq!(recorder.start_status()["state"], "retired");
+        assert!(
+            recorder.issue_recovery_capability().unwrap() == capability,
+            "receipt retirement must not revoke live recovery authority"
+        );
+        assert!(matches!(
+            recorder
+                .start_receipt(OpControl::budget_ms(5000).with_connection_lease("lease-a".into()))
+                .await,
+            Err(crate::ordered_recording::RecordingError::ReceiptRetired)
+        ));
+        assert!(
+            registry
+                .ordered_owner("start-replay", &central)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "ordered_open")
+                .count(),
+            1
+        );
+        central
+            .boundary()
+            .fail_next(FaultOp::Disconnect, "synthetic recorder lease refusal");
+        let _ = recorder.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(recorder.driver_status(), RecordingDriverStatus::Failed(_)) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("failed dedicated lease cleanup must be visible");
+        let failed =
+            crate::continuation_journal::OrderedSupervisor::host_cleanup(recorder.clone()).await;
+        assert_eq!(failed["state"], "release-failed");
+        assert!(failed["failures"][0]["error"].is_object());
+        let released = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                recorder.retry_driver();
+                let receipt = registry
+                    .stop_ordered_host_receipt("start-replay")
+                    .await
+                    .unwrap();
+                if receipt["hostCleanup"]["state"] == "released" {
+                    break receipt;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("lease cleanup retry");
+        assert_eq!(released["hostCleanup"]["state"], "released");
+        assert_eq!(
+            registry
+                .stop_ordered_host_receipt("start-replay")
+                .await
+                .unwrap()["hostCleanup"]["state"],
+            "released",
+            "lost stop response replays durable cleanup outcome"
+        );
+        assert!(matches!(
+            recorder.driver_status(),
+            RecordingDriverStatus::Finished
+        ));
+        assert!(matches!(
+            recorder.connection_lease_status(),
+            crate::ordered_recording::RecordingConnectionLeaseStatus::NotRetained
+        ));
+        assert!(
+            recorder
+                .reclaim_reservation_owner(&capability)
+                .await
+                .is_err()
+        );
+        assert!(recorder.issue_recovery_capability().is_err());
+        assert!(reservation.bind_capability(&capability).is_err());
+        central
+            .boundary()
+            .lose_reclaim_authority_replies(false, true);
+        tokio::time::timeout(Duration::from_secs(3), central.shutdown())
+            .await
+            .expect("lost authority close must retry before teardown");
+        drop(recorder);
+        drop(retry);
+        drop(registry);
+        drop(central);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn reclaim_binding_failure_preserves_ordinary_discovery() {
+        let central = open().await;
+        central.boundary().set_gatt_snapshot_identity(
+            "binding",
+            crate::boundary::GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        central
+            .boundary()
+            .fail_reclaim_binding(DesktopError::subscribe_failed("native binding refused"));
+        ready_peer(&central, "binding", vec![hrm_service()]).await;
+        let coordinator = super::discovery_coordinator(&central.inner, "binding");
+        let snapshot = coordinator.snapshot.lock().await;
+        assert!(
+            snapshot.report.is_some(),
+            "ordinary discovery remains available"
+        );
+        assert!(
+            matches!(snapshot.reclaim_binding.as_ref(), Some(Err(_))),
+            "reclaim retains the exact binding failure"
+        );
+    }
+
+    #[test]
+    fn reclaim_ids_bound_out_of_order_retirement() {
+        let mut ids = super::ReclaimIdWindow::default();
+        for expected in 1..=256 {
+            assert_eq!(ids.issue(), Some(expected));
+        }
+        for id in 2..=256 {
+            ids.retire(id);
+        }
+        assert_eq!(
+            ids.issue(),
+            None,
+            "stalled oldest permit must bound later receipts"
+        );
+        ids.retire(1);
+        assert_eq!(ids.frontier, 256);
+        assert_eq!(ids.issue(), Some(257));
+    }
+
+    #[tokio::test]
+    async fn reclaim_permit_receipts_compact_after_many_retirements() {
+        use crate::boundary::{OrderedReclaimGraphKey, OrderedReclaimPermitRequest, RadioBoundary};
+        let radio = crate::boundary::FakeRadio::new();
+        let authority = radio.open_ordered_reclaim_authority(50).await.unwrap();
+        let identity = crate::boundary::GattSnapshotIdentity {
+            owner: "fake".into(),
+            attachment: 1,
+            revision: 1,
+        };
+        for request_id in 1..=300 {
+            let request = OrderedReclaimPermitRequest {
+                authority_id: authority,
+                request_id,
+                peer_id: "peer".into(),
+                connection_generation: "generation".into(),
+                identity: identity.clone(),
+            };
+            let id = radio
+                .reserve_ordered_reclaim_permit(&request)
+                .await
+                .unwrap();
+            let key = OrderedReclaimGraphKey {
+                authority_id: authority,
+                peer_id: request.peer_id,
+                connection_generation: request.connection_generation,
+                identity: request.identity,
+                permit_id: id,
+            };
+            radio.forget_ordered_reclaim_graph(&key).await.unwrap();
+            radio.forget_ordered_reclaim_graph(&key).await.unwrap();
+        }
+        let future = OrderedReclaimGraphKey {
+            authority_id: authority,
+            peer_id: "peer".into(),
+            connection_generation: "generation".into(),
+            identity,
+            permit_id: 10_000,
+        };
+        assert!(radio.forget_ordered_reclaim_graph(&future).await.is_err());
+        radio
+            .close_ordered_reclaim_authority(authority)
+            .await
+            .unwrap();
+        radio
+            .forget_ordered_reclaim_authority(authority)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reclaim_refusal_does_not_erase_lost_successful_reservations() {
+        use crate::boundary::{GattSnapshotIdentity, OrderedReclaimPermitRequest, RadioBoundary};
+        use ubm_core::contracts::CommitState;
+
+        let radio = crate::boundary::FakeRadio::new();
+        radio.lose_reclaim_authority_replies(true, false);
+        assert!(radio.open_ordered_reclaim_authority(31).await.is_err());
+        radio.refuse_reclaim_authority_before_dispatch();
+        let authority = radio.open_ordered_reclaim_authority(31).await.unwrap();
+        assert_eq!(
+            radio.open_ordered_reclaim_authority(31).await.unwrap(),
+            authority
+        );
+        assert_eq!(
+            radio
+                .open_ordered_reclaim_authority(32)
+                .await
+                .unwrap_err()
+                .commit(),
+            Some(CommitState::NotDispatched)
+        );
+
+        let request = OrderedReclaimPermitRequest {
+            authority_id: authority,
+            request_id: 1,
+            peer_id: "peer".into(),
+            connection_generation: "generation".into(),
+            identity: GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        };
+        radio.lose_reclaim_permit_reserve_reply();
+        assert!(
+            radio
+                .reserve_ordered_reclaim_permit(&request)
+                .await
+                .is_err()
+        );
+        radio.refuse_reclaim_permit_capacity();
+        let permit = radio
+            .reserve_ordered_reclaim_permit(&request)
+            .await
+            .unwrap();
+        assert_eq!(
+            radio
+                .reserve_ordered_reclaim_permit(&request)
+                .await
+                .unwrap(),
+            permit
+        );
+        let mut next = request.clone();
+        next.request_id = 2;
+        assert_eq!(
+            radio
+                .reserve_ordered_reclaim_permit(&next)
+                .await
+                .unwrap_err()
+                .commit(),
+            Some(CommitState::NotDispatched)
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_authorities_replay_lost_open_and_close_without_collision() {
+        use crate::boundary::RadioBoundary;
+        let radio = crate::boundary::FakeRadio::new();
+        radio.lose_reclaim_authority_replies(true, false);
+        assert!(radio.open_ordered_reclaim_authority(31).await.is_err());
+        let first = radio.open_ordered_reclaim_authority(31).await.unwrap();
+        let second = radio.open_ordered_reclaim_authority(99).await.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            radio.open_ordered_reclaim_authority(31).await.unwrap(),
+            first
+        );
+        radio.lose_reclaim_authority_replies(false, true);
+        assert!(radio.close_ordered_reclaim_authority(first).await.is_err());
+        radio.close_ordered_reclaim_authority(first).await.unwrap();
+        radio.forget_ordered_reclaim_authority(first).await.unwrap();
+        assert!(radio.open_ordered_reclaim_authority(31).await.is_err());
+        assert_eq!(
+            radio.open_ordered_reclaim_authority(99).await.unwrap(),
+            second
+        );
+        let replacement = radio.open_ordered_reclaim_authority(150).await.unwrap();
+        assert_ne!(replacement, first);
+        radio.close_ordered_reclaim_authority(second).await.unwrap();
+        radio
+            .forget_ordered_reclaim_authority(second)
+            .await
+            .unwrap();
+        radio
+            .close_ordered_reclaim_authority(replacement)
+            .await
+            .unwrap();
+        radio
+            .forget_ordered_reclaim_authority(replacement)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reclaim_authority_ids_separate_exact_permits() {
+        use crate::boundary::{
+            OrderedReclaimGraphAcquire, OrderedReclaimGraphCommit, OrderedReclaimGraphKey,
+            RadioBoundary,
+        };
+        let radio = crate::boundary::FakeRadio::new();
+        let identity = crate::boundary::GattSnapshotIdentity {
+            owner: "fake".into(),
+            attachment: 1,
+            revision: 1,
+        };
+        radio.set_gatt_snapshot_identity("peer", identity.clone());
+        let old = OrderedReclaimGraphKey {
+            authority_id: 1,
+            peer_id: "peer".into(),
+            connection_generation: "generation".into(),
+            identity,
+            permit_id: 1,
+        };
+        let mut other = old.clone();
+        other.authority_id = 2;
+        assert!(matches!(
+            radio.acquire_ordered_reclaim_graph(&old).await.unwrap(),
+            OrderedReclaimGraphAcquire::Acquired
+        ));
+        assert!(matches!(
+            radio.acquire_ordered_reclaim_graph(&other).await.unwrap(),
+            OrderedReclaimGraphAcquire::Acquired
+        ));
+        radio.release_ordered_reclaim_graph(&old).await.unwrap();
+        assert!(matches!(
+            radio.commit_ordered_reclaim_graph(&other).await.unwrap(),
+            OrderedReclaimGraphCommit::Committed
+        ));
+        radio.release_ordered_reclaim_graph(&other).await.unwrap();
+        let mut replacement = old.clone();
+        replacement.authority_id = 3;
+        assert!(matches!(
+            radio
+                .acquire_ordered_reclaim_graph(&replacement)
+                .await
+                .unwrap(),
+            OrderedReclaimGraphAcquire::Acquired
+        ));
+        radio.release_ordered_reclaim_graph(&old).await.unwrap();
+        assert!(matches!(
+            radio
+                .commit_ordered_reclaim_graph(&replacement)
+                .await
+                .unwrap(),
+            OrderedReclaimGraphCommit::Committed
+        ));
+        radio
+            .release_ordered_reclaim_graph(&replacement)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reclaim_commit_rejects_native_change_before_host_event() {
+        use crate::boundary::{
+            OrderedReclaimGraphAcquire, OrderedReclaimGraphCommit, OrderedReclaimGraphKey,
+            RadioBoundary,
+        };
+        let radio = crate::boundary::FakeRadio::new();
+        let old = crate::boundary::GattSnapshotIdentity {
+            owner: "fake".into(),
+            attachment: 1,
+            revision: 1,
+        };
+        radio.set_gatt_snapshot_identity("peer", old.clone());
+        let key = OrderedReclaimGraphKey {
+            authority_id: 1,
+            peer_id: "peer".into(),
+            connection_generation: "generation".into(),
+            identity: old,
+            permit_id: 1,
+        };
+        assert!(matches!(
+            radio.acquire_ordered_reclaim_graph(&key).await.unwrap(),
+            OrderedReclaimGraphAcquire::Acquired
+        ));
+        // Model the native callback before any host lifecycle event is read.
+        radio.set_gatt_snapshot_identity(
+            "peer",
+            crate::boundary::GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 2,
+            },
+        );
+        assert!(matches!(
+            radio.commit_ordered_reclaim_graph(&key).await.unwrap(),
+            OrderedReclaimGraphCommit::Invalidated(_)
+        ));
+        radio.release_ordered_reclaim_graph(&key).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recorder_registration_seal_waits_for_inflight_owner() {
+        let central = open().await;
+        let registration = central.begin_ordered_recording_registration().unwrap();
+        let (ready, received) = std::sync::mpsc::channel();
+        let sealing = {
+            let central = central.clone();
+            tokio::task::spawn_blocking(move || {
+                ready.send(()).unwrap();
+                central.seal_ordered_recording_registration();
+            })
+        };
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            !sealing.is_finished(),
+            "seal must wait for the in-flight registration owner"
+        );
+        drop(registration);
+        tokio::time::timeout(Duration::from_secs(2), sealing)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(central.reserve_ordered_recording("late-peer").is_err());
+    }
+
+    #[tokio::test]
+    async fn recorder_preflight_receipt_pins_supervisor_during_cleanup() {
+        use crate::boundary::{GattSnapshotIdentity, OrderedMarkerWriteStatus};
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, OrderedRecordingDeclaration, OrderedRecordingMember,
+            RecordingDriverStatus,
+        };
+        let central = std::sync::Arc::new(open().await);
+        central.boundary().set_gatt_snapshot_identity(
+            "recorder-pin",
+            GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, "recorder-pin", vec![writable_hrm_service()]).await;
+        let key = central.peer_key_for("recorder-pin").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-recorder-pin-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = std::sync::Arc::new(JournalRegistry::default());
+        registry.configure_directory(&path).unwrap();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: "recorder-pin".into(),
+            connection_generation: connection,
+            database_generation: database,
+            members: vec![OrderedRecordingMember {
+                member_id: 1,
+                public_member_id: "heart".into(),
+                selector: hrm_selector(0),
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let recorder = OrderedRecording::prepare(
+            central.clone(),
+            registry.clone(),
+            "recorder-pin".into(),
+            JournalQuota {
+                max_bytes: 1 << 20,
+                max_records: 16,
+            },
+            declaration,
+        )
+        .await
+        .unwrap();
+        recorder
+            .start_receipt(OpControl::budget_ms(5000).with_connection_lease("lease-a".into()))
+            .await
+            .unwrap();
+        let reservation = recorder.marker_reservation_owner().await.unwrap();
+        let handle = reservation.reserve("pin-test").await.unwrap();
+        let _ = recorder.shutdown().await.unwrap();
+        let mut invalid = hrm_selector(0);
+        invalid.characteristic_occurrence = Some(999);
+        reservation
+            .start(handle, invalid, vec![1], true)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    reservation.status(handle).await,
+                    Ok(OrderedMarkerWriteStatus::NotAdmitted(_))
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("preflight refusal must remain inspectable");
+        assert!(
+            registry
+                .ordered_owner("recorder-pin", &central)
+                .unwrap()
+                .is_some(),
+            "receipt must pin supervisor"
+        );
+        reservation.forget(handle).await.unwrap();
+        recorder.retry_driver();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(recorder.driver_status(), RecordingDriverStatus::Finished) {
+                    break;
+                }
+                recorder.retry_driver();
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("supervisor cleanup after receipt retirement");
+        central
+            .release_connection_lease("recorder-pin", "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        drop(recorder);
+        drop(registry);
+        drop(central);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn recorder_shutdown_waits_for_held_open_receipt() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, OrderedRecordingDeclaration, OrderedRecordingMember,
+            RecordingDriverStatus,
+        };
+        let central = std::sync::Arc::new(open().await);
+        ready_peer(&central, "stop-start", vec![hrm_service()]).await;
+        let key = central.peer_key_for("stop-start").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-stop-start-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = std::sync::Arc::new(JournalRegistry::default());
+        registry.configure_directory(&path).unwrap();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: "stop-start".into(),
+            connection_generation: connection,
+            database_generation: database,
+            members: vec![OrderedRecordingMember {
+                member_id: 1,
+                public_member_id: "heart".into(),
+                selector: hrm_selector(0),
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let recorder = OrderedRecording::prepare(
+            central.clone(),
+            registry.clone(),
+            "stop-start".into(),
+            JournalQuota {
+                max_bytes: 1 << 20,
+                max_records: 16,
+            },
+            declaration,
+        )
+        .await
+        .unwrap();
+        central.boundary().block_op(FaultOp::OrderedOpen);
+        let starting = {
+            let recorder = recorder.clone();
+            tokio::spawn(async move {
+                recorder
+                    .start_receipt(
+                        OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("ordered_open", 1),
+        )
+        .await
+        .unwrap();
+        let stopping = {
+            let recorder = recorder.clone();
+            tokio::spawn(async move { recorder.shutdown().await })
+        };
+        tokio::task::yield_now().await;
+        assert!(
+            !stopping.is_finished(),
+            "shutdown must wait for the retained start outcome"
+        );
+        central.boundary().unblock_op(FaultOp::OrderedOpen);
+        let receipt = starting.await.unwrap().unwrap();
+        assert_eq!(receipt["state"], "active");
+        let _ = stopping.await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(recorder.driver_status(), RecordingDriverStatus::Finished) {
+                    break;
+                }
+                recorder.retry_driver();
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("supervised shutdown");
+        assert_eq!(recorder.start_status()["state"], "ready");
+        central
+            .release_connection_lease("stop-start", "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        drop(recorder);
+        drop(registry);
+        drop(central);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn recorder_cleanup_preserves_other_same_peer_lease() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, OrderedRecordingDeclaration, OrderedRecordingMember,
+            RecordingDriverStatus,
+        };
+        let central = std::sync::Arc::new(open().await);
+        ready_peer(&central, "recording-shared", vec![hrm_service()]).await;
+        let key = central.peer_key_for("recording-shared").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-shared-recorder-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = std::sync::Arc::new(JournalRegistry::default());
+        registry.configure_directory(&path).unwrap();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: "recording-shared".into(),
+            connection_generation: connection,
+            database_generation: database,
+            members: vec![OrderedRecordingMember {
+                member_id: 1,
+                public_member_id: "heart".into(),
+                selector: hrm_selector(0),
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let recorder = OrderedRecording::prepare(
+            central.clone(),
+            registry.clone(),
+            "recording-shared".into(),
+            JournalQuota {
+                max_bytes: 1 << 20,
+                max_records: 16,
+            },
+            declaration,
+        )
+        .await
+        .unwrap();
+        recorder
+            .start_receipt(OpControl::budget_ms(5000).with_connection_lease("lease-a".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_lease_count(&key))
+                .await,
+            2
+        );
+        let disconnects = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "disconnect")
+            .count();
+        let _ = recorder.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(recorder.driver_status(), RecordingDriverStatus::Finished) {
+                    break;
+                }
+                recorder.retry_driver();
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("recorder shutdown");
+        assert!(
+            central
+                .with_core(|core| core.holds_lease(&key, "lease-a"))
+                .await
+        );
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_lease_count(&key))
+                .await,
+            1
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "disconnect")
+                .count(),
+            disconnects
+        );
+        assert_eq!(
+            registry
+                .stop_ordered_host_receipt("recording-shared")
+                .await
+                .unwrap()["hostCleanup"]["state"],
+            "released"
+        );
+        central
+            .release_connection_lease("recording-shared", "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        drop(recorder);
+        drop(registry);
+        drop(central);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn marker_reservation_factories_share_owner_and_block_group_ack() {
+        let central = open().await;
+        let id = central.reserve_ordered_batch("singleton-peer").unwrap();
+        let first = central
+            .marker_reservation_owner("singleton-peer", id, None)
+            .await
+            .unwrap();
+        let second = central
+            .marker_reservation_owner("singleton-peer", id, None)
+            .await
+            .unwrap();
+        assert!(
+            central
+                .marker_reservation_owner("singleton-peer", id, Some(77))
+                .await
+                .is_err()
+        );
+        let handle = first.reserve("client-one").await.unwrap();
+        assert_eq!(second.reserve("client-one").await.unwrap(), handle);
+        assert!(second.reserve("client-two").await.is_err());
+        assert_eq!(
+            central
+                .retry_retained_ordered_batch("singleton-peer", id, OpControl::budget_ms(5000))
+                .await
+                .unwrap(),
+            super::OrderedCleanupOutcome::Released
+        );
+        assert!(
+            central
+                .acknowledge_ordered_batch("singleton-peer", id)
+                .await
+                .is_err()
+        );
+        first.cancel(handle).await.unwrap();
+        second.forget(handle).await.unwrap();
+        central
+            .acknowledge_ordered_batch("singleton-peer", id)
+            .await
+            .unwrap();
+        assert!(first.reserve("after-ack").await.is_err());
+        central
+            .forget_ordered_batch("singleton-peer", id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn recording_owner_cannot_release_pending_marker_credit() {
+        let central = open().await;
+        ready_peer(&central, "marker-owner", vec![hrm_service()]).await;
+        let peer_key = central.peer_key_for("marker-owner").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let (id, token) = central.reserve_ordered_recording("marker-owner").unwrap();
+        let request = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "marker-recorder".into(),
+            delivery: None,
+            preference: None,
+        };
+        central
+            .open_ordered_recording(
+                "marker-owner",
+                id,
+                token,
+                &connection,
+                &database,
+                &[request],
+                8,
+                128,
+                2,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        central
+            .reserve_ordered_marker_credit("marker-owner", id, 0, Some(token))
+            .await
+            .unwrap();
+        central
+            .reserve_ordered_marker_credit("marker-owner", id, 0, Some(token))
+            .await
+            .unwrap();
+        assert!(
+            central
+                .release_ordered_recording("marker-owner", id, token)
+                .await
+                .is_err()
+        );
+        assert!(
+            central
+                .finish_ordered_marker_credit("marker-owner", id, 0, Some(token))
+                .await
+                .is_err()
+        );
+        assert!(
+            central
+                .release_ordered_marker_credit("marker-owner", id, 0, Some(token + 1))
+                .await
+                .is_err()
+        );
+        central
+            .release_ordered_marker_credit("marker-owner", id, 0, Some(token))
+            .await
+            .unwrap(); // authoritative NotAdmitted
+        assert_eq!(
+            central
+                .retry_ordered_recording_cleanup(
+                    "marker-owner",
+                    id,
+                    token,
+                    OpControl::budget_ms(5000)
+                )
+                .await
+                .unwrap(),
+            super::OrderedCleanupOutcome::PendingDrain
+        );
+        let terminal = central
+            .poll_ordered_recording("marker-owner", id, token)
+            .await
+            .unwrap();
+        central
+            .acknowledge_ordered_recording("marker-owner", id, token, terminal.delivery_id.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            central
+                .retry_ordered_recording_cleanup(
+                    "marker-owner",
+                    id,
+                    token,
+                    OpControl::budget_ms(5000)
+                )
+                .await
+                .unwrap(),
+            super::OrderedCleanupOutcome::Released
+        );
+        central
+            .acknowledge_ordered_recording_batch("marker-owner", id, token)
+            .await
+            .unwrap();
+        central
+            .forget_ordered_batch("marker-owner", id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn recording_marker_started_retains_owner_until_settled_and_acked() {
+        use crate::boundary::{
+            GattSnapshotIdentity, OrderedMarkerWritePhase, OrderedMarkerWriteRequest,
+            OrderedMarkerWriteStatus,
+        };
+        let central = open().await;
+        let identity = GattSnapshotIdentity {
+            owner: "fake-graph".into(),
+            attachment: 1,
+            revision: 2,
+        };
+        central
+            .boundary()
+            .set_gatt_snapshot_identity("marker-started", identity.clone());
+        ready_peer(&central, "marker-started", vec![writable_hrm_service()]).await;
+        let peer_key = central.peer_key_for("marker-started").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let (id, token) = central.reserve_ordered_recording("marker-started").unwrap();
+        let claim = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "marker-started-recorder".into(),
+            delivery: None,
+            preference: None,
+        };
+        central
+            .open_ordered_recording(
+                "marker-started",
+                id,
+                token,
+                &connection,
+                &database,
+                &[claim],
+                8,
+                128,
+                2,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        let owner = central
+            .inner
+            .ordered_batches
+            .get("marker-started", id)
+            .unwrap();
+        let target = owner.lock().await.claims[0].scope.clone();
+        let request = OrderedMarkerWriteRequest {
+            marker_id: 0,
+            connection_generation: connection,
+            snapshot_identity: identity,
+            target,
+            value: vec![7],
+            with_response: true,
+        };
+        let mut out_of_range = request.clone();
+        out_of_range.target.4 = i64::MAX as u64 + 1;
+        assert!(
+            central
+                .start_ordered_marker_write("marker-started", id, Some(token), out_of_range)
+                .await
+                .is_err()
+        );
+        let mut oversized = request.clone();
+        oversized.value = vec![0; 513];
+        assert!(
+            central
+                .start_ordered_marker_write("marker-started", id, Some(token), oversized)
+                .await
+                .is_err()
+        );
+        let mut stale = request.clone();
+        stale.snapshot_identity.revision += 1;
+        assert!(
+            central
+                .start_ordered_marker_write("marker-started", id, Some(token), stale)
+                .await
+                .is_err()
+        );
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "ordered_marker_pending")
+        );
+        central.boundary().block_op(FaultOp::OrderedMarkerStart);
+        let waiter = {
+            let central = central.clone();
+            let request = request.clone();
+            tokio::spawn(async move {
+                central
+                    .start_ordered_marker_write("marker-started", id, Some(token), request)
+                    .await
+            })
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("ordered_marker_start", 1),
+        )
+        .await
+        .unwrap();
+        waiter.abort();
+        let status = tokio::time::timeout(
+            Duration::from_secs(2),
+            central.ordered_marker_write_status("marker-started", id, Some(token), &request),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            status,
+            OrderedMarkerWriteStatus::Admitted {
+                write: OrderedMarkerWritePhase::Started(_),
+                ..
+            }
+        ));
+        assert_eq!(
+            central
+                .start_ordered_marker_write("marker-started", id, Some(token), request.clone())
+                .await
+                .unwrap(),
+            status
+        );
+        assert_eq!(
+            central
+                .cancel_ordered_marker_write_by_id("marker-started", id, Some(token), 0)
+                .await
+                .unwrap(),
+            status
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "ordered_marker_start")
+                .count(),
+            1
+        );
+        central.boundary().unblock_op(FaultOp::OrderedMarkerStart);
+        let mut different = request.clone();
+        different.value.push(8);
+        assert!(
+            central
+                .start_ordered_marker_write("marker-started", id, Some(token), different)
+                .await
+                .is_err()
+        );
+        assert!(
+            central
+                .release_ordered_recording("marker-started", id, token)
+                .await
+                .is_err()
+        );
+        let delivery = central
+            .poll_ordered_recording("marker-started", id, token)
+            .await
+            .unwrap();
+        assert!(matches!(
+            delivery.poll,
+            ubm_core::ordered_notifications::Poll::Record(
+                ubm_core::ordered_notifications::Record::Marker { marker_id: 0, .. }
+            )
+        ));
+        central
+            .acknowledge_ordered_recording(
+                "marker-started",
+                id,
+                token,
+                delivery.delivery_id.unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            central
+                .forget_ordered_marker_write("marker-started", id, Some(token), &request)
+                .await
+                .is_err()
+        );
+        central.boundary().settle_marker_write(id, 0);
+        assert!(matches!(
+            central
+                .ordered_marker_write_status("marker-started", id, Some(token), &request)
+                .await
+                .unwrap(),
+            OrderedMarkerWriteStatus::Admitted {
+                write: OrderedMarkerWritePhase::Settled(_),
+                ..
+            }
+        ));
+        central
+            .forget_ordered_marker_write("marker-started", id, Some(token), &request)
+            .await
+            .unwrap();
+        let mut next = request.clone();
+        next.marker_id = 1;
+        central
+            .boundary()
+            .block_op(FaultOp::OrderedMarkerBeforeAdmission);
+        let waiter = {
+            let central = central.clone();
+            let next = next.clone();
+            tokio::spawn(async move {
+                central
+                    .start_ordered_marker_write("marker-started", id, Some(token), next)
+                    .await
+            })
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("ordered_marker_pending", 2),
+        )
+        .await
+        .unwrap();
+        waiter.abort();
+        assert_eq!(
+            central
+                .start_ordered_marker_write("marker-started", id, Some(token), next.clone())
+                .await
+                .unwrap(),
+            OrderedMarkerWriteStatus::Pending
+        );
+        assert!(
+            central
+                .release_ordered_recording("marker-started", id, token)
+                .await
+                .is_err()
+        );
+        central.boundary().block_op(FaultOp::OrderedMarkerCancel);
+        let cancel_waiter = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .cancel_ordered_marker_write_by_id("marker-started", id, Some(token), 1)
+                    .await
+            })
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("ordered_marker_cancel", 2),
+        )
+        .await
+        .unwrap();
+        cancel_waiter.abort();
+        central.boundary().unblock_op(FaultOp::OrderedMarkerCancel);
+        assert_eq!(
+            central
+                .cancel_ordered_marker_write_by_id("marker-started", id, Some(token), 1)
+                .await
+                .unwrap(),
+            OrderedMarkerWriteStatus::NotAdmitted(None)
+        );
+        assert_eq!(
+            central
+                .cancel_ordered_marker_write_by_id("marker-started", id, Some(token), 1)
+                .await
+                .unwrap(),
+            OrderedMarkerWriteStatus::NotAdmitted(None)
+        );
+        central
+            .forget_ordered_marker_write("marker-started", id, Some(token), &next)
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .unblock_op(FaultOp::OrderedMarkerBeforeAdmission);
+        tokio::task::yield_now().await;
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "ordered_marker_start")
+                .count(),
+            1,
+            "cancelled pre-admission transaction cannot dispatch late"
+        );
+        central
+            .release_ordered_recording("marker-started", id, token)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn queued_marker_rechecks_acquired_write_before_native_dispatch() {
+        use crate::acquired_gatt::{AcquisitionKind, ownership::Admission};
+        use crate::boundary::{GattSnapshotIdentity, OrderedMarkerWriteStatus};
+        let central = open().await;
+        central.boundary().set_gatt_snapshot_identity(
+            "marker-queue",
+            GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, "marker-queue", vec![writable_hrm_service()]).await;
+        let peer_key = central.peer_key_for("marker-queue").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let id = central.reserve_ordered_batch("marker-queue").unwrap();
+        let claim = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "marker-queue-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        central
+            .open_reserved_ordered_batch(
+                "marker-queue",
+                id,
+                &connection,
+                &database,
+                &[claim],
+                8,
+                128,
+                8,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        let request = central
+            .prepare_ordered_marker_request(
+                "marker-queue",
+                id,
+                None,
+                0,
+                &hrm_selector(0),
+                vec![1],
+                true,
+            )
+            .await
+            .unwrap();
+        let blocker = central
+            .inner
+            .gatt_admission
+            .reserve("marker-queue")
+            .unwrap();
+        blocker.wait().await.unwrap();
+        let operation = {
+            let central = central.clone();
+            let request = request.clone();
+            tokio::spawn(async move {
+                central
+                    .start_ordered_marker_write("marker-queue", id, None, request)
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if central
+                    .ordered_marker_next_id("marker-queue", id, None)
+                    .await
+                    .unwrap()
+                    .1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let acquired = central
+            .inner
+            .acquired
+            .reserve("marker-queue", Some("lease-a"), AcquisitionKind::Write)
+            .unwrap();
+        assert!(
+            acquired
+                .resource
+                .admission
+                .set(Admission {
+                    scope: request.target.clone(),
+                    selector: hrm_selector(0),
+                    connection: Some(connection),
+                    database: Some(database)
+                })
+                .is_ok()
+        );
+        drop(blocker);
+        let status = tokio::time::timeout(Duration::from_secs(2), operation)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(status, OrderedMarkerWriteStatus::NotAdmitted(Some(ref error)) if error.code() == ubm_core::contracts::BleErrorCode::OwnershipDenied)
+        );
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "ordered_marker_pending")
+        );
+        drop(acquired);
+        central
+            .forget_ordered_marker_write_by_id("marker-queue", id, None, 0)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reservation_cancel_wins_before_immediate_native_poll() {
+        use crate::boundary::{GattSnapshotIdentity, OrderedMarkerWriteStatus};
+        let central = open().await;
+        central.boundary().set_gatt_snapshot_identity(
+            "marker-prepublish",
+            GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, "marker-prepublish", vec![writable_hrm_service()]).await;
+        let peer_key = central.peer_key_for("marker-prepublish").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let id = central.reserve_ordered_batch("marker-prepublish").unwrap();
+        let claim = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "marker-prepublish-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        central
+            .open_reserved_ordered_batch(
+                "marker-prepublish",
+                id,
+                &connection,
+                &database,
+                &[claim],
+                8,
+                128,
+                8,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        let owner = central
+            .marker_reservation_owner("marker-prepublish", id, None)
+            .await
+            .unwrap();
+        let handle = owner.reserve("prepublish-test").await.unwrap();
+        let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        *super::lock_std(&central.inner.marker_before_publication) =
+            Some((entered.clone(), release.clone()));
+        owner
+            .start(handle, hrm_selector(0), vec![1], true)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+        let cancelled = {
+            let owner = owner.clone();
+            tokio::spawn(async move { owner.cancel(handle).await })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !owner.cancel_latched(handle).await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        cancelled.abort(); // losing the waiter must not lose the cancellation intent
+        let retry = {
+            let owner = owner.clone();
+            tokio::spawn(async move { owner.cancel(handle).await })
+        };
+        release.notify_one();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), retry)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            OrderedMarkerWriteStatus::NotAdmitted(_)
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if owner.forget(handle).await.is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "ordered_marker_pending")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_queued_marker_cannot_dispatch_after_forget() {
+        use crate::boundary::{GattSnapshotIdentity, OrderedMarkerWriteStatus};
+        let central = open().await;
+        central.boundary().set_gatt_snapshot_identity(
+            "marker-cancel-queue",
+            GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(
+            &central,
+            "marker-cancel-queue",
+            vec![writable_hrm_service()],
+        )
+        .await;
+        let peer_key = central.peer_key_for("marker-cancel-queue").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let id = central
+            .reserve_ordered_batch("marker-cancel-queue")
+            .unwrap();
+        let claim = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "marker-cancel-queue-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        central
+            .open_reserved_ordered_batch(
+                "marker-cancel-queue",
+                id,
+                &connection,
+                &database,
+                &[claim],
+                8,
+                128,
+                8,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        let request = central
+            .prepare_ordered_marker_request(
+                "marker-cancel-queue",
+                id,
+                None,
+                0,
+                &hrm_selector(0),
+                vec![1],
+                true,
+            )
+            .await
+            .unwrap();
+        let blocker = central
+            .inner
+            .gatt_admission
+            .reserve("marker-cancel-queue")
+            .unwrap();
+        blocker.wait().await.unwrap();
+        let operation = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .start_ordered_marker_write("marker-cancel-queue", id, None, request)
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if central
+                    .ordered_marker_next_id("marker-cancel-queue", id, None)
+                    .await
+                    .unwrap()
+                    .1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            central
+                .cancel_ordered_marker_write_by_id("marker-cancel-queue", id, None, 0)
+                .await
+                .unwrap(),
+            OrderedMarkerWriteStatus::NotAdmitted(_)
+        ));
+        central
+            .forget_ordered_marker_write_by_id("marker-cancel-queue", id, None, 0)
+            .await
+            .unwrap();
+        drop(blocker);
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), operation)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            OrderedMarkerWriteStatus::NotAdmitted(_)
+        ));
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "ordered_marker_pending")
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnect_fences_queued_marker_before_native_dispatch() {
+        use crate::boundary::{GattSnapshotIdentity, OrderedMarkerWriteStatus};
+        let central = open().await;
+        central.boundary().set_gatt_snapshot_identity(
+            "marker-disconnect",
+            GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, "marker-disconnect", vec![writable_hrm_service()]).await;
+        let peer_key = central.peer_key_for("marker-disconnect").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let id = central.reserve_ordered_batch("marker-disconnect").unwrap();
+        let claim = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "marker-disconnect-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        central
+            .open_reserved_ordered_batch(
+                "marker-disconnect",
+                id,
+                &connection,
+                &database,
+                &[claim],
+                8,
+                128,
+                8,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        let request = central
+            .prepare_ordered_marker_request(
+                "marker-disconnect",
+                id,
+                None,
+                0,
+                &hrm_selector(0),
+                vec![1],
+                true,
+            )
+            .await
+            .unwrap();
+        let blocker = central
+            .inner
+            .gatt_admission
+            .reserve("marker-disconnect")
+            .unwrap();
+        blocker.wait().await.unwrap();
+        let operation = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .start_ordered_marker_write("marker-disconnect", id, None, request)
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if central
+                    .ordered_marker_next_id("marker-disconnect", id, None)
+                    .await
+                    .unwrap()
+                    .1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        central
+            .boundary()
+            .push_event(RadioEvent::Disconnected("marker-disconnect".into()))
+            .expect("synthetic event admission failed");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if central
+                    .with_core(|core| core.connection_state(&peer_key))
+                    .await
+                    != Some(ubm_core::central::ConnectionState::Connected)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(blocker);
+        let status = tokio::time::timeout(Duration::from_secs(2), operation)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            status,
+            OrderedMarkerWriteStatus::NotAdmitted(Some(_))
+        ));
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "ordered_marker_pending")
+        );
+        central
+            .forget_ordered_marker_write_by_id("marker-disconnect", id, None, 0)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn marker_after_source_terminal_is_not_admitted_and_preserves_terminal() {
+        use crate::boundary::{
+            GattSnapshotIdentity, OrderedMarkerWriteStatus, OrderedSourceCleanup, RadioBoundary,
+        };
+        use ubm_core::ordered_notifications::{EndReason, Poll};
+        let central = open().await;
+        central.boundary().set_gatt_snapshot_identity(
+            "marker-ended",
+            GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, "marker-ended", vec![writable_hrm_service()]).await;
+        let peer_key = central.peer_key_for("marker-ended").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let id = central.reserve_ordered_batch("marker-ended").unwrap();
+        let claim = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "marker-ended-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        central
+            .open_reserved_ordered_batch(
+                "marker-ended",
+                id,
+                &connection,
+                &database,
+                &[claim],
+                8,
+                128,
+                8,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        let request = central
+            .prepare_ordered_marker_request(
+                "marker-ended",
+                id,
+                None,
+                0,
+                &hrm_selector(0),
+                vec![1],
+                true,
+            )
+            .await
+            .unwrap();
+        let owner = central
+            .inner
+            .ordered_batches
+            .get("marker-ended", id)
+            .unwrap();
+        let lease = {
+            let state = owner.lock().await;
+            match state.source.clone().unwrap() {
+                OrderedSourceCleanup::Lease(lease) => lease,
+                _ => panic!("lease not installed"),
+            }
+        };
+        central
+            .boundary()
+            .block_op(FaultOp::OrderedMarkerBeforeAdmission);
+        let operation = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .start_ordered_marker_write("marker-ended", id, None, request)
+                    .await
+            })
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("ordered_marker_pending", 1),
+        )
+        .await
+        .unwrap();
+        central
+            .boundary()
+            .retire_ordered_source(&lease, EndReason::ServiceChanged)
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .unblock_op(FaultOp::OrderedMarkerBeforeAdmission);
+        assert!(matches!(
+            operation.await.unwrap().unwrap(),
+            OrderedMarkerWriteStatus::NotAdmitted(Some(_))
+        ));
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "ordered_marker_start")
+        );
+        let terminal = central
+            .poll_ordered_delivery("marker-ended", id)
+            .await
+            .unwrap();
+        assert!(
+            matches!(terminal.poll, Poll::Terminal(ref value) if value.reason == EndReason::ServiceChanged && value.source_rejection.is_none())
+        );
+        central
+            .acknowledge_ordered_delivery("marker-ended", id, terminal.delivery_id.unwrap())
+            .await
+            .unwrap();
+        central
+            .forget_ordered_marker_write_by_id("marker-ended", id, None, 0)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordered_cleanup_failure_preserves_source_terminal_and_admitted_prefix() {
+        use ubm_core::ordered_notifications::{EndReason, Phase, Poll, Record};
+        for (peer, fault, lifecycle) in [
+            ("ordered-fence-failure", FaultOp::OrderedSourceFence, false),
+            (
+                "ordered-retire-failure",
+                FaultOp::OrderedSourceRetire,
+                false,
+            ),
+            (
+                "ordered-lifecycle-failure",
+                FaultOp::OrderedSourceRetire,
+                true,
+            ),
+        ] {
+            let central = open().await;
+            ready_peer(&central, peer, vec![hrm_service()]).await;
+            let key = central.peer_key_for(peer).await.unwrap();
+            let (connection, database) = {
+                let core = central.inner.core.lock().await;
+                (
+                    core.connection_generation(&key).unwrap(),
+                    core.database_generation(&key).unwrap(),
+                )
+            };
+            let id = central.reserve_ordered_batch(peer).unwrap();
+            let claim = super::OrderedClaimRequest {
+                member_id: 1,
+                selector: hrm_selector(0),
+                consumer: peer.into(),
+                delivery: None,
+                preference: None,
+            };
+            central
+                .open_reserved_ordered_batch(
+                    peer,
+                    id,
+                    &connection,
+                    &database,
+                    &[claim],
+                    8,
+                    128,
+                    8,
+                    OpControl::budget_ms(5000),
+                )
+                .await
+                .unwrap();
+            let owner = central.inner.ordered_batches.get(peer, id).unwrap();
+            let (scope, epoch, lease) = {
+                let state = owner.lock().await;
+                (
+                    state.claims[0].scope.clone(),
+                    state.claims[0].epoch,
+                    match state.source.clone().unwrap() {
+                        crate::boundary::OrderedSourceCleanup::Lease(lease) => lease,
+                        _ => panic!("source lease"),
+                    },
+                )
+            };
+            central
+                .boundary()
+                .push_event(RadioEvent::Notification {
+                    peer_id: scope.0.clone(),
+                    service_uuid: scope.1.clone(),
+                    service_occurrence: scope.2,
+                    characteristic_uuid: scope.3.clone(),
+                    characteristic_occurrence: scope.4,
+                    epoch,
+                    value: vec![0x41],
+                })
+                .expect("synthetic event admission failed");
+            central
+                .boundary()
+                .fail_next(fault, "injected cleanup failure");
+            if lifecycle {
+                let generation = super::Generations {
+                    connection: Some(connection.clone()),
+                    database: Some(database.clone()),
+                };
+                super::retire_peer_ordered_groups(
+                    &central.inner,
+                    peer,
+                    &generation,
+                    EndReason::ServiceChanged,
+                )
+                .await;
+                assert_eq!(
+                    central
+                        .retained_ordered_batch_errors(peer, id)
+                        .await
+                        .unwrap()
+                        .1
+                        .unwrap()
+                        .detail(),
+                    Some("injected cleanup failure")
+                );
+            } else {
+                let error = central
+                    .retry_retained_ordered_batch(peer, id, OpControl::budget_ms(5000))
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.detail(), Some("injected cleanup failure"));
+            }
+            assert_eq!(
+                central.ordered_owner_status(&lease).unwrap().phase,
+                Phase::Active,
+                "failure must not preempt the source terminal"
+            );
+            central
+                .retry_retained_ordered_batch(peer, id, OpControl::budget_ms(5000))
+                .await
+                .unwrap();
+            let value = central.poll_ordered_delivery(peer, id).await.unwrap();
+            assert!(
+                matches!(value.poll, Poll::Record(Record::Value { ref value, .. }) if value == &[0x41])
+            );
+            central
+                .acknowledge_ordered_delivery(peer, id, value.delivery_id.unwrap())
+                .await
+                .unwrap();
+            let terminal = central.poll_ordered_delivery(peer, id).await.unwrap();
+            let expected = if lifecycle {
+                EndReason::ServiceChanged
+            } else {
+                EndReason::Closed
+            };
+            assert!(matches!(terminal.poll, Poll::Terminal(ref value) if value.reason == expected));
+            central
+                .acknowledge_ordered_delivery(peer, id, terminal.delivery_id.unwrap())
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn recorder_marker_wrappers_preserve_rejection_until_ack_and_forget() {
+        use crate::boundary::{GattSnapshotIdentity, OrderedMarkerWriteStatus};
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, RecordingClose, RecordingOpen, RecordingStep,
+        };
+        let central = std::sync::Arc::new(open().await);
+        central.boundary().set_gatt_snapshot_identity(
+            "marker-recorder",
+            GattSnapshotIdentity {
+                owner: "fake".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        );
+        ready_peer(&central, "marker-recorder", vec![writable_hrm_service()]).await;
+        let key = central.peer_key_for("marker-recorder").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-marker-recorder-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&path).unwrap();
+        let journal = registry
+            .open(
+                "marker-recorder",
+                &serde_json::json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 64,
+                },
+            )
+            .unwrap();
+        let recorder = OrderedRecording::reserve(
+            central.clone(),
+            journal.clone(),
+            "marker-recorder".into(),
+            "marker-producer".into(),
+            "marker-recorder".into(),
+        )
+        .unwrap();
+        let id = recorder.collection_id();
+        let claim = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "marker-recorder-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        recorder
+            .open(RecordingOpen {
+                connection_generation: connection,
+                database_generation: database,
+                requests: vec![claim],
+                max_items: 8,
+                max_bytes: 128,
+                max_controls: 8,
+                control: OpControl::budget_ms(5000),
+            })
+            .await
+            .unwrap();
+        assert_eq!(recorder.marker_next_id().await.unwrap(), (Some(0), false));
+        let reservation = recorder.marker_reservation_owner().await.unwrap();
+        let handle = reservation.reserve("marker-cancel").await.unwrap();
+        central
+            .boundary()
+            .block_op(FaultOp::OrderedMarkerBeforeAdmission);
+        reservation
+            .start(handle, hrm_selector(0), vec![9], true)
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("ordered_marker_pending", 1),
+        )
+        .await
+        .unwrap();
+        reservation.cancel(handle).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    reservation.status(handle).await,
+                    Ok(OrderedMarkerWriteStatus::NotAdmitted(_))
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancel must settle before native admission");
+        central
+            .boundary()
+            .unblock_op(FaultOp::OrderedMarkerBeforeAdmission);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if reservation.forget(handle).await.is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancel receipt must remain forgettable");
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "ordered_marker_start")
+        );
+        assert_eq!(recorder.marker_next_id().await.unwrap(), (Some(1), false));
+        let request = recorder
+            .prepare_marker_request(1, &hrm_selector(0), vec![3], true)
+            .await
+            .unwrap();
+        assert!(
+            central
+                .ordered_marker_write_status_by_id("marker-recorder", id, None, 1)
+                .await
+                .is_err()
+        );
+        assert!(matches!(
+            recorder.start_marker_write(request.clone()).await.unwrap(),
+            OrderedMarkerWriteStatus::Admitted { .. }
+        ));
+        assert_eq!(recorder.retained_marker_request(1).await.unwrap(), request);
+        assert_eq!(recorder.step().await.unwrap(), RecordingStep::Committed);
+        assert!(recorder.forget_marker_write_by_id(1).await.is_err());
+        central.boundary().settle_marker_write(id, 1);
+        recorder.marker_write_status_by_id(1).await.unwrap();
+        recorder.forget_marker_write_by_id(1).await.unwrap();
+        let owner = central
+            .inner
+            .ordered_batches
+            .get("marker-recorder", id)
+            .unwrap();
+        let (scope, epoch) = {
+            let state = owner.lock().await;
+            (state.claims[0].scope.clone(), state.claims[0].epoch)
+        };
+        central
+            .boundary()
+            .push_event(RadioEvent::Notification {
+                peer_id: scope.0.clone(),
+                service_uuid: scope.1.clone(),
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3.clone(),
+                characteristic_occurrence: scope.4,
+                epoch,
+                value: vec![0x54],
+            })
+            .expect("synthetic event admission failed");
+        let next = recorder
+            .prepare_marker_request(2, &hrm_selector(0), vec![4], true)
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .force_marker_ordinal("marker-recorder", u64::MAX);
+        assert!(matches!(
+            recorder.start_marker_write(next).await.unwrap(),
+            OrderedMarkerWriteStatus::Rejected(_)
+        ));
+        assert!(
+            recorder.forget_marker_write_by_id(2).await.is_err(),
+            "terminal evidence must be journaled and ACKed first"
+        );
+        for _ in 0..3 {
+            assert!(matches!(
+                recorder.close(OpControl::budget_ms(5000)).await.unwrap(),
+                RecordingClose::PendingDrain | RecordingClose::Progress
+            ));
+        }
+        let terminal_page = journal.prepare(16, 4096).unwrap();
+        let records = terminal_page["records"].as_array().unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|entry| entry["record"]["bytes"] == serde_json::json!([0x54])),
+            "the earlier admitted value is durable: {records:?}"
+        );
+        assert!(
+            records
+                .iter()
+                .any(|entry| entry["record"]["sourceRejection"]
+                    == serde_json::json!({"kind":"marker", "markerId":"2"})),
+            "the exact rejection is durable: {records:?}"
+        );
+        recorder.forget_marker_write_by_id(2).await.unwrap();
+        for _ in 0..10 {
+            if recorder.close(OpControl::budget_ms(5000)).await.unwrap() == RecordingClose::Finished
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            recorder.close(OpControl::budget_ms(5000)).await.unwrap(),
+            RecordingClose::Finished
+        );
+        let page = journal.prepare(16, 4096).unwrap();
+        let records = page["records"].as_array().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|entry| entry["record"]["kind"] == "terminal")
+                .count(),
+            1,
+            "{records:?}"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .find(|entry| entry["record"]["kind"] == "terminal")
+                .unwrap()["record"]["reason"]["kind"],
+            "source-ordinal-exhausted"
+        );
+        drop(recorder);
+        drop(journal);
+        drop(central);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn ordered_recorder_retains_failed_setup_until_terminal_journaled() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{OrderedRecording, RecordingClose, RecordingOpen};
+        let central = std::sync::Arc::new(open().await);
+        ready_peer(&central, "recording-fail", vec![hrm_service()]).await;
+        let peer_key = central.peer_key_for("recording-fail").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&peer_key).unwrap(),
+                core.database_generation(&peer_key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-recording-failed-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&path).unwrap();
+        let journal = registry
+            .open(
+                "recorder-failed",
+                &serde_json::json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 64,
+                },
+            )
+            .unwrap();
+        let recorder = OrderedRecording::reserve(
+            central.clone(),
+            journal.clone(),
+            "recorder-failed".into(),
+            "producer-failed".into(),
+            "recording-fail".into(),
+        )
+        .unwrap();
+        central
+            .boundary()
+            .fail_next(FaultOp::Subscribe, "synthetic refusal");
+        let request = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "recorder-failed-owner".into(),
+            delivery: None,
+            preference: None,
+        };
+        assert!(
+            recorder
+                .open(RecordingOpen {
+                    connection_generation: connection,
+                    database_generation: database,
+                    requests: vec![request],
+                    max_items: 8,
+                    max_bytes: 128,
+                    max_controls: 8,
+                    control: OpControl::budget_ms(5000)
+                })
+                .await
+                .is_err()
+        );
+        let collection = recorder.collection_id();
+        let owner = central
+            .inner
+            .ordered_batches
+            .get("recording-fail", collection)
+            .unwrap();
+        let lease = match &owner.lock().await.source {
+            Some(crate::boundary::OrderedSourceCleanup::Lease(lease)) => lease.clone(),
+            _ => panic!("failed enable must retain its exact source"),
+        };
+        assert_eq!(
+            central.ordered_owner_status(&lease).unwrap().phase,
+            ubm_core::ordered_notifications::Phase::Staging,
+            "the source must still be able to deliver its ordered terminal"
+        );
+        assert!(
+            central
+                .poll_ordered_delivery("recording-fail", collection)
+                .await
+                .is_err(),
+            "the recorder retains exclusive delivery ownership"
+        );
+        let mut finished = false;
+        for _ in 0..20 {
+            if recorder.close(OpControl::budget_ms(5000)).await.unwrap() == RecordingClose::Finished
+            {
+                finished = true;
+                break;
+            }
+        }
+        assert!(finished, "failed setup must retain and settle its terminal");
+        let page = journal.prepare(16, 4096).unwrap();
+        let records = page["records"].as_array().unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "the exact setup terminal must be journaled once"
+        );
+        assert_eq!(records[0]["record"]["kind"], "terminal");
+        assert_eq!(records[0]["record"]["reason"]["kind"], "setup-failed");
+        assert_eq!(
+            records[0]["record"]["reason"]["failure"]["detail"],
+            "synthetic refusal"
+        );
+        assert_eq!(records[0]["metadata"]["sourceGeneration"]["value"], "1");
+        assert_eq!(
+            recorder.close(OpControl::budget_ms(5000)).await.unwrap(),
+            RecordingClose::Finished
+        );
+        drop(recorder);
+        drop(journal);
+        drop(central);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[tokio::test]
+    async fn ordered_recorder_failed_enable_keeps_value_and_retries_terminal_after_full_journal() {
+        use crate::continuation_journal::{JournalQuota, JournalRegistry};
+        use crate::ordered_recording::{
+            OrderedRecording, RecordingClose, RecordingError, RecordingOpen,
+        };
+        let central = std::sync::Arc::new(open().await);
+        ready_peer(&central, "recording-prefix", vec![hrm_service()]).await;
+        let key = central.peer_key_for("recording-prefix").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let path = std::env::temp_dir().join(format!(
+            "ubm-recording-prefix-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&path).unwrap();
+        let journal = registry
+            .open(
+                "prefix",
+                &serde_json::json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 1,
+                },
+            )
+            .unwrap();
+        let recorder = OrderedRecording::reserve(
+            central.clone(),
+            journal.clone(),
+            "prefix".into(),
+            "prefix-producer".into(),
+            "recording-prefix".into(),
+        )
+        .unwrap();
+        let collection = recorder.collection_id();
+        central.boundary().block_op(FaultOp::Subscribe);
+        central
+            .boundary()
+            .fail_next(FaultOp::Subscribe, "prefix refusal");
+        let task = tokio::spawn({
+            let recorder = recorder.clone();
+            async move {
+                let request = super::OrderedClaimRequest {
+                    member_id: 1,
+                    selector: hrm_selector(0),
+                    consumer: "prefix-owner".into(),
+                    delivery: None,
+                    preference: None,
+                };
+                recorder
+                    .open(RecordingOpen {
+                        connection_generation: connection,
+                        database_generation: database,
+                        requests: vec![request],
+                        max_items: 8,
+                        max_bytes: 1024,
+                        max_controls: 8,
+                        control: OpControl::budget_ms(5000),
+                    })
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            central.boundary().wait_for_calls("set_notifications", 1),
+        )
+        .await
+        .unwrap();
+        let activation = {
+            let source = central.boundary().ordered.lock().unwrap();
+            source.claims.get(&collection).unwrap()[0].2.clone()
+        };
+        let scope = activation.scope;
+        central
+            .boundary()
+            .push_event(RadioEvent::Notification {
+                peer_id: scope.0,
+                service_uuid: scope.1,
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3,
+                characteristic_occurrence: scope.4,
+                epoch: activation.activation_epoch,
+                value: vec![42],
+            })
+            .expect("synthetic event admission failed");
+        central.boundary().unblock_op(FaultOp::Subscribe);
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(
+            recorder.close(OpControl::budget_ms(5000)).await.unwrap(),
+            RecordingClose::Progress
+        );
+        let page = journal.prepare(16, 4096).unwrap();
+        assert_eq!(page["records"][0]["record"]["kind"], "value");
+        assert_eq!(
+            page["records"][0]["record"]["bytes"],
+            serde_json::json!([42])
+        );
+        assert!(
+            matches!(recorder.close(OpControl::budget_ms(5000)).await, Err(RecordingError::Storage(error)) if error.kind == "storage.full")
+        );
+        let owner = central
+            .inner
+            .ordered_batches
+            .get("recording-prefix", collection)
+            .expect("failed commit retains the owner");
+        let (terminal_id, terminal) = {
+            let state = owner.lock().await;
+            let delivery = super::lock_std(&state.delivery_state);
+            delivery
+                .pending
+                .clone()
+                .expect("failed commit must not ACK the terminal")
+        };
+        assert!(matches!(
+            terminal,
+            ubm_core::ordered_notifications::Poll::Terminal(_)
+        ));
+        assert_eq!(journal.status().unwrap()["records"], 1);
+        assert!(
+            central
+                .poll_ordered_delivery("recording-prefix", collection)
+                .await
+                .is_err()
+        );
+        journal
+            .acknowledge(page["token"].as_str().unwrap())
+            .unwrap();
+        let mut finished = false;
+        for _ in 0..20 {
+            if recorder.close(OpControl::budget_ms(5000)).await.unwrap() == RecordingClose::Finished
+            {
+                finished = true;
+                break;
+            }
+        }
+        assert!(finished);
+        let page = journal.prepare(16, 4096).unwrap();
+        assert_eq!(page["records"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            page["records"][0]["metadata"]["deliveryId"],
+            terminal_id.to_string()
+        );
+        assert_eq!(
+            page["records"][0]["record"]["reason"]["kind"],
+            "setup-failed"
+        );
+        assert_eq!(
+            page["records"][0]["record"]["reason"]["failure"]["detail"],
+            "prefix refusal"
+        );
+        drop(recorder);
+        drop(journal);
+        drop(central);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn source_uncertainty_preserves_accepted_value_and_connection() {
+        use ubm_core::ordered_notifications::{EndReason, Poll, Record};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let key = central.peer_key_for("peer").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let id = central.reserve_ordered_batch("peer").unwrap();
+        let request = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "uncertain".into(),
+            delivery: None,
+            preference: None,
+        };
+        central
+            .open_reserved_ordered_batch(
+                "peer",
+                id,
+                &connection,
+                &database,
+                &[request],
+                8,
+                128,
+                8,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        let owner = central.inner.ordered_batches.get("peer", id).unwrap();
+        let (scope, epoch) = {
+            let state = owner.lock().await;
+            (state.claims[0].scope.clone(), state.claims[0].epoch)
+        };
+        central
+            .boundary()
+            .push_event(RadioEvent::Notification {
+                peer_id: scope.0,
+                service_uuid: scope.1,
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3,
+                characteristic_occurrence: scope.4,
+                epoch,
+                value: vec![42],
+            })
+            .expect("synthetic event admission failed");
+        central
+            .boundary()
+            .push_event(RadioEvent::GattSourceUncertain {
+                peer_id: "peer".into(),
+                identity: snapshot_identity(1),
+                error: DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Gatt,
+                    "gatt.source-overflow",
+                ),
+            })
+            .expect("synthetic event admission failed");
+        // FakeRadio admits notification events synchronously. Wait until the
+        // uncertainty has invalidated this graph before reading the FIFO.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while central.with_core(|core| core.database_state(&key)).await
+                == Some(ubm_core::central::DatabaseState::Current)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let value = central.poll_ordered_delivery("peer", id).await.unwrap();
+        assert!(
+            matches!(value.poll, Poll::Record(Record::Value { ref value, .. }) if value == &[42])
+        );
+        central
+            .acknowledge_ordered_delivery("peer", id, value.delivery_id.unwrap())
+            .await
+            .unwrap();
+        let terminal = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let delivery = central.poll_ordered_delivery("peer", id).await.unwrap();
+                if matches!(delivery.poll, Poll::Terminal(_)) {
+                    break delivery;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(terminal.poll, Poll::Terminal(ref terminal) if matches!(terminal.reason, EndReason::SourceFailed(_)) && terminal.tail_uncertain)
+        );
+        assert!(central.with_core(|core| core.holds_lease(&key, "a")).await);
+        assert_ne!(
+            central.with_core(|core| core.connection_state(&key)).await,
+            Some(ubm_core::central::ConnectionState::Disconnected)
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn ownerless_source_uncertainty_is_public_without_mutating_a_connection() {
+        let central = open().await;
+        let mut events = central.source_uncertainty_events();
+        let error = DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Gatt,
+            "gatt.source",
+        )
+        .with_detail("callback had no accepted graph")
+        .with_platform(
+            crate::errors::PlatformDetail::new("corebluetooth", "unassociated")
+                .with_message("native callback had no admitted cycle"),
+        );
+        central
+            .boundary()
+            .push_event(RadioEvent::GattSourceUncertainUnassociated {
+                peer_id: "peer".into(),
+                error,
+            })
+            .expect("synthetic event admission failed");
+        let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("source uncertainty was not published")
+            .expect("source uncertainty receiver closed");
+        assert_eq!(event.peer_id, "peer");
+        assert_eq!(event.error.code(), BleErrorCode::PlatformFailure);
+        assert_eq!(
+            event
+                .error
+                .platform()
+                .map(|platform| (platform.domain.as_str(), platform.code.as_str())),
+            Some(("corebluetooth", "unassociated"))
+        );
+        assert!(
+            central.peer_key_for("peer").await.is_none(),
+            "an ownerless observation must not invent a graph or connection"
+        );
+        drop(events);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn abandoned_initial_discovery_is_cleaned_and_can_retry() {
+        for (blocked, call) in [
+            (FaultOp::Discover, "discover"),
+            (FaultOp::DiscoveryAccess, "characteristic_access"),
+        ] {
+            let central = open().await;
+            central
+                .connect("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            central.boundary().set_services("peer", vec![hrm_service()]);
+            central.boundary().block_op(blocked);
+            let task = tokio::spawn({
+                let central = central.clone();
+                async move { central.discover("peer", "a", OpControl::unbounded()).await }
+            });
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                central.boundary().wait_for_calls(call, 1),
+            )
+            .await
+            .unwrap();
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            central.boundary().unblock_op(blocked);
+            central
+                .discover("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            let key = central.peer_key_for("peer").await.unwrap();
+            assert_eq!(
+                central.with_core(|core| core.database_state(&key)).await,
+                Some(ubm_core::central::DatabaseState::Current)
+            );
+            assert!(central.with_core(|core| core.holds_lease(&key, "a")).await);
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_adopts_held_discovery_transaction() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central.boundary().block_op(FaultOp::Discover);
+        let task = tokio::spawn({
+            let central = central.clone();
+            async move { central.discover("peer", "a", OpControl::unbounded()).await }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            central.boundary().wait_for_calls("discover", 1),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), central.shutdown())
+            .await
+            .unwrap();
+        assert!(super::lock_std(&central.inner.discovery_transactions).is_empty());
+        central.boundary().unblock_op(FaultOp::Discover);
+        let result = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn graph_retirement_preserves_committed_replacement_and_recovers_abandoned_discovery() {
+        for cancel in [false, true] {
+            let central = open().await;
+            central
+                .connect("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            central.boundary().set_services("peer", vec![hrm_service()]);
+            discover_with_identity(&central, 1).await;
+            central
+                .boundary()
+                .set_gatt_snapshot_identity("peer", snapshot_identity(2));
+            central.boundary().block_op(FaultOp::DiscoveryAccess);
+            let discovery = tokio::spawn({
+                let central = central.clone();
+                async move { central.discover("peer", "a", OpControl::unbounded()).await }
+            });
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                central
+                    .boundary()
+                    .wait_for_calls("characteristic_access", 2),
+            )
+            .await
+            .unwrap();
+            let error = super::contract_error(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "discovery.graph-retired",
+            );
+            super::defer_services_changed(
+                &central.inner,
+                "peer".into(),
+                Some(snapshot_identity(1)),
+                Some(error),
+                true,
+                true,
+            )
+            .await;
+            let retired = super::lock_std(&central.inner.retirement_tail)
+                .take()
+                .unwrap();
+            if cancel {
+                discovery.abort();
+                assert!(discovery.await.unwrap_err().is_cancelled());
+            } else {
+                central.boundary().unblock_op(FaultOp::DiscoveryAccess);
+                discovery.await.unwrap().unwrap();
+            }
+            central.boundary().unblock_op(FaultOp::DiscoveryAccess);
+            let _ = tokio::time::timeout(Duration::from_secs(5), retired)
+                .await
+                .unwrap();
+            let key = central.peer_key_for("peer").await.unwrap();
+            if cancel {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while central.with_core(|core| core.database_state(&key)).await
+                        == Some(ubm_core::central::DatabaseState::Discovering)
+                    {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert_ne!(
+                    central.with_core(|core| core.database_state(&key)).await,
+                    Some(ubm_core::central::DatabaseState::Current)
+                );
+            } else {
+                // A second old event after publication must also be harmless.
+                let error = super::contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "discovery.graph-retired",
+                );
+                super::defer_services_changed(
+                    &central.inner,
+                    "peer".into(),
+                    Some(snapshot_identity(1)),
+                    Some(error),
+                    true,
+                    true,
+                )
+                .await;
+                let retired = super::lock_std(&central.inner.retirement_tail)
+                    .take()
+                    .unwrap();
+                let _ = tokio::time::timeout(Duration::from_secs(5), retired)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    central.with_core(|core| core.database_state(&key)).await,
+                    Some(ubm_core::central::DatabaseState::Current)
+                );
+                assert_eq!(
+                    super::discovery_coordinator(&central.inner, "peer")
+                        .snapshot
+                        .lock()
+                        .await
+                        .identity,
+                    Some(snapshot_identity(2))
+                );
+            }
+            assert!(central.with_core(|core| core.holds_lease(&key, "a")).await);
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn saturated_host_reset_retires_group_after_accepted_value() {
+        use ubm_core::ordered_notifications::{EndReason, Poll, Record};
+        let central = open().await;
+        ready_peer(&central, "overflow-group", vec![hrm_service()]).await;
+        let key = central.peer_key_for("overflow-group").await.unwrap();
+        let (connection, database) = {
+            let core = central.inner.core.lock().await;
+            (
+                core.connection_generation(&key).unwrap(),
+                core.database_generation(&key).unwrap(),
+            )
+        };
+        let id = central.reserve_ordered_batch("overflow-group").unwrap();
+        let request = super::OrderedClaimRequest {
+            member_id: 1,
+            selector: hrm_selector(0),
+            consumer: "ordered-overflow".into(),
+            delivery: None,
+            preference: None,
+        };
+        central
+            .open_reserved_ordered_batch(
+                "overflow-group",
+                id,
+                &connection,
+                &database,
+                &[request],
+                8,
+                128,
+                8,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        let owner = central
+            .inner
+            .ordered_batches
+            .get("overflow-group", id)
+            .unwrap();
+        let (scope, epoch) = {
+            let state = owner.lock().await;
+            (state.claims[0].scope.clone(), state.claims[0].epoch)
+        };
+        central
+            .boundary()
+            .push_event(RadioEvent::Notification {
+                peer_id: scope.0,
+                service_uuid: scope.1,
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3,
+                characteristic_occurrence: scope.4,
+                epoch,
+                value: vec![42],
+            })
+            .expect("synthetic event admission failed");
+        central
+            .boundary()
+            .stage_ordered_source_loss("overflow-group", Some(3))
+            .unwrap();
+        let held = central
+            .inner
+            .retirement_slots
+            .clone()
+            .acquire_many_owned(256)
+            .await
+            .unwrap();
+        let mut resets = central.adapter_reset_events();
+        let mut lifecycle = central.lifecycle_events();
+        central
+            .boundary()
+            .push_event(RadioEvent::Lost("overflow-group".into()))
+            .expect("synthetic event admission failed");
+        let event = tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.kind, super::LifecycleKind::HostReset);
+        let reset = tokio::time::timeout(Duration::from_secs(2), resets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reset.cause,
+            crate::boundary::AdapterLossCause::SourceObservationOverflow
+        );
+        let delivery = central
+            .poll_ordered_delivery("overflow-group", id)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&delivery.poll, Poll::Record(Record::Value { value, .. }) if value == &[42])
+        );
+        assert_eq!(
+            central
+                .poll_ordered_delivery("overflow-group", id)
+                .await
+                .unwrap(),
+            delivery
+        );
+        assert_eq!(
+            central
+                .retry_retained_ordered_batch("overflow-group", id, OpControl::budget_ms(5000))
+                .await
+                .unwrap(),
+            super::OrderedCleanupOutcome::PendingDrain
+        );
+        let delivery_id = delivery.delivery_id.unwrap();
+        let receipt = central
+            .discard_ordered_delivery("overflow-group", id, delivery_id)
+            .await
+            .unwrap();
+        assert!(matches!(
+            receipt.evidence,
+            super::OrderedDiscardEvidence::Value {
+                member: 1,
+                bytes: 1,
+                ..
+            }
+        ));
+        assert_eq!(
+            central
+                .poll_ordered_discard_receipt("overflow-group", id)
+                .await
+                .unwrap(),
+            Some(receipt.clone())
+        );
+        assert_eq!(
+            central
+                .retry_retained_ordered_batch("overflow-group", id, OpControl::budget_ms(5000))
+                .await
+                .unwrap(),
+            super::OrderedCleanupOutcome::PendingDrain
+        );
+        central
+            .acknowledge_ordered_discard_receipt("overflow-group", id, receipt.receipt_id)
+            .await
+            .unwrap();
+        central
+            .acknowledge_ordered_discard_receipt("overflow-group", id, receipt.receipt_id)
+            .await
+            .unwrap();
+        let loss = central
+            .poll_ordered_delivery("overflow-group", id)
+            .await
+            .unwrap();
+        let loss_receipt = central
+            .discard_ordered_delivery("overflow-group", id, loss.delivery_id.unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            loss_receipt.evidence,
+            super::OrderedDiscardEvidence::Loss(Record::Loss { count: Some(3), .. })
+        ));
+        assert_eq!(
+            central
+                .poll_ordered_discard_receipt("overflow-group", id)
+                .await
+                .unwrap(),
+            Some(loss_receipt.clone())
+        );
+        central
+            .acknowledge_ordered_discard_receipt("overflow-group", id, loss_receipt.receipt_id)
+            .await
+            .unwrap();
+        let terminal = central
+            .poll_ordered_delivery("overflow-group", id)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&terminal.poll, Poll::Terminal(terminal) if matches!(terminal.reason, EndReason::HostReset(_)) && terminal.tail_uncertain)
+        );
+        let terminal_receipt = central
+            .discard_ordered_delivery("overflow-group", id, terminal.delivery_id.unwrap())
+            .await
+            .unwrap();
+        assert!(
+            matches!(&terminal_receipt.evidence, super::OrderedDiscardEvidence::Terminal(terminal) if matches!(terminal.reason, EndReason::HostReset(_)))
+        );
+        assert_eq!(
+            central
+                .poll_ordered_discard_receipt("overflow-group", id)
+                .await
+                .unwrap(),
+            Some(terminal_receipt.clone())
+        );
+        central
+            .acknowledge_ordered_discard_receipt("overflow-group", id, terminal_receipt.receipt_id)
+            .await
+            .unwrap();
+        central
+            .acknowledge_ordered_discard_receipt("overflow-group", id, terminal_receipt.receipt_id)
+            .await
+            .unwrap();
+        assert!(
+            central
+                .acknowledge_ordered_discard_receipt("overflow-group", id, receipt.receipt_id)
+                .await
+                .is_err()
+        );
+        drop(held);
+        let mut released = false;
+        for _ in 0..20 {
+            let outcome = central
+                .retry_retained_ordered_batch("overflow-group", id, OpControl::budget_ms(5000))
+                .await
+                .unwrap();
+            if outcome == super::OrderedCleanupOutcome::Released {
+                released = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(released, "cleanup remains admitted and eventually released");
+        let status = central
+            .ordered_batch_member_status("overflow-group", id)
+            .await
+            .unwrap();
+        assert_eq!(status.len(), 1);
+        assert!(status[0].cleanup_released);
+        central
+            .acknowledge_ordered_batch("overflow-group", id)
+            .await
+            .unwrap();
+        central
+            .acknowledge_ordered_batch("overflow-group", id)
+            .await
+            .unwrap();
+        central
+            .forget_ordered_batch("overflow-group", id)
+            .await
+            .unwrap();
+        central
+            .forget_ordered_batch("overflow-group", id)
+            .await
+            .unwrap();
+        assert!(
+            central
+                .ordered_batch_member_status("overflow-group", id)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_pending_lifecycle_fence_and_releases_queue_slots() {
+        let central = open().await;
+        ready_peer(&central, "shutdown-fence", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "shutdown-fence",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let baseline = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        central
+            .boundary()
+            .push_event(RadioEvent::Lost("shutdown-fence".into()))
+            .expect("synthetic event admission failed");
+        for _ in 0..200 {
+            if central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "notification_fence")
+                .count()
+                > baseline
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(central.inner.retirement_slots.available_permits() < 256);
+        tokio::time::timeout(Duration::from_secs(2), central.shutdown())
+            .await
+            .unwrap();
+        assert_eq!(central.inner.retirement_slots.available_permits(), 256);
+        assert!(super::lock_std(&central.inner.retirement_tasks).is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_scoped_service_event_preserves_reserved_admission() {
+        use crate::boundary::RadioBoundary;
+        let central = open().await;
+        ready_peer(&central, "stale-fence", vec![hrm_service()]).await;
+        let held = central.admit_gatt("stale-fence").unwrap();
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChangedScoped {
+                peer_id: "stale-fence".into(),
+                identity: snapshot_identity(999),
+            })
+            .expect("synthetic event admission failed");
+        central
+            .boundary()
+            .flush_peer_notification_source("stale-fence")
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), held.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        held.assert_current().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn indeterminate_physical_loss_retries_and_keeps_source_error_visible() {
+        let central = open().await;
+        ready_peer(&central, "retry-loss", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "retry-loss",
+                &hrm_selector(0),
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().set_physical_generation("retry-loss", 17);
+        central
+            .boundary()
+            .fail_next(FaultOp::NotificationFence, "transient fence refusal");
+        let mut lifecycle = central.lifecycle_events();
+        central
+            .boundary()
+            .push_event(RadioEvent::LinuxPhysicalLost {
+                peer_id: "retry-loss".into(),
+                physical_generation: 17,
+                reason: 1,
+            });
+        let source_error = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let super::NotificationPoll::SourceFailed(error) = central
+                    .poll_notification("retry-loss", &hrm_selector(0), "consumer")
+                    .await
+                    .unwrap()
+                {
+                    break error;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(source_error.detail(), Some("transient fence refusal"));
+        tokio::time::timeout(Duration::from_secs(3), lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(super::lock_std(&central.inner.uncertain_physical_losses).is_empty());
     }
 
     #[tokio::test]
@@ -13820,7 +30806,8 @@ mod adapter_tests {
         let mut wake = central.native_wakes();
         central
             .boundary()
-            .push_event(notification("peer-tail", 0, vec![0, 74]));
+            .push_event(notification("peer-tail", 0, vec![0, 74]))
+            .expect("synthetic event admission failed");
         tokio::time::timeout(Duration::from_secs(2), wake.recv())
             .await
             .unwrap()
@@ -13908,7 +30895,10 @@ mod adapter_tests {
             },
             _ => panic!("notification fixture must produce a notification"),
         };
-        central.boundary().push_event(event);
+        central
+            .boundary()
+            .push_event(event)
+            .expect("synthetic event admission failed");
         tokio::time::timeout(Duration::from_secs(2), wake.recv())
             .await
             .unwrap()
@@ -13963,7 +30953,8 @@ mod adapter_tests {
             .await;
         central
             .boundary()
-            .push_event(notification("peer-ud", 0, vec![0x05]));
+            .push_event(notification("peer-ud", 0, vec![0x05]))
+            .expect("synthetic event admission failed");
         let mut still_flows = false;
         for _ in 0..200 {
             if central
@@ -14283,10 +31274,13 @@ mod adapter_tests {
             "readiness has not admitted a native write"
         );
         central.boundary().set_write_readiness("ready-peer", true);
-        central.boundary().push_event(RadioEvent::WriteReadiness {
-            peer_id: "ready-peer".into(),
-            ready: true,
-        });
+        central
+            .boundary()
+            .push_event(RadioEvent::WriteReadiness {
+                peer_id: "ready-peer".into(),
+                ready: true,
+            })
+            .expect("synthetic event admission failed");
         earlier.await.unwrap();
         later.await.unwrap();
         let writes = central.boundary().writes();
@@ -14552,7 +31546,8 @@ mod adapter_tests {
         assert!(waiting.as_mut().now_or_never().is_none());
         central
             .boundary()
-            .push_event(RadioEvent::ServicesChanged("ready-peer".into()));
+            .push_event(RadioEvent::ServicesChanged("ready-peer".into()))
+            .expect("synthetic event admission failed");
         let failure = tokio::time::timeout(Duration::from_millis(1000), waiting)
             .await
             .expect("database invalidation must settle the held readiness probe")
@@ -14577,7 +31572,8 @@ mod adapter_tests {
         let mut events = central.lifecycle_events();
         central
             .boundary()
-            .push_event(RadioEvent::ServicesChanged("ready-peer".into()));
+            .push_event(RadioEvent::ServicesChanged("ready-peer".into()))
+            .expect("synthetic event admission failed");
         tokio::time::timeout(Duration::from_secs(1), events.recv())
             .await
             .unwrap()
@@ -14623,18 +31619,22 @@ mod adapter_tests {
             tokio::pin!(waiting);
             assert!(waiting.as_mut().now_or_never().is_none());
             if source_failure {
-                central.boundary().push_event(RadioEvent::GattWatchFailed(
-                    DesktopError::new(
-                        BleErrorCode::AdapterPoweredOff,
-                        BleErrorDomain::Adapter,
-                        "test.readiness.source",
-                    )
-                    .with_detail("original source fault"),
-                ));
+                central
+                    .boundary()
+                    .push_event(RadioEvent::GattWatchFailed(
+                        DesktopError::new(
+                            BleErrorCode::AdapterPoweredOff,
+                            BleErrorDomain::Adapter,
+                            "test.readiness.source",
+                        )
+                        .with_detail("original source fault"),
+                    ))
+                    .expect("synthetic event admission failed");
             } else {
                 central
                     .boundary()
-                    .push_event(RadioEvent::Disconnected("ready-peer".into()));
+                    .push_event(RadioEvent::Disconnected("ready-peer".into()))
+                    .expect("synthetic event admission failed");
             }
             let failure = tokio::time::timeout(Duration::from_secs(1), waiting)
                 .await
@@ -14982,7 +31982,8 @@ mod adapter_tests {
             .expect("subscribe");
         central
             .boundary()
-            .push_event(second_instance_notification("peer-f18", 1, vec![0x09]));
+            .push_event(second_instance_notification("peer-f18", 1, vec![0x09]))
+            .expect("synthetic event admission failed");
         let mut delivered = None;
         for _ in 0..200 {
             delivered = central
@@ -15001,7 +32002,8 @@ mod adapter_tests {
         );
         central
             .boundary()
-            .push_event(second_instance_notification("peer-f18", 0, vec![0x08]));
+            .push_event(second_instance_notification("peer-f18", 0, vec![0x08]))
+            .expect("synthetic event admission failed");
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
             central
@@ -15134,7 +32136,8 @@ mod adapter_tests {
         // Both consumers observe the same live stream.
         central
             .boundary()
-            .push_event(notification("peer-f11", 0, vec![0x07]));
+            .push_event(notification("peer-f11", 0, vec![0x07]))
+            .expect("synthetic event admission failed");
         let mut first_value = None;
         let mut second_value = None;
         for _ in 0..200 {
@@ -15232,7 +32235,10 @@ mod adapter_tests {
 
         // Release the held old value: it must never enter the new stream,
         // even though the peripheral id and instance key match again.
-        central.boundary().push_event(stale);
+        central
+            .boundary()
+            .push_event(stale)
+            .expect("synthetic event admission failed");
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
             central
@@ -15249,7 +32255,8 @@ mod adapter_tests {
         // The new subscription is live: current-generation values deliver.
         central
             .boundary()
-            .push_event(notification_epoch("peer-f10", 0, vec![0xBB], fresh_epoch));
+            .push_event(notification_epoch("peer-f10", 0, vec![0xBB], fresh_epoch))
+            .expect("synthetic event admission failed");
         let mut delivered = None;
         for _ in 0..200 {
             delivered = central
@@ -15268,7 +32275,8 @@ mod adapter_tests {
         let pre_change = notification_epoch("peer-f10", 0, vec![0xCC], fresh_epoch);
         central
             .boundary()
-            .push_event(RadioEvent::ServicesChanged("peer-f10".to_owned()));
+            .push_event(RadioEvent::ServicesChanged("peer-f10".to_owned()))
+            .expect("synthetic event admission failed");
         let peer_key = central.peer_key_for("peer-f10").await.expect("peer");
         let mut invalidated = false;
         for _ in 0..200 {
@@ -15307,7 +32315,10 @@ mod adapter_tests {
             current_epoch, fresh_epoch,
             "post-change install captures a new generation"
         );
-        central.boundary().push_event(pre_change);
+        central
+            .boundary()
+            .push_event(pre_change)
+            .expect("synthetic event admission failed");
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
             central
@@ -15319,7 +32330,8 @@ mod adapter_tests {
         );
         central
             .boundary()
-            .push_event(notification_epoch("peer-f10", 0, vec![0xDD], current_epoch));
+            .push_event(notification_epoch("peer-f10", 0, vec![0xDD], current_epoch))
+            .expect("synthetic event admission failed");
         let mut redelivered = None;
         for _ in 0..200 {
             redelivered = central
@@ -15553,7 +32565,8 @@ mod adapter_tests {
         }
         central
             .boundary()
-            .push_event(RadioEvent::ServicesChanged("peer-f03s".to_owned()));
+            .push_event(RadioEvent::ServicesChanged("peer-f03s".to_owned()))
+            .expect("synthetic event admission failed");
         let peer_key = central.peer_key_for("peer-f03s").await.expect("peer");
         let mut invalidated = false;
         for _ in 0..200 {
@@ -15690,7 +32703,8 @@ mod adapter_tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
             central
                 .boundary()
-                .push_event(RadioEvent::Lost(peer.clone()));
+                .push_event(RadioEvent::Lost(peer.clone()))
+                .expect("synthetic event admission failed");
             let error = tokio::time::timeout(Duration::from_secs(5), pending)
                 .await
                 .expect("ended by the loss, not the deadline")
@@ -15796,7 +32810,8 @@ mod adapter_tests {
         for _ in 0..70u32 {
             central
                 .boundary()
-                .push_event(notification("peer-f17", 0, vec![0x01]));
+                .push_event(notification("peer-f17", 0, vec![0x01]))
+                .expect("synthetic event admission failed");
         }
         // Wait for the overflow terminal to land.
         let peer_key = central.peer_key_for("peer-f17").await.expect("peer");
@@ -15831,7 +32846,8 @@ mod adapter_tests {
                 .expect("poll")
             {
                 crate::central::NotificationPoll::Value(_)
-                | crate::central::NotificationPoll::ValueWithReceipt { .. } => values += 1,
+                | crate::central::NotificationPoll::ValueWithReceipt { .. }
+                | crate::central::NotificationPoll::ValueWithProvenance { .. } => values += 1,
                 crate::central::NotificationPoll::Terminal(terminal) => {
                     terminals += 1;
                     terminal_details = Some((
@@ -15843,6 +32859,15 @@ mod adapter_tests {
                 crate::central::NotificationPoll::Closed => break,
                 crate::central::NotificationPoll::Empty => {
                     panic!("failed stream must not report live-empty")
+                }
+                crate::central::NotificationPoll::SourceFailed(_) => {
+                    panic!("overflow is not a source failure")
+                }
+                crate::central::NotificationPoll::SourceFailureRecovery(_) => {
+                    panic!("overflow is not a recoverable source failure")
+                }
+                crate::central::NotificationPoll::PeerSourceLoss { .. } => {
+                    panic!("overflow is not a peer source gap")
                 }
                 crate::central::NotificationPoll::Invalidated(_) => {
                     panic!("overflow is terminal, not invalidated")
@@ -15889,7 +32914,8 @@ mod adapter_tests {
         assert_ne!(epoch, 0, "resubscription must retire the previous epoch");
         central
             .boundary()
-            .push_event(notification_epoch("peer-f17", 0, vec![0x09], epoch));
+            .push_event(notification_epoch("peer-f17", 0, vec![0x09], epoch))
+            .expect("synthetic event admission failed");
         let mut redelivered = None;
         for _ in 0..200 {
             match central
@@ -15936,7 +32962,8 @@ mod adapter_tests {
         ));
         central
             .boundary()
-            .push_event(RadioEvent::ServicesChanged("peer-f17i".to_owned()));
+            .push_event(RadioEvent::ServicesChanged("peer-f17i".to_owned()))
+            .expect("synthetic event admission failed");
         let peer_key = central.peer_key_for("peer-f17i").await.expect("peer");
         for _ in 0..200 {
             if central
@@ -15980,7 +33007,8 @@ mod adapter_tests {
             .expect("forwarder installed");
         central
             .boundary()
-            .push_event(notification_epoch("peer-f17i", 0, vec![0x0A], fresh_epoch));
+            .push_event(notification_epoch("peer-f17i", 0, vec![0x0A], fresh_epoch))
+            .expect("synthetic event admission failed");
         let mut got = None;
         for _ in 0..200 {
             match central
@@ -15999,6 +33027,4402 @@ mod adapter_tests {
             }
         }
         assert_eq!(got, Some(vec![0x0A]));
+    }
+
+    #[tokio::test]
+    async fn exact_subscription_retry_does_not_remove_same_name_replacement() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "exact-retry", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "exact-retry",
+                &selector,
+                "keeper",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                "exact-retry",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central
+            .unsubscribe_exact_draining(
+                "exact-retry",
+                &selector,
+                "reused",
+                &old,
+                OpControl::unbounded(),
+                None,
+            )
+            .await
+            .unwrap();
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                "exact-retry",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(old, replacement);
+        // A lost reply makes the old owner retry after the name was reused.
+        let calls = central.boundary().calls().len();
+        assert!(
+            central
+                .unsubscribe("exact-retry", &selector, "reused", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        let drained = std::sync::Mutex::new(Vec::new());
+        let retry = central
+            .unsubscribe_exact_draining(
+                "exact-retry",
+                &selector,
+                "reused",
+                &old,
+                OpControl::unbounded(),
+                Some(&|item| drained.lock().unwrap().push(item)),
+            )
+            .await;
+        assert!(retry.is_err(), "old admission must not release replacement");
+        assert!(drained.lock().unwrap().is_empty());
+        assert_eq!(central.boundary().calls().len(), calls);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "exact-retry",
+                    &selector,
+                    "reused",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .is_ok()
+        );
+        assert!(
+            central
+                .unsubscribe("exact-retry", &selector, "keeper", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_subscription_retained_failure_retries_original_activation() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = hrm_selector(0);
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                "peer",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        discover_with_identity(&central, 2).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                "peer",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let route = central.inner.subscriptions.lock().await.clone();
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "old exact cleanup refused");
+        let error = central
+            .unsubscribe_exact_draining(
+                "peer",
+                &selector,
+                "reused",
+                &old,
+                OpControl::unbounded(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail(), Some("old exact cleanup refused"));
+        assert!(super::lock_std(&central.inner.exact_retained_cleanup).contains_key(&old));
+        assert_eq!(*central.inner.subscriptions.lock().await, route);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "peer",
+                    &selector,
+                    "reused",
+                    &old,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(*central.inner.subscriptions.lock().await, route);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "peer",
+                    &selector,
+                    "reused",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_retained_disable_timeout_keeps_native_result_for_retry() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = hrm_selector(0);
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                "peer",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        discover_with_identity(&central, 2).await;
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let old = old.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "peer",
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::budget_ms(100),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .expect("retained disable must dispatch");
+        assert_eq!(
+            first.await.unwrap().unwrap_err().code(),
+            BleErrorCode::OperationTimedOut
+        );
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "peer",
+                    &selector,
+                    "consumer",
+                    &old,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match central
+                    .unsubscribe_exact_draining(
+                        "peer",
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+                {
+                    Ok(true) => break,
+                    Err(error)
+                        if error.operation() == "gatt.unsubscribe.settlement"
+                            || error.code() == BleErrorCode::OperationTimedOut =>
+                    {
+                        tokio::task::yield_now().await
+                    }
+                    other => panic!("unexpected retained settlement: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("retry must observe the retained activation's native success");
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_subscription_reset_keeps_failed_debt_and_original_error() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = hrm_selector(0);
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                "peer",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        discover_with_identity(&central, 2).await;
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "retained cleanup refused");
+        assert_eq!(
+            central
+                .unsubscribe_exact_draining(
+                    "peer",
+                    &selector,
+                    "reused",
+                    &old,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("retained cleanup refused")
+        );
+        super::reconcile_disconnected(&central.inner, "peer", true).await;
+        ready_peer(&central, "peer", vec![hrm_service()]).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                "peer",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let before = central.boundary().calls().len();
+        let error = central
+            .unsubscribe_exact_draining(
+                "peer",
+                &selector,
+                "reused",
+                &old,
+                OpControl::unbounded(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail(), Some("retained cleanup refused"));
+        assert!(super::lock_std(&central.inner.exact_retained_cleanup).contains_key(&old));
+        assert_eq!(central.boundary().calls().len(), before);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "peer",
+                    &selector,
+                    "reused",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_subscription_rejects_wrong_selector_before_any_effect() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "exact-selector", vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                "exact-selector",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let before = central.boundary().calls().len();
+        let drained = std::sync::Mutex::new(Vec::new());
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "exact-selector",
+                    &hrm_selector(1),
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    Some(&|item| drained.lock().unwrap().push(item))
+                )
+                .await
+                .is_err()
+        );
+        assert!(drained.lock().unwrap().is_empty());
+        assert_eq!(central.boundary().calls().len(), before);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "exact-selector",
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_subscription_old_owner_after_link_reset_cannot_drain_replacement() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "exact-reset", vec![hrm_service()]).await;
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                "exact-reset",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        super::reconcile_disconnected(&central.inner, "exact-reset", true).await;
+        ready_peer(&central, "exact-reset", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "exact-reset",
+                &selector,
+                "keeper",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                "exact-reset",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let before = central.boundary().calls().len();
+        let drained = std::sync::Mutex::new(Vec::new());
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "exact-reset",
+                    &selector,
+                    "reused",
+                    &old,
+                    OpControl::unbounded(),
+                    Some(&|item| drained.lock().unwrap().push(item))
+                )
+                .await
+                .is_err()
+        );
+        assert!(drained.lock().unwrap().is_empty());
+        assert_eq!(central.boundary().calls().len(), before);
+        assert!(
+            !central
+                .unsubscribe_exact_draining(
+                    "exact-reset",
+                    &selector,
+                    "reused",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            central
+                .unsubscribe("exact-reset", &selector, "keeper", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_subscription_late_disable_does_not_remove_replacement_route() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "exact-late", vec![hrm_service()]).await;
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                "exact-late",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let pending = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "exact-late",
+                        &selector,
+                        "reused",
+                        &old,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        central
+            .boundary()
+            .wait_for_calls("set_notifications", 2)
+            .await;
+        super::reconcile_disconnected(&central.inner, "exact-late", true).await;
+        ready_peer(&central, "exact-late", vec![hrm_service()]).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                "exact-late",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let route = central.inner.subscriptions.lock().await.clone();
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let _ = pending.await.unwrap();
+        assert_eq!(
+            *central.inner.subscriptions.lock().await,
+            route,
+            "late old completion must not remove replacement route"
+        );
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "exact-late",
+                    &selector,
+                    "reused",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_subscription_concurrent_releases_join_one_disable() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "exact-join", vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                "exact-join",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "exact-join",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        central
+            .boundary()
+            .wait_for_calls("set_notifications", 2)
+            .await;
+        assert_eq!(
+            central.resource_counters().await.pending_disables,
+            0,
+            "the pre-dispatch marker must not change in-flight settlement"
+        );
+        let second = central.unsubscribe_exact_draining(
+            "exact-join",
+            &selector,
+            "consumer",
+            &owner,
+            OpControl::unbounded(),
+            None,
+        );
+        tokio::pin!(second);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(second.as_mut().poll(cx).is_pending())).await,
+            "the duplicate waits for the actual result"
+        );
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        assert!(first.await.unwrap().unwrap());
+        assert!(second.await.unwrap());
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            2
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_subscription_abandoned_disable_does_not_invent_success() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "exact-abandoned", vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                "exact-abandoned",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "exact-abandoned",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        central
+            .boundary()
+            .wait_for_calls("set_notifications", 2)
+            .await;
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        let calls = central.boundary().calls().len();
+        let retry = central
+            .unsubscribe_exact_draining(
+                "exact-abandoned",
+                &selector,
+                "consumer",
+                &owner,
+                OpControl::unbounded(),
+                None,
+            )
+            .await;
+        assert!(
+            retry.is_err(),
+            "an unsettled disable cannot be reported as released"
+        );
+        assert_eq!(central.boundary().calls().len(), calls);
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let reconciled = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                match central
+                    .unsubscribe_exact_draining(
+                        "exact-abandoned",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+                {
+                    Ok(result) => break result,
+                    Err(error) if error.operation() == "gatt.unsubscribe.settlement" => {
+                        tokio::task::yield_now().await
+                    }
+                    Err(error) => panic!("unexpected reconciliation failure: {error:?}"),
+                }
+            }
+        })
+        .await
+        .expect("a retry must reconcile the late native success");
+        assert!(reconciled);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_abandoned_disable_retains_tail_for_retrying_drain() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "exact-abandoned-tail", vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                "exact-abandoned-tail",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "exact-abandoned-tail",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        Some(&|_| {}),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .expect("disable must dispatch");
+        let mut wake = central.native_wakes();
+        central
+            .boundary()
+            .push_event(notification("exact-abandoned-tail", 0, vec![7, 8]))
+            .expect("synthetic event admission failed");
+        tokio::time::timeout(Duration::from_secs(2), wake.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let captured = std::sync::Mutex::new(Vec::new());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match central
+                    .unsubscribe_exact_draining(
+                        "exact-abandoned-tail",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        Some(&|item| captured.lock().unwrap().push(item)),
+                    )
+                    .await
+                {
+                    Ok(true) => break,
+                    Err(error) if error.operation() == "gatt.unsubscribe.settlement" => {
+                        tokio::task::yield_now().await
+                    }
+                    other => panic!("unexpected settlement: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the exact retry must receive the settled tail");
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![crate::NotificationPoll::Value(vec![7, 8])]
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_cancelled_disable_retains_late_tail_for_retry() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        let peer = "exact-cancelled-tail";
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let ctl = OpControl::unbounded();
+        let ticket = ctl.ticket.clone();
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &owner,
+                        ctl,
+                        Some(&|_| {}),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .expect("disable must dispatch");
+        let mut wake = central.native_wakes();
+        central
+            .boundary()
+            .push_event(notification(peer, 0, vec![9, 10]))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), wake.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        ticket.request_cancel();
+        let error = first.await.unwrap().unwrap_err();
+        assert_eq!(error.code(), BleErrorCode::OperationAborted);
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let captured = std::sync::Mutex::new(Vec::new());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        Some(&|item| captured.lock().unwrap().push(item)),
+                    )
+                    .await
+                {
+                    Ok(true) => break,
+                    Err(error) if error.operation() == "gatt.unsubscribe.settlement" => {
+                        tokio::task::yield_now().await
+                    }
+                    other => panic!("unexpected settlement: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("retry must receive the actual settlement and final tail");
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![crate::NotificationPoll::Value(vec![9, 10])]
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_abandoned_disable_drains_old_tail_after_replacement() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        let peer = "exact-old-tail-after-replacement";
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let old = old.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        Some(&|_| {}),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .unwrap();
+        let mut wake = central.native_wakes();
+        central
+            .boundary()
+            .push_event(notification(peer, 0, vec![21, 22]))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), wake.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        super::reconcile_disconnected(&central.inner, peer, true).await;
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let routes = central.inner.subscriptions.lock().await.clone();
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let captured = std::sync::Mutex::new(Vec::new());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        Some(&|item| captured.lock().unwrap().push(item)),
+                    )
+                    .await
+                {
+                    Ok(true) => break,
+                    Err(error)
+                        if error.operation() == "gatt.unsubscribe.settlement"
+                            && error.detail()
+                                == Some("the previous native cleanup has not settled") =>
+                    {
+                        tokio::task::yield_now().await
+                    }
+                    other => panic!("old receipt and drain must remain available: {other:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![crate::NotificationPoll::Value(vec![21, 22])]
+        );
+        assert_eq!(*central.inner.subscriptions.lock().await, routes);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_abandoned_disable_drains_old_tail_after_adapter_reset_and_replacement() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        let peer = "exact-old-tail-after-adapter-reset";
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let old = old.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        Some(&|_| {}),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .unwrap();
+        let mut wake = central.native_wakes();
+        central
+            .boundary()
+            .push_event(notification(peer, 0, vec![21, 22]))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), wake.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        super::adapter_reset(
+            &central.inner,
+            super::AdapterLossCause::PoweredOff,
+            None,
+            None,
+        )
+        .await;
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let routes = central.inner.subscriptions.lock().await.clone();
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let captured = std::sync::Mutex::new(Vec::new());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        Some(&|item| captured.lock().unwrap().push(item)),
+                    )
+                    .await
+                {
+                    Ok(true) => break,
+                    Err(error)
+                        if error.operation() == "gatt.unsubscribe.settlement"
+                            && error.detail()
+                                == Some("the previous native cleanup has not settled") =>
+                    {
+                        tokio::task::yield_now().await
+                    }
+                    other => panic!("old receipt and drain must remain available: {other:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![crate::NotificationPoll::Value(vec![21, 22])]
+        );
+        assert_eq!(*central.inner.subscriptions.lock().await, routes);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_abandoned_empty_drain_survives_adapter_reset_and_replacement() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        let peer = "exact-empty-drain-after-adapter-reset";
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let old = old.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        Some(&|_| {}),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        super::adapter_reset(
+            &central.inner,
+            super::AdapterLossCause::PoweredOff,
+            None,
+            None,
+        )
+        .await;
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let routes = central.inner.subscriptions.lock().await.clone();
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let captured = std::sync::Mutex::new(Vec::new());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        Some(&|item| captured.lock().unwrap().push(item)),
+                    )
+                    .await
+                {
+                    Ok(true) => break,
+                    Err(error)
+                        if error.operation() == "gatt.unsubscribe.settlement"
+                            && error.detail()
+                                == Some("the previous native cleanup has not settled") =>
+                    {
+                        tokio::task::yield_now().await
+                    }
+                    other => panic!("old receipt and drain must remain available: {other:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(captured.lock().unwrap().is_empty());
+        assert_eq!(*central.inner.subscriptions.lock().await, routes);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_disable_timeout_preserves_late_native_success() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "exact-timeout", vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                "exact-timeout",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "exact-timeout",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::budget_ms(100),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .expect("disable must dispatch");
+        assert!(first.await.unwrap().is_err(), "the caller's budget expires");
+        let calls = central.boundary().calls().len();
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "exact-timeout",
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            central.boundary().calls().len(),
+            calls,
+            "an in-flight disable must not be reissued"
+        );
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let released = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                match central
+                    .unsubscribe_exact_draining(
+                        "exact-timeout",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+                {
+                    Ok(result) => break result,
+                    Err(error)
+                        if error.operation() == "gatt.unsubscribe.settlement"
+                            || error.code() == BleErrorCode::OperationTimedOut =>
+                    {
+                        tokio::task::yield_now().await
+                    }
+                    Err(error) => panic!("unexpected reconciliation failure: {error:?}"),
+                }
+            }
+        })
+        .await
+        .expect("a retry must reconcile the late native success after timeout");
+        assert!(released);
+        assert_eq!(
+            central.boundary().calls().len(),
+            calls,
+            "reconciliation must join the original disable"
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_abandoned_disable_reports_late_failure_and_retries() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "late-disable-failure", vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                "late-disable-failure",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        central
+            .boundary()
+            .fail_next_disable_after_gate("late native refusal");
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "late-disable-failure",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .expect("disable must dispatch");
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let error = central
+                    .unsubscribe_exact_draining(
+                        "late-disable-failure",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+                    .unwrap_err();
+                if error.detail() == Some("late native refusal") {
+                    break;
+                }
+                assert_eq!(error.operation(), "gatt.unsubscribe.settlement");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("native failure must be observed");
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "late-disable-failure",
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_disable_timeout_reports_late_native_failure_before_retry() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "late-timeout-failure", vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                "late-timeout-failure",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        central
+            .boundary()
+            .fail_next_disable_after_gate("timeout native refusal");
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "late-timeout-failure",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::budget_ms(100),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .expect("disable must dispatch");
+        let error = first.await.unwrap().unwrap_err();
+        assert_eq!(error.code(), BleErrorCode::OperationTimedOut);
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "late-timeout-failure",
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls,
+            "pending native work must not be duplicated"
+        );
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let error = central
+                    .unsubscribe_exact_draining(
+                        "late-timeout-failure",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+                    .unwrap_err();
+                if error.detail() == Some("timeout native refusal") {
+                    break;
+                }
+                assert!(
+                    error.operation() == "gatt.unsubscribe.settlement"
+                        || error.code() == BleErrorCode::OperationTimedOut
+                );
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the exact native failure must be observable after caller timeout");
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "late-timeout-failure",
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls + 1
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_abandoned_late_success_after_reset_preserves_replacement() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        let peer = "late-success-reset";
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let old = old.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .expect("disable must dispatch");
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        super::reconcile_disconnected(&central.inner, peer, true).await;
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let route = central.inner.subscriptions.lock().await.clone();
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+                {
+                    Ok(true) => break,
+                    Err(error) if error.operation() == "gatt.unsubscribe.settlement" => {
+                        tokio::task::yield_now().await
+                    }
+                    other => panic!("unexpected old settlement: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("old native success must remain observable");
+        assert_eq!(*central.inner.subscriptions.lock().await, route);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_abandoned_late_failure_after_reset_preserves_replacement() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "late-failure-reset", vec![hrm_service()]).await;
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                "late-failure-reset",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        central
+            .boundary()
+            .fail_next_disable_after_gate("old native refusal");
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let old = old.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "late-failure-reset",
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .expect("disable must dispatch");
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        super::reconcile_disconnected(&central.inner, "late-failure-reset", true).await;
+        ready_peer(&central, "late-failure-reset", vec![hrm_service()]).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                "late-failure-reset",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let route = central.inner.subscriptions.lock().await.clone();
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let error = central
+                    .unsubscribe_exact_draining(
+                        "late-failure-reset",
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+                    .unwrap_err();
+                if error.detail() == Some("old native refusal") {
+                    break;
+                }
+                assert_eq!(error.operation(), "gatt.unsubscribe.settlement");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("old native failure must be retained");
+        assert_eq!(*central.inner.subscriptions.lock().await, route);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "late-failure-reset",
+                    &selector,
+                    "consumer",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn settled_exact_mismatch_does_not_orphan_consumer_name() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "exact-settled-mismatch";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        assert!(
+            central
+                .subscribe_exact_with_admission(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        central
+            .subscribe(peer, &selector, "consumer", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn failed_exact_mismatch_cleanup_is_accessible_without_an_admission() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "exact-mismatch-cleanup";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "exact cleanup refused");
+        assert!(
+            central
+                .subscribe_exact_with_admission(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let error = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail(), Some("exact cleanup refused"));
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central
+            .subscribe(peer, &selector, "consumer", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mismatch_receipt_capacity_refuses_before_native_enable() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "capacity-old", vec![hrm_service()]).await;
+        ready_peer(&central, "capacity-new", vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "retained cleanup");
+        assert!(
+            central
+                .subscribe(
+                    "capacity-old",
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        {
+            let mut receipts = super::lock_std(&central.inner.mismatch_compensations);
+            let retained = receipts[0].clone();
+            receipts.resize_with(4096, || retained.clone());
+        }
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        let result = central
+            .subscribe(
+                "capacity-new",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await;
+        super::lock_std(&central.inner.mismatch_compensations).truncate(1);
+        if result.is_ok() {
+            central
+                .unsubscribe(
+                    "capacity-new",
+                    &selector,
+                    "consumer",
+                    OpControl::unbounded(),
+                )
+                .await
+                .unwrap();
+        }
+        let error = result.expect_err("receipt capacity must be reserved before radio enable");
+        assert_eq!(error.code(), BleErrorCode::CapabilityLimited);
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mismatch_receipts_are_selected_by_characteristic_and_consumer() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-distinct-characteristics";
+        let first = hrm_selector(0);
+        let second = hrm_selector(1);
+        ready_peer(&central, peer, vec![hrm_service(), second_hrm_service()]).await;
+        for (selector, detail) in [(&first, "first refusal"), (&second, "second refusal")] {
+            central
+                .boundary()
+                .script_observed_delivery(ObservedDelivery::Unknown);
+            central.boundary().fail_next(FaultOp::Unsubscribe, detail);
+            assert!(
+                central
+                    .subscribe(
+                        peer,
+                        selector,
+                        "consumer",
+                        Some(DeliveryMode::Notification),
+                        OpControl::unbounded()
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            super::lock_std(&central.inner.mismatch_compensations).len(),
+            2
+        );
+        assert_eq!(
+            central
+                .unsubscribe(peer, &second, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("second refusal")
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &second, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            central
+                .unsubscribe(peer, &first, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("first refusal")
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &first, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_report_release_with_pending_mismatch_task() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-shutdown";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let ticket = crate::op_control::OpTicket::new();
+        let subscriber = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let ticket = ticket.clone();
+            async move {
+                central
+                    .subscribe(
+                        peer,
+                        &selector,
+                        "consumer",
+                        Some(DeliveryMode::Notification),
+                        OpControl::new(super::Budget::unbounded(), ticket),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .unwrap();
+        ticket.request_cancel();
+        assert!(subscriber.await.unwrap().is_err());
+        let mut shutdown = tokio::spawn({
+            let central = central.clone();
+            async move { central.shutdown().await }
+        });
+        let report = tokio::time::timeout(Duration::from_secs(5), &mut shutdown).await;
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let report = report
+            .expect("shutdown must account for a pending task without waiting indefinitely")
+            .unwrap();
+        assert!(
+            !report.is_released(),
+            "shutdown must account for an unreported mismatch receipt"
+        );
+    }
+
+    #[tokio::test]
+    async fn mismatch_cleanup_wait_honors_original_subscribe_deadline() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-original-deadline";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let result = tokio::time::timeout(
+            Duration::from_millis(600),
+            central.subscribe(
+                peer,
+                &selector,
+                "consumer",
+                Some(DeliveryMode::Notification),
+                OpControl::new(
+                    super::Budget::from_ms(150),
+                    crate::op_control::OpTicket::new(),
+                ),
+            ),
+        )
+        .await;
+        let error = result
+            .expect("the subscribe deadline bounds the compensation wait")
+            .unwrap_err();
+        assert_eq!(error.code(), BleErrorCode::OperationTimedOut);
+        let pending = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(pending.operation(), "gatt.unsubscribe.settlement");
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pending_mismatch_recovers_after_confirmed_shutdown_link_release() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-pending-release";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let ticket = crate::op_control::OpTicket::new();
+        let subscriber = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let ticket = ticket.clone();
+            async move {
+                central
+                    .subscribe(
+                        peer,
+                        &selector,
+                        "consumer",
+                        Some(DeliveryMode::Notification),
+                        OpControl::new(super::Budget::unbounded(), ticket),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .unwrap();
+        ticket.request_cancel();
+        assert_eq!(
+            subscriber.await.unwrap().unwrap_err().code(),
+            BleErrorCode::OperationAborted
+        );
+        central
+            .boundary()
+            .fail_next(FaultOp::Disconnect, "link release refused");
+        assert!(!central.shutdown().await.is_released());
+        let pending = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(pending.operation(), "gatt.unsubscribe.settlement");
+        super::note_mismatch_generation_release(&central.inner, peer, Some("unrelated-generation"));
+        let pending = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(pending.operation(), "gatt.unsubscribe.settlement");
+        assert!(!central.shutdown().await.is_released());
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        let recovered = tokio::time::timeout(
+            Duration::from_secs(2),
+            central.unsubscribe(peer, &selector, "consumer", OpControl::unbounded()),
+        )
+        .await;
+        assert!(
+            !recovered
+                .expect("the retired task must not block recovery")
+                .unwrap()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        assert!(central.shutdown().await.is_released());
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+    }
+
+    #[tokio::test]
+    async fn mismatch_ticket_cancellation_does_not_wait_for_native_cleanup() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-ticket-cancel";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let ticket = crate::op_control::OpTicket::new();
+        let task = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let ticket = ticket.clone();
+            async move {
+                central
+                    .subscribe(
+                        peer,
+                        &selector,
+                        "consumer",
+                        Some(DeliveryMode::Notification),
+                        OpControl::new(super::Budget::unbounded(), ticket),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .unwrap();
+        ticket.request_cancel();
+        let mut task = task;
+        let answer = tokio::time::timeout(Duration::from_millis(200), &mut task).await;
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let error = answer
+            .expect("ticket cancellation must promptly settle the caller")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code(), BleErrorCode::OperationAborted);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mismatch_disconnect_refusal_does_not_retire_physical_debt() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-disconnect-refusal";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "first native refusal");
+        assert!(
+            central
+                .subscribe(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("first native refusal")
+        );
+        central
+            .boundary()
+            .fail_next(FaultOp::Disconnect, "disconnect refused");
+        assert!(
+            central
+                .disconnect(peer, "lease-a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "retry native refusal");
+        let error = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail(), Some("retry native refusal"));
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mismatch_preserves_real_core_failure_and_native_refusal_across_link_loss() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-core-native-release";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central.boundary().block_op(FaultOp::Subscribe);
+        central.boundary().fail_next(
+            FaultOp::Unsubscribe,
+            "native refusal alongside core failure",
+        );
+        let subscriber = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            async move {
+                central
+                    .subscribe(
+                        peer,
+                        &selector,
+                        "consumer",
+                        Some(DeliveryMode::Notification),
+                        OpControl::unbounded(),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 1),
+        )
+        .await
+        .unwrap();
+        // Race a real core enable settlement with the outstanding native
+        // enable. The compensation's duplicate settlement must fail in core.
+        {
+            let peer_key = central.peer_key_for(peer).await.unwrap();
+            let mut core = central.inner.core.lock().await;
+            let path = core
+                .consumer_path(&peer_key, &selector, "consumer")
+                .unwrap();
+            core.settle_subscribe_enable(path, false, super::now_ms(), &mut super::batch())
+                .unwrap();
+        }
+        central.boundary().unblock_op(FaultOp::Subscribe);
+        assert!(subscriber.await.unwrap().is_err());
+        let native = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            native.detail(),
+            Some("native refusal alongside core failure")
+        );
+        let mut lifecycle = central.lifecycle_events();
+        central
+            .boundary()
+            .push_event(RadioEvent::Lost(peer.into()))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let logical = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(logical.operation(), "subscribe.enable");
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        assert!(
+            !central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn mismatch_unrelated_release_does_not_prove_activation_release() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-unrelated-release";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "first refusal");
+        assert!(
+            central
+                .subscribe(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("first refusal")
+        );
+        // A release counter alone carries no connection-generation proof.
+        super::note_confirmed_release(&central.inner, peer);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "second refusal");
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("second refusal")
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mismatch_cleanup_remains_recoverable_after_shutdown() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-post-shutdown";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "native refusal");
+        assert!(
+            central
+                .subscribe(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        assert!(!central.shutdown().await.is_released());
+        let ctl = central
+            .wait_unsubscribe_admission(peer, OpControl::unbounded())
+            .await
+            .unwrap();
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", ctl)
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("native refusal")
+        );
+        assert!(
+            !central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn mismatch_logical_failures_retry_without_repeating_confirmed_disable() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-logical-retry";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "native refusal");
+        assert!(
+            central
+                .subscribe(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let owner = super::lock_std(&central.inner.mismatch_compensations)[0].clone();
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        let first = super::contract_error(
+            BleErrorCode::StreamQuota,
+            BleErrorDomain::Cleanup,
+            "logical.first",
+        );
+        let second = super::contract_error(
+            BleErrorCode::StreamQuota,
+            BleErrorDomain::Cleanup,
+            "logical.second",
+        );
+        super::lock_std(&owner.logical).consumer_pending = true;
+        super::lock_std(&owner.reconcile_errors).extend([first.clone(), second]);
+        *super::lock_std(&owner.state) = super::MismatchCompensationState::ReconcileFailed(first);
+        super::lock_std(&central.inner.mismatch_compensations).push(owner);
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .operation(),
+            "logical.first"
+        );
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .operation(),
+            "logical.second"
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn interrupted_mismatch_requires_matching_generation_release() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "mismatch-interrupted";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "native refusal");
+        assert!(
+            central
+                .subscribe(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let owner = super::lock_std(&central.inner.mismatch_compensations)[0].clone();
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("native refusal")
+        );
+        *super::lock_std(&owner.state) = super::MismatchCompensationState::Pending;
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let task = central.spawn_mismatch_compensation(owner.clone());
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 3),
+        )
+        .await
+        .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        let interrupted = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            interrupted.detail(),
+            Some("compensation task ended without a native outcome")
+        );
+        super::note_mismatch_generation_release(&central.inner, peer, Some("unrelated-generation"));
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        super::note_mismatch_generation_release(
+            &central.inner,
+            peer,
+            owner.connection_generation.as_deref(),
+        );
+        assert!(
+            !central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn shutdown_reports_unpublished_mismatch_reservations() {
+        let central = open().await;
+        *super::lock_std(&central.inner.mismatch_reservations) += 1;
+        let report = central.shutdown().await;
+        assert!(
+            !report.is_released(),
+            "an admitted subscribe can still publish cleanup debt"
+        );
+        *super::lock_std(&central.inner.mismatch_reservations) -= 1;
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn immediate_mismatch_cleanup_failure_is_observable_before_retry() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let selector = hrm_selector(0);
+        let peer = "mismatch-immediate-report";
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "native refusal");
+        assert!(
+            central
+                .subscribe(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        let error = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail(), Some("native refusal"));
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn failed_delivery_compensation_keeps_physical_cleanup_owned() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "compensation-debt", vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "compensation refused");
+        assert!(
+            central
+                .subscribe(
+                    "compensation-debt",
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            central.resource_counters().await.pending_disables,
+            1,
+            "a failed physical compensation must remain retryable"
+        );
+        assert!(
+            central
+                .subscribe(
+                    "compensation-debt",
+                    &selector,
+                    "other",
+                    None,
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let error = central
+            .unsubscribe(
+                "compensation-debt",
+                &selector,
+                "consumer",
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail(), Some("compensation refused"));
+        assert!(
+            central
+                .unsubscribe(
+                    "compensation-debt",
+                    &selector,
+                    "consumer",
+                    OpControl::unbounded()
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.resource_counters().await.pending_disables, 0);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn same_consumer_failed_exact_admissions_keep_separate_receipts() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "peer";
+        let selector = hrm_selector(0);
+        central
+            .connect(peer, "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services(peer, vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "first exact refusal");
+        assert!(
+            central
+                .subscribe_exact_with_admission(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let first = central.boundary().enable_epochs().last().cloned().unwrap();
+        discover_with_identity(&central, 2).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "second exact refusal");
+        assert!(
+            central
+                .subscribe_exact_with_admission(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let second = central.boundary().enable_epochs().last().cloned().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            super::lock_std(&central.inner.exact_subscription_owners)
+                .owners
+                .len(),
+            2
+        );
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("first exact refusal")
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            super::lock_std(&central.inner.exact_subscription_owners)
+                .owners
+                .len(),
+            1
+        );
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("second exact refusal")
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![first, second]);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn same_consumer_mismatches_keep_independent_activation_receipts() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "peer";
+        let selector = hrm_selector(0);
+        central
+            .connect(peer, "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services(peer, vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "first refusal");
+        assert!(
+            central
+                .subscribe(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let first = central.boundary().enable_epochs().last().cloned().unwrap();
+        discover_with_identity(&central, 2).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "second refusal");
+        assert!(
+            central
+                .subscribe(
+                    peer,
+                    &selector,
+                    "consumer",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let second = central.boundary().enable_epochs().last().cloned().unwrap();
+        assert_ne!(first, second, "the second activation must be admitted");
+        assert_eq!(central.resource_counters().await.pending_disables, 2);
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("first refusal")
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .detail(),
+            Some("second refusal")
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![first, second]);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn delivery_compensation_retries_original_after_multiple_rediscoveries() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let peer = "peer";
+        let selector = hrm_selector(0);
+        central
+            .connect(peer, "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services(peer, vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "old cleanup refused");
+        assert!(
+            central
+                .subscribe(
+                    peer,
+                    &selector,
+                    "old",
+                    Some(DeliveryMode::Notification),
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        let old = central.boundary().enable_epochs().last().cloned().unwrap();
+        discover_with_identity(&central, 2).await;
+        central
+            .subscribe(peer, &selector, "middle", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        discover_with_identity(&central, 3).await;
+        central
+            .subscribe(peer, &selector, "new", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        let newest = central.boundary().enable_epochs().last().cloned().unwrap();
+        let route = central.inner.subscriptions.lock().await.clone();
+        let error = central
+            .unsubscribe(peer, &selector, "old", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail(), Some("old cleanup refused"));
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "old", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![old]);
+        assert_eq!(*central.inner.subscriptions.lock().await, route);
+        assert!(
+            central
+                .boundary()
+                .live_notification_activations()
+                .contains(&newest)
+        );
+        central
+            .unsubscribe(peer, &selector, "middle", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .unsubscribe(peer, &selector, "new", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn abandoned_delivery_compensation_preserves_native_failure_for_retry() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let selector = hrm_selector(0);
+        let peer = "abandoned-compensation";
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        central
+            .boundary()
+            .fail_next_disable_after_gate("late compensation refusal");
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            async move {
+                central
+                    .subscribe(
+                        peer,
+                        &selector,
+                        "consumer",
+                        Some(DeliveryMode::Notification),
+                        OpControl::unbounded(),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let error = central
+                    .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                    .await
+                    .unwrap_err();
+                if error.detail() == Some("late compensation refusal") {
+                    break;
+                }
+                assert_eq!(error.operation(), "gatt.unsubscribe.settlement");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the abandoned native result must remain observable");
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn delivery_compensation_timeout_keeps_one_native_attempt_and_its_failure() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let selector = hrm_selector(0);
+        let peer = "compensation-timeout";
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        central
+            .boundary()
+            .fail_next_disable_after_gate("timed-out compensation refusal");
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            async move {
+                central
+                    .subscribe(
+                        peer,
+                        &selector,
+                        "consumer",
+                        Some(DeliveryMode::Notification),
+                        OpControl::unbounded(),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), first)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count();
+        let pending = central
+            .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(pending.operation(), "gatt.unsubscribe.settlement");
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls,
+            "a timeout must not start another physical disable"
+        );
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let error = central
+                    .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                    .await
+                    .unwrap_err();
+                if error.detail() == Some("timed-out compensation refusal") {
+                    break;
+                }
+                assert_eq!(error.operation(), "gatt.unsubscribe.settlement");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the original native failure must survive the wait timeout");
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "consumer", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            calls + 1
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn abandoned_delivery_compensation_late_failure_does_not_retire_reconnected_route() {
+        use crate::boundary::{DeliveryMode, ObservedDelivery};
+        let central = open().await;
+        let selector = hrm_selector(0);
+        let peer = "compensation-reconnect";
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .boundary()
+            .script_observed_delivery(ObservedDelivery::Unknown);
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        central
+            .boundary()
+            .fail_next_disable_after_gate("old compensation refusal");
+        let first = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            async move {
+                central
+                    .subscribe(
+                        peer,
+                        &selector,
+                        "old",
+                        Some(DeliveryMode::Notification),
+                        OpControl::unbounded(),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("set_notifications", 2),
+        )
+        .await
+        .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        super::reconcile_disconnected(&central.inner, peer, true).await;
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .subscribe(peer, &selector, "replacement", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        let route = central.inner.subscriptions.lock().await.clone();
+        let replacement = central.boundary().enable_epochs().last().cloned().unwrap();
+        let old_owner = super::lock_std(&central.inner.mismatch_compensations)[0].clone();
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            super::DesktopCentral::<crate::boundary::FakeRadio>::wait_mismatch(&old_owner),
+        )
+        .await
+        .expect("the old native call must settle");
+        let error = central
+            .unsubscribe(peer, &selector, "old", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail(), Some("old compensation refusal"));
+        assert_eq!(*central.inner.subscriptions.lock().await, route);
+        assert!(
+            central
+                .boundary()
+                .live_notification_activations()
+                .contains(&replacement)
+        );
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "replacement", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_unsubscribe_cancelled_before_dispatch_can_retry() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "exact-before-dispatch", vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                "exact-before-dispatch",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let blocker = central.admit_gatt("exact-before-dispatch").unwrap();
+        blocker.wait().await.unwrap();
+        let ctl = OpControl::unbounded();
+        let ticket = ctl.ticket.clone();
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "exact-before-dispatch",
+                        &selector,
+                        "consumer",
+                        &owner,
+                        ctl,
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .gatt_admission
+                .queued_for_peer("exact-before-dispatch")
+                < 2
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        ticket.request_cancel();
+        assert!(attempt.await.unwrap().is_err());
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            1
+        );
+        drop(blocker);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "exact-before-dispatch",
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_abandoned_after_core_removal_before_radio_still_retries() {
+        let central = open().await;
+        let peer = "exact-core-before-radio";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let index = super::lock_std(&central.inner.exact_subscription_owners)
+            .owners
+            .get(&owner)
+            .unwrap()
+            .activation
+            .0;
+        let activation = central.boundary().enable_epochs().last().cloned().unwrap();
+        let fences = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("notification_fence", fences + 1),
+        )
+        .await
+        .unwrap();
+        let gate = central.inner.gatt_admission.provisional_peer(peer);
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                != Some(ubm_core::central::ConsumerState::Removing)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("core removal must precede the blocked first poll");
+        attempt.abort();
+        assert!(attempt.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            1
+        );
+        drop(gate);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap(),
+            "retry must actually disable the radio"
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            2
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![activation]);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_cancel_after_core_removal_before_radio_still_retries() {
+        let central = open().await;
+        let peer = "exact-cancel-core-before-radio";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let index = super::lock_std(&central.inner.exact_subscription_owners)
+            .owners
+            .get(&owner)
+            .unwrap()
+            .activation
+            .0;
+        let activation = central.boundary().enable_epochs().last().cloned().unwrap();
+        let fences = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        let ctl = OpControl::unbounded();
+        let ticket = ctl.ticket.clone();
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(peer, &selector, "consumer", &owner, ctl, None)
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("notification_fence", fences + 1),
+        )
+        .await
+        .unwrap();
+        let gate = central.inner.gatt_admission.provisional_peer(peer);
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                != Some(ubm_core::central::ConsumerState::Removing)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("core removal must precede the blocked first poll");
+        ticket.request_cancel();
+        let result = tokio::time::timeout(Duration::from_millis(200), attempt)
+            .await
+            .expect("cancellation must finish while the provisional gate stays closed")
+            .unwrap();
+        assert_eq!(result.unwrap_err().code_str(), "operation.aborted");
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            1
+        );
+        drop(gate);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap(),
+            "retry must actually disable the same activation"
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            2
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![activation]);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_deadline_expires_during_final_admission_gate_and_retries() {
+        let central = open().await;
+        let peer = "exact-deadline-final-gate";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let index = super::lock_std(&central.inner.exact_subscription_owners)
+            .owners
+            .get(&owner)
+            .unwrap()
+            .activation
+            .0;
+        let activation = central.boundary().enable_epochs().last().cloned().unwrap();
+        let fences = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::budget_ms(1000),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("notification_fence", fences + 1),
+        )
+        .await
+        .unwrap();
+        let gate = central.inner.gatt_admission.provisional_peer(peer);
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                != Some(ubm_core::central::ConsumerState::Removing)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), attempt)
+            .await
+            .expect("deadline must finish while the provisional gate stays closed")
+            .unwrap();
+        assert_eq!(result.unwrap_err().code_str(), "operation.timed-out");
+        assert!(central.boundary().disable_epochs().is_empty());
+        drop(gate);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![activation]);
+        central.shutdown().await;
+    }
+
+    #[cfg(feature = "btleplug")]
+    #[tokio::test]
+    async fn cleanup_waiting_for_backend_gatt_lock_is_not_native_dispatch() {
+        use futures_util::FutureExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cache = crate::btleplug_backend::GattCache::<()>::new();
+        let gate = cache.lock_peer("peer").await;
+        let ticket = crate::op_control::OpTicket::new();
+        let window = OpControl::unbounded().unsubscribe_window();
+        let started = AtomicBool::new(false);
+        let native_effect = AtomicBool::new(false);
+        let work = async {
+            let _gate = cache.lock_peer("peer").await;
+            native_effect.store(true, Ordering::SeqCst);
+            Ok(())
+        };
+        let attempt = super::drive(
+            &ticket,
+            window,
+            super::start_notification_cleanup(&ticket, window, &started, || {}, work),
+        );
+        tokio::pin!(attempt);
+        assert!(attempt.as_mut().now_or_never().is_none());
+        assert!(
+            !started.load(Ordering::SeqCst),
+            "a backend lock wait has no native effect"
+        );
+        ticket.request_cancel();
+        assert!(matches!(attempt.await, super::Wait::Cancelled));
+        assert!(!native_effect.load(Ordering::SeqCst));
+        drop(gate);
+
+        let next_ticket = crate::op_control::OpTicket::new();
+        let next_started = AtomicBool::new(false);
+        let work = async {
+            let _gate = cache.lock_peer("peer").await;
+            native_effect.store(true, Ordering::SeqCst);
+            std::future::pending::<Result<(), crate::DesktopError>>().await
+        };
+        let attempt = super::drive(
+            &next_ticket,
+            window,
+            super::start_notification_cleanup(&next_ticket, window, &next_started, || {}, work),
+        );
+        tokio::pin!(attempt);
+        assert!(attempt.as_mut().now_or_never().is_none());
+        assert!(native_effect.load(Ordering::SeqCst));
+        assert!(
+            next_started.load(Ordering::SeqCst),
+            "passing the lock and issuing work is dispatched"
+        );
+        next_ticket.request_cancel();
+        assert!(matches!(attempt.await, super::Wait::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn dispatched_notification_cleanup_can_finish_after_caller_ticket_settles() {
+        use futures_util::FutureExt;
+        let ticket = crate::op_control::OpTicket::new();
+        let window = OpControl::unbounded().unsubscribe_window();
+        let started = std::sync::atomic::AtomicBool::new(false);
+        let (answer, native) = tokio::sync::oneshot::channel();
+        let work = async move {
+            native.await.expect("native answer remains owned");
+            Ok(())
+        };
+        let cleanup = super::start_notification_cleanup(&ticket, window, &started, || {}, work);
+        tokio::pin!(cleanup);
+        assert!(cleanup.as_mut().now_or_never().is_none());
+        assert!(started.load(std::sync::atomic::Ordering::SeqCst));
+        ticket.settle();
+        answer.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_millis(100), cleanup)
+            .await
+            .expect("a dispatched native future must outlive its caller ticket")
+            .unwrap();
+    }
+
+    #[cfg(feature = "btleplug")]
+    #[tokio::test]
+    async fn exact_cancel_at_backend_gatt_lock_retries_original_activation() {
+        let central = open().await;
+        let peer = "exact-backend-lock";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let activation = central.boundary().enable_epochs().last().cloned().unwrap();
+        let cache = std::sync::Arc::new(crate::btleplug_backend::GattCache::<()>::new());
+        let gate = cache.lock_peer(peer).await;
+        *super::lock_std(&central.inner.test_notification_cleanup_gate) = Some(cache);
+        let ctl = OpControl::unbounded();
+        let ticket = ctl.ticket.clone();
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(peer, &selector, "consumer", &owner, ctl, None)
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !super::lock_std(&central.inner.exact_unsettled_cleanup).contains_key(&owner) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        ticket.request_cancel();
+        let error = tokio::time::timeout(Duration::from_secs(1), attempt)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code_str(), "operation.aborted");
+        assert_eq!(
+            error.commit(),
+            Some(ubm_core::contracts::CommitState::NotDispatched)
+        );
+        assert!(central.boundary().disable_epochs().is_empty());
+        assert!(!super::lock_std(&central.inner.exact_unsettled_cleanup).contains_key(&owner));
+        drop(gate);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![activation]);
+        central.shutdown().await;
+    }
+
+    #[cfg(feature = "btleplug")]
+    #[tokio::test]
+    async fn exact_deadline_at_backend_gatt_lock_retries_original_activation() {
+        let central = open().await;
+        let peer = "exact-backend-lock-timeout";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, owner) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let activation = central.boundary().enable_epochs().last().cloned().unwrap();
+        let cache = std::sync::Arc::new(crate::btleplug_backend::GattCache::<()>::new());
+        let gate = cache.lock_peer(peer).await;
+        *super::lock_std(&central.inner.test_notification_cleanup_gate) = Some(cache);
+        let ctl = OpControl::budget_ms(1000);
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(peer, &selector, "consumer", &owner, ctl, None)
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !super::lock_std(&central.inner.exact_unsettled_cleanup).contains_key(&owner) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(2), attempt)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code_str(), "operation.timed-out");
+        assert_eq!(
+            error.commit(),
+            Some(ubm_core::contracts::CommitState::NotDispatched)
+        );
+        assert!(central.boundary().disable_epochs().is_empty());
+        assert!(!super::lock_std(&central.inner.exact_unsettled_cleanup).contains_key(&owner));
+        drop(gate);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![activation]);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_pruned_terminal_abandoned_before_dispatch_retries_same_activation() {
+        let central = open().await;
+        let peer = "exact-pruned-terminal";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let mut admitted = None;
+        central
+            .subscribe_buffered_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                ubm_core::streams::OverflowPolicy::Error,
+                (64, 8192),
+                OpControl::unbounded(),
+                &mut admitted,
+                true,
+            )
+            .await
+            .unwrap();
+        let owner = admitted.unwrap();
+        let index = super::lock_std(&central.inner.exact_subscription_owners)
+            .owners
+            .get(&owner)
+            .unwrap()
+            .activation
+            .0;
+        let activation = central.boundary().enable_epochs().last().cloned().unwrap();
+        for _ in 0..65 {
+            central
+                .boundary()
+                .push_event(notification(peer, 0, vec![1]))
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                != Some(ubm_core::central::ConsumerState::Failed)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        for _ in 0..64 {
+            assert!(matches!(
+                central
+                    .poll_notification(peer, &selector, "consumer")
+                    .await
+                    .unwrap(),
+                crate::NotificationPoll::Value(_)
+            ));
+        }
+        assert!(matches!(
+            central
+                .poll_notification(peer, &selector, "consumer")
+                .await
+                .unwrap(),
+            crate::NotificationPoll::Terminal(_)
+        ));
+        let fences = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("notification_fence", fences + 1),
+        )
+        .await
+        .unwrap();
+        let gate = central.inner.gatt_admission.provisional_peer(peer);
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                .is_some()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        attempt.abort();
+        assert!(attempt.await.unwrap_err().is_cancelled());
+        drop(gate);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![activation]);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_pruned_terminal_retry_after_rediscovery_preserves_replacement() {
+        let central = open().await;
+        let peer = "peer";
+        let selector = hrm_selector(0);
+        central
+            .connect(peer, "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services(peer, vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let mut admitted = None;
+        central
+            .subscribe_buffered_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                ubm_core::streams::OverflowPolicy::Error,
+                (64, 8192),
+                OpControl::unbounded(),
+                &mut admitted,
+                true,
+            )
+            .await
+            .unwrap();
+        let owner = admitted.unwrap();
+        let index = super::lock_std(&central.inner.exact_subscription_owners)
+            .owners
+            .get(&owner)
+            .unwrap()
+            .activation
+            .0;
+        let activation = central.boundary().enable_epochs().last().cloned().unwrap();
+        for _ in 0..65 {
+            central
+                .boundary()
+                .push_event(notification(peer, 0, vec![1]))
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                != Some(ubm_core::central::ConsumerState::Failed)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        for _ in 0..64 {
+            assert!(matches!(
+                central
+                    .poll_notification(peer, &selector, "consumer")
+                    .await
+                    .unwrap(),
+                crate::NotificationPoll::Value(_)
+            ));
+        }
+        assert!(matches!(
+            central
+                .poll_notification(peer, &selector, "consumer")
+                .await
+                .unwrap(),
+            crate::NotificationPoll::Terminal(_)
+        ));
+        let fences = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("notification_fence", fences + 1),
+        )
+        .await
+        .unwrap();
+        let gate = central.inner.gatt_admission.provisional_peer(peer);
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                .is_some()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        attempt.abort();
+        assert!(attempt.await.unwrap_err().is_cancelled());
+        drop(gate);
+        discover_with_identity(&central, 2).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let route = central.inner.subscriptions.lock().await.clone();
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![activation]);
+        assert_eq!(*central.inner.subscriptions.lock().await, route);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_drain_pruned_terminal_abandoned_before_dispatch_retries_same_activation() {
+        let central = open().await;
+        let peer = "exact-drain-pruned-terminal";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let mut admitted = None;
+        central
+            .subscribe_buffered_with_admission(
+                peer,
+                &selector,
+                "consumer",
+                None,
+                ubm_core::streams::OverflowPolicy::Error,
+                (64, 8192),
+                OpControl::unbounded(),
+                &mut admitted,
+                true,
+            )
+            .await
+            .unwrap();
+        let owner = admitted.unwrap();
+        let index = super::lock_std(&central.inner.exact_subscription_owners)
+            .owners
+            .get(&owner)
+            .unwrap()
+            .activation
+            .0;
+        let activation = central.boundary().enable_epochs().last().cloned().unwrap();
+        for _ in 0..65 {
+            central
+                .boundary()
+                .push_event(notification(peer, 0, vec![1]))
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                != Some(ubm_core::central::ConsumerState::Failed)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fences = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let owner = owner.clone();
+            let captured = captured.clone();
+            async move {
+                let drain = |item| captured.lock().unwrap().push(item);
+                central
+                    .unsubscribe_exact_draining(
+                        peer,
+                        &selector,
+                        "consumer",
+                        &owner,
+                        OpControl::unbounded(),
+                        Some(&drain),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("notification_fence", fences + 1),
+        )
+        .await
+        .unwrap();
+        let gate = central.inner.gatt_admission.provisional_peer(peer);
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                .is_some()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            captured
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|item| matches!(item, crate::NotificationPoll::Terminal(_)))
+        );
+        attempt.abort();
+        assert!(attempt.await.unwrap_err().is_cancelled());
+        drop(gate);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    peer,
+                    &selector,
+                    "consumer",
+                    &owner,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![activation]);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_abandoned_before_dispatch_retry_after_rediscovery_preserves_replacement() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = hrm_selector(0);
+        let (_, old) = central
+            .subscribe_exact_with_admission(
+                "peer",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let index = super::lock_std(&central.inner.exact_subscription_owners)
+            .owners
+            .get(&old)
+            .unwrap()
+            .activation
+            .0;
+        let old_activation = central.boundary().enable_epochs().last().cloned().unwrap();
+        let fences = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        central.boundary().block_op(FaultOp::NotificationFence);
+        let attempt = tokio::spawn({
+            let central = central.clone();
+            let selector = selector.clone();
+            let old = old.clone();
+            async move {
+                central
+                    .unsubscribe_exact_draining(
+                        "peer",
+                        &selector,
+                        "consumer",
+                        &old,
+                        OpControl::unbounded(),
+                        None,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central
+                .boundary()
+                .wait_for_calls("notification_fence", fences + 1),
+        )
+        .await
+        .unwrap();
+        let gate = central.inner.gatt_admission.provisional_peer("peer");
+        central.boundary().unblock_op(FaultOp::NotificationFence);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while central
+                .inner
+                .core
+                .lock()
+                .await
+                .consumer_state(index, "consumer")
+                != Some(ubm_core::central::ConsumerState::Removing)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        attempt.abort();
+        assert!(attempt.await.unwrap_err().is_cancelled());
+        drop(gate);
+        discover_with_identity(&central, 2).await;
+        let (_, replacement) = central
+            .subscribe_exact_with_admission(
+                "peer",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let route = central.inner.subscriptions.lock().await.clone();
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "peer",
+                    &selector,
+                    "consumer",
+                    &old,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.boundary().disable_epochs(), vec![old_activation]);
+        assert_eq!(*central.inner.subscriptions.lock().await, route);
+        assert!(
+            central
+                .unsubscribe_exact_draining(
+                    "peer",
+                    &selector,
+                    "consumer",
+                    &replacement,
+                    OpControl::unbounded(),
+                    None
+                )
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
     }
 
     #[tokio::test]
@@ -16214,7 +37638,8 @@ mod adapter_tests {
         for _ in 0..1000u32 {
             central
                 .boundary()
-                .push_event(notification("peer-f07a", 0, vec![0x01]));
+                .push_event(notification("peer-f07a", 0, vec![0x01]))
+                .expect("synthetic event admission failed");
         }
         assert!(
             central.boundary().dropped_notification_count() > 0,
@@ -16233,7 +37658,8 @@ mod adapter_tests {
         // order preserved) still reconciles.
         central
             .boundary()
-            .push_event(RadioEvent::Disconnected("peer-f07b".to_owned()));
+            .push_event(RadioEvent::Disconnected("peer-f07b".to_owned()))
+            .expect("synthetic event admission failed");
         let peer_b = central.peer_key_for("peer-f07b").await.expect("peer B");
         let mut lost = false;
         for _ in 0..400 {
@@ -16340,7 +37766,8 @@ mod adapter_tests {
             .expect("B subscribes under A's cleanup");
         central
             .boundary()
-            .push_event(notification("peer-f24b", 0, vec![0x0B]));
+            .push_event(notification("peer-f24b", 0, vec![0x0B]))
+            .expect("synthetic event admission failed");
         let mut delivered = None;
         for _ in 0..200 {
             delivered = central
@@ -16513,7 +37940,10 @@ mod adapter_tests {
     async fn f03_dropped_connect_still_releases() {
         let central = open().await;
         let peer = "peer-f03c".to_owned();
-        central.boundary().push_event(advertisement(&peer));
+        central
+            .boundary()
+            .push_event(advertisement(&peer))
+            .expect("synthetic event admission failed");
         let baseline = central.with_core(|core| core.live_operation_count()).await;
         central.boundary().block_op(FaultOp::Connect);
         let caller = central.clone();
@@ -16543,6 +37973,54 @@ mod adapter_tests {
             .connect(&peer, "lease-x", OpControl::budget_ms(10_000))
             .await
             .expect("post-drop admission");
+    }
+
+    #[tokio::test]
+    async fn dropped_subscribe_cleanup_does_not_remove_reconnected_activation() {
+        let central = open().await;
+        let peer = "drop-subscribe-reconnect";
+        let selector = hrm_selector(0);
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        let (_, old) = central
+            .subscribe_with_admission(peer, &selector, "old", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        let (key, (index, epoch)) = central
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .iter()
+            .next()
+            .map(|(key, activation)| (key.clone(), *activation))
+            .unwrap();
+        super::reconcile_disconnected(&central.inner, peer, true).await;
+        ready_peer(&central, peer, vec![hrm_service()]).await;
+        central
+            .subscribe(peer, &selector, "replacement", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        let replacement = central.inner.subscriptions.lock().await.clone();
+        assert_ne!(replacement.get(&key), Some(&(index, epoch)));
+        super::run_drop_cleanup(
+            central.clone(),
+            old.operation_id().clone(),
+            super::DropCleanup::Subscribe {
+                key,
+                path_index: index,
+                epoch: Some(epoch),
+                drive_enable: true,
+            },
+        )
+        .await;
+        assert_eq!(*central.inner.subscriptions.lock().await, replacement);
+        assert!(
+            central
+                .unsubscribe(peer, &selector, "replacement", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
     }
 
     #[tokio::test]
@@ -16748,6 +38226,35 @@ mod adapter_tests {
             .await
             .expect("admission remains");
         assert_eq!(value.value, vec![0x42]);
+    }
+
+    #[tokio::test]
+    async fn reset_retains_disconnect_observation_cleanup_failure() {
+        let central = open().await;
+        ready_peer(&central, "reset-observation", vec![hrm_service()]).await;
+        central.boundary().set_disconnect_cleanup_failure(
+            "reset-observation",
+            super::contract_error(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Cleanup,
+                "native.cleanup",
+            )
+            .with_detail("reset cleanup refused"),
+        );
+        let mut resets = central.adapter_reset_events();
+        super::adapter_reset(
+            &central.inner,
+            super::AdapterLossCause::PoweredOff,
+            None,
+            None,
+        )
+        .await;
+        let event = resets.recv().await.unwrap();
+        assert_eq!(event.link_release_failures.len(), 1);
+        assert_eq!(
+            event.link_release_failures[0].1.detail(),
+            Some("reset cleanup refused")
+        );
     }
 
     #[tokio::test]

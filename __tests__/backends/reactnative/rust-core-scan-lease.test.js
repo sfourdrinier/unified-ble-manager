@@ -70,7 +70,7 @@ describe('finding 185: a scan lease is never left behind', () => {
     await manager.destroy()
   })
 
-  test('destroy disposes the session even when a scan release failed, and reports the debt', async () => {
+  test('destroy retains a failed scan release for retry before disposing the session', async () => {
     const { native, manager } = await openManager()
     const scan = await manager.scan(scanOptions())
     void scan
@@ -79,11 +79,33 @@ describe('finding 185: a scan lease is never left behind', () => {
     // The debt stays visible…
     expect(destroyed.state).toBe('release-failed')
     expect(JSON.stringify(destroyed.failures)).toContain('scan')
-    // …but the native session was still disposed…
-    expect(native.opsInvoked('session.dispose')).toHaveLength(1)
-    // …so no scan membership survives the destroyed manager on any session.
+    // The session remains alive because its scan identity is needed for retry.
+    expect(native.opsInvoked('session.dispose')).toHaveLength(0)
     const retained = [...native.sessions.values()].flatMap(session => [...session.scans.keys()])
-    expect(retained).toEqual([])
+    expect(retained).toHaveLength(1)
+    expect(await manager.destroy()).toEqual({ state: 'released', failures: [] })
+    expect(native.opsInvoked('session.dispose')).toHaveLength(1)
+    expect([...native.sessions.values()].flatMap(session => [...session.scans.keys()])).toEqual([])
+  })
+
+  test('destroy retains backend disposal debt for retry', async () => {
+    const { manager, backend } = await openManager()
+    const destroyBackend = backend.destroy.bind(backend)
+    let attempts = 0
+    backend.destroy = async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('backend disposal unavailable')
+      return destroyBackend()
+    }
+
+    const refused = await manager.destroy()
+
+    expect(refused).toMatchObject({
+      state: 'release-failed',
+      failures: [{ resourceKind: 'backend', error: { code: 'platform.failure' } }]
+    })
+    expect(await manager.destroy()).toEqual({ state: 'released', failures: [] })
+    expect(attempts).toBe(2)
   })
 
   test('a manager created after a debted destroy scans on the same process host', async () => {

@@ -201,6 +201,22 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
     this.deliverAvailableItems()
   }
 
+  /**
+   * Stops future admission while retaining the FIFO prefix that was already
+   * accepted.  Deterministic backend cleanup uses this for a successful
+   * release fence; destructive `closeWithReason` remains for source loss and
+   * explicit value disposal.
+   */
+  finishWithReason(reason: StreamTerminalNotice['reason'], error: NormalizedBleError | null = null): void {
+    if (this.closed) {
+      return
+    }
+    this.closed = true
+    this.settledTerminalReason = reason
+    this.terminalNotice = this.makeTerminalNotice(reason, error)
+    this.deliverAvailableItems()
+  }
+
   terminalReason(): StreamTerminalNotice['reason'] | null {
     return this.settledTerminalReason
   }

@@ -1,5 +1,6 @@
 jest.mock('../src/react-native-app-manager', () => ({
-  createReactNativeApplicationHost: jest.fn()
+  createReactNativeApplicationHost: jest.fn(),
+  configureReactNativeTerminalEvidence: jest.fn().mockResolvedValue(undefined)
 }))
 
 jest.mock('../src/public/ble-manager', () => ({

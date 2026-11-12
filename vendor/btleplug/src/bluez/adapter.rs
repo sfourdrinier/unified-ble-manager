@@ -14,9 +14,14 @@ use std::pin::Pin;
 pub struct Adapter {
     session: BluetoothSession,
     adapter: AdapterId,
+    peers: std::sync::Arc<super::peer_source::PeerRegistry>,
 }
 
 impl Adapter {
+    /// Retain the native source authority across adapter clones.
+    pub fn reclaim_authority_handle(&self) -> crate::ubm_reclaim_authority::ReclaimAuthorityHandle {
+        self.peers.reclaim_authority_handle()
+    }
     /// Release only this session's accepted LE acquisition, without requiring
     /// a device-directory read that can fail after daemon/object loss.
     pub async fn disconnect_le(&self, peer_id: &str, owner: &str) -> Result<()> {
@@ -25,14 +30,25 @@ impl Adapter {
         {
             return Err(Error::DeviceNotFound);
         }
-        self.session.disconnect_le_by_peer(peer_id, owner).await?;
-        Ok(())
+        let peer = self.peers.get_by_peer(peer_id)?;
+        let session = self.session.clone();
+        let peer_id = peer_id.to_owned();
+        let owner = owner.to_owned();
+        peer.own_graph_operation(super::peer_source::GraphOperationScope::Effect(Some(owner.clone())), async move {
+            session.disconnect_le_by_peer(&peer_id, &owner).await?;
+            Ok(())
+        }).await
     }
 
-    pub(crate) fn new(session: BluetoothSession, adapter: AdapterId) -> Self {
+    pub(crate) fn new(
+        session: BluetoothSession,
+        adapter: AdapterId,
+        peers: std::sync::Arc<super::peer_source::PeerRegistry>,
+    ) -> Self {
         Self {
             session: session.scoped_match_cleanup(),
             adapter,
+            peers,
         }
     }
 
@@ -59,6 +75,7 @@ impl Central for Adapter {
         // Get the stream first, on the basis that it's better to have a duplicate DeviceDiscovered
         // event than to miss one. It's unlikely to happen in any case.
         let events = self.session.adapter_event_stream(&self.adapter).await?;
+        let source_events = self.peers.lifecycle_events();
 
         // Synthesise `DeviceDiscovered' and `DeviceConnected` events for existing peripherals.
         let devices = self.session.get_devices().await?;
@@ -88,8 +105,20 @@ impl Central for Adapter {
         let events = events
             .filter_map(move |event| central_events(event, session.clone(), adapter_id.clone()))
             .flat_map(stream::iter);
-
-        Ok(Box::pin(initial_events.chain(events)))
+        let source_adapter = self.adapter.clone();
+        let source_events = tokio_stream::wrappers::BroadcastStream::new(source_events).filter_map(move |event| {
+            let adapter = source_adapter.clone();
+            async move {
+                match event {
+                    Ok(super::peer_source::PeerLifecycleEvent::Uncertain(id, graph)) if id.adapter() == adapter => Some(CentralEvent::DeviceSourceUncertain { id: id.into(), graph, platform: None }),
+                    Ok(super::peer_source::PeerLifecycleEvent::GraphRetired(id, graph)) if id.adapter() == adapter => Some(CentralEvent::DeviceGraphRetired { id: id.into(), graph }),
+                    Ok(super::peer_source::PeerLifecycleEvent::EventsLost(skipped)) => Some(CentralEvent::EventsLost { skipped }),
+                    Ok(_) => None,
+                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => Some(CentralEvent::EventsLost { skipped }),
+                }
+            }
+        });
+        Ok(Box::pin(initial_events.chain(stream::select(events.boxed(), source_events.boxed()))))
     }
 
     async fn start_scan(&self, filter: ScanFilter) -> Result<()> {
@@ -109,10 +138,10 @@ impl Central for Adapter {
 
     async fn peripherals(&self) -> Result<Vec<Peripheral>> {
         let devices = self.session.get_devices_on_adapter(&self.adapter).await?;
-        Ok(devices
+        devices
             .into_iter()
-            .map(|device| Peripheral::new(self.session.clone(), device))
-            .collect())
+            .map(|device| Peripheral::new_shared(self.session.clone(), device, &self.peers))
+            .collect()
     }
 
     async fn peripheral(&self, id: &PeripheralId) -> Result<Peripheral> {
@@ -123,7 +152,11 @@ impl Central for Adapter {
                 e.into()
             }
         })?;
-        Ok(Peripheral::new(self.session.clone(), device))
+        Peripheral::new_shared(
+            self.session.clone(),
+            device,
+            &self.peers,
+        )
     }
 
     async fn add_peripheral(&self, _address: &PeripheralId) -> Result<Peripheral> {

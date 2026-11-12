@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use ubm_desktop::continuation_journal::{
-    APPEND_BATCH_MAX, AppendBatch, ContinuationJournal, JournalQuota,
+    APPEND_BATCH_MAX, AppendBatch, ContinuationJournal, JournalQuota, RecordedLoss,
 };
 use ubm_desktop::continuation_outbox::{
     AfterCutoffLoss, DATA_RECORD_BYTES, DATA_RECORD_CAP, DataIngressFailure, Outbox, WakeSink,
@@ -245,6 +245,95 @@ fn record_capacity_mid_batch_commits_prefix_and_first_loss_marker_atomically() {
     assert!(one.append(&context(0), &record(0)).is_err());
     assert_eq!(stored(&one), stored(&many));
     assert_eq!(counters(&one), counters(&many));
+}
+
+#[test]
+fn capacity_refusal_precedes_later_invalid_journal_record() {
+    for (occupied, already_refused) in [(2, false), (1, false), (2, true)] {
+        let journal = fixture(2);
+        for i in 0..occupied {
+            journal.append(&context(i), &record(i)).unwrap();
+        }
+        if already_refused {
+            assert_eq!(
+                journal.append(&context(0), &record(0)).unwrap_err().kind,
+                "storage.full"
+            );
+        }
+        let valid = record(10);
+        let invalid = json!("not an object");
+        let metadata = context(0);
+        let items = if occupied == 1 {
+            vec![
+                (&metadata, &valid),
+                (&metadata, &valid),
+                (&metadata, &invalid),
+            ]
+        } else {
+            vec![(&metadata, &valid), (&metadata, &invalid)]
+        };
+        let result = journal.append_batch(&items).unwrap();
+        assert_eq!(result.accepted, 2 - occupied);
+        let refusal = result.rejected.unwrap();
+        assert_eq!(refusal.error.kind, "storage.full");
+        assert_eq!(refusal.not_attempted, 1);
+        let status = journal.status().unwrap();
+        assert_eq!(status["records"], 2);
+        assert_eq!(status["lostRecords"], if already_refused { 2 } else { 1 });
+        // The refused current record still receives full validation.
+        assert_eq!(
+            journal
+                .append_batch(&[(&metadata, &invalid)])
+                .unwrap_err()
+                .kind,
+            "argument.invalid"
+        );
+        assert_eq!(
+            journal.status().unwrap()["lostRecords"],
+            if already_refused { 2 } else { 1 }
+        );
+    }
+}
+
+#[test]
+fn recorded_capacity_refusal_accounts_unattempted_invalid_tail() {
+    let journal = fixture(1);
+    let metadata = json!({});
+    journal.append(&metadata, &record(0)).unwrap();
+    let valid = record(1);
+    let invalid = json!("not an object");
+    let impacts = [
+        RecordedLoss {
+            items: 1,
+            bytes: Some(4),
+        },
+        RecordedLoss {
+            items: 2,
+            bytes: Some(7),
+        },
+    ];
+    let result = journal
+        .append_recorded_batch(
+            &[(&metadata, &valid), (&metadata, &invalid)],
+            &impacts,
+            RecordedLoss {
+                items: 1,
+                bytes: Some(3),
+            },
+        )
+        .unwrap();
+    assert_eq!(result.accepted, 0);
+    let refusal = result.rejected.unwrap();
+    assert_eq!(refusal.error.kind, "storage.full");
+    assert_eq!(refusal.not_attempted, 1);
+    let status = journal.status().unwrap();
+    assert_eq!(status["records"], 1);
+    assert_eq!(status["lostRecords"], 4);
+    assert_eq!(
+        status["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":4,"bytes":14})
+    );
+    assert_eq!(status["collectionFailure"]["persisted"], true);
 }
 
 #[test]
@@ -493,6 +582,74 @@ fn outbox_capacity_commits_prefix_observes_it_and_accounts_every_uncommitted_val
 }
 
 #[test]
+fn capacity_refusal_precedes_later_unregistered_consumer() {
+    // The registration fills one slot. Test an already full journal and a
+    // batch that admits a prefix before meeting the same capacity refusal.
+    for max_records in [1, 2] {
+        let (journal, outbox) = durable(max_records);
+        let first = value(0);
+        let missing = json!({"t":"value", "consumer":"missing"});
+        let records = if max_records == 2 {
+            vec![value(1), first.clone(), missing.clone()]
+        } else {
+            vec![first.clone(), missing.clone()]
+        };
+        let outcome = outbox.push_data_batch(records.clone());
+        assert_eq!(outcome.accepted, (max_records - 1) as usize);
+        let rejected = outcome.rejected.unwrap();
+        assert!(
+            matches!(rejected.failure, DataIngressFailure::Storage { ref error, bytes }
+            if error.kind == "storage.full" && bytes == first.to_string().len())
+        );
+        assert_eq!(rejected.items, 2);
+        assert_eq!(
+            rejected.bytes,
+            (first.to_string().len() + missing.to_string().len()) as u64
+        );
+        let status = journal.status().unwrap();
+        assert_eq!(status["records"], max_records);
+        assert_eq!(status["lostRecords"], 1);
+        assert_eq!(status["collectionFailure"]["kind"], "storage.full");
+        assert_eq!(outbox.journal_failure().unwrap().kind, "storage.full");
+    }
+}
+
+#[test]
+fn reached_unregistered_consumer_rolls_back_and_remains_invalid() {
+    for max_records in [1, 10] {
+        let (journal, outbox) = durable(max_records);
+        let before = stored(&journal);
+        let missing = json!({"t":"value", "consumer":"missing"});
+        let records = if max_records == 1 {
+            vec![missing]
+        } else {
+            vec![value(0), missing]
+        };
+        let expected_bytes: u64 = records
+            .iter()
+            .map(|record| record.to_string().len() as u64)
+            .sum();
+        let result = outbox.push_data_batch(records.clone());
+        assert_eq!(result.accepted, 0);
+        let rejection = result.rejected.unwrap();
+        assert!(
+            matches!(rejection.failure, DataIngressFailure::Storage { ref error, .. }
+            if error.kind == "argument.invalid")
+        );
+        assert_eq!(rejection.items, records.len() as u64);
+        assert_eq!(rejection.bytes, expected_bytes);
+        let after = stored(&journal);
+        assert_eq!(after["records"], before["records"]);
+        assert_eq!(after["cursor"][1], before["cursor"][1]);
+        assert_eq!(journal.status().unwrap()["lostRecords"], 0);
+        assert_eq!(
+            journal.status().unwrap()["collectionFailure"]["kind"],
+            "argument.invalid"
+        );
+    }
+}
+
+#[test]
 fn outbox_storage_failure_is_all_or_nothing_without_observation() {
     let (journal, outbox) = durable(1000);
     let before = stored(&journal);
@@ -670,5 +827,360 @@ fn sealed_refusal_names_the_cutoff_and_counts_a_long_batch_once() {
             bytes: total
         },
         "every value of the batch, tail groups included, once"
+    );
+}
+
+#[test]
+fn independent_handles_merge_recorded_loss_and_show_current_status() {
+    let path = path();
+    let a = open(&path, 100);
+    let b = open(&path, 100);
+    let failure = a.append_batch(&[]).unwrap_err();
+    a.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 5,
+            bytes: Some(50),
+        },
+    );
+    b.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 3,
+            bytes: Some(30),
+        },
+    );
+    for journal in [&a, &b] {
+        let status = journal.status().unwrap();
+        assert_eq!(status["lostRecords"], 8);
+        assert_eq!(
+            status["collectionFailure"]["knownRecordedLoss"],
+            json!({"items":8,"bytes":80})
+        );
+    }
+}
+
+#[test]
+fn validation_does_not_overwrite_runtime_storage_failure() {
+    let journal = fixture(100);
+    let injector = fail_insert_of_ordinal(&journal.path, 1);
+    assert_eq!(
+        journal.append(&context(0), &record(0)).unwrap_err().kind,
+        "storage.io"
+    );
+    let before = journal.status().unwrap()["runtimeFailure"].clone();
+    assert_eq!(
+        journal.append_batch(&[]).unwrap_err().kind,
+        "argument.invalid"
+    );
+    assert_eq!(journal.status().unwrap()["runtimeFailure"], before);
+    drop(injector);
+}
+
+#[test]
+fn unpersisted_loss_retries_on_top_of_other_handles_durable_loss() {
+    let path = path();
+    let a = open(&path, 100);
+    let b = open(&path, 100);
+    let failure = a.append_batch(&[]).unwrap_err();
+    let injector = rusqlite::Connection::open(&path).unwrap();
+    injector.execute_batch("CREATE TRIGGER reject_loss BEFORE UPDATE OF collection_failure ON journal BEGIN SELECT RAISE(ABORT, 'injected loss failure'); END;").unwrap();
+    a.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 5,
+            bytes: Some(50),
+        },
+    );
+    assert_eq!(a.status().unwrap()["collectionFailure"]["persisted"], false);
+    injector.execute_batch("DROP TRIGGER reject_loss").unwrap();
+    b.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 3,
+            bytes: Some(30),
+        },
+    );
+    let pending_status = a.status().unwrap();
+    assert_eq!(pending_status["collectionFailure"]["persisted"], false);
+    assert_eq!(
+        pending_status["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":8,"bytes":80})
+    );
+    a.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 2,
+            bytes: Some(20),
+        },
+    );
+    for journal in [&a, &b] {
+        let status = journal.status().unwrap();
+        assert_eq!(status["lostRecords"], 10);
+        assert_eq!(
+            status["collectionFailure"]["knownRecordedLoss"],
+            json!({"items":10,"bytes":100})
+        );
+    }
+}
+
+#[test]
+fn independent_handle_cannot_admit_after_unpersisted_terminal_loss() {
+    let path = path();
+    let a = open(&path, 100);
+    let b = open(&path, 100);
+    let failure = a.append_batch(&[]).unwrap_err();
+    let injector = rusqlite::Connection::open(&path).unwrap();
+    injector.execute_batch("CREATE TRIGGER reject_loss BEFORE UPDATE OF collection_failure ON journal BEGIN SELECT RAISE(ABORT, 'injected loss failure'); END;").unwrap();
+    a.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 5,
+            bytes: Some(50),
+        },
+    );
+    injector.execute_batch("DROP TRIGGER reject_loss").unwrap();
+    let status = b.status().unwrap();
+    assert_eq!(status["accepting"], false);
+    assert_eq!(status["collectionFailure"]["persisted"], false);
+    assert_eq!(
+        status["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":5,"bytes":50})
+    );
+    assert_eq!(
+        b.append(&context(0), &record(0)).unwrap_err().kind,
+        "storage.collection-failed"
+    );
+    assert_eq!(b.status().unwrap()["records"], 0);
+}
+
+#[test]
+fn durable_loss_is_visible_with_unpersisted_non_loss_failure() {
+    let path = path();
+    let a = open(&path, 100);
+    let b = open(&path, 100);
+    let failure = a.append_batch(&[]).unwrap_err();
+    let injector = rusqlite::Connection::open(&path).unwrap();
+    injector.execute_batch("CREATE TRIGGER reject_failure BEFORE UPDATE OF collection_failure ON journal BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+    a.mark_collection_failure(&failure);
+    let original = a.status().unwrap()["collectionFailure"].clone();
+    assert_eq!(original["persisted"], false);
+    injector
+        .execute_batch("DROP TRIGGER reject_failure")
+        .unwrap();
+    b.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 3,
+            bytes: Some(30),
+        },
+    );
+    let status = a.status().unwrap();
+    assert_eq!(status["lostRecords"], 3);
+    assert_eq!(
+        status["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":3,"bytes":30})
+    );
+    assert_eq!(status["collectionFailure"]["persisted"], false);
+    assert_eq!(
+        status["collectionFailure"]["persistenceFailure"],
+        original["persistenceFailure"]
+    );
+}
+
+#[test]
+fn abandoned_unpersisted_loss_is_retained_and_can_be_retried() {
+    let path = path();
+    let a = open(&path, 100);
+    let failure = a.append_batch(&[]).unwrap_err();
+    let injector = rusqlite::Connection::open(&path).unwrap();
+    injector.execute_batch("CREATE TRIGGER reject_loss BEFORE UPDATE OF collection_failure ON journal BEGIN SELECT RAISE(ABORT, 'injected loss failure'); END;").unwrap();
+    a.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 5,
+            bytes: Some(50),
+        },
+    );
+    drop(a);
+    injector.execute_batch("DROP TRIGGER reject_loss").unwrap();
+    let reopened = open(&path, 100);
+    let status = reopened.status().unwrap();
+    assert_eq!(status["accepting"], false);
+    assert_eq!(status["collectionFailure"]["persisted"], false);
+    assert_eq!(
+        status["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":5,"bytes":50})
+    );
+    reopened.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 2,
+            bytes: Some(20),
+        },
+    );
+    let status = reopened.status().unwrap();
+    assert_eq!(status["lostRecords"], 7);
+    assert_eq!(status["collectionFailure"]["persisted"], true);
+    assert_eq!(
+        status["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":7,"bytes":70})
+    );
+}
+
+#[test]
+fn ordered_admission_keeps_storage_diagnostics_after_peer_failure() {
+    let path = path();
+    let a = open(&path, 100);
+    let b = open(&path, 100);
+    let failure = a.append_batch(&[]).unwrap_err();
+    let injector = rusqlite::Connection::open(&path).unwrap();
+    injector
+        .execute(
+            "INSERT INTO ordered_owner VALUES(1,'producer','collection','counter','1','live')",
+            [],
+        )
+        .unwrap();
+    injector.execute_batch("CREATE TRIGGER reject_loss BEFORE UPDATE OF collection_failure ON journal BEGIN SELECT RAISE(ABORT, 'injected loss failure'); END;").unwrap();
+    a.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 1,
+            bytes: Some(10),
+        },
+    );
+    assert_eq!(
+        b.append_ordered(
+            "producer",
+            "collection",
+            "counter",
+            "1",
+            "delivery",
+            &json!({}),
+            &json!({})
+        )
+        .unwrap_err()
+        .kind,
+        "storage.collection-failed"
+    );
+    assert!(b.status().unwrap()["runtimeFailure"].is_null());
+}
+
+#[test]
+fn retry_does_not_discard_a_distinct_unpersisted_failure() {
+    let path = path();
+    let a = open(&path, 100);
+    let b = open(&path, 100);
+    let first = a.append_batch(&[]).unwrap_err();
+    let second = b.append(&json!(null), &json!({})).unwrap_err();
+    assert_ne!(first.detail, second.detail);
+    let injector = rusqlite::Connection::open(&path).unwrap();
+    injector.execute_batch("CREATE TRIGGER reject_failure BEFORE UPDATE OF collection_failure ON journal BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+    a.mark_collection_failure(&first);
+    let original = a.status().unwrap()["collectionFailure"].clone();
+    injector
+        .execute_batch("DROP TRIGGER reject_failure")
+        .unwrap();
+    b.mark_recorded_collection_loss(
+        &second,
+        RecordedLoss {
+            items: 3,
+            bytes: Some(30),
+        },
+    );
+    a.mark_recorded_collection_loss(
+        &first,
+        RecordedLoss {
+            items: 2,
+            bytes: Some(20),
+        },
+    );
+    let status = a.status().unwrap();
+    assert_eq!(status["lostRecords"], 5);
+    assert_eq!(
+        status["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":5,"bytes":50})
+    );
+    assert_eq!(status["collectionFailure"]["detail"], original["detail"]);
+    assert_eq!(status["collectionFailure"]["persisted"], false);
+    assert_eq!(
+        status["collectionFailure"]["persistenceFailure"],
+        original["persistenceFailure"]
+    );
+}
+
+#[test]
+fn unpersisted_non_loss_failure_can_be_retried() {
+    let path = path();
+    let journal = open(&path, 100);
+    let failure = journal.append_batch(&[]).unwrap_err();
+    let injector = rusqlite::Connection::open(&path).unwrap();
+    injector.execute_batch("CREATE TRIGGER reject_failure BEFORE UPDATE OF collection_failure ON journal BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+    journal.mark_collection_failure(&failure);
+    assert_eq!(
+        journal.status().unwrap()["collectionFailure"]["persisted"],
+        false
+    );
+    injector
+        .execute_batch("DROP TRIGGER reject_failure")
+        .unwrap();
+    journal.mark_collection_failure(&failure);
+    let status = journal.status().unwrap();
+    assert_eq!(status["phase"], "stopped");
+    assert_eq!(status["collectionFailure"]["persisted"], true);
+    assert!(
+        status["collectionFailure"]
+            .get("persistenceFailure")
+            .is_none()
+    );
+}
+
+#[test]
+fn independent_pending_losses_are_merged_and_retried_once() {
+    let path = path();
+    let a = open(&path, 100);
+    let b = open(&path, 100);
+    let failure = a.append_batch(&[]).unwrap_err();
+    let injector = rusqlite::Connection::open(&path).unwrap();
+    injector.execute_batch("CREATE TRIGGER reject_loss BEFORE UPDATE OF collection_failure ON journal BEGIN SELECT RAISE(ABORT, 'injected loss failure'); END;").unwrap();
+    a.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 5,
+            bytes: Some(50),
+        },
+    );
+    b.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 3,
+            bytes: Some(30),
+        },
+    );
+    assert_eq!(
+        b.status().unwrap()["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":8,"bytes":80})
+    );
+    drop(a);
+    injector.execute_batch("DROP TRIGGER reject_loss").unwrap();
+    b.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 2,
+            bytes: Some(20),
+        },
+    );
+    assert_eq!(
+        b.status().unwrap()["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":10,"bytes":100})
+    );
+    let reopened = open(&path, 100);
+    reopened.mark_recorded_collection_loss(&failure, RecordedLoss::default());
+    let status = b.status().unwrap();
+    assert_eq!(status["lostRecords"], 10);
+    assert_eq!(status["collectionFailure"]["persisted"], true);
+    assert_eq!(
+        status["collectionFailure"]["knownRecordedLoss"],
+        json!({"items":10,"bytes":100})
     );
 }

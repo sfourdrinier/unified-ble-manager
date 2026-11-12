@@ -21,38 +21,47 @@ mod macaddress;
 mod match_cleanup;
 mod messagestream;
 mod modalias;
+mod notification_sender;
+mod peer_observer;
 mod serde_path;
 mod service;
 
 pub use self::adapter::{AdapterId, AdapterInfo};
-pub use self::bleuuid::{BleUuid, uuid_from_u16, uuid_from_u32};
+pub use self::bleuuid::{uuid_from_u16, uuid_from_u32, BleUuid};
 pub use self::characteristic::{CharacteristicFlags, CharacteristicId, CharacteristicInfo};
 pub use self::descriptor::{DescriptorId, DescriptorInfo};
 pub use self::device::{AddressType, DeviceId, DeviceInfo};
 pub use self::events::{AdapterEvent, BluetoothEvent, CharacteristicEvent, DeviceEvent};
 use self::introspect::IntrospectParse;
 pub use self::le_gatt::{
-    LE_GATT_OBSERVATION_TIMEOUT, LeGattBearer, LeGattErrorStage, LeGattReadyToken, LeGattSnapshot,
-    LeGattStatus,
+    LeGattBearer, LeGattErrorStage, LeGattReadyToken, LeGattSnapshot, LeGattStatus,
+    LE_GATT_OBSERVATION_TIMEOUT,
 };
 pub use self::le_lease::{LeLeaseProtocolError, LeLeaseReleaseReceipt, LeLeaseReleaseScope};
 pub use self::macaddress::{MacAddress, ParseMacAddressError};
 use self::match_cleanup::{MatchFailure, MatchRegistry};
 use self::messagestream::MessageStream;
 pub use self::modalias::{Modalias, ParseModaliasError};
+pub use self::notification_sender::{
+    NotificationSender, NotificationSenderFailure, NotificationSenderMonitor,
+    NotificationSenderTerminal,
+};
+pub use self::peer_observer::{
+    event_bytes as peer_observer_event_bytes, PeerObserverClose, PeerObserverError, PeerObserverEvent, PeerObserverLease, PeerObserverLimits,
+};
 pub use self::service::{ServiceId, ServiceInfo};
 use bluez_generated::{
-    ORG_BLUEZ_ADAPTER1_NAME, ORG_BLUEZ_DEVICE1_NAME, ORG_BLUEZ_GATT_CHARACTERISTIC1_NAME,
     OrgBluezAdapter1, OrgBluezAdapter1Properties, OrgBluezDevice1, OrgBluezDevice1Properties,
     OrgBluezGattCharacteristic1, OrgBluezGattCharacteristic1Properties, OrgBluezGattDescriptor1,
-    OrgBluezGattService1,
+    OrgBluezGattService1, ORG_BLUEZ_ADAPTER1_NAME, ORG_BLUEZ_DEVICE1_NAME,
+    ORG_BLUEZ_GATT_CHARACTERISTIC1_NAME,
 };
-use dbus::Path;
 use dbus::arg::{PropMap, Variant};
 use dbus::nonblock::stdintf::org_freedesktop_dbus::{Introspectable, ObjectManager, Properties};
 use dbus::nonblock::{Proxy, SyncConnection};
+use dbus::Path;
 use dbus_tokio::connection::IOResourceError;
-use futures::stream::{self, StreamExt, select_all};
+use futures::stream::{self, select_all, StreamExt};
 use futures::{FutureExt, Stream};
 use std::collections::HashMap;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -340,6 +349,9 @@ pub struct BluetoothSession {
     le: Arc<le_bearer::Registry>,
     lease_reservation_ids: Arc<std::sync::atomic::AtomicU64>,
     destination: String,
+    peer_observers: Arc<peer_observer::PeerObservers>,
+    peer_owner_init: Arc<tokio::sync::Mutex<()>>,
+    notification_bus: Option<dbus::channel::BusType>,
 }
 
 static NEXT_CLEANUP_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -363,6 +375,7 @@ impl Debug for BluetoothSession {
 
 impl BluetoothSession {
     fn from_connection(connection: Arc<SyncConnection>) -> Self {
+        connection.set_signal_match_mode(true);
         let add = connection.clone();
         let remove = connection.clone();
         let matches = MatchRegistry::new(
@@ -385,12 +398,17 @@ impl BluetoothSession {
                 })
             }),
         );
+        let peer_observers = Arc::new(peer_observer::PeerObservers::default());
+        peer_observers.install(&connection, "org.bluez");
         Self {
             connection,
             matches,
             le: Arc::new(le_bearer::Registry::default()),
             lease_reservation_ids: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             destination: "org.bluez".to_owned(),
+            peer_observers,
+            peer_owner_init: Arc::new(tokio::sync::Mutex::new(())),
+            notification_bus: None,
             cleanup_scope: NEXT_CLEANUP_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
@@ -403,6 +421,9 @@ impl BluetoothSession {
             le: self.le.clone(),
             lease_reservation_ids: self.lease_reservation_ids.clone(),
             destination: self.destination.clone(),
+            peer_observers: self.peer_observers.clone(),
+            peer_owner_init: self.peer_owner_init.clone(),
+            notification_bus: self.notification_bus,
             cleanup_scope: NEXT_CLEANUP_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
@@ -419,8 +440,8 @@ impl BluetoothSession {
     /// Returns a tuple of (join handle, Self).
     /// If the join handle ever completes then you're in trouble and should
     /// probably restart the process.
-    pub async fn new()
-    -> Result<(impl Future<Output = Result<(), SpawnError>>, Self), BluetoothError> {
+    pub async fn new(
+    ) -> Result<(impl Future<Output = Result<(), SpawnError>>, Self), BluetoothError> {
         // Connect to the D-Bus system bus (this is blocking, unfortunately).
         let (dbus_resource, connection) = dbus_tokio::connection::new_system_sync()?;
         // Configure the connection to send signal messages to all matching `MsgMatch`es, as we may
@@ -428,14 +449,17 @@ impl BluetoothSession {
         connection.set_signal_match_mode(true);
         // The resource is a task that should be spawned onto a tokio compatible
         // reactor ASAP. If the resource ever finishes, you lost connection to D-Bus.
-        let dbus_handle = tokio::spawn(async {
+        let mut session = Self::from_connection(connection);
+        session.notification_bus = Some(dbus::channel::BusType::System);
+        let observers = Arc::downgrade(&session.peer_observers);
+        let dbus_handle = tokio::spawn(async move {
             let err = dbus_resource.await;
+            if let Some(observers) = observers.upgrade() {
+                observers.connection_lost();
+            }
             Err(SpawnError::DbusConnectionLost(err))
         });
-        Ok((
-            dbus_handle.map(|res| res?),
-            Self::from_connection(connection),
-        ))
+        Ok((dbus_handle.map(|res| res?), session))
     }
 
     /// UBM patch (vendor/btleplug/UBM_PATCHES.md #3): the same as
@@ -443,18 +467,21 @@ impl BluetoothSession {
     /// system bus — for a BlueZ service exported on the session bus (mock
     /// BlueZ, sandboxed setups), which the legacy UBM BlueZ backend
     /// supported as `busKind: 'session'`.
-    pub async fn new_session_bus()
-    -> Result<(impl Future<Output = Result<(), SpawnError>>, Self), BluetoothError> {
+    pub async fn new_session_bus(
+    ) -> Result<(impl Future<Output = Result<(), SpawnError>>, Self), BluetoothError> {
         let (dbus_resource, connection) = dbus_tokio::connection::new_session_sync()?;
         connection.set_signal_match_mode(true);
-        let dbus_handle = tokio::spawn(async {
+        let mut session = Self::from_connection(connection);
+        session.notification_bus = Some(dbus::channel::BusType::Session);
+        let observers = Arc::downgrade(&session.peer_observers);
+        let dbus_handle = tokio::spawn(async move {
             let err = dbus_resource.await;
+            if let Some(observers) = observers.upgrade() {
+                observers.connection_lost();
+            }
             Err(SpawnError::DbusConnectionLost(err))
         });
-        Ok((
-            dbus_handle.map(|res| res?),
-            Self::from_connection(connection),
-        ))
+        Ok((dbus_handle.map(|res| res?), session))
     }
 
     /// Powers the given adapter on or off.
@@ -993,6 +1020,31 @@ impl BluetoothSession {
         Ok(characteristic
             .write_value(value.into(), options.into())
             .await?)
+    }
+
+    /// Start a write on an already validated daemon and characteristic path.
+    /// `method_call` sends synchronously; the returned reply must be retained
+    /// and polled independently of the caller that requested the operation.
+    /// A send failure is returned by the reply future, and does not establish
+    /// whether a remote device observed an operation.
+    pub fn start_characteristic_write(
+        &self,
+        daemon: &str,
+        id: &CharacteristicId,
+        value: Vec<u8>,
+        options: WriteOptions,
+    ) -> dbus::nonblock::MethodReply<()> {
+        let proxy = Proxy::new(
+            daemon.to_owned(),
+            id.object_path.to_owned(),
+            DBUS_METHOD_CALL_TIMEOUT,
+            self.connection.clone(),
+        );
+        proxy.method_call(
+            "org.bluez.GattCharacteristic1",
+            "WriteValue",
+            (value, PropMap::from(options)),
+        )
     }
 
     /// Read the value of the given GATT descriptor.

@@ -2,6 +2,7 @@
 
 import type { WebContents } from 'electron'
 import type { PeerDirectoryBackend, PeerReference as BackendPeerReference } from 'unified-ble-manager/backend-sdk'
+import type { NativeContinuationControlV1 } from 'unified-ble-manager/backend-sdk'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- fixture verifies these are importable from application root
 import type {
   BlePeer,
@@ -30,7 +31,14 @@ import type {
   BleDiscoveryInfo,
   BleAdapter,
   AdapterReadinessOptions,
-  BleDiagnostics
+  BleDiagnostics,
+  DiscoveryLossCountersV1,
+  GattOrderedStream,
+  NotificationProvenance,
+  BleDiagnosticWarning,
+  PublicStreamPeerSourceLossNotice,
+  OrderedRecordingBatch,
+  OrderedRecordingRecoveryHandle
 } from 'unified-ble-manager'
 const recordingConfiguration: ContinuationRecordingConfiguration = {
   id: 'session-1',
@@ -103,7 +111,14 @@ type _RootImportCheck = BlePeer &
   GattCharacteristic &
   OperationOptions &
   BleManagerCreateOptions &
-  StreamPreset
+  StreamPreset &
+  DiscoveryLossCountersV1 &
+  GattOrderedStream &
+  NotificationProvenance &
+  BleDiagnosticWarning &
+  PublicStreamPeerSourceLossNotice &
+  OrderedRecordingBatch &
+  OrderedRecordingRecoveryHandle
 declare const _rootCheck: _RootImportCheck
 void _rootCheck
 declare const publicPeer: BlePeer
@@ -112,8 +127,10 @@ void publicPeer.sources
 void publicPeer.lastAdvertisement
 declare const backendReference: BackendPeerReference
 declare const backendPeers: PeerDirectoryBackend<string>
+declare const backendV1Control: NativeContinuationControlV1
 void backendReference
 void backendPeers
+void backendV1Control
 declare const connectionIntent: ConnectionIntent
 declare const connectOptions: ConnectOptions
 declare const retryPolicy: RetryPolicy

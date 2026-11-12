@@ -34,6 +34,7 @@ use ubm_desktop::{
     DesktopError, DiscoveredPath, DiscoveryReport, LifecycleEvent, NotificationPoll,
     ObservedConnectionParameters, ObservedDelivery, OpControl, OpTicket, PathSelector,
     PeerSnapshot, RadioBoundary, ScanStop, ScanTerminalEvent, ShutdownReport,
+    SourceUncertaintyEvent,
 };
 
 /// GATT path selector parts (UUIDs plus optional duplicate occurrences).
@@ -54,7 +55,7 @@ pub struct CoreSelector {
 }
 
 impl CoreSelector {
-    fn path<B: RadioBoundary>(&self) -> Result<PathSelector, DesktopError> {
+    pub(super) fn path<B: RadioBoundary>(&self) -> Result<PathSelector, DesktopError> {
         DesktopCentral::<B>::selector(
             &self.service_uuid,
             self.service_occurrence,
@@ -80,6 +81,199 @@ pub fn error_identity(error: &DesktopError) -> (&'static str, &'static str, Stri
 /// One boxed core future behind the authority trait.
 pub type CoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, DesktopError>> + Send + 'a>>;
 
+/// Object-safe handle for the shared supervised ordered recorder.
+pub type OrderedRecordingFuture<'a, T> = Pin<
+    Box<dyn Future<Output = Result<T, ubm_desktop::ordered_recording::RecordingError>> + Send + 'a>,
+>;
+pub trait ReclaimReservation: Send + Sync {
+    fn next(&self, capability: &str) -> Result<u64, DesktopError>;
+    fn reserve(
+        &self,
+        id: u64,
+        capability: &str,
+        lease: &str,
+        key: &str,
+    ) -> Result<(), DesktopError>;
+    fn status(
+        &self,
+        id: u64,
+        capability: &str,
+        lease: &str,
+        key: &str,
+    ) -> Result<ubm_desktop::reclaim_reservation::ReclaimReservationStatus, DesktopError>;
+    fn action(
+        &self,
+        action: &str,
+        id: u64,
+        capability: &str,
+        lease: &str,
+        key: &str,
+        publish: Box<dyn FnOnce() -> Result<(), DesktopError> + Send>,
+    ) -> Result<(), DesktopError>;
+}
+impl<B: RadioBoundary> ReclaimReservation
+    for ubm_desktop::reclaim_reservation::ReclaimReservationOwner<B>
+{
+    fn next(&self, capability: &str) -> Result<u64, DesktopError> {
+        self.next_request_id(capability)
+    }
+    fn reserve(
+        &self,
+        id: u64,
+        capability: &str,
+        lease: &str,
+        key: &str,
+    ) -> Result<(), DesktopError> {
+        self.reserve(id, capability, lease, key)
+    }
+    fn status(
+        &self,
+        id: u64,
+        capability: &str,
+        lease: &str,
+        key: &str,
+    ) -> Result<ubm_desktop::reclaim_reservation::ReclaimReservationStatus, DesktopError> {
+        self.status(id, capability, lease, key)
+    }
+    fn action(
+        &self,
+        action: &str,
+        id: u64,
+        capability: &str,
+        lease: &str,
+        key: &str,
+        publish: Box<dyn FnOnce() -> Result<(), DesktopError> + Send>,
+    ) -> Result<(), DesktopError> {
+        match action {
+            "start" => self.start(id, capability, lease, key),
+            "commit" => self.commit(id, capability, lease, key, publish),
+            "cancel" => self.cancel(id, capability, lease, key),
+            "release" => self.release(id, capability, lease, key),
+            "retire" => self.retire(id, capability, lease, key),
+            "ack-retirement" => self.acknowledge_retirement(id, capability, lease, key),
+            "forget-retirement" => self.forget_retirement(id, capability, lease, key),
+            _ => Err(DesktopError::cancelled("gatt.ordered.reclaim.action")),
+        }
+    }
+}
+pub trait MarkerReservation: Send + Sync {
+    fn active(
+        &self,
+    ) -> CoreFuture<'_, Option<(u64, ubm_desktop::boundary::OrderedMarkerWriteStatus)>>;
+    fn reserve<'a>(&'a self, token: &'a str) -> CoreFuture<'a, u64>;
+    fn start(
+        &self,
+        handle: u64,
+        selector: PathSelector,
+        value: Vec<u8>,
+        with_response: bool,
+    ) -> CoreFuture<'_, ubm_desktop::boundary::OrderedMarkerWriteStatus>;
+    fn status(
+        &self,
+        handle: u64,
+    ) -> CoreFuture<'_, ubm_desktop::boundary::OrderedMarkerWriteStatus>;
+    fn cancel(
+        &self,
+        handle: u64,
+    ) -> CoreFuture<'_, ubm_desktop::boundary::OrderedMarkerWriteStatus>;
+    fn forget(&self, handle: u64) -> CoreFuture<'_, ()>;
+}
+impl<B: RadioBoundary> MarkerReservation
+    for ubm_desktop::marker_reservation::MarkerReservationOwner<B>
+{
+    fn active(
+        &self,
+    ) -> CoreFuture<'_, Option<(u64, ubm_desktop::boundary::OrderedMarkerWriteStatus)>> {
+        Box::pin(self.active())
+    }
+    fn reserve<'a>(&'a self, token: &'a str) -> CoreFuture<'a, u64> {
+        Box::pin(self.reserve(token))
+    }
+    fn start(
+        &self,
+        handle: u64,
+        selector: PathSelector,
+        value: Vec<u8>,
+        with_response: bool,
+    ) -> CoreFuture<'_, ubm_desktop::boundary::OrderedMarkerWriteStatus> {
+        Box::pin(self.start(handle, selector, value, with_response))
+    }
+    fn status(
+        &self,
+        handle: u64,
+    ) -> CoreFuture<'_, ubm_desktop::boundary::OrderedMarkerWriteStatus> {
+        Box::pin(self.status(handle))
+    }
+    fn cancel(
+        &self,
+        handle: u64,
+    ) -> CoreFuture<'_, ubm_desktop::boundary::OrderedMarkerWriteStatus> {
+        Box::pin(self.cancel(handle))
+    }
+    fn forget(&self, handle: u64) -> CoreFuture<'_, ()> {
+        Box::pin(self.forget(handle))
+    }
+}
+
+pub trait OrderedRecordingOwner: Send + Sync {
+    fn issue_recovery(&self) -> Result<String, ubm_desktop::ordered_recording::RecordingError>;
+    fn validate_recovery(
+        &self,
+        capability: &str,
+    ) -> Result<(), ubm_desktop::ordered_recording::RecordingError>;
+    fn reclaim_reservation<'a>(
+        &'a self,
+        capability: &'a str,
+    ) -> OrderedRecordingFuture<'a, Arc<dyn ReclaimReservation>>;
+    fn marker_reservation(&self) -> OrderedRecordingFuture<'_, Arc<dyn MarkerReservation>>;
+    fn collection_id(&self) -> u64;
+    fn start_receipt(
+        self: Arc<Self>,
+        ctl: OpControl,
+    ) -> OrderedRecordingFuture<'static, serde_json::Value>;
+}
+
+impl<B: RadioBoundary> OrderedRecordingOwner
+    for ubm_desktop::ordered_recording::OrderedRecording<B>
+{
+    fn issue_recovery(&self) -> Result<String, ubm_desktop::ordered_recording::RecordingError> {
+        self.issue_recovery_capability()
+    }
+    fn validate_recovery(
+        &self,
+        capability: &str,
+    ) -> Result<(), ubm_desktop::ordered_recording::RecordingError> {
+        self.validate_recovery_capability(capability)
+    }
+    fn reclaim_reservation<'a>(
+        &'a self,
+        capability: &'a str,
+    ) -> OrderedRecordingFuture<'a, Arc<dyn ReclaimReservation>> {
+        Box::pin(async move {
+            let owner: Arc<dyn ReclaimReservation> =
+                self.reclaim_reservation_owner(capability).await?;
+            Ok(owner)
+        })
+    }
+    fn marker_reservation(&self) -> OrderedRecordingFuture<'_, Arc<dyn MarkerReservation>> {
+        Box::pin(async move {
+            let owner: Arc<dyn MarkerReservation> = self.marker_reservation_owner().await?;
+            Ok(owner)
+        })
+    }
+    fn collection_id(&self) -> u64 {
+        ubm_desktop::ordered_recording::OrderedRecording::collection_id(self)
+    }
+    fn start_receipt(
+        self: Arc<Self>,
+        ctl: OpControl,
+    ) -> OrderedRecordingFuture<'static, serde_json::Value> {
+        Box::pin(async move {
+            ubm_desktop::ordered_recording::OrderedRecording::start_receipt(&self, ctl).await
+        })
+    }
+}
+
 /// Shared-core scheduling authority behind the Tauri IPC dispatcher.
 ///
 /// Every BLE verdict the dispatcher serves comes through this trait. The
@@ -88,6 +282,90 @@ pub type CoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, DesktopError>
 /// method is a direct delegation to the shared [`DesktopCentral`]; none of
 /// them takes a lock across the radio call.
 pub trait CoreAuthority: Send + Sync {
+    fn recording_reclaim_supported(&self) -> bool;
+    fn group_marker_reservation<'a>(
+        &'a self,
+        peer: &'a str,
+        group: u64,
+    ) -> CoreFuture<'a, Arc<dyn MarkerReservation>>;
+    fn prepare_ordered_recording<'a>(
+        &'a self,
+        registry: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
+        recording_id: String,
+        quota: ubm_desktop::continuation_journal::JournalQuota,
+        declaration: ubm_desktop::ordered_recording::OrderedRecordingDeclaration,
+    ) -> OrderedRecordingFuture<'a, Arc<dyn OrderedRecordingOwner>>;
+    fn ordered_selector(&self, selector: &CoreSelector) -> Result<PathSelector, DesktopError>;
+    fn ordered_peer_records(&self) -> CoreFuture<'_, Vec<ubm_desktop::central::PeerRecord>>;
+    fn reserve_ordered_batch(&self, peer: &str) -> Result<u64, DesktopError>;
+    fn discard_ordered_delivery<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        delivery: u64,
+    ) -> CoreFuture<'a, ubm_desktop::central::OrderedDiscardReceipt>;
+    fn acknowledge_ordered_discard<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        receipt: u64,
+    ) -> CoreFuture<'a, ()>;
+    fn poll_ordered_delivery<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, ubm_desktop::central::OrderedDelivery>;
+    fn acknowledge_ordered_delivery<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        delivery: u64,
+    ) -> CoreFuture<'a, ()>;
+    fn acknowledge_ordered_batch<'a>(&'a self, peer: &'a str, id: u64) -> CoreFuture<'a, ()>;
+    fn forget_ordered_batch<'a>(&'a self, peer: &'a str, id: u64) -> CoreFuture<'a, ()>;
+    fn open_ordered_batch<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        connection_generation: &'a str,
+        database_generation: &'a str,
+        requests: &'a [ubm_desktop::central::OrderedClaimRequest],
+        max_items: usize,
+        max_bytes: usize,
+        max_controls: usize,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ()>;
+    fn poll_ordered_batch<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, ubm_core::ordered_notifications::Poll>;
+    fn ordered_batch_status<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, Option<ubm_desktop::boundary::OrderedSourceStatus>>;
+    fn ordered_batch_lease<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, Option<ubm_desktop::boundary::OrderedSourceLease>>;
+    fn ordered_batch_members<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, Vec<ubm_desktop::central::OrderedMemberSetupStatus>>;
+    fn ordered_batch_errors<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, (Option<DesktopError>, Option<DesktopError>)>;
+    fn close_ordered_batch<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::central::OrderedCleanupOutcome>;
     fn read_phy<'a>(
         &'a self,
         _peer_id: &'a str,
@@ -355,6 +633,43 @@ pub trait CoreAuthority: Send + Sync {
         selector: &'a CoreSelector,
         consumer: &'a str,
     ) -> CoreFuture<'a, NotificationPoll>;
+    /// Attach the host-selected, already-open durable recording ledger used
+    /// for retained peer-source failure evidence.  This is deliberately an
+    /// authority operation: a webview never supplies a filesystem path or
+    /// creates a journal through the BLE IPC surface.
+    fn attach_peer_failure_recovery_ledger<'a>(
+        &'a self,
+        ledger: Arc<dyn ubm_desktop::central::PeerFailureRecoveryLedger>,
+    ) -> CoreFuture<'a, ()>;
+    /// Enumerate source-time recipient handles restored from the durable
+    /// ledger.  The occurrence includes private producer bookkeeping; IPC
+    /// projections must expose only descriptor, exact recipient scope,
+    /// consumer and opaque recipient lease.
+    fn durable_peer_failure_recoveries(
+        &self,
+    ) -> Vec<ubm_desktop::central::DurablePeerFailureRecoveryOccurrence>;
+    /// Read one exact retained source-failure page using the original
+    /// recipient authority.  A reconnect does not mint a replacement lease.
+    fn read_peer_notification_failure_recovery<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+        recipient_lease: &'a str,
+        offset: u64,
+    ) -> CoreFuture<'a, ubm_core::oversized_evidence::PeerSourceFailureChunk>;
+    /// Acknowledge a completely read retained source-failure page sequence.
+    /// The desktop core preserves the typed owner-unavailable result for a
+    /// restored in-flight source acknowledgement.
+    fn acknowledge_peer_notification_failure_recovery<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+        recipient_lease: &'a str,
+    ) -> CoreFuture<'a, ()>;
     /// Remove one consumer (the last one disables the CCCD).
     fn unsubscribe<'a>(
         &'a self,
@@ -409,6 +724,10 @@ pub trait CoreAuthority: Send + Sync {
     fn cancel<'a>(&'a self, ticket: &'a OpTicket) -> CoreFuture<'a, CancelAck>;
     /// Subscribe to connection-lifecycle events.
     fn lifecycle_events(&self) -> broadcast::Receiver<LifecycleEvent>;
+    /// Native callbacks that could not be associated with an accepted graph.
+    /// They are diagnostics only: no connection or database identity may be
+    /// inferred from their peer identifier.
+    fn source_uncertainty_events(&self) -> broadcast::Receiver<SourceUncertaintyEvent>;
     /// Subscribe to scans the core ended without a stop request (the OS
     /// stopped it, or an adapter loss took it).
     fn scan_terminal_events(&self) -> broadcast::Receiver<ScanTerminalEvent>;
@@ -435,6 +754,160 @@ pub trait CoreAuthority: Send + Sync {
 }
 
 impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
+    fn recording_reclaim_supported(&self) -> bool {
+        self.boundary().ordered_recording_reclaim_supported()
+    }
+    fn group_marker_reservation<'a>(
+        &'a self,
+        peer: &'a str,
+        group: u64,
+    ) -> CoreFuture<'a, Arc<dyn MarkerReservation>> {
+        Box::pin(async move {
+            let owner: Arc<dyn MarkerReservation> =
+                self.marker_reservation_owner(peer, group, None).await?;
+            Ok(owner)
+        })
+    }
+    fn prepare_ordered_recording<'a>(
+        &'a self,
+        registry: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
+        recording_id: String,
+        quota: ubm_desktop::continuation_journal::JournalQuota,
+        declaration: ubm_desktop::ordered_recording::OrderedRecordingDeclaration,
+    ) -> OrderedRecordingFuture<'a, Arc<dyn OrderedRecordingOwner>> {
+        let central = Arc::new(self.clone());
+        Box::pin(async move {
+            let owner = ubm_desktop::ordered_recording::OrderedRecording::prepare(
+                central,
+                registry,
+                recording_id,
+                quota,
+                declaration,
+            )
+            .await?;
+            let owner: Arc<dyn OrderedRecordingOwner> = owner;
+            Ok(owner)
+        })
+    }
+    fn ordered_selector(&self, selector: &CoreSelector) -> Result<PathSelector, DesktopError> {
+        selector.path::<B>()
+    }
+    fn ordered_peer_records(&self) -> CoreFuture<'_, Vec<ubm_desktop::central::PeerRecord>> {
+        Box::pin(async move { Ok(self.peer_records().await) })
+    }
+    fn forget_ordered_batch<'a>(&'a self, peer: &'a str, id: u64) -> CoreFuture<'a, ()> {
+        Box::pin(DesktopCentral::forget_ordered_batch(self, peer, id))
+    }
+    fn acknowledge_ordered_batch<'a>(&'a self, peer: &'a str, id: u64) -> CoreFuture<'a, ()> {
+        Box::pin(DesktopCentral::acknowledge_ordered_batch(self, peer, id))
+    }
+    fn poll_ordered_delivery<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, ubm_desktop::central::OrderedDelivery> {
+        Box::pin(DesktopCentral::poll_ordered_delivery(self, peer, id))
+    }
+    fn acknowledge_ordered_delivery<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        delivery: u64,
+    ) -> CoreFuture<'a, ()> {
+        Box::pin(DesktopCentral::acknowledge_ordered_delivery(
+            self, peer, id, delivery,
+        ))
+    }
+    fn discard_ordered_delivery<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        delivery: u64,
+    ) -> CoreFuture<'a, ubm_desktop::central::OrderedDiscardReceipt> {
+        Box::pin(DesktopCentral::discard_ordered_delivery(
+            self, peer, id, delivery,
+        ))
+    }
+    fn acknowledge_ordered_discard<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        receipt: u64,
+    ) -> CoreFuture<'a, ()> {
+        Box::pin(DesktopCentral::acknowledge_ordered_discard_receipt(
+            self, peer, id, receipt,
+        ))
+    }
+    fn reserve_ordered_batch(&self, peer: &str) -> Result<u64, DesktopError> {
+        DesktopCentral::reserve_ordered_batch(self, peer)
+    }
+    fn open_ordered_batch<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        connection_generation: &'a str,
+        database_generation: &'a str,
+        requests: &'a [ubm_desktop::central::OrderedClaimRequest],
+        max_items: usize,
+        max_bytes: usize,
+        max_controls: usize,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ()> {
+        Box::pin(self.open_reserved_ordered_batch(
+            peer,
+            id,
+            connection_generation,
+            database_generation,
+            requests,
+            max_items,
+            max_bytes,
+            max_controls,
+            ctl,
+        ))
+    }
+    fn poll_ordered_batch<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, ubm_core::ordered_notifications::Poll> {
+        Box::pin(self.poll_retained_ordered_batch(peer, id))
+    }
+    fn ordered_batch_status<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, Option<ubm_desktop::boundary::OrderedSourceStatus>> {
+        Box::pin(self.ordered_batch_source_status(peer, id))
+    }
+    fn ordered_batch_lease<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, Option<ubm_desktop::boundary::OrderedSourceLease>> {
+        Box::pin(self.ordered_batch_source_lease(peer, id))
+    }
+    fn ordered_batch_members<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, Vec<ubm_desktop::central::OrderedMemberSetupStatus>> {
+        Box::pin(self.ordered_batch_member_status(peer, id))
+    }
+    fn ordered_batch_errors<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+    ) -> CoreFuture<'a, (Option<DesktopError>, Option<DesktopError>)> {
+        Box::pin(self.retained_ordered_batch_errors(peer, id))
+    }
+    fn close_ordered_batch<'a>(
+        &'a self,
+        peer: &'a str,
+        id: u64,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::central::OrderedCleanupOutcome> {
+        Box::pin(self.retry_retained_ordered_batch(peer, id, ctl))
+    }
     fn request_priority<'a>(
         &'a self,
         peer: &'a str,
@@ -767,6 +1240,65 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
         })
     }
 
+    fn attach_peer_failure_recovery_ledger<'a>(
+        &'a self,
+        ledger: Arc<dyn ubm_desktop::central::PeerFailureRecoveryLedger>,
+    ) -> CoreFuture<'a, ()> {
+        Box::pin(DesktopCentral::attach_peer_failure_recovery_ledger(
+            self, ledger,
+        ))
+    }
+
+    fn durable_peer_failure_recoveries(
+        &self,
+    ) -> Vec<ubm_desktop::central::DurablePeerFailureRecoveryOccurrence> {
+        DesktopCentral::durable_peer_failure_recoveries(self)
+    }
+
+    fn read_peer_notification_failure_recovery<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+        recipient_lease: &'a str,
+        offset: u64,
+    ) -> CoreFuture<'a, ubm_core::oversized_evidence::PeerSourceFailureChunk> {
+        Box::pin(async move {
+            DesktopCentral::read_peer_notification_failure_recovery(
+                self,
+                descriptor,
+                peer_id,
+                &selector.path::<B>()?,
+                consumer,
+                recipient_lease,
+                offset,
+            )
+            .await
+        })
+    }
+
+    fn acknowledge_peer_notification_failure_recovery<'a>(
+        &'a self,
+        descriptor: &'a ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+        recipient_lease: &'a str,
+    ) -> CoreFuture<'a, ()> {
+        Box::pin(async move {
+            DesktopCentral::ack_peer_notification_failure_recovery(
+                self,
+                descriptor,
+                peer_id,
+                &selector.path::<B>()?,
+                consumer,
+                recipient_lease,
+            )
+            .await
+        })
+    }
+
     fn unsubscribe<'a>(
         &'a self,
         peer_id: &'a str,
@@ -859,6 +1391,10 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
 
     fn lifecycle_events(&self) -> broadcast::Receiver<LifecycleEvent> {
         DesktopCentral::lifecycle_events(self)
+    }
+
+    fn source_uncertainty_events(&self) -> broadcast::Receiver<SourceUncertaintyEvent> {
+        DesktopCentral::source_uncertainty_events(self)
     }
 
     fn scan_terminal_events(&self) -> broadcast::Receiver<ScanTerminalEvent> {

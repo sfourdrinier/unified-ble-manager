@@ -35,7 +35,7 @@ class DeterministicNativeControl {
     this.handshakes.push(request)
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 7,
+      abi: 8,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
@@ -43,6 +43,7 @@ class DeterministicNativeControl {
       traceFormat: 1,
       maximumControlRecordBytes: 65536,
       maximumBinaryPayloadBytes: 524288,
+      scanEventIdentityAvailable: true,
       securityAvailable: this.securityAvailable,
       securityCancelPairingAvailable: this.securityAvailable
     })
@@ -139,6 +140,7 @@ class DeterministicReactNativeProtocolRuntime {
     this.nextEvent = 1
     this.subscriptionId = null
     this.subscribeCorrelation = null
+    this.scanCorrelation = null
     this.connection = null
     this.descriptorValue = new Uint8Array([8, 7])
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
@@ -184,11 +186,27 @@ class DeterministicReactNativeProtocolRuntime {
     this.fatalListener = listener
   }
 
+  submitWithAdmission(bytes) {
+    try {
+      this.submit(bytes)
+      return { state: 'submitted' }
+    } catch (error) {
+      return { state: 'notAdmitted', message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   submit(bytes) {
     const command = decodeNativeProtocolRecord(bytes)
     const kind = requiredString(command, 3)
-    if (kind === 'scanStart') return this.emitResult(command, 'scanStarted')
-    if (kind === 'scanStop' || kind === 'disconnect') return this.emitResult(command, 'accepted')
+    if (kind === 'scanStart') {
+      this.scanCorrelation = requiredRecord(command, 2)
+      return this.emitResult(command, 'scanStarted')
+    }
+    if (kind === 'scanStop') {
+      this.scanCorrelation = null
+      return this.emitResult(command, 'accepted')
+    }
+    if (kind === 'disconnect') return this.emitResult(command, 'accepted')
     if (kind === 'unsubscribe') return this.emitResult(command, 'unsubscribed')
     if (kind === 'connect') {
       this.connection = requiredRecord(command, 10)
@@ -269,7 +287,9 @@ class DeterministicReactNativeProtocolRuntime {
   }
 
   emitAdvertisement() {
+    if (this.scanCorrelation === null) return
     this.emitEvent('advertisement', [
+      field(10, this.scanCorrelation),
       field(
         12,
         record('advertisement', [

@@ -83,13 +83,22 @@ fn setup_notification_epoch(radio: &Scripted) -> u64 {
 }
 
 async fn dispose_native(engine: &ubm_desktop::continuation::NativeContinuation) {
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
-    let receipt = engine
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
-        .await
-        .unwrap();
-    assert_eq!(receipt["disposed"], true, "{receipt}");
-    assert_eq!(receipt["disposeFailure"], serde_json::Value::Null);
+    for _ in 0..32 {
+        let claim = engine.prepare_claim(256, 65536).await.unwrap();
+        let receipt = engine
+            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .await
+            .unwrap();
+        if receipt["disposed"] == true {
+            assert_eq!(receipt["disposeFailure"], serde_json::Value::Null);
+            return;
+        }
+        assert!(
+            receipt["disposeFailure"].as_str().unwrap().contains("tail"),
+            "{receipt}"
+        );
+    }
+    panic!("continuation cleanup tail did not settle");
 }
 
 async fn observe_recording<F>(operation: F) -> serde_json::Value
@@ -348,14 +357,7 @@ async fn public_session_disposal_preserves_native_continuation_lease() {
             0,
             "disposing a public session cannot disconnect the native owner's shared link"
         );
-        let claim = engine.prepare_claim(256, 65536).await.unwrap();
-        assert_eq!(
-            engine
-                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
-                .await
-                .unwrap()["disposed"],
-            true
-        );
+        dispose_native(&engine).await;
         assert_eq!(radio.count(RequestKind::Disconnect), 1);
         host.shutdown().await;
     }
@@ -381,14 +383,7 @@ async fn native_claim_preserves_public_lease_until_its_own_disposal() {
             &json!({"peerId":POLAR,"lease":"foreground", "operationId":"discover"}).to_string(),
         )
         .await);
-        let claim = engine.prepare_claim(256, 65536).await.unwrap();
-        assert_eq!(
-            engine
-                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
-                .await
-                .unwrap()["disposed"],
-            true
-        );
+        dispose_native(&engine).await;
         assert_eq!(radio.count(RequestKind::Disconnect), 0);
         ok(&call(
             &foreground,
@@ -484,14 +479,7 @@ async fn public_discovery_and_native_wake_share_the_same_physical_snapshot() {
         .await);
         ok(&call(&foreground, "session.dispose", "{}").await);
         assert_eq!(radio.count(RequestKind::Disconnect), 0);
-        let claim = engine.prepare_claim(256, 65536).await.unwrap();
-        assert_eq!(
-            engine
-                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
-                .await
-                .unwrap()["disposed"],
-            true
-        );
+        dispose_native(&engine).await;
         assert_eq!(radio.count(RequestKind::Disconnect), 1);
         host.shutdown().await;
     }
@@ -1205,12 +1193,149 @@ async fn native_executor_connects_subscribes_and_replays_prepared_handoff() {
         let token = claim["claimToken"].as_str().unwrap();
         assert!(executor.acknowledge_claim("wrong").await.is_err());
         let ack = executor.acknowledge_claim(token).await.unwrap();
-        assert_eq!(ack["disposed"], true);
         assert_eq!(executor.acknowledge_claim(token).await.unwrap(), ack);
+        if ack["disposed"] == false {
+            assert!(ack["disposeFailure"].is_string());
+            let tail = executor.prepare_claim(256, 65536).await.unwrap();
+            assert_eq!(
+                executor
+                    .acknowledge_claim(tail["claimToken"].as_str().unwrap())
+                    .await
+                    .unwrap()["disposed"],
+                true
+            );
+        }
         assert_eq!(
             executor.prepare_claim(256, 65536).await.unwrap()["batches"],
             json!([])
         );
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mobile_host_versioned_prepare_and_exact_receipt_retirement() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let executor = host.continuation();
+        executor.execute(POLAR, &declaration()).await.unwrap();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        host.continuation_prepare_retained_claim_v1(
+            256,
+            65536,
+            Box::new(move |reply| {
+                let _ = send.send(reply);
+            }),
+        );
+        let reply: serde_json::Value = serde_json::from_str(&receive.await.unwrap()).unwrap();
+        assert_eq!(reply["ok"], true);
+        let token = reply["value"]["claimToken"].as_str().unwrap().to_owned();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        host.continuation_acknowledge_retained_claim_v1(
+            &token,
+            Box::new(move |reply| {
+                let _ = send.send(reply);
+            }),
+        );
+        let reply: serde_json::Value = serde_json::from_str(&receive.await.unwrap()).unwrap();
+        assert_eq!(reply["ok"], true);
+        let receipt = reply["value"].clone();
+        assert_eq!(
+            executor.acknowledge_claim_v1(&token).await.unwrap(),
+            receipt
+        );
+        let (send, receive) = tokio::sync::oneshot::channel();
+        host.continuation_retire_claim_receipt(
+            "wrong",
+            Box::new(move |reply| {
+                let _ = send.send(reply);
+            }),
+        );
+        let reply: serde_json::Value = serde_json::from_str(&receive.await.unwrap()).unwrap();
+        assert_eq!(reply["ok"], false);
+        assert_eq!(
+            executor.acknowledge_claim_v1(&token).await.unwrap(),
+            receipt
+        );
+        let (send, receive) = tokio::sync::oneshot::channel();
+        host.continuation_retire_claim_receipt(
+            &token,
+            Box::new(move |reply| {
+                let _ = send.send(reply);
+            }),
+        );
+        let reply: serde_json::Value = serde_json::from_str(&receive.await.unwrap()).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert!(executor.acknowledge_claim_v1(&token).await.is_err());
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_single_record_handoffs_replay_and_deliver_every_tail_on_both_platforms() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let executor = host.continuation();
+        executor.execute(POLAR, &declaration()).await.unwrap();
+        let epoch = setup_notification_epoch(&radio);
+        for byte in [72, 73] {
+            host.ingest(RadioIngress::Notification {
+                instance: Instance {
+                    peer_id: POLAR.into(),
+                    service_uuid: HR_SERVICE.into(),
+                    service_occurrence: 0,
+                    characteristic_uuid: HR_MEASUREMENT.into(),
+                    characteristic_occurrence: 0,
+                },
+                epoch,
+                value: vec![0, byte],
+            });
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Ok(status) = executor.describe_backlog().await
+                    && status["counters"]["retainedByteBuffers"]
+                        .as_u64()
+                        .is_some_and(|count| count >= 2)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut values = Vec::new();
+        let mut released = false;
+        for _ in 0..32 {
+            let claim = executor.prepare_claim_versioned(1, 1, 65536).await.unwrap();
+            assert_eq!(
+                executor.prepare_claim_versioned(1, 1, 65536).await.unwrap(),
+                claim
+            );
+            for batch in claim["batches"].as_array().unwrap() {
+                let batch: serde_json::Value =
+                    serde_json::from_str(batch.as_str().unwrap()).unwrap();
+                values.extend(
+                    batch["records"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|record| record["valueB64"].as_str().map(str::to_owned)),
+                );
+            }
+            let token = claim["claimToken"].as_str().unwrap();
+            let receipt = executor.acknowledge_claim_v1(token).await.unwrap();
+            assert_eq!(executor.acknowledge_claim_v1(token).await.unwrap(), receipt);
+            if receipt["disposed"] == true {
+                released = true;
+                break;
+            }
+        }
+        assert!(released);
+        assert_eq!(values, ["AEg=", "AEk="]);
         host.shutdown().await;
     }
 }
@@ -1307,12 +1432,23 @@ async fn partial_resubscription_recovers_only_missing_selector_without_a_claim()
     .expect("partial native order completes its missing selector without JS or claim");
     assert_eq!(radio.count(RequestKind::Connect), 1);
     assert_eq!(radio.count(RequestKind::Discover), 1);
-    let claim = loop {
-        match engine.prepare_claim(256, 65536).await {
-            Ok(claim) => break claim,
-            Err(_) => tokio::task::yield_now().await,
+    let claim = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match engine.prepare_claim(256, 65536).await {
+                Ok(claim) => break claim,
+                Err(error)
+                    if error["code"] == "lifecycle.invalid-state"
+                        && error["detail"]
+                            == "continuation execution or handoff is in progress" =>
+                {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => panic!("claim failed: {error}"),
+            }
         }
-    };
+    })
+    .await
+    .expect("continuation claim remained busy");
     assert_eq!(
         claim["consumerCount"], 3,
         "successful first selector plus refused and successful second admissions retain distinct identities"
@@ -1702,4 +1838,91 @@ async fn native_continuation_never_wakes_an_unregistered_javascript_session() {
         "native records must not enter JS early-wake bookkeeping"
     );
     host.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_mobile_callback_client_consumes_all_batches_before_auto_ack() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let executor = host.continuation();
+        executor.execute(POLAR, &declaration()).await.unwrap();
+        let epoch = setup_notification_epoch(&radio);
+        for byte in [72, 73] {
+            host.ingest(RadioIngress::Notification {
+                instance: Instance {
+                    peer_id: POLAR.into(),
+                    service_uuid: HR_SERVICE.into(),
+                    service_occurrence: 0,
+                    characteristic_uuid: HR_MEASUREMENT.into(),
+                    characteristic_occurrence: 0,
+                },
+                epoch,
+                value: vec![0, byte],
+            });
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Ok(status) = executor.describe_backlog().await
+                    && status["counters"]["retainedByteBuffers"]
+                        .as_u64()
+                        .is_some_and(|n| n >= 2)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        host.continuation_prepare_claim(
+            1,
+            65536,
+            Box::new(move |reply| {
+                let _ = send.send(reply);
+            }),
+        );
+        let reply: serde_json::Value = serde_json::from_str(&receive.await.unwrap()).unwrap();
+        assert_eq!(reply["ok"], true);
+        let claim = &reply["value"];
+        let mut values = Vec::new();
+        for batch in claim["batches"].as_array().unwrap() {
+            let batch: serde_json::Value = serde_json::from_str(batch.as_str().unwrap()).unwrap();
+            values.extend(
+                batch["records"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|record| record["valueB64"].as_str().map(str::to_owned)),
+            );
+        }
+        assert_eq!(values, ["AEg=", "AEk="]);
+        let token = claim["claimToken"].as_str().unwrap();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        host.continuation_acknowledge_claim(
+            token,
+            Box::new(move |reply| {
+                let _ = send.send(reply);
+            }),
+        );
+        let reply: serde_json::Value = serde_json::from_str(&receive.await.unwrap()).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert_eq!(
+            executor.acknowledge_claim(token).await.unwrap(),
+            reply["value"]
+        );
+        if reply["value"]["disposed"] == false {
+            assert!(reply["value"]["disposeFailure"].is_string());
+            let tail = executor.prepare_claim(256, 65536).await.unwrap();
+            assert_eq!(
+                executor
+                    .acknowledge_claim(tail["claimToken"].as_str().unwrap())
+                    .await
+                    .unwrap()["disposed"],
+                true
+            );
+        }
+        host.shutdown().await;
+    }
 }

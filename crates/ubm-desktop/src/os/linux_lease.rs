@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard, oneshot};
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,7 +86,49 @@ pub(crate) struct Ledger<C> {
     entries: Arc<StdMutex<HashMap<String, Arc<Entry<C>>>>>,
     terminal_facts: Arc<StdMutex<HashMap<String, Arc<Entry<C>>>>>,
     maintenance: Arc<StdMutex<HashMap<u64, Arc<Acknowledgment<C>>>>>,
+    loss_pins: Arc<StdMutex<HashMap<String, u64>>>,
+    pins_changed: Arc<Notify>,
 }
+pub(crate) struct PhysicalLossPin {
+    peer: String,
+    token: u64,
+    guard: StdMutex<Option<OwnedMutexGuard<State>>>,
+    pins: Arc<StdMutex<HashMap<String, u64>>>,
+    changed: Arc<Notify>,
+}
+impl std::fmt::Debug for PhysicalLossPin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PhysicalLossPin")
+            .field("peer", &self.peer)
+            .field("token", &self.token)
+            .finish()
+    }
+}
+impl PhysicalLossPin {
+    fn release_pin(&self) {
+        let mut guard = self.guard.lock().expect("physical loss pin");
+        if guard.take().is_none() {
+            return;
+        }
+        let mut pins = self.pins.lock().expect("physical loss pins");
+        if pins.get(&self.peer) == Some(&self.token) {
+            pins.remove(&self.peer);
+        }
+        self.changed.notify_waiters();
+    }
+}
+impl Drop for PhysicalLossPin {
+    fn drop(&mut self) {
+        self.release_pin();
+    }
+}
+#[cfg(target_os = "linux")]
+impl crate::boundary::PhysicalLossGuard for PhysicalLossPin {
+    fn release(&self) {
+        self.release_pin();
+    }
+}
+
 struct Acknowledgment<C> {
     client: C,
     token: u64,
@@ -100,6 +142,8 @@ impl<C> Clone for Ledger<C> {
             entries: Arc::clone(&self.entries),
             terminal_facts: Arc::clone(&self.terminal_facts),
             maintenance: Arc::clone(&self.maintenance),
+            loss_pins: Arc::clone(&self.loss_pins),
+            pins_changed: Arc::clone(&self.pins_changed),
         }
     }
 }
@@ -109,6 +153,8 @@ impl<C> Default for Ledger<C> {
             entries: Arc::default(),
             terminal_facts: Arc::default(),
             maintenance: Arc::default(),
+            loss_pins: Arc::default(),
+            pins_changed: Arc::default(),
         }
     }
 }
@@ -164,6 +210,7 @@ impl<C: LeaseClient> Ledger<C> {
             .is_some_and(|owned| Arc::ptr_eq(owned, entry))
         {
             entries.remove(peer);
+            self.pins_changed.notify_waiters();
             if entry.physical_generation.load(Ordering::Acquire) != 0 {
                 let mut facts = self.terminal_facts.lock().expect("terminal release facts");
                 if !entry.loss_reported.load(Ordering::Acquire) {
@@ -217,37 +264,59 @@ impl<C: LeaseClient> Ledger<C> {
         self.connect_owned(peer, client).await
     }
     async fn connect_owned(self, peer: String, client: C) -> Result<(), DesktopError> {
-        let (entry, mut state) = {
-            let mut entries = self.entries.lock().expect("lease ledger");
-            if entries.contains_key(&peer) {
-                return Err(failed("an earlier lease for this peer remains owned"));
+        let mut waited_for_pin = false;
+        let (entry, mut state) = loop {
+            let notified = self.pins_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let result = {
+                let mut entries = self.entries.lock().expect("lease ledger");
+                if self
+                    .loss_pins
+                    .lock()
+                    .expect("physical loss pins")
+                    .contains_key(&peer)
+                {
+                    waited_for_pin = true;
+                    None
+                } else if entries.contains_key(&peer) && waited_for_pin {
+                    None
+                } else {
+                    if entries.contains_key(&peer) {
+                        return Err(failed("an earlier lease for this peer remains owned"));
+                    }
+                    // Allocate only after peer admission. Every allocated sender nonce
+                    // is then owned before any await and recoverable even if Reserve
+                    // never reaches the daemon; refused duplicate work leaves no gaps.
+                    let reservation = client.allocate_reservation()?;
+                    if reservation == 0 {
+                        return Err(failed("private reservation identity must be nonzero"));
+                    }
+                    let token = Arc::new(Mutex::new(State::UnresolvedReservation));
+                    let state = Arc::clone(&token)
+                        .try_lock_owned()
+                        .expect("new unpublished lease state");
+                    let entry = Arc::new(Entry {
+                        client: client.clone(),
+                        reservation,
+                        token,
+                        physical_generation: AtomicU64::new(0),
+                        loss_reported: AtomicBool::new(false),
+                        pending_losses: StdMutex::new(BTreeMap::new()),
+                        observation_failure: AtomicBool::new(false),
+                    });
+                    entries.insert(peer.clone(), Arc::clone(&entry));
+                    self.terminal_facts
+                        .lock()
+                        .expect("terminal release facts")
+                        .remove(&peer);
+                    Some((entry, state))
+                }
+            };
+            if let Some(result) = result {
+                break result;
             }
-            // Allocate only after peer admission. Every allocated sender nonce
-            // is then owned before any await and recoverable even if Reserve
-            // never reaches the daemon; refused duplicate work leaves no gaps.
-            let reservation = client.allocate_reservation()?;
-            if reservation == 0 {
-                return Err(failed("private reservation identity must be nonzero"));
-            }
-            let token = Arc::new(Mutex::new(State::UnresolvedReservation));
-            let state = Arc::clone(&token)
-                .try_lock_owned()
-                .expect("new unpublished lease state");
-            let entry = Arc::new(Entry {
-                client,
-                reservation,
-                token,
-                physical_generation: AtomicU64::new(0),
-                loss_reported: AtomicBool::new(false),
-                pending_losses: StdMutex::new(BTreeMap::new()),
-                observation_failure: AtomicBool::new(false),
-            });
-            entries.insert(peer.clone(), Arc::clone(&entry));
-            self.terminal_facts
-                .lock()
-                .expect("terminal release facts")
-                .remove(&peer);
-            (entry, state)
+            notified.await;
         };
         // Reserve/connect worker takes the lock across both accepted futures.
         // Pass an owned mutex guard instead of racing publication with spawning.
@@ -575,6 +644,103 @@ impl<C: LeaseClient> Ledger<C> {
         });
         task.await
             .map_err(|_| failed("retained lease release task failed"))?
+    }
+
+    /// Admit a source fence only while the exact physical generation is owned.
+    /// The callback is synchronous and runs under the lease-owner locks; it
+    /// must enqueue the native source barrier without awaiting. Early losses
+    /// remain retained until Connect publishes the physical generation.
+    pub(crate) fn fence_physical_loss<T>(
+        &self,
+        peer: &str,
+        generation: u64,
+        reason: u8,
+        enqueue: impl FnOnce() -> T,
+    ) -> Option<T> {
+        self.with_valid_physical_loss(peer, generation, reason, None, |_| enqueue())
+    }
+
+    pub(crate) fn reserve_physical_loss(
+        &self,
+        peer: &str,
+        generation: u64,
+        reason: u8,
+    ) -> Result<Option<(u64, Arc<PhysicalLossPin>)>, ()> {
+        self.with_valid_physical_loss(peer, generation, reason, None, |entry| {
+            let guard = Arc::clone(&entry.token).try_lock_owned().map_err(|_| ())?;
+            let mut pins = self.loss_pins.lock().expect("physical loss pins");
+            if pins.contains_key(peer) {
+                return Err(());
+            }
+            pins.insert(peer.to_owned(), entry.reservation);
+            Ok((
+                entry.reservation,
+                Arc::new(PhysicalLossPin {
+                    peer: peer.to_owned(),
+                    token: entry.reservation,
+                    guard: StdMutex::new(Some(guard)),
+                    pins: Arc::clone(&self.loss_pins),
+                    changed: Arc::clone(&self.pins_changed),
+                }),
+            ))
+        })
+        .transpose()
+    }
+    pub(crate) fn fence_reserved_physical_loss<T>(
+        &self,
+        peer: &str,
+        generation: u64,
+        reason: u8,
+        token: u64,
+        enqueue: impl FnOnce() -> T,
+    ) -> Option<T> {
+        self.with_valid_physical_loss(peer, generation, reason, Some(token), |_| {
+            let pins = self.loss_pins.lock().expect("physical loss pins");
+            if pins.get(peer) == Some(&token) {
+                Some(enqueue())
+            } else {
+                None
+            }
+        })
+        .flatten()
+    }
+
+    fn with_valid_physical_loss<T>(
+        &self,
+        peer: &str,
+        generation: u64,
+        reason: u8,
+        reservation: Option<u64>,
+        apply: impl FnOnce(&Entry<C>) -> T,
+    ) -> Option<T> {
+        let entries = self.entries.lock().expect("lease ledger");
+        let facts = self.terminal_facts.lock().expect("terminal release facts");
+        let entry = entries.get(peer).or_else(|| facts.get(peer))?;
+        if generation == 0 || reservation.is_some_and(|token| token != entry.reservation) {
+            return None;
+        }
+        if entry.physical_generation.load(Ordering::Acquire) == 0 {
+            let mut pending = entry.pending_losses.lock().expect("pending physical loss");
+            if entry.physical_generation.load(Ordering::Acquire) == 0 {
+                if !pending.contains_key(&generation) {
+                    if pending.len() == 64 {
+                        entry.observation_failure.store(true, Ordering::Release);
+                        eprintln!(
+                            "ubm-desktop: authenticated early physical-loss intake overflow; acquisition will fail closed"
+                        );
+                    } else {
+                        pending.insert(generation, reason);
+                    }
+                }
+                return None;
+            }
+        }
+        if entry.physical_generation.load(Ordering::Acquire) != generation
+            || entry.loss_reported.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        Some(apply(entry))
     }
 
     /// An authenticated daemon loss generation is evidence for this lease,
@@ -1635,6 +1801,82 @@ mod tests {
             assert_eq!(ledger.len(), 0);
             assert_eq!(ledger.maintenance_len(), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn physical_loss_pin_blocks_release_and_replacement_until_consumed() {
+        let ledger = Ledger::default();
+        let first = Client::new();
+        first.reserve.add_permits(1);
+        first.connect.add_permits(1);
+        ledger
+            .clone()
+            .connect("peer".into(), first.clone())
+            .await
+            .unwrap();
+        let (token, pin) = ledger
+            .reserve_physical_loss("peer", 73, 3)
+            .unwrap()
+            .unwrap();
+        let release = tokio::spawn(ledger.clone().release("peer"));
+        let mut next = Client::new();
+        next.token = 42;
+        next.generation = 74;
+        next.reserve.add_permits(1);
+        next.connect.add_permits(1);
+        let replacement = tokio::spawn(ledger.clone().connect("peer".into(), next));
+        settled().await;
+        assert!(!release.is_finished());
+        assert!(!replacement.is_finished());
+        assert_eq!(
+            ledger.fence_reserved_physical_loss("peer", 73, 3, token, || 7),
+            Some(7)
+        );
+        pin.release_pin();
+        release.await.unwrap().unwrap();
+        replacement.await.unwrap().unwrap();
+        assert_eq!(
+            ledger.fence_reserved_physical_loss("peer", 73, 3, token, || panic!(
+                "stale permit fenced replacement"
+            )),
+            None::<()>
+        );
+    }
+
+    #[tokio::test]
+    async fn physical_loss_fence_preserves_early_and_rejects_replaced_generation() {
+        let ledger = Ledger::default();
+        let first = Client::new();
+        first.reserve.add_permits(1);
+        let acquired = tokio::spawn(ledger.clone().connect("peer".into(), first.clone()));
+        settled().await;
+        assert_eq!(
+            ledger.fence_physical_loss("peer", 73, 3, || panic!("early loss must wait")),
+            None::<()>
+        );
+        first.connect.add_permits(1);
+        acquired.await.unwrap().unwrap();
+        assert_eq!(*first.replayed_losses.lock().unwrap(), vec![(73, 3)]);
+        assert_eq!(
+            ledger.fence_physical_loss("peer", 72, 3, || panic!("stale loss fenced")),
+            None::<()>
+        );
+        assert_eq!(ledger.fence_physical_loss("peer", 73, 3, || 7), Some(7));
+        assert!(ledger.physical_lost_observed("peer", 73, 3).await);
+        settled().await;
+        let mut next = Client::new();
+        next.token = 42;
+        next.generation = 74;
+        next.reserve.add_permits(1);
+        next.connect.add_permits(1);
+        ledger.clone().connect("peer".into(), next).await.unwrap();
+        assert_eq!(
+            ledger.fence_physical_loss("peer", 73, 3, || panic!(
+                "old generation fenced replacement"
+            )),
+            None::<()>
+        );
+        assert_eq!(ledger.fence_physical_loss("peer", 74, 3, || 9), Some(9));
     }
 
     #[tokio::test]

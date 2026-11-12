@@ -419,16 +419,16 @@ describe('rc.4.1 fail-closed audit closure', () => {
         },
         ipcProtocol: {
           axis: 'ipc-protocol',
-          selected: { axis: 'ipc-protocol', value: 6 },
+          selected: { axis: 'ipc-protocol', value: 9 },
           localRange: {
             axis: 'ipc-protocol',
-            minimum: { axis: 'ipc-protocol', value: 6 },
-            maximum: { axis: 'ipc-protocol', value: 6 }
+            minimum: { axis: 'ipc-protocol', value: 9 },
+            maximum: { axis: 'ipc-protocol', value: 9 }
           },
           remoteRange: {
             axis: 'ipc-protocol',
-            minimum: { axis: 'ipc-protocol', value: 6 },
-            maximum: { axis: 'ipc-protocol', value: 6 }
+            minimum: { axis: 'ipc-protocol', value: 9 },
+            maximum: { axis: 'ipc-protocol', value: 9 }
           }
         }
       },

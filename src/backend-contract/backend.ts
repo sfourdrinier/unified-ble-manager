@@ -68,6 +68,7 @@ import type {
 import { applicableVersionAxesEqual, assertCoreVersionsAccepted, snapshotApplicableVersionAxes } from './primitives'
 import { serializableRecordsEqual, snapshotSerializableRecord } from './serializable'
 import type { BoundedAsyncStream } from './streams'
+import type { TerminalEvidenceSource } from './terminal-evidence'
 import type { ManagerRestorationCapability } from './restoration'
 import type { PeerReference } from './peer-reference'
 import type { SecurityBackend } from './security'
@@ -151,9 +152,20 @@ export interface ScanLease<Attachment extends string, _Lease extends string> {
   readonly leaseId: LeaseId<Attachment, string>
   readonly shareToken: ScanShareToken<Attachment, string> | null
   readonly observations: BoundedAsyncStream<AdvertisementObservation<Attachment>>
+  /**
+   * Stops the physical scan and establishes its ordered observation fence.
+   *
+   * A `released` result is not merely a radio acknowledgement: before it
+   * resolves, `observations` MUST have accepted its final terminal behind every
+   * observation admitted before the stop cutoff. Consumers need not have read
+   * that prefix yet. A native terminal already accepted by the source, including
+   * its error and evidence, remains authoritative; otherwise the backend emits
+   * `owner-released`. A `release-failed` result retains the lease and source for
+   * a later retry.
+   */
   stop(): Promise<CleanupRecord>
 }
-export interface ScannerBackend<Attachment extends string> {
+export interface ScannerBackend<Attachment extends string> extends Partial<TerminalEvidenceSource> {
   plan?(query: NormalizedScanQuery): ScanPlan
   start(
     options: OwnerScanOptions<Attachment, string>,
@@ -265,7 +277,7 @@ export interface ConnectionBackend<Attachment extends string> {
     request: ConnectionMaximumWriteLengthRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, ConnectionMaximumWriteLengthMeasurement<Attachment, Operation>>
 }
-export interface GattBackend<Attachment extends string> {
+export interface GattBackend<Attachment extends string> extends Partial<TerminalEvidenceSource> {
   discover(
     connection: BackendConnection<Attachment, string>,
     options: PublicOperationOptions

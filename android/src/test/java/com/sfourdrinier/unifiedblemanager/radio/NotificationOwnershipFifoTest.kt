@@ -201,4 +201,28 @@ class NotificationOwnershipFifoTest {
     assertEquals(1, notifications)
   }
 
+  @Test fun stagedRetirementPreservesPriorOwnersQueuedValues() {
+    val events = mutableListOf<NotificationOwnershipFifo.Event>()
+    lateinit var fifo: NotificationOwnershipFifo
+    lateinit var first: NotificationOwnershipFifo.Claim
+    fifo = NotificationOwnershipFifo(8, 100, 2, {}) { event ->
+      events.add(event)
+      if (event is NotificationOwnershipFifo.Event.Value && event.bytes[0] == 1.toByte()) {
+        assertTrue(fifo.retire(first, 1))
+        val second = (fifo.arm(2) as NotificationOwnershipFifo.Admission.Armed).claim
+        assertTrue(fifo.offer(second, 2, byteArrayOf(9, 8)))
+        assertTrue(fifo.retireStagedAsLoss(second, 2))
+      }
+    }
+    first = (fifo.arm(1) as NotificationOwnershipFifo.Admission.Armed).claim
+    assertTrue(fifo.offer(first, 1, byteArrayOf(1)))
+    assertTrue(fifo.offer(first, 1, byteArrayOf(2)))
+    assertTrue(fifo.activate(first, 1))
+    assertEquals(listOf(1, 2), events.filterIsInstance<NotificationOwnershipFifo.Event.Value>().map { it.bytes[0].toInt() })
+    val loss = events.filterIsInstance<NotificationOwnershipFifo.Event.Loss>().single()
+    assertEquals(1L, loss.items)
+    assertEquals(2L, loss.bytes)
+    assertEquals(2, events.filterIsInstance<NotificationOwnershipFifo.Event.Terminal>().size)
+  }
+
 }

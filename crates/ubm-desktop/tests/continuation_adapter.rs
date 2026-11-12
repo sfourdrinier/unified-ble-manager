@@ -51,6 +51,29 @@ async fn fixture() -> (DesktopCentral<FakeRadio>, NativeContinuation) {
     (central, executor)
 }
 
+async fn finish_cleanup(engine: &NativeContinuation, token: &str) {
+    let mut receipt = engine.acknowledge_claim_v1(token).await.unwrap();
+    for _ in 0..16 {
+        if receipt["disposed"] == true {
+            return;
+        }
+        assert!(
+            receipt["disposeFailure"].as_str().unwrap().contains("tail"),
+            "{receipt}"
+        );
+        let claim = engine
+            .prepare_claim_versioned(1, 256, 1 << 20)
+            .await
+            .unwrap();
+        assert!(!claim["batches"].as_array().unwrap().is_empty());
+        receipt = engine
+            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
+            .await
+            .unwrap();
+    }
+    panic!("cleanup tail did not settle: {receipt}");
+}
+
 #[tokio::test]
 async fn failed_discovery_continuation_link_is_released_by_its_parent() {
     let (central, engine) = fixture().await;
@@ -64,10 +87,13 @@ async fn failed_discovery_continuation_link_is_released_by_its_parent() {
     );
     assert!(central.shutdown().await.is_released());
     assert!(!central.boundary().link_connected(PEER));
-    let claim = engine.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = engine
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(
         engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
             .await
             .unwrap()["disposed"],
         true
@@ -87,9 +113,12 @@ async fn process_shutdown_retry_then_claim_recognizes_confirmed_parent_release()
     let second = central.shutdown().await;
     assert!(second.is_released(), "{second:?}");
     assert!(!central.boundary().link_connected(PEER));
-    let claim = engine.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = engine
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     let receipt = engine
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     assert_eq!(receipt["disposed"], true, "{receipt}");
@@ -102,9 +131,12 @@ async fn process_shutdown_after_confirmed_link_loss_allows_child_retirement() {
     engine.stop_recovery();
     central.remote_peer_loss(PEER).await.unwrap();
     assert!(central.shutdown().await.is_released());
-    let claim = engine.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = engine
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     let receipt = engine
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     assert_eq!(receipt["disposed"], true, "{receipt}");
@@ -125,20 +157,20 @@ async fn process_shutdown_pending_is_not_child_release_authority() {
     )
     .await
     .unwrap();
-    let claim = engine.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = engine
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     let token = claim["claimToken"].as_str().unwrap();
     assert_eq!(
-        engine.acknowledge_claim(token).await.unwrap()["disposed"],
+        engine.acknowledge_claim_v1(token).await.unwrap()["disposed"],
         false
     );
     central
         .boundary()
         .unblock_op(ubm_desktop::FaultOp::Disconnect);
     assert!(shutdown.await.unwrap().is_released());
-    assert_eq!(
-        engine.acknowledge_claim(token).await.unwrap()["disposed"],
-        true
-    );
+    finish_cleanup(&engine, token).await;
     assert!(
         central
             .release_connection_lease(PEER, "foreign-lease", ubm_desktop::OpControl::default())
@@ -152,9 +184,12 @@ async fn process_shutdown_success_allows_explicit_later_claim_disposal() {
     let (central, engine) = fixture().await;
     engine.execute(PEER, &declaration()).await.unwrap();
     assert!(central.shutdown().await.is_released());
-    let claim = engine.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = engine
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     let receipt = engine
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     assert_eq!(receipt["disposed"], true, "{receipt}");
@@ -196,9 +231,9 @@ async fn pinned_declaration_precheck_compares_full_normalized_identity() {
             "{field} replacement must require claim"
         );
     }
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    let claim = engine.prepare_claim_versioned(1, 256, 65536).await.unwrap();
     engine
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     central.shutdown().await;
@@ -250,9 +285,9 @@ async fn unattached_recording_can_retry_after_directory_configuration() {
             .any(|entry| entry["record"]["valueB64"] == "AEk=")
     );
     engine.recording_stop("late-directory").unwrap();
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    let claim = engine.prepare_claim_versioned(1, 256, 65536).await.unwrap();
     engine
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     central.shutdown().await;
@@ -276,15 +311,18 @@ async fn desktop_native_setup_observes_early_reply_but_waits_for_att_and_retains
     )
     .await
     .unwrap();
-    central.boundary().push_event(RadioEvent::Notification {
-        peer_id: PEER.into(),
-        service_uuid: SERVICE.into(),
-        service_occurrence: 0,
-        characteristic_uuid: CHARACTERISTIC.into(),
-        characteristic_occurrence: 0,
-        value: vec![240, 2, 0, 0],
-        epoch: central.routing_epoch(PEER).await,
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::Notification {
+            peer_id: PEER.into(),
+            service_uuid: SERVICE.into(),
+            service_occurrence: 0,
+            characteristic_uuid: CHARACTERISTIC.into(),
+            characteristic_occurrence: 0,
+            value: vec![240, 2, 0, 0],
+            epoch: central.routing_epoch(PEER).await,
+        })
+        .expect("synthetic event admission failed");
     assert!(
         !result.is_finished(),
         "application acknowledgement does not bypass held ATT receipt"
@@ -294,7 +332,10 @@ async fn desktop_native_setup_observes_early_reply_but_waits_for_att_and_retains
         result.await.unwrap().unwrap()["link"]["mtu"]["outcome"],
         "unsupported"
     );
-    let claim = executor.prepare_claim(256, 65536).await.unwrap();
+    let claim = executor
+        .prepare_claim_versioned(1, 256, 65536)
+        .await
+        .unwrap();
     let records: Vec<Value> = claim["batches"]
         .as_array()
         .unwrap()
@@ -312,7 +353,7 @@ async fn desktop_native_setup_observes_early_reply_but_waits_for_att_and_retains
             .any(|record| record["valueB64"] == "8AIAAA==")
     );
     executor
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     central.shutdown().await;
@@ -354,7 +395,7 @@ async fn durable_native_values_survive_radio_claim_and_restart_without_double_de
     );
     engine.recording_stop("native-test").unwrap();
     inject_value(&central, 73).await;
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    let claim = engine.prepare_claim_versioned(1, 256, 65536).await.unwrap();
     assert!(
         engine.recording_status("native-test").unwrap()["collectionFailure"].is_null(),
         "explicit collection stop is not a storage fault"
@@ -373,7 +414,7 @@ async fn durable_native_values_survive_radio_claim_and_restart_without_double_de
         .collect();
     assert!(!ordinary.iter().any(|record| record["t"] == "value"));
     engine
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     assert_eq!(
@@ -413,10 +454,10 @@ async fn durable_native_values_survive_radio_claim_and_restart_without_double_de
         prepared
     );
     engine.recording_stop("next-recording").unwrap();
-    let next_claim = engine.prepare_claim(256, 65536).await.unwrap();
+    let next_claim = engine.prepare_claim_versioned(1, 256, 65536).await.unwrap();
     assert_eq!(next_claim["recording"], json!({"id":"next-recording"}));
     engine
-        .acknowledge_claim(next_claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(next_claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     central.shutdown().await;
@@ -440,6 +481,100 @@ async fn durable_native_values_survive_radio_claim_and_restart_without_double_de
 }
 
 #[tokio::test]
+async fn another_host_stop_seals_the_recording_owner_before_stopping_the_journal() {
+    struct TrackingHost {
+        inner: DesktopContinuationHost<FakeRadio>,
+        session: std::sync::Mutex<Option<Arc<dyn ContinuationSession>>>,
+    }
+    impl ContinuationHost for TrackingHost {
+        fn open_session(&self) -> ubm_desktop::continuation::Result<Arc<dyn ContinuationSession>> {
+            let session = self.inner.open_session()?;
+            *self.session.lock().unwrap() = Some(session.clone());
+            Ok(session)
+        }
+    }
+    let Some(directory) = isolated_fixture_process(
+        "another_host_stop_seals_the_recording_owner_before_stopping_the_journal",
+    ) else {
+        return;
+    };
+    let (central, unused) = fixture().await;
+    drop(unused);
+    let tracked = Arc::new(TrackingHost {
+        inner: DesktopContinuationHost::new(central.clone()),
+        session: std::sync::Mutex::new(None),
+    });
+    let owner = NativeContinuation::new(tracked.clone());
+    let (other_central, unused) = fixture().await;
+    drop(unused);
+    let other_tracked = Arc::new(TrackingHost {
+        inner: DesktopContinuationHost::new(other_central.clone()),
+        session: std::sync::Mutex::new(None),
+    });
+    let other = NativeContinuation::new(other_tracked.clone());
+    let (caller_central, caller) = fixture().await;
+    owner.configure_recording_directory(&directory).unwrap();
+    other.configure_recording_directory(&directory).unwrap();
+    caller.configure_recording_directory(&directory).unwrap();
+    let mut order: Value = serde_json::from_str(&declaration()).unwrap();
+    order["recording"] = json!({"id":"cross-host","maxBytes":1048576,"maxRecords":1000});
+    owner.execute(PEER, &order.to_string()).await.unwrap();
+    other.execute(PEER, &order.to_string()).await.unwrap();
+    assert_eq!(
+        caller.recording_stop("cross-host").unwrap()["radioRelease"],
+        "not-requested"
+    );
+    assert!(
+        tracked
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .collection_sealed(),
+        "the live owner's session must be sealed synchronously"
+    );
+    assert!(
+        other_tracked
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .collection_sealed(),
+        "every live owner's session must be sealed synchronously"
+    );
+    inject_value(&central, 91).await;
+    let claim = owner.prepare_claim_versioned(1, 256, 65536).await.unwrap();
+    let ordinary: Vec<Value> = claim["batches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|batch| {
+            serde_json::from_str::<Value>(batch.as_str().unwrap()).unwrap()["records"]
+                .as_array()
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    assert!(
+        !ordinary.iter().any(|record| record["t"] == "value"),
+        "owner collection must be sealed before stop: {ordinary:?}"
+    );
+    assert!(owner.recording_status("cross-host").unwrap()["collectionFailure"].is_null());
+    finish_cleanup(&owner, claim["claimToken"].as_str().unwrap()).await;
+    let other_claim = other.prepare_claim_versioned(1, 256, 65536).await.unwrap();
+    finish_cleanup(&other, other_claim["claimToken"].as_str().unwrap()).await;
+    central.shutdown().await;
+    other_central.shutdown().await;
+    caller_central.shutdown().await;
+    drop(owner);
+    drop(other);
+    drop(caller);
+    complete_fixture_process(&directory);
+}
+
+#[tokio::test]
 async fn independent_store_stop_is_observed_without_waiting_for_sensor_ingress() {
     let Some(directory) = isolated_fixture_process(
         "independent_store_stop_is_observed_without_waiting_for_sensor_ingress",
@@ -459,10 +594,10 @@ async fn independent_store_stop_is_observed_without_waiting_for_sensor_ingress()
         "lifecycle.invalid-state"
     );
     assert!(engine.recording_status("external-stop").unwrap()["collectionFailure"].is_null());
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    let claim = engine.prepare_claim_versioned(1, 256, 65536).await.unwrap();
     assert_eq!(
         engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
             .await
             .unwrap()["disposed"],
         true
@@ -509,10 +644,10 @@ async fn recording_stop_during_held_setup_prevents_late_success_and_keeps_releas
         "lifecycle.invalid-state"
     );
     assert!(engine.recording_status("stop-test").unwrap()["collectionFailure"].is_null());
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    let claim = engine.prepare_claim_versioned(1, 256, 65536).await.unwrap();
     assert!(
         engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
             .await
             .unwrap()["disposed"]
             == true
@@ -543,9 +678,9 @@ async fn reopened_recording_uses_a_distinct_session_epoch_before_new_ingress() {
         engine
             .recording_acknowledge("epoch-test", prepared["token"].as_str().unwrap())
             .unwrap();
-        let claim = engine.prepare_claim(256, 65536).await.unwrap();
+        let claim = engine.prepare_claim_versioned(1, 256, 65536).await.unwrap();
         engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
             .await
             .unwrap();
         central.shutdown().await;
@@ -567,15 +702,18 @@ async fn wait_for_notification_call(central: &DesktopCentral<FakeRadio>, count: 
 
 async fn inject_value(central: &DesktopCentral<FakeRadio>, bpm: u8) {
     let mut wake = central.native_wakes();
-    central.boundary().push_event(RadioEvent::Notification {
-        peer_id: PEER.into(),
-        service_uuid: SERVICE.into(),
-        service_occurrence: 0,
-        characteristic_uuid: CHARACTERISTIC.into(),
-        characteristic_occurrence: 0,
-        value: vec![0, bpm],
-        epoch: central.routing_epoch(PEER).await,
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::Notification {
+            peer_id: PEER.into(),
+            service_uuid: SERVICE.into(),
+            service_occurrence: 0,
+            characteristic_uuid: CHARACTERISTIC.into(),
+            characteristic_occurrence: 0,
+            value: vec![0, bpm],
+            epoch: central.routing_epoch(PEER).await,
+        })
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), wake.recv())
         .await
         .unwrap()
@@ -601,12 +739,11 @@ async fn subscribed_session(central: &DesktopCentral<FakeRadio>) -> Arc<dyn Cont
 async fn drain_records(session: &Arc<dyn ContinuationSession>) -> Vec<Value> {
     let mut records = Vec::new();
     loop {
-        let batch: Value = serde_json::from_str(&session.drain(256, 1 << 20).await).unwrap();
-        let entries = batch["records"].as_array().unwrap();
-        if entries.is_empty() {
+        let Some(claim) = session.claim_drain(256, 1 << 20).unwrap() else {
             return records;
-        }
-        records.extend(entries.iter().cloned());
+        };
+        records.extend(claim.records);
+        session.acknowledge_drain(claim.id).unwrap();
     }
 }
 
@@ -830,20 +967,36 @@ async fn native_collection_and_replayable_claim_need_no_ui() {
     );
     let epoch = central.routing_epoch(PEER).await;
     let mut wake = central.native_wakes();
-    central.boundary().push_event(RadioEvent::Notification {
-        peer_id: PEER.into(),
-        service_uuid: SERVICE.into(),
-        service_occurrence: 0,
-        characteristic_uuid: CHARACTERISTIC.into(),
-        characteristic_occurrence: 0,
-        value: vec![0, 72],
-        epoch,
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::NotificationWithProvenance {
+            peer_id: PEER.into(),
+            service_uuid: SERVICE.into(),
+            service_occurrence: 0,
+            characteristic_uuid: CHARACTERISTIC.into(),
+            characteristic_occurrence: 0,
+            value: vec![0, 72],
+            epoch,
+            provenance: ubm_core::central::NotificationProvenance::ReadOrNotification,
+            source_generation: 9,
+            source_ordinal: 42,
+        })
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), wake.recv())
         .await
         .unwrap()
         .unwrap();
-    let claim = executor.prepare_claim(256, 1 << 20).await.unwrap();
+    assert_eq!(
+        executor.prepare_claim(256, 1 << 20).await.unwrap_err()["code"],
+        "protocol.incompatible"
+    );
+    let claim = executor
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
+    if let Some(path) = std::env::var_os("UBM_521_STAGED_CLAIM") {
+        std::fs::write(path, claim.to_string()).unwrap();
+    }
     let records: Vec<Value> = claim["batches"]
         .as_array()
         .unwrap()
@@ -859,16 +1012,27 @@ async fn native_collection_and_replayable_claim_need_no_ui() {
             .any(|r| r["t"] == "value" && r["valueB64"] == "AEg="),
         "{records:?}"
     );
-    assert_eq!(executor.prepare_claim(256, 1 << 20).await.unwrap(), claim);
+    assert!(
+        records
+            .iter()
+            .any(|r| r["t"] == "value" && r["provenance"].is_string())
+    );
+    assert_eq!(
+        executor
+            .prepare_claim_versioned(1, 256, 1 << 20)
+            .await
+            .unwrap(),
+        claim
+    );
     let receipt = executor
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     assert_eq!(receipt["disposed"], true);
     assert!(!central.boundary().link_connected(PEER));
     assert_eq!(
         executor
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
             .await
             .unwrap(),
         receipt
@@ -883,11 +1047,14 @@ async fn repeat_is_idempotent_but_link_loss_starts_a_new_generation() {
     central.remote_peer_loss(PEER).await.unwrap();
     executor.execute(PEER, &declaration()).await.unwrap();
     assert!(central.boundary().link_connected(PEER));
-    let claim = executor.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = executor
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(claim["consumerCount"], 2);
     assert_eq!(
         executor
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
             .await
             .unwrap()["disposed"],
         true
@@ -902,10 +1069,13 @@ async fn claim_preserves_another_clients_connection_lease() {
         .await
         .unwrap();
     executor.execute(PEER, &declaration()).await.unwrap();
-    let claim = executor.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = executor
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(
         executor
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
             .await
             .unwrap()["disposed"],
         true
@@ -925,23 +1095,31 @@ async fn claim_preserves_another_clients_connection_lease() {
 async fn claim_counts_values_arriving_while_native_unsubscribe_is_held() {
     let (central, executor) = fixture().await;
     executor.execute(PEER, &declaration()).await.unwrap();
-    let claim = executor.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = executor
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     let token = claim["claimToken"].as_str().unwrap().to_owned();
     central
         .boundary()
         .block_op(ubm_desktop::FaultOp::Unsubscribe);
-    let pending = tokio::spawn(async move { executor.acknowledge_claim(&token).await });
+    let worker = executor.clone();
+    let worker_token = token.clone();
+    let pending = tokio::spawn(async move { worker.acknowledge_claim_v1(&worker_token).await });
     wait_for_notification_call(&central, 2).await;
     let mut wake = central.native_wakes();
-    central.boundary().push_event(RadioEvent::Notification {
-        peer_id: PEER.into(),
-        service_uuid: SERVICE.into(),
-        service_occurrence: 0,
-        characteristic_uuid: CHARACTERISTIC.into(),
-        characteristic_occurrence: 0,
-        value: vec![0, 73],
-        epoch: central.routing_epoch(PEER).await,
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::Notification {
+            peer_id: PEER.into(),
+            service_uuid: SERVICE.into(),
+            service_occurrence: 0,
+            characteristic_uuid: CHARACTERISTIC.into(),
+            characteristic_occurrence: 0,
+            value: vec![0, 73],
+            epoch: central.routing_epoch(PEER).await,
+        })
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), wake.recv())
         .await
         .unwrap()
@@ -953,9 +1131,50 @@ async fn claim_counts_values_arriving_while_native_unsubscribe_is_held() {
         .boundary()
         .unblock_op(ubm_desktop::FaultOp::Unsubscribe);
     let receipt = pending.await.unwrap().unwrap();
-    assert_eq!(receipt["disposed"], true);
     assert_eq!(receipt["afterCutoffLoss"]["items"], 1, "{receipt}");
     assert!(receipt["afterCutoffLoss"]["bytes"].as_u64().unwrap() > 0);
+    if receipt["disposed"] == false {
+        finish_cleanup(&executor, &token).await;
+    }
+    central.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelled_acknowledgement_keeps_cleanup_and_receipt_recoverable() {
+    let (central, executor) = fixture().await;
+    executor.execute(PEER, &declaration()).await.unwrap();
+    let claim = executor
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
+    let token = claim["claimToken"].as_str().unwrap().to_owned();
+    central
+        .boundary()
+        .block_op(ubm_desktop::FaultOp::Unsubscribe);
+    let owner = executor.clone();
+    let worker_token = token.clone();
+    let task = tokio::spawn(async move { owner.acknowledge_claim_v1(&worker_token).await });
+    wait_for_notification_call(&central, 2).await;
+    task.abort();
+    central
+        .boundary()
+        .unblock_op(ubm_desktop::FaultOp::Unsubscribe);
+    let receipt = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match executor.acknowledge_claim_v1(&token).await {
+                Ok(receipt) => break receipt,
+                Err(error) if error["code"] == "lifecycle.invalid-state" => {
+                    tokio::task::yield_now().await
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    if receipt["disposed"] == false {
+        finish_cleanup(&executor, &token).await;
+    }
     central.shutdown().await;
 }
 
@@ -963,7 +1182,10 @@ async fn claim_counts_values_arriving_while_native_unsubscribe_is_held() {
 async fn failed_parent_release_keeps_claim_retryable() {
     let (central, executor) = fixture().await;
     executor.execute(PEER, &declaration()).await.unwrap();
-    let claim = executor.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = executor
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     central
         .boundary()
         .fail_next(ubm_desktop::FaultOp::Unsubscribe, "held CCCD");
@@ -972,13 +1194,10 @@ async fn failed_parent_release_keeps_claim_retryable() {
         .fail_next(ubm_desktop::FaultOp::Disconnect, "held link");
     let token = claim["claimToken"].as_str().unwrap();
     assert_eq!(
-        executor.acknowledge_claim(token).await.unwrap()["disposed"],
+        executor.acknowledge_claim_v1(token).await.unwrap()["disposed"],
         false
     );
-    assert_eq!(
-        executor.acknowledge_claim(token).await.unwrap()["disposed"],
-        true
-    );
+    finish_cleanup(&executor, token).await;
     assert!(!central.boundary().link_connected(PEER));
     central.shutdown().await;
 }
@@ -996,12 +1215,16 @@ async fn native_supervisor_recovers_a_dropped_link_without_ui_requests() {
     assert!(central.boundary().link_connected(PEER));
     // The second enable entry proves supervision ran. Claim admission takes
     // the engine lock after that execution and is the final completion barrier.
-    let claim = owner.engine.prepare_claim(256, 1 << 20).await.unwrap();
+    let claim = owner
+        .engine
+        .prepare_claim_versioned(1, 256, 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(claim["consumerCount"], 2);
     assert_eq!(
         owner
             .engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
             .await
             .unwrap()["disposed"],
         true
@@ -1215,11 +1438,15 @@ async fn setup_response_behind_a_recorded_backlog_is_acknowledged_within_its_dea
         epoch,
     };
     for index in 0..120u8 {
-        central.boundary().push_event(notification(vec![0, index]));
+        central
+            .boundary()
+            .push_event(notification(vec![0, index]))
+            .expect("synthetic event admission failed");
     }
     central
         .boundary()
-        .push_event(notification(vec![240, 2, 0, 0]));
+        .push_event(notification(vec![240, 2, 0, 0]))
+        .expect("synthetic event admission failed");
     central.boundary().unblock_op(ubm_desktop::FaultOp::Write);
     let started = std::time::Instant::now();
     result
@@ -1240,9 +1467,9 @@ async fn setup_response_behind_a_recorded_backlog_is_acknowledged_within_its_dea
     );
     assert_eq!(status["lostRecords"], 0);
     engine.recording_stop("backlog").unwrap();
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    let claim = engine.prepare_claim_versioned(1, 256, 65536).await.unwrap();
     engine
-        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     central.shutdown().await;

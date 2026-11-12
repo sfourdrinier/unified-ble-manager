@@ -6,6 +6,7 @@ const path = require('node:path')
 const semver = require('semver')
 const { runUnifiedBleCli } = require('../src/cli')
 const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri')
+const { IPC_PROTOCOL_MINIMUM_VERSION, IPC_PROTOCOL_VERSION } = require('../src/ipc/protocol')
 const { createTestBleEnvironment } = require('../src/testing')
 const { UNIFIED_BLE_IMPLEMENTATION_VERSION } = require('../src/implementation-version')
 
@@ -142,7 +143,8 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         proofBoundary: 'compile-config-loadability',
         cratePublished: false,
         compatibility: expect.objectContaining({
-          ipcProtocol: 6
+          ipcProtocolMinimum: IPC_PROTOCOL_MINIMUM_VERSION,
+          ipcProtocol: IPC_PROTOCOL_VERSION
         })
       })
     )
@@ -167,7 +169,8 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         host: 'tauri',
         liveRadio: false,
         proofBoundary: 'compile-config-loadability',
-        ipcProtocol: 6
+        ipcProtocolMinimum: IPC_PROTOCOL_MINIMUM_VERSION,
+        ipcProtocol: IPC_PROTOCOL_VERSION
       })
     )
   })
@@ -252,7 +255,8 @@ describe('PR11 Tauri crate and testkit contracts', () => {
     expect(semver.satisfies(UNIFIED_BLE_IMPLEMENTATION_VERSION, TAURI_PLUGIN_COMPATIBILITY.crateRange)).toBe(true)
     expect(TAURI_PLUGIN_COMPATIBILITY).toEqual(
       expect.objectContaining({
-        ipcProtocol: 6,
+        ipcProtocolMinimum: IPC_PROTOCOL_MINIMUM_VERSION,
+        ipcProtocol: IPC_PROTOCOL_VERSION,
         contractRevision: require('../contracts/src/version').CONTRACT_REVISION
       })
     )

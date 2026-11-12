@@ -39,14 +39,14 @@ struct DescriptorInternal {
 }
 
 #[derive(Clone, Debug)]
-struct CharacteristicInternal {
+pub(super) struct CharacteristicInternal {
     handle: u64,
-    info: CharacteristicInfo,
+    pub(super) info: CharacteristicInfo,
     descriptors: Vec<DescriptorInternal>,
 }
 
 #[derive(Clone, Debug)]
-struct ServiceInternal {
+pub(super) struct ServiceInternal {
     handle: u64,
     info: ServiceInfo,
     characteristics: Vec<CharacteristicInternal>,
@@ -54,13 +54,15 @@ struct ServiceInternal {
 }
 
 #[derive(Clone, Debug, Default)]
-struct PublishedGatt {
-    services: Vec<ServiceInternal>,
-    accepted_token: Option<LeGattReadyToken>,
+pub(super) struct PublishedGatt {
+    pub(super) services: Vec<ServiceInternal>,
+    pub(super) accepted_token: Option<LeGattReadyToken>,
 }
 
-fn publish_gatt(publication: &Mutex<PublishedGatt>, candidate: PublishedGatt) -> Result<()> {
-    let mut current = publication.lock().map_err(Into::<Error>::into)?;
+pub(super) fn publish_gatt_locked(
+    current: &mut PublishedGatt,
+    candidate: PublishedGatt,
+) -> Result<()> {
     if let Some(accepted) = &current.accepted_token {
         let Some(proposed) = &candidate.accepted_token else {
             return Err(bluez_async::BluetoothError::LeGattProtocolError(
@@ -85,12 +87,19 @@ fn publish_gatt(publication: &Mutex<PublishedGatt>, candidate: PublishedGatt) ->
     Ok(())
 }
 
+#[cfg(test)]
+fn publish_gatt(publication: &Mutex<PublishedGatt>, candidate: PublishedGatt) -> Result<()> {
+    let mut current = publication.lock().map_err(Into::<Error>::into)?;
+    publish_gatt_locked(&mut current, candidate)
+}
+
 /// The ATT handle BlueZ encodes in the last segment of a GATT object path
 /// (`.../service0010` → `0x10`). `None` when the segment does not follow
 /// BlueZ's naming.
 pub(crate) fn handle_from_object_path(path: &str) -> Option<u64> {
     let segment = path.rsplit('/').next()?;
-    let digits = segment.strip_prefix("service")
+    let digits = segment
+        .strip_prefix("service")
         .or_else(|| segment.strip_prefix("char"))
         .or_else(|| segment.strip_prefix("desc"))?;
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -122,13 +131,14 @@ impl Display for PeripheralId {
 /// Implementation of [api::Peripheral](crate::api::Peripheral).
 #[derive(Clone, Debug)]
 pub struct Peripheral {
-    session: BluetoothSession,
-    device: DeviceId,
+    pub(super) session: BluetoothSession,
+    pub(super) device: DeviceId,
     mac_address: BDAddr,
     services: Arc<Mutex<PublishedGatt>>,
+    pub(super) peer: Arc<super::peer_source::PeerSource>,
 }
 
-fn get_characteristic<'a>(
+pub(super) fn get_characteristic<'a>(
     services: &'a [ServiceInternal],
     service_uuid: &Uuid,
     service_instance: u64,
@@ -160,7 +170,35 @@ fn get_characteristic<'a>(
         })
 }
 
+pub(super) fn route_characteristic_id(
+    graph: &PublishedGatt,
+    characteristic: &Characteristic,
+) -> Result<CharacteristicId> {
+    Ok(get_characteristic(
+        &graph.services,
+        &characteristic.service_uuid,
+        characteristic.service_instance,
+        &characteristic.uuid,
+        characteristic.instance,
+    )?
+    .info
+    .id
+    .clone())
+}
+
 impl Peripheral {
+    pub fn acquire_reclaim(&self, binding: &crate::ubm_reclaim_graph_binding::GraphBinding, key: crate::ubm_reclaim_authority::GraphKey) -> std::result::Result<crate::ubm_reclaim_authority::PermitStatus, crate::ubm_reclaim_authority::AuthorityError> {
+        self.peer.acquire_reclaim(binding, key)
+    }
+    pub fn commit_reclaim(&self, key: &crate::ubm_reclaim_authority::GraphKey) -> std::result::Result<crate::ubm_reclaim_authority::PermitStatus, crate::ubm_reclaim_authority::AuthorityError> {
+        self.peer.commit_reclaim(key)
+    }
+    pub fn release_reclaim(&self, key: &crate::ubm_reclaim_authority::GraphKey) -> std::result::Result<crate::ubm_reclaim_authority::PermitStatus, crate::ubm_reclaim_authority::AuthorityError> {
+        self.peer.release_reclaim(key)
+    }
+    pub fn forget_reclaim(&self, key: &crate::ubm_reclaim_authority::GraphKey) -> std::result::Result<(), crate::ubm_reclaim_authority::AuthorityError> {
+        self.peer.forget_reclaim(key)
+    }
     /// Nonrecycled private identities shared across this actual sender lifetime.
     pub fn allocate_le_reservation_id(&self) -> Result<u64> {
         Ok(self.session.allocate_le_reservation_id()?)
@@ -192,10 +230,12 @@ impl Peripheral {
 
     /// Connect the exact retained reservation on its original daemon owner.
     pub async fn connect_le_lease(&self, owner: &str, token: u64) -> Result<u64> {
-        Ok(self
-            .session
-            .connect_le_lease(&self.device, owner, token)
-            .await?)
+        let session = self.session.clone();
+        let device = self.device.clone();
+        let owner = owner.to_owned();
+        self.peer.own_graph_operation(if token == 0 || !owner.starts_with(':') { super::peer_source::GraphOperationScope::Observation } else { super::peer_source::GraphOperationScope::SingleReplyEffect(Some(owner.clone())) }, async move {
+            Ok(session.connect_le_lease(&device, &owner, token).await?)
+        }).await
     }
 
     /// Preserve authoritative scope; lease retirement is not ACL disconnection.
@@ -205,10 +245,12 @@ impl Peripheral {
         token: u64,
         expected_generation: Option<u64>,
     ) -> Result<bluez_async::LeLeaseReleaseReceipt> {
-        Ok(self
-            .session
-            .release_le_lease(&self.device, owner, token, expected_generation)
-            .await?)
+        let session = self.session.clone();
+        let device = self.device.clone();
+        let owner = owner.to_owned();
+        self.peer.own_classified_graph_operation(if token == 0 || !owner.starts_with(':') { super::peer_source::GraphOperationScope::Observation } else { super::peer_source::GraphOperationScope::SingleReplyEffect(Some(owner.clone())) }, async move {
+            Ok(session.release_le_lease(&device, &owner, token, expected_generation).await?)
+        }, super::peer_source::lease_release_settlement).await
     }
 
     /// Pin this peripheral's GATT calls to an explicitly attested BlueZ
@@ -220,14 +262,24 @@ impl Peripheral {
 
     /// Strict LE-only acquisition; never invokes Device1.Connect.
     pub async fn connect_le(&self, owner: &str) -> Result<()> {
-        self.session.connect_le(&self.device, owner).await?;
-        Ok(())
+        let session = self.session.clone();
+        let device = self.device.clone();
+        let owner = owner.to_owned();
+        self.peer.own_graph_operation(super::peer_source::GraphOperationScope::Effect(Some(owner.clone())), async move {
+            session.connect_le(&device, &owner).await?;
+            Ok(())
+        }).await
     }
 
     /// Retryable LE-only release of accepted work on the same daemon epoch.
     pub async fn disconnect_le(&self, owner: &str) -> Result<()> {
-        self.session.disconnect_le(&self.device, owner).await?;
-        Ok(())
+        let session = self.session.clone();
+        let device = self.device.clone();
+        let owner = owner.to_owned();
+        self.peer.own_graph_operation(super::peer_source::GraphOperationScope::Effect(Some(owner.clone())), async move {
+            session.disconnect_le(&device, &owner).await?;
+            Ok(())
+        }).await
     }
 
     /// Read the current daemon answer on this peripheral's strict owner.
@@ -279,13 +331,25 @@ impl Peripheral {
         Ok(retained)
     }
 
+    #[cfg(test)]
     pub(crate) fn new(session: BluetoothSession, device: DeviceInfo) -> Self {
-        Peripheral {
+        let registry = super::peer_source::PeerRegistry::default();
+        Self::new_shared(session, device, &registry).expect("fresh peer registry has capacity")
+    }
+
+    pub(crate) fn new_shared(
+        session: BluetoothSession,
+        device: DeviceInfo,
+        registry: &super::peer_source::PeerRegistry,
+    ) -> Result<Self> {
+        let peer = registry.get(&device.id)?;
+        Ok(Peripheral {
             session,
             device: device.id,
             mac_address: device.mac_address.into(),
-            services: Arc::new(Mutex::new(PublishedGatt::default())),
-        }
+            services: peer.services.clone(),
+            peer,
+        })
     }
 
     fn characteristic_info(&self, characteristic: &Characteristic) -> Result<CharacteristicInfo> {
@@ -386,31 +450,50 @@ impl api::Peripheral for Peripheral {
     }
 
     async fn connect(&self) -> Result<()> {
-        self.session.connect(&self.device).await?;
-        Ok(())
+        let session = self.session.clone();
+        let device = self.device.clone();
+        self.peer.own_graph_operation(super::peer_source::GraphOperationScope::Effect(None), async move {
+            session.connect(&device).await?;
+            Ok(())
+        }).await
     }
 
     async fn disconnect(&self) -> Result<()> {
-        self.session.disconnect(&self.device).await?;
-        Ok(())
+        let session = self.session.clone();
+        let device = self.device.clone();
+        let peer = self.peer.clone();
+        self.peer.own_graph_operation(super::peer_source::GraphOperationScope::Effect(None), async move {
+            let watch = peer.current_watch();
+            session.disconnect(&device).await?;
+            if let Some(watch) = watch { peer.close_watch(watch); }
+            Ok(())
+        }).await
     }
 
     async fn discover_services(&self) -> Result<()> {
+        let peripheral = self.clone();
+        self.peer.own_graph_operation(super::peer_source::GraphOperationScope::Observation, async move {
+        let peripheral = &peripheral;
         // UBM patch (UBM_PATCHES.md #6): every characteristic and descriptor
         // instance is kept (upstream kept the first of each UUID), and a
         // descriptor listing that fails fails the discovery (upstream
         // replaced it with an empty list).
-        let before = if let Some(owner) = self.session.attested_le_owner() {
+        let watch_revision = peripheral
+            .peer
+            .ensure_watch(&peripheral.session, &peripheral.device)
+            .await
+            .map_err(|error| Error::Other(format!("BlueZ peer observer: {error}").into()))?;
+        let before = if let Some(owner) = peripheral.session.attested_le_owner() {
             Some(
-                self.session
-                    .await_le_gatt_ready(&self.device, owner)
+                peripheral.session
+                    .await_le_gatt_ready(&peripheral.device, owner)
                     .await?,
             )
         } else {
             None
         };
         let mut services_internal = Vec::new();
-        let services = self.session.get_services(&self.device).await?;
+        let services = peripheral.session.get_services(&peripheral.device).await?;
         for service in &services {
             let service_handle = object_handle(&service.id.to_string())?;
             let includes = service
@@ -439,10 +522,10 @@ impl api::Peripheral for Peripheral {
                         .collect::<Result<Vec<_>>>()
                 })
                 .transpose()?;
-            let characteristics = self.session.get_characteristics(&service.id).await?;
+            let characteristics = peripheral.session.get_characteristics(&service.id).await?;
             let characteristics = join_all(characteristics.into_iter().map(|info| async move {
                 let handle = object_handle(&info.id.to_string())?;
-                let descriptors = self
+                let descriptors = peripheral
                     .session
                     .get_descriptors(&info.id)
                     .await?
@@ -473,7 +556,7 @@ impl api::Peripheral for Peripheral {
         if let Some(before) = &before {
             // Never wait/retry the publication bracket: the candidate was read
             // under THIS token, not a later successful rediscovery.
-            let after = self.le_gatt_snapshot().await?.ready_token()?;
+            let after = peripheral.le_gatt_snapshot().await?.ready_token()?;
             if &after != before {
                 return Err(bluez_async::BluetoothError::LeGattTokenChanged {
                     before: before.clone(),
@@ -484,13 +567,14 @@ impl api::Peripheral for Peripheral {
         }
         // Graph and token are committed together; failed parsing/RPC/brackets
         // leave the prior publication untouched. No await under this lock.
-        publish_gatt(
-            &self.services,
+        peripheral.peer.commit_graph(
+            watch_revision,
             PublishedGatt {
                 services: services_internal,
                 accepted_token: before,
             },
         )
+        }).await
     }
 
     async fn write(
@@ -504,10 +588,24 @@ impl api::Peripheral for Peripheral {
             write_type: Some(write_type.into()),
             ..Default::default()
         };
-        Ok(self
-            .session
-            .write_characteristic_value_with_options(&characteristic_info.id, data, options)
-            .await?)
+        let session = self.session.clone();
+        let id = characteristic_info.id.clone();
+        let data = data.to_vec();
+        if let Some(daemon) = session.notification_daemon_owner().filter(|owner| owner.starts_with(':')) {
+            let scope = super::peer_source::GraphOperationScope::SingleReplyEffect(Some(daemon.clone()));
+            self.peer.own_graph_operation(scope, async move {
+                session.start_characteristic_write(&daemon, &id, data, options).await
+                    .map_err(|error| Error::Platform(crate::PlatformError::bluez_dbus(error.name(), error.message())))?;
+                Ok(())
+            }).await
+        } else {
+            // An unpinned well-known-name call cannot be attributed to a
+            // particular daemon if its result is indeterminate.
+            self.peer.own_graph_operation(super::peer_source::GraphOperationScope::Effect(None), async move {
+                session.write_characteristic_value_with_options(&id, data, options).await?;
+                Ok(())
+            }).await
+        }
     }
 
     async fn read(&self, characteristic: &Characteristic) -> Result<Vec<u8>> {
@@ -520,12 +618,20 @@ impl api::Peripheral for Peripheral {
 
     async fn subscribe(&self, characteristic: &Characteristic) -> Result<()> {
         let characteristic_info = self.characteristic_info(characteristic)?;
-        Ok(self.session.start_notify(&characteristic_info.id).await?)
+        let session = self.session.clone();
+        self.peer.own_graph_operation(super::peer_source::GraphOperationScope::Effect(None), async move {
+            session.start_notify(&characteristic_info.id).await?;
+            Ok(())
+        }).await
     }
 
     async fn unsubscribe(&self, characteristic: &Characteristic) -> Result<()> {
         let characteristic_info = self.characteristic_info(characteristic)?;
-        Ok(self.session.stop_notify(&characteristic_info.id).await?)
+        let session = self.session.clone();
+        self.peer.own_graph_operation(super::peer_source::GraphOperationScope::Effect(None), async move {
+            session.stop_notify(&characteristic_info.id).await?;
+            Ok(())
+        }).await
     }
 
     async fn notifications(&self) -> Result<Pin<Box<dyn Stream<Item = ValueNotification> + Send>>> {
@@ -544,10 +650,13 @@ impl api::Peripheral for Peripheral {
 
     async fn write_descriptor(&self, descriptor: &Descriptor, data: &[u8]) -> Result<()> {
         let descriptor_info = self.descriptor_info(descriptor)?;
-        Ok(self
-            .session
-            .write_descriptor_value(&descriptor_info.id, data)
-            .await?)
+        let session = self.session.clone();
+        let id = descriptor_info.id.clone();
+        let data = data.to_vec();
+        self.peer.own_graph_operation(super::peer_source::GraphOperationScope::Effect(None), async move {
+            session.write_descriptor_value(&id, data).await?;
+            Ok(())
+        }).await
     }
 
     async fn read_descriptor(&self, descriptor: &Descriptor) -> Result<Vec<u8>> {
@@ -559,17 +668,25 @@ impl api::Peripheral for Peripheral {
     }
 }
 
-fn value_notification(
+pub(super) fn value_notification(
     event: BluetoothEvent,
     device_id: &DeviceId,
     services: Arc<Mutex<PublishedGatt>>,
+) -> Option<ValueNotification> {
+    let services = services.lock().unwrap();
+    value_notification_from_graph(event, device_id, &services)
+}
+
+pub(super) fn value_notification_from_graph(
+    event: BluetoothEvent,
+    device_id: &DeviceId,
+    services: &PublishedGatt,
 ) -> Option<ValueNotification> {
     match event {
         BluetoothEvent::Characteristic {
             id,
             event: CharacteristicEvent::Value { value },
         } if id.service().device() == *device_id => {
-            let services = services.lock().unwrap();
             let (charac, service) = find_characteristic_by_id(&services.services, id.clone())?;
             Some(ValueNotification {
                 uuid: charac.info.uuid,
@@ -714,14 +831,37 @@ mod ubm_instance_tests {
     #[test]
     fn gatt_hex_suffix_is_preserved_after_exact_prefix() {
         for prefix in ["service", "char", "desc"] {
-            for (suffix, expected) in [("0001", 1), ("a001", 0xa001), ("abcd", 0xabcd), ("ffff", 0xffff)] {
-                assert_eq!(super::handle_from_object_path(&format!("/org/bluez/hci0/dev_AA/{prefix}{suffix}")), Some(expected));
+            for (suffix, expected) in [
+                ("0001", 1),
+                ("a001", 0xa001),
+                ("abcd", 0xabcd),
+                ("ffff", 0xffff),
+            ] {
+                assert_eq!(
+                    super::handle_from_object_path(&format!(
+                        "/org/bluez/hci0/dev_AA/{prefix}{suffix}"
+                    )),
+                    Some(expected)
+                );
             }
         }
-        for segment in ["a001", "unknowna001", "service", "charxyz", "desc-1", "service+a001"] {
-            assert_eq!(super::handle_from_object_path(&format!("/org/bluez/hci0/dev_AA/{segment}")), None);
+        for segment in [
+            "a001",
+            "unknowna001",
+            "service",
+            "charxyz",
+            "desc-1",
+            "service+a001",
+        ] {
+            assert_eq!(
+                super::handle_from_object_path(&format!("/org/bluez/hci0/dev_AA/{segment}")),
+                None
+            );
         }
-        assert_ne!(super::handle_from_object_path("/char0001"), super::handle_from_object_path("/chara001"));
+        assert_ne!(
+            super::handle_from_object_path("/char0001"),
+            super::handle_from_object_path("/chara001")
+        );
     }
 
     use super::handle_from_object_path;
@@ -748,4 +888,4 @@ mod ubm_instance_tests {
 
 #[cfg(test)]
 #[path = "le_gatt_tests.rs"]
-mod le_gatt_tests;
+pub(in crate::bluez) mod le_gatt_tests;

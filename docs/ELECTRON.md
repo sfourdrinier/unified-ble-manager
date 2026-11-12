@@ -4,7 +4,7 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-This source targets `5.2.1`. Verify publication in the npm registry. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
+This source targets `5.2.2`. Verify publication in the npm registry. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
 
 macOS desktop support is Apple Silicon (`arm64`) only. Windows and Linux desktop support includes `arm64` and `x64`.
 Intel macOS desktop is outside the UBM support policy, including source-built
@@ -25,7 +25,12 @@ Runnable composition lives in [`example-electron/`](../example-electron/)
 6. use the same `scan`/`find`, `connect`, `discover`, `read`, `subscribe`, and `destroy` vocabulary as other hosts;
 7. release renderer resources, destroy the binding, destroy the manager.
 
-BrowserWindow must use `contextIsolation: true` and `nodeIntegration: false`.
+BrowserWindow must use `contextIsolation: true`, `nodeIntegration: false`, and
+`sandbox: true`; call `app.enableSandbox()` before Electron is ready. The
+preload is trusted host code but must expose only named typed bridge methods,
+never generic IPC, an addon loader, a native recording store, or a filesystem
+directory. A renderer/preload allowed to import the Node-API binary has opted
+out of Electron renderer isolation; UBM cannot treat it as untrusted.
 Security internals live in [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md).
 
 In the renderer, after preload hands you an authenticated transport:
@@ -43,6 +48,34 @@ const scan = await manager.scan({
 await scan.stop()
 await manager.destroy()
 ```
+
+### Durable terminal evidence
+
+Terminal evidence is off unless the renderer opts in with bounded canonical
+bytes and Electron main has already selected a private native ledger. The
+renderer never supplies a directory, ledger reference, or storage credential:
+
+```ts
+const manager = await createElectronRendererBleManager({
+  transport,
+  terminalEvidence: { maximumCanonicalBytes: 64 * 1024, maximumDurableBytes: 4 * 1024 * 1024 }
+})
+```
+
+After a renderer reload or main-process recovery, inspect only the opaque
+aliases that trusted main grants to that authenticated lease:
+
+```ts
+for (const record of await manager.terminalEvidenceRecovery.list()) {
+  const value = await manager.terminalEvidenceRecovery.read(record.handle, record.byteLength)
+  await persistExactCanonicalBytes(value.canonicalBytes, value.digest)
+  await manager.terminalEvidenceRecovery.acknowledge(record.handle)
+}
+```
+
+Reading does not retire evidence. Acknowledge only after durable consumption;
+it releases the selected record. Without renderer opt-in, no reservation is
+requested and the normal Electron behavior is unchanged.
 
 The low-level `ElectronRendererBleClient` is an implementation seam for the
 transport and tests, not an application API.
@@ -163,9 +196,25 @@ function recorderForMain(central: DesktopRustCoreCentral) {
 Only trusted main code may call `execute`, `status` and `claim`. This adds no
 renderer IPC privilege: expose any application-specific commands through your
 existing authenticated, scoped IPC policy. `execute` needs a known peer ID and
-explicit native resubscription declaration. `claim` validates values before
-acknowledging native handoff, reports loss and cleanup uncertainty, and ends the
-recording generation. Persist returned values according to your application.
+explicit native resubscription declaration. `claim` decodes and automatically
+acknowledges the complete backlog. The separately versioned `claimRetainedV1`
+discloses a retained prefix: process its ordered records before acknowledging,
+then claim again until the receipt confirms disposal. It requires the V1 native
+operations and fails closed when unavailable. Coordinate one application consumer
+and retry uncertain acknowledgements with the same handoff.
+
+Durable recording diagnostics from
+`openNativeContinuationRecordings(...).diagnostics` follow the same rule.
+They are intentionally absent from the UBM BLE IPC channel: an Electron
+application may expose named, authenticated main-process commands only after it
+has selected the renderer/document entitled to receive raw journal evidence.
+Keep the recording directory private, preserve the opaque lower-case 80-hex
+occurrence identity and raw byte pages exactly, and bound pages to 64 KiB (128
+occurrence IDs per page). Reading never acknowledges. Only after the application
+has durably retained the complete exact UTF-8 payload may it call the lifecycle
+in order: acknowledge, retire, confirm retirement, then release confirmation.
+Every native transition compares the exact payload; an occurrence is not a
+peer, window, or UUID identity.
 
 For an authenticated application bridge that forwards raw native control
 envelopes, main may use `encodeNativeContinuationFailure(error)` when a typed
@@ -267,8 +316,13 @@ reference driver grants the first four explicitly and leaves custom ceremony
 denied. Permissions authorize a route; the attached native backend still
 determines capability and reports the operation's actual result.
 
-The renderer and main negotiate the IPC protocol at bootstrap; both offer
-exactly version 6. Version 5 added security routes, address targeting, connection
+The renderer and main negotiate IPC versions 6 through 11 at bootstrap.
+Protocol 6 retains the normal BLE routes for a 5.2.1 renderer/main pair;
+ordered routes require version 9 because that version added individual failure
+observations and ordered platform metadata. Attachment diagnostics and durable
+peer-failure recovery require version 10. Durable terminal-evidence recovery
+requires version 11. Those higher-version surfaces are not published or
+callable when a lower version was selected. Version 5 added security routes, address targeting, connection
 intent and platform scan-option forwarding. A capability still describes the
 instantiated backend's implementation; transport support does not invent native
 support. The caller's deadline crosses as a relative `budgetMs` that
@@ -277,7 +331,7 @@ main admits against its own monotonic clock at receipt (the renderer's
 absolute renderer `deadline` as `protocol.malformed`. Normalized errors may
 carry `commit` (`not-dispatched`, `uncertain`, or `null`). Version 4 adds the
 attachment rebind described below. A renderer and main built from different
-package versions where one side speaks protocol 4 or older fail at bootstrap
+package versions where one side speaks protocol 5 or older fail at bootstrap
 with `protocol.incompatible`, in either direction, before a lease is
 registered or any operation runs, so preload, renderer bundle and main must
 ship from the same package version. The IPC channel name

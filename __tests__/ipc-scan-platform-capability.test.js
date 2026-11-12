@@ -1,6 +1,7 @@
 // __tests__/ipc-scan-platform-capability.test.js
 // IPC preserves supported platform scan options and native limitations.
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
+const { emptyIpcDiagnostics } = require('./helpers/ipc-diagnostics')
 
 function descriptor(id, state) {
   return {
@@ -39,6 +40,7 @@ function ipcManagerWith(
   const ipc = {
     capabilities,
     bootstrap: { discovery: { kind: 'scan' } },
+    diagnostics: emptyIpcDiagnostics,
     scan
   }
   return new IpcPublicManagerAdapter(ipc, {

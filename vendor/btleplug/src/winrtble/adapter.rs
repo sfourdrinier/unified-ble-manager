@@ -11,7 +11,7 @@
 //
 // Copyright (c) 2014 The Rust Project Developers
 
-use super::{ble::watcher::BLEWatcher, peripheral::Peripheral, peripheral::PeripheralId};
+use super::{ble::watcher::{BLEWatcher, ScanWatcherRecovery}, peripheral::{PeerRegistry, Peripheral, PeripheralId}};
 use crate::{
     Error, Result,
     api::{AddressType, BDAddr, Central, CentralEvent, CentralState, ScanFilter},
@@ -29,11 +29,38 @@ use windows::{
     Foundation::TypedEventHandler,
 };
 
+#[path = "adapter_cache.rs"]
+mod adapter_cache;
+
+pub(super) fn resolved_peer_identity(address: BDAddr, kind: windows::Devices::Bluetooth::BluetoothAddressType) -> Result<PeripheralId> {
+    let kind = match kind {
+        windows::Devices::Bluetooth::BluetoothAddressType::Public => AddressType::Public,
+        windows::Devices::Bluetooth::BluetoothAddressType::Random => AddressType::Random,
+        _ => return Err(Error::Other("WinRT resolved an unknown Bluetooth address type".into())),
+    };
+    Ok(PeripheralId::with_address_type(address, Some(kind)))
+}
+
+fn cache_resolved_peripheral(
+    manager: &Arc<AdapterManager<Peripheral>>,
+    peers: &PeerRegistry,
+    authorities: &Arc<Mutex<crate::ubm_reclaim_authority::ReclaimAuthorities>>,
+    identity: PeripheralId,
+) -> Result<Peripheral> {
+    use crate::api::Peripheral as _;
+    let candidate = peers.get(Arc::downgrade(manager), identity, authorities.clone())?;
+    Ok(adapter_cache::cache_resolved_peer(candidate, |peer| peer.id(), |key, candidate| {
+        manager.peripheral_or_insert_with(key, || candidate).0
+    }))
+}
+
 /// Implementation of [api::Central](crate::api::Central).
 #[derive(Clone)]
 pub struct Adapter {
     watcher: Arc<Mutex<BLEWatcher>>,
     manager: Arc<AdapterManager<Peripheral>>,
+    reclaim_authorities: Arc<Mutex<crate::ubm_reclaim_authority::ReclaimAuthorities>>,
+    peers: Arc<PeerRegistry>,
     /// UBM patch (`winrt-adapter-by-id`): the radio this adapter reports
     /// state from, rebindable when the adapter device comes back after a
     /// removal. `None` when the OS withholds the radio (adapter access not
@@ -48,6 +75,15 @@ pub struct Adapter {
 struct RadioBinding {
     radio: Radio,
     token: i64,
+}
+
+/// Public result for a recovery attempt. The watcher's internal registration
+/// generation deliberately stays private to this adapter implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StalledScanWatcher {
+    Replaced,
+    Aborted,
+    StillStopping,
 }
 
 impl Drop for RadioBinding {
@@ -93,6 +129,10 @@ fn bind_radio(radio: Radio, manager: &Arc<AdapterManager<Peripheral>>) -> Result
 }
 
 impl Adapter {
+    pub fn reclaim_authority_handle(&self) -> crate::ubm_reclaim_authority::ReclaimAuthorityHandle {
+        crate::ubm_reclaim_authority::ReclaimAuthorityHandle::from_owner(self.reclaim_authorities.clone())
+    }
+
     /// Register a natively resolved explicit target without losing its LE
     /// address type when the connection is subsequently opened.
     pub async fn add_peripheral_with_address_type(
@@ -106,10 +146,6 @@ impl Adapter {
         Ok(peripheral)
     }
 
-    pub(crate) fn new(radio: Radio) -> Result<Self> {
-        Self::from_radio(radio)
-    }
-
     /// UBM patch (`winrt-adapter-by-id`): the adapter for one chosen radio
     /// (`BluetoothAdapter::FromIdAsync(id).GetRadioAsync()`), so a caller
     /// selects the Bluetooth adapter by its device id instead of by radio
@@ -118,11 +154,18 @@ impl Adapter {
     /// `BluetoothLEDevice::FromBluetoothAddressAsync` take no adapter), as
     /// they did in the legacy addon; the radio decides the reported state.
     pub fn from_radio(radio: Radio) -> Result<Self> {
+        let (peers, authorities) = super::peripheral::shared_peer_owners();
+        Self::from_radio_with_authorities(radio, authorities, peers)
+    }
+
+    pub(crate) fn from_radio_with_authorities(radio: Radio, reclaim_authorities: Arc<Mutex<crate::ubm_reclaim_authority::ReclaimAuthorities>>, peers: Arc<PeerRegistry>) -> Result<Self> {
         let manager = Arc::new(AdapterManager::default());
         let binding = bind_radio(radio, &manager)?;
         Ok(Adapter {
             watcher: Arc::new(Mutex::new(BLEWatcher::new()?)),
             manager,
+            reclaim_authorities,
+            peers,
             radio: Arc::new(Mutex::new(Some(binding))),
             withheld: CentralState::Unknown,
         })
@@ -133,9 +176,12 @@ impl Adapter {
     /// radio when access was not granted). `adapter_state` answers `state`
     /// until [`Adapter::rebind_radio`] supplies a radio.
     pub fn without_radio(state: CentralState) -> Result<Self> {
+        let (peers, reclaim_authorities) = super::peripheral::shared_peer_owners();
         Ok(Adapter {
             watcher: Arc::new(Mutex::new(BLEWatcher::new()?)),
             manager: Arc::new(AdapterManager::default()),
+            reclaim_authorities,
+            peers,
             radio: Arc::new(Mutex::new(None)),
             withheld: state,
         })
@@ -166,6 +212,27 @@ impl Adapter {
     ) -> Result<tokio::sync::broadcast::Receiver<super::ble::watcher::ScanStopped>> {
         let watcher = self.watcher.lock().map_err(Into::<Error>::into)?;
         Ok(watcher.stopped_events())
+    }
+
+    /// Retire a watcher after WinRT has reached a terminal state but failed to
+    /// deliver its `Stopped` callback.  The replacement has a distinct
+    /// generation, so a callback already queued from the old watcher cannot
+    /// terminate a later scan.
+    pub fn recover_stalled_scan_watcher(
+        &self,
+        expected_generation: u64,
+    ) -> Result<StalledScanWatcher> {
+        let mut watcher = self.watcher.lock().map_err(Into::<Error>::into)?;
+        Ok(match watcher.reset_after_terminal(expected_generation)? {
+            ScanWatcherRecovery::Replaced { aborted: false, .. } => StalledScanWatcher::Replaced,
+            ScanWatcherRecovery::Replaced { aborted: true, .. } => StalledScanWatcher::Aborted,
+            ScanWatcherRecovery::StillStopping => StalledScanWatcher::StillStopping,
+        })
+    }
+
+    pub fn scan_watcher_generation(&self) -> Result<u64> {
+        let watcher = self.watcher.lock().map_err(Into::<Error>::into)?;
+        Ok(watcher.generation())
     }
 }
 
@@ -214,6 +281,8 @@ impl Central for Adapter {
         }
         let watcher = self.watcher.lock().map_err(Into::<Error>::into)?;
         let manager = self.manager.clone();
+        let reclaim_authorities = self.reclaim_authorities.clone();
+        let peers = self.peers.clone();
         watcher.start(
             filter,
             Box::new(move |args| {
@@ -237,9 +306,16 @@ impl Central for Adapter {
                     }
                 };
                 let identity = PeripheralId::with_address_type(address, kind);
+                let candidate = match peers.get(Arc::downgrade(&manager), identity.clone(), reclaim_authorities.clone()) {
+                    Ok(peer) => peer,
+                    Err(error) => {
+                        manager.emit(CentralEvent::AdvertisementUnread { id: identity, detail: format!("WinRT peer owner unavailable: {error:?}") });
+                        return Ok(());
+                    }
+                };
                 let (peripheral, created) = manager
                     .peripheral_or_insert_with(identity.clone(), || {
-                        Peripheral::new_with_id(Arc::downgrade(&manager), identity.clone())
+                        candidate
                     });
                 peripheral.update_properties(args);
                 manager.emit(if created {
@@ -285,10 +361,20 @@ impl Central for Adapter {
     /// `winrt-boundary.inc:868`), which `connect` does here too, so no scan
     /// is needed first.
     async fn add_peripheral(&self, address: &PeripheralId) -> Result<Peripheral> {
-        let (peripheral, _) = self.manager.peripheral_or_insert_with(address.clone(), || {
-            Peripheral::new_with_id(Arc::downgrade(&self.manager), address.clone())
-        });
-        Ok(peripheral)
+        // An untyped address cannot be matched to an existing public or random
+        // owner by its bits alone. Resolve it before admitting any owner.
+        let identity = if address.address_type().is_some() {
+            address.clone()
+        } else {
+            let raw = address.address();
+            super::marker_executor::spawn_owned(async move {
+                let operation = windows::Devices::Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(raw.into())?;
+                let device = super::ble::terminal_result(operation).await?;
+                resolved_peer_identity(raw, device.BluetoothAddressType()?)
+            }).map_err(|error| Error::Other(error.into()))?.await
+                .map_err(|error| Error::Other(format!("WinRT address resolution task failed: {error}").into()))??
+        };
+        cache_resolved_peripheral(&self.manager, &self.peers, &self.reclaim_authorities, identity)
     }
 
     async fn clear_peripherals(&self) -> Result<()> {
@@ -306,6 +392,55 @@ impl Central for Adapter {
         match radio.as_ref() {
             Some(binding) => get_central_state(&binding.radio),
             None => Ok(self.withheld.clone()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod adapter_cache_tests {
+    use super::*;
+    use crate::api::Peripheral as _;
+
+    #[test]
+    fn resolved_admission_uses_the_same_keys_as_adapter_lookup_and_scanning() {
+        let address = BDAddr::from([1, 2, 3, 4, 5, 6]);
+        let unknown = PeripheralId::from(address);
+        let public = PeripheralId::with_address_type(address, Some(AddressType::Public));
+        let random = PeripheralId::with_address_type(address, Some(AddressType::Random));
+        for (first, second) in [(public.clone(), random.clone()), (random.clone(), public.clone())] {
+            for typed_first in [false, true] {
+                let manager = Arc::new(AdapterManager::<Peripheral>::default());
+                let peers = PeerRegistry::default();
+                let authorities = Arc::new(Mutex::new(Default::default()));
+                let admit = |_requested: &PeripheralId, resolved: PeripheralId| {
+                    cache_resolved_peripheral(&manager, &peers, &authorities, resolved).unwrap()
+                };
+                if typed_first {
+                    // Match the advertisement path: registry first, then the
+                    // adapter manager's typed-key insertion.
+                    let candidate = peers.get(Arc::downgrade(&manager), first.clone(), authorities.clone()).unwrap();
+                    manager.peripheral_or_insert_with(first.clone(), || candidate);
+                }
+                let native_identity = |id: &PeripheralId| {
+                    let kind = match id.address_type().unwrap() {
+                        AddressType::Public => windows::Devices::Bluetooth::BluetoothAddressType::Public,
+                        AddressType::Random => windows::Devices::Bluetooth::BluetoothAddressType::Random,
+                    };
+                    resolved_peer_identity(address, kind).unwrap()
+                };
+                let initial = admit(&unknown, native_identity(&first));
+                assert_eq!(initial.id(), first);
+                // This is the same lookup used by Central::peripheral.
+                assert_eq!(manager.peripheral(&initial.id()).unwrap().id(), initial.id());
+                admit(&first, first.clone());
+                assert_eq!(manager.peripherals().len(), 1);
+                let changed = admit(&unknown, native_identity(&second));
+                assert_eq!(changed.id(), second);
+                assert_eq!(manager.peripheral(&changed.id()).unwrap().id(), second);
+                assert_eq!(manager.peripheral(&first).unwrap().id(), first);
+                assert_eq!(manager.peripherals().len(), 2);
+                assert!(manager.peripheral(&unknown).is_none());
+            }
         }
     }
 }

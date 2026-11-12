@@ -519,7 +519,42 @@ claimed afterwards:
 
 ```ts
 const backlog = await manager.continuation.claim({ maxItems, maxBytes })
-// selectors[], values[], streamEnds[], controlLost, afterCutoffLoss, disposed
+// The complete prepared backlog is decoded and acknowledged before return.
+// Process values and streamEnds; inspect disposed and disposeFailure for cleanup.
+```
+
+For a versioned retained-prefix handoff, use the separate `claimRetainedV1`
+operation. It requires the corresponding V1 native operations; otherwise it
+fails with `capability.unsupported` before preparing a claim:
+
+The automatic-ACK legacy claim remains strict 5.2.1: production sessions
+atomically project only records its decoder can represent. New vocabulary and
+fields (for example provenance and peer-source-loss) are never forged into an
+old fact or silently discarded. Their exact original records are retained by
+the process under the legacy claim token and can be read through the additive
+native `legacyEvidencePage(token, afterOrdinal, maxItems, maxBytes)` operation.
+After durable processing, retire each original explicitly with
+`legacyEvidenceRetire(token, ordinal)`. A quota or projection failure leaves
+the source outbox unchanged, so the legacy claim fails rather than acknowledging
+unrecoverable evidence.
+The V1 owner budgets the complete encoded reply, including escaping, before
+selecting a prefix. A single record larger than that safe budget remains at
+the native source, but continuation does not yet provide a chunk reader for
+it; smaller retries cannot retrieve that record. Do not acknowledge or treat
+that refusal as disposal.
+
+```ts
+for (;;) {
+  const prefix = await manager.continuation.claimRetainedV1({ maxItems, maxBytes })
+  if (!prefix.acknowledge) break // no native wake
+  // Process or persist prefix.records in order before acknowledging.
+  const receipt = await prefix.acknowledge()
+  // Persist the ACK receipt before explicitly giving up lost-reply recovery.
+  await persistReceipt(receipt)
+  await prefix.retireReceipt!()
+  if (receipt.disposed) break
+  // A retained tail or cleanup retry requires another claim.
+}
 ```
 
 This is a **stop-and-handoff** operation, not a non-disruptive periodic read.
@@ -559,23 +594,50 @@ Loss is reported, never hidden:
 A native module without the claim answers `capability.unsupported` — never an
 invented empty backlog, which would read as "the wake collected nothing".
 
-**The claim has a duty.** `disposed` reports whether the wake's session was
-released. When it is `false`, the session is **kept for the next claim, never
-abandoned**, and `disposeFailure` says why the release did not complete — the
-failures the platform reported, verbatim. The same is true when a drain is cut
-short by the batch cap with more still queued: the unread tail is retained
-rather than discarded. An application that sees `disposed: false` must claim
-again until it sees `true`; treating one claim as the end of the backlog loses
-data that the library deliberately kept for it. When a native drain batch is
-malformed, only earlier strictly validated batches are returned and
-`disposeFailure` reports the malformed boundary; destructive cleanup is not
-authorized and the session remains owned for diagnosis or a follow-up claim.
-If JavaScript decoded a handoff but its acknowledgement is rejected in transit
-or returns a malformed receipt, the decoded backlog is still returned with
-`disposed: false` and an acknowledgement uncertainty in `disposeFailure`.
-After native cleanup succeeds it retains one empty acknowledgement receipt, so
-the next claim can confirm release without delivering those already decoded
-batches again.
+The existing `claim()` decodes the complete native handoff and automatically
+acknowledges it, as in 5.2.1. When acknowledgement fails or its receipt is
+malformed, decoded data remains observable with `disposed: false` and a
+`disposeFailure` explaining that acknowledgement is uncertain. A session whose
+cleanup remains incomplete must be claimed again. The native implementation of
+these legacy operations must retain the complete-backlog contract.
+
+`claimRetainedV1()` instead discloses one retained prefix, with its stable
+`claimToken`, ordered `records`, and `acknowledge()` function. No native ACK
+occurs until the application calls that function. Process or persist every
+observation, including controls and terminal records, before acknowledging.
+The receipt reports native cleanup; when not disposed, claim again for retained
+or cleanup-generated tails, or retry cleanup. An empty prepared prefix still
+needs acknowledgement. A tokenless result without `acknowledge` means no wake.
+
+If acknowledgement fails or its reply is malformed, retry the same
+`acknowledge()` before claiming another prefix. Repeated claims in the same
+control return its pending prefix; repeated successful ACKs on that handoff
+return its cached receipt. A lost prepare reply leaves native data retained.
+Use one application consumer across controls and runtimes. Abandoning a promise
+does not cancel a dispatched operation. Native receipts and ordinary outbox data
+are in memory, not process-death durable; application effects need their own
+idempotence or recovery.
+
+`maxItems` and `maxBytes` bound each retained prefix; a pending prefix is
+replayed with its original bounds. An oversized record or envelope fails without
+authorizing ACK and remains retained. The retained protocol uses separately
+named V1 native operations, never the legacy operation names. Bindings without
+all three V1 operations fail closed before preparation. Availability requires native
+and host bridge support; package build identity alone is not negotiation. The
+independent durable recording journal has its own prepare/ACK protocol and is
+never acknowledged by this handoff.
+
+Binding integration remains necessary: the native owner provides V1 prepare,
+ACK and exact-token retirement, and the mobile host exposes callbacks for
+them. Android has JNI entrypoints and a Kotlin port, but its React Native
+module does not expose the full V1 surface. UniFFI and the iOS host, Node-API,
+Tauri, and the Electron/Tauri transports also need the full surface wired.
+Require the complete V1 prepare, ACK and retirement surface before handoff;
+retire only after the receiver has durably accepted the ACK reply. The older
+unversioned Rust prepare does not negotiate. Until all routes are connected,
+independent bindings cannot rely on negotiation or recover receipt capacity
+through the packaged API. A full receipt ledger refuses new claims rather than
+evicting recovery evidence.
 
 **Execution and refusal outcomes are recorded.** Android also records an
 unassociated appearance as `association.unknown`; an appearance outside a
@@ -736,6 +798,267 @@ The recording controller has separate operations:
 - `stop(id)` closes collection admission while retaining unread records. Its
   `radioRelease: 'not-requested'` receipt is not a disconnect receipt.
 - `clear(id)` explicitly deletes retained records only after recording is stopped.
+  The native journal refuses clearing while diagnostic occurrence identities or
+  unacknowledged diagnostic rows remain retained.
+
+The Rust journal also has an independent evidence snapshot cursor. This is a
+journal-level facility; no host or bridge handoff is established by it. A
+snapshot pins the rows retained at its cutoff until the recording and evidence
+readers have both acknowledged them. Later appends require another snapshot.
+Before acknowledging a page, the caller must durably accept its exact bytes.
+The journal persists the page's membership, bytes, count and cursor identity;
+retry and acknowledgement fail with `storage.corrupt` if they differ. The
+snapshot copy consumes SQLite quota, so preparation can fail for lack of space
+without advancing either reader.
+
+If evidence preparation reports corruption, `inspect_evidence_record` can
+walk retained snapshot ordinals and read raw bytes in chunks without advancing
+either cursor. The journal-level `inspect_raw_record` also reads `records` and
+saved `evidenceClaim` bodies without opening a journal writer, and can work when
+normal open refuses damaged counters. A trusted native Rust host can also call
+`JournalRegistry::inspect_raw_record` with a recording ID after configuring its
+private recording directory; this does not require a successful journal open.
+Trusted desktop Node/Electron-main hosts can call `inspectRawRecord` through
+`openNativeContinuationRecordings`, including when normal opening or legacy
+preparation fails. It reads `records` or `evidenceClaim`, one bounded byte
+chunk at a time, and exposes the same length and JSON diagnostics. It never
+acknowledges, repairs, or releases a cursor: malformed JSON, invalid UTF-8,
+length faults and damaged counters remain fenced until an independently safe
+recovery procedure is available. Migration also refuses orphaned legacy
+evidence state, including retained acknowledged rows. Active or completed
+legacy evidence transfers remain fenced. Raw inspection has no mobile bridge.
+Raw bytes do not
+establish the missing historical claim identity and inspection does not release
+or acknowledge a claim. `length` and valid `storedLength` values
+are decimal byte counts; a non-integer stored length is null and reported as a
+length fault, independently of the body bytes. JSON is checked only when one
+call contains the complete body. Neither inspector repairs or deletes anything.
+
+`max_bytes` bounds the returned chunk and its allocation, not total work or
+memory used by SQLite. The raw reader does not scan or validate retained
+counters (`countersValid` and `counterFault` are null). SQLite open, database and
+WAL processing, filesystem I/O and sidecar behavior are not bounded by that
+parameter. Each call opens its own read transaction, so concurrent changes can
+make chunks from different calls inconsistent; quiesce writers or inspect a
+consistent copy. A read-only open can fail when a hot rollback journal needs
+write recovery. A live-WAL test is not proof of recovery after process death,
+or of bounded I/O or sidecar immutability.
+
+Opening a quiescent older SQLite journal migrates it transactionally to schema
+v7. The current compatibility reader rejects v7 when used for older-schema
+recovery; no historical v5 binary or already-open historical handle has been
+qualified. Downgrade is unsupported: retain a consistent backup and the
+original reader until all data is handled. Before
+changing any schema, the reader refuses a pre-v5 pending recording cursor,
+any evidence transfer identity or pending fields, or a saved v4 evidence claim
+with `storage.schema`. Migration from v5 retains pending v5 claims, receipts,
+and the existing collection-failure summary in its original column and bytes.
+It does not invent an occurrence for that summary. On open, a v6 file from the
+earlier migration is repaired only when its untouched zero-identity row exactly
+duplicates that summary; other rows remain retained. The existing public clear
+route can clear the records while the legacy summary remains visible.
+
+Diagnostic occurrence inspection and receipt operations are internal facilities,
+not a negotiated host API. A retained occurrence or unresolved durable owner can
+therefore leave public `clear(id)` returning `storage.busy`. The durable-owner
+foundation admits at most 64 owners or confirmation receipts per journal. The
+host must persist a unique, never reused occurrence ID
+and the complete exact occurrence. Reservation commits that exact payload before
+an insertion is attempted; a reservation with an uncertain result must be
+retried with the same ID, limit and bytes; an exact retry reports whether the
+owner is reserved, committed, or reclaimed at the transaction's observation,
+even after a concurrent advance or restart. A successful durable reservation
+authorizes exact replay after a failed or uncertain insert. An older v7
+reservation with no bound payload cannot be rebound or replayed: its original
+identity is unknown, so it remains retained until the host excludes all stale
+producers and explicitly releases it. Insertion and the owner's committed state change
+share one transaction. New durable reservations and volatile permits admit at most 64 KiB of failure
+fields measured in UTF-8 bytes (not the capacity of their allocations), and the
+serialized occurrence must fit the 397,312-byte receipt limit. An exact retry of
+an existing reservation admitted under the older field-byte rule still reports
+its retained state; the stricter field limit applies to new reservations.
+Confirmation normally replaces the occurrence with an exact, bounded receipt
+in the same transaction, so confirmation can be retried after
+an uncertain result and an exact producer retry can identify reclamation.
+An older ownerless occurrence exceeding that limit is retained in place as its
+exact confirmation receipt, with a reclaimed owner marker committed alongside
+it. It occupies its original storage until explicit receipt release; clear
+continues to refuse it until then. Internal byte-page inspection reads at most
+64 KiB per call from the occurrence, a bound reservation, or the receipt,
+including across UTF-8 boundaries, so a coordinating host can export all bytes
+before accepting and releasing it. Internal exact comparison accepts sequential
+chunks of at most 64 KiB against the pinned retained bytes; only a complete exact
+comparison can check an already-retained replay, acknowledge, retire, confirm,
+or release. The comparison holds the journal locks and a SQLite write transaction
+until it completes or is dropped; do not invoke another journal operation on the
+same thread during it. The replay check reports a retained or reclaimed occurrence;
+insertion of a reserved, uncommitted owner remains a separate operation. The caller must retain
+the exact bytes durably, but need not assemble or transport them all at once.
+An interrupted comparison rolls back and must be restarted; release still requires
+excluding stale producers and consumers. Paging itself does not acknowledge or
+delete anything. These old receipts can still fail for lack of a
+free owner slot or filesystem space, and are not a fixed-size storage bound.
+A separate bounded internal owner snapshot reports up to 64 identities, payload
+limits, states and whether a payload is bound, including old unbound reservations
+and reclaimed receipts after restart. An oversized reclaimed marker has no bound
+owner payload; its bytes remain in the ledger. The snapshot fails closed if the
+owner table exceeds its limit and does not itself release anything. Occurrence
+discovery uses a separate pinned snapshot and pages at most 128 ordered, deduplicated
+durable and volatile identities at a time. Its SQLite read transaction and local
+ledger lock remain held until the scan is dropped: concurrent journal mutations
+wait, while other SQLite writers can wait or report busy. Callers must finish or
+drop the scan before calling other journal operations on the same thread. The
+scan itself reads up to 64 KiB per byte page for each discovered identity,
+including a persistence-failed volatile slot, and reports whether the bytes are
+durable. It serializes a volatile occurrence directly into the requested window;
+it does not first construct the complete payload. If both local and stored
+forms exist after an uncertain commit, it checks their complete identity in
+bounded chunks before returning a page. Volatile bytes do not survive process
+loss and cannot be acknowledged or retired until persistence succeeds. A
+process restart ends the snapshot, so discovery must start again from the first
+page; a cursor is not a durable resume token. Unknown IDs
+and mismatched payloads fail closed. A host explicitly releases the
+confirmation receipt only after retaining the result and excluding stale
+producers and consumers; after release it can no longer be replayed, and IDs
+must never be reused. The release itself has no replay receipt. Unresolved
+reservations and unreleased confirmations occupy slots. A full owner table
+refuses new owners and new ownerless confirmation receipts; an already committed
+owner can still transition to reclaimed in its existing slot.
+A bound unused reservation requires its exact payload for release. Any unused
+reservation can be released only after the host excludes future attempts; that
+release also ends replay and has no separate receipt.
+
+Ordinary status and stop project stored diagnostic payloads and collection
+summaries only up to 64 KiB. A larger unacknowledged occurrence produces a
+`storage.diagnostic-oversized` runtime status marker with its byte length and
+`source: "occurrence"`; invalid UTF-8, JSON, or occurrence shape instead produces
+`storage.diagnostic-unreadable` with that source. Its category is unknown until
+the retained bytes are inspected. A larger collection summary produces the same marker with
+`source: "collectionSummary"`. If an unpersisted collection failure takes
+precedence, the marker appears in its `retainedSummary` field and the combined
+loss breakdown is omitted rather than guessed. When additional loss is known,
+`pendingRecordedLoss` reports the separate delta, with `persisted: true` only
+when the occurrence and delta committed. Its byte count is omitted if unknown.
+`lostRecords` remains the stored historical aggregate; it is not a total for
+an unreadable summary. A summary that is not valid UTF-8, JSON, or a valid
+public failure projection is reported as `storage.diagnostic-unreadable` with
+its raw byte length.
+
+The production loss writer records the new loss and an exact occurrence in one
+transaction without changing the unreadable or oversized summary. A failed
+transaction keeps the attempt in memory for a zero-delta retry; an ambiguous
+commit is resolved by comparing its identity and exact payload. If storage
+remains unavailable, the unpersisted attempt is volatile and can be lost when
+the process exits. `ContinuationJournal::record_loss_occurrence` additionally
+accepts a producer-owned, never-reused 40-byte identity. The producer must retain
+that identity and the exact failure and loss before attempting the write and
+retry the same inputs after an error or restart; a receipt confirms the occurrence
+was committed. Neither path reserves filesystem space. The automatic writer's
+identity is process-owned and does not identify a caller replay after process
+loss; consumers requiring that guarantee must use the producer-owned operation.
+
+The Rust host methods `recording_diagnostic_occurrences_page` and
+`recording_diagnostic_occurrence_page` discover retained occurrence identities
+and page exact bytes. Each call has its own snapshot; coordinate writers and
+retirement for a complete traversal. In-memory attempts retained by the
+production loss writer are also discoverable and exportable, with `durable: false`;
+they do not survive process loss. The Rust host can retry one such attempt by its
+original identity using `recording_retry_diagnostic_occurrence`. Clear refuses
+while uncommitted loss remains retained. Internal exact lifecycle transitions
+also refuse an occurrence while its process-owned loss attempt is unresolved,
+even if an ambiguous commit left a durable row; retry it first. The Rust
+retry retains locally committed members until all attempts owned by that
+failure state are reconciled, so retry order does not discard the first failure.
+The Rust
+`NativeContinuation::recording_diagnostic_summary_page` host method pages the
+original summary bytes, including legacy summaries without an occurrence
+identity. The trusted desktop recording-store transport exposes the same
+summary and occurrence pages plus exact retry and the explicit
+acknowledge, retire, confirm-retirement and release-confirmation lifecycle.
+It accepts only a canonical 40-byte lower-hex occurrence identity and bounded
+byte pages. Each mutating step supplies the complete exact UTF-8 payload; Rust
+compares it in bounded chunks in the same transaction as the state change.
+The transport is intentionally trusted-host-only: Electron renderers and
+Tauri webviews do not receive a file or diagnostic-retirement capability, and
+their host must explicitly provide an audited main-process command if it needs
+one. The Tauri dispatcher exposes the same trusted Rust-only page, retry, and
+exact lifecycle methods for an application-owned command; it does not insert
+them into the plugin's generic webview route or default permission. Electron
+hosts likewise expose diagnostics only through an application-defined,
+authenticated main-process bridge. In both cases the host is responsible for
+the consent boundary and must preserve the occurrence identity and raw bytes
+without replacing them with connection, account, or device identifiers. Before a summary is first
+rewritten for loss accounting, its original raw bytes are saved transactionally;
+if that copy cannot be committed, the loss rewrite also fails. Before the first
+rewrite, coordinate summary updates while paging, because separate summary
+page calls do not pin one snapshot.
+These projections do not acknowledge, alter, or delete the evidence.
+
+These mechanisms do not reserve SQLite pages or filesystem capacity. An
+insert, reservation, receipt, or its retry can fail for lack of space; an
+in-memory permit alone does not survive process loss or coordinate direct
+openers; hosts must coordinate legacy volatile slots across processes as well.
+The automatic production failure paths do not use the durable-owner protocol.
+The explicit producer-owned operation requires the producer to retain its ID and
+exact occurrence. Coordinating all stale producers before final release remains
+necessary. The trusted desktop route is unit-tested at the protocol boundary;
+it is not yet a physical-device or packaged-addon qualification, and neither
+the Electron renderer nor Tauri webview exposes the capability. Exercise the
+host route across restart and migration before claiming that public clear can
+always complete; retaining these rows and owners is necessary until that work
+is done. Without production-caller integration, failure persistence can remain
+volatile and the legacy status summary does not provide a lossless history of
+distinct failures. Quiesce older implementations and non-cooperating writers
+before migration; an already-open older writer is not qualified. For an existing pending recording cursor, trusted desktop
+Node/Electron-main hosts may use `openNativeContinuationRecordings` version 1
+legacy recovery: call `prepareLegacy`, durably retain the returned page including
+its ordered string ordinals and exact raw body bytes, then pass that same page to
+`acknowledgeLegacy`. The cursor and every row byte are compared in the same
+SQLite transaction as deletion. `bytes` is the total stored body length; parse
+raw bodies only after retaining the original bytes. No BLE radio is needed.
+
+Preparation stores one bounded SHA-256 page commitment and fences token-only
+ACK; ACK stores the receipt in the same deletion transaction.
+Retrying the identical page after a lost reply returns that receipt, including
+across a process restart or a second compatible client. A different ACK,
+token-only ACK, or migration is fenced while that receipt remains. Persist the
+receipt, then call `retireLegacyReceipt` with the same page; only explicit
+retirement removes the migration fence. The retirement result remains replayable
+with the identical page across restart, concurrent compatible clients and
+migration. One retired receipt occupies the bounded replay slot: if another
+pre-v5 page must be recovered, call `confirmLegacyRetirement` only after
+retirement is durably observed, which releases that slot. Coordinate clients
+before confirmation; it ends replay of that retirement. A concurrent SQLite
+write can temporarily return `storage.busy`; retry the same page. A durable journal marker
+distinguishes an unused slot, an outstanding receipt and a retired receipt; a
+missing or corrupt receipt fails closed. For older files containing an empty
+receipt table without such a marker, the earlier retirement cannot be
+distinguished from deletion, so recovery fails closed. Receipt retirement
+is not itself a data backup or secure erase. Quiesce older implementations and
+other non-cooperating SQLite writers during recovery: they do not know this
+fence. The legacy token-only native method retains its original semantics when
+no exact receipt is outstanding and must not be used as an exact-byte handoff.
+The recovered bytes describe what was observed now; pre-v5 preparation stored
+no identity proving what it observed earlier. An interrupted SQLite transaction
+reopens with its pre-transaction data; tests of process exit and SQLite rollback
+are not physical power-loss or filesystem qualification.
+For legacy evidence transfers, even a completed transfer identity blocks
+migration; the journal has no supported abandonment/reset operation. Preserve
+the file and its evidence for an explicit recovery procedure. A file already
+migrated by an earlier v5 build with a pending legacy claim cannot recover its
+original identity from the current rows: retry and ACK fail closed. The native
+Rust registry inspector can extract retained bytes by recording ID, but there is
+no application bridge or safe automatic conversion for that case. Rolling back a legacy evidence token
+does not establish missing snapshot membership.
+
+Snapshot membership and claim copies and recording digests consume the same
+SQLite page quota as records. Start or prepare can fail atomically with
+`storage.full`; smaller pages can help claim-copy pressure but cannot guarantee
+progress when membership or other required metadata cannot fit. Preserve the
+file and export existing evidence rather than deleting or silently repairing it.
+The digest and membership checks detect the changes they compare; they do not
+authenticate coordinated changes to data and stored identity or establish the
+original content of rows not yet prepared.
 
 Logical clear does not reclaim physical allocation or securely erase payloads.
 SQLite may retain freed pages in the recording file; `status().bytes` measures
@@ -756,6 +1079,11 @@ Prepared prefixes survive native-session release and process restart.
 All trusted accessors in one process share the authority for a canonical
 recording path, including standalone desktop export stores. Export preparation
 and live appends use the same journal mutex rather than competing SQLite writers.
+For legacy native continuations, a stop through this authority seals every live
+continuation session attached to that journal before stopping it. A failed seal
+does not stop the journal and keeps the owner reachable for retry. Android's
+binding still conservatively refuses some stops while another native host is
+retained; ordinary recorded-subscription ownership is not yet indexed here.
 A second process is refused before it opens SQLite while that authority is
 retained, with `storage.busy`; access is nonblocking, not a wait-and-retry loop.
 Use the owning process's authenticated recording bridge for concurrent export.

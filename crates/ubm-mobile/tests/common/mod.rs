@@ -33,6 +33,7 @@ pub enum Reply {
 type Responder = Box<dyn FnMut(&RadioRequest) -> Reply + Send>;
 
 pub struct Scripted {
+    ordered_owner: ubm_mobile::OrderedAdmissionOwner,
     pub subrate_available: AtomicBool,
     pub requests: Mutex<Vec<RadioRequest>>,
     pub cancels: Mutex<Vec<u64>>,
@@ -43,7 +44,14 @@ pub struct Scripted {
 
 impl Scripted {
     pub fn new(responder: Responder) -> Arc<Self> {
+        static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
+        let serial = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
         Arc::new(Self {
+            ordered_owner: ubm_mobile::OrderedAdmissionOwner::negotiate(
+                1,
+                &format!("12345678-1234-4abc-8def-{serial:012x}"),
+            )
+            .unwrap(),
             subrate_available: AtomicBool::new(false),
             requests: Mutex::new(Vec::new()),
             cancels: Mutex::new(Vec::new()),
@@ -105,6 +113,9 @@ impl Scripted {
 }
 
 impl PlatformRadio for Scripted {
+    fn ordered_admission_owner(&self) -> Option<ubm_mobile::OrderedAdmissionOwner> {
+        Some(self.ordered_owner)
+    }
     fn connection_subrate_available(&self) -> bool {
         self.subrate_available.load(Ordering::SeqCst)
     }

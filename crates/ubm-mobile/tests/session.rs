@@ -10,8 +10,20 @@ use common::*;
 use serde_json::{Value, json};
 use ubm_mobile::{
     Advertisement, FailureKind, IngressClass, IngressStatus, Instance, ManufacturerData,
-    MobilePlatform, PlatformFailure, RadioCompletion, RadioIngress, RequestKind, RestoredPeer,
+    MobilePlatform, OPS, PlatformFailure, RadioCompletion, RadioIngress, RequestKind, RestoredPeer,
 };
+
+#[test]
+fn terminal_evidence_producer_operations_are_public_mobile_wire_operations() {
+    for operation in [
+        "terminal-evidence.reserve",
+        "terminal-evidence.commit",
+        "terminal-evidence.read",
+        "terminal-evidence.release",
+    ] {
+        assert!(OPS.contains(&operation), "missing {operation}");
+    }
+}
 
 fn polar_advertisement() -> RadioIngress {
     RadioIngress::Advertisement(Advertisement {
@@ -915,6 +927,38 @@ async fn polar_h10_script_runs_end_to_end() {
     assert_eq!(after["process"]["counters"]["connectionLeases"], 0);
     assert_eq!(after["process"]["counters"]["subscriptionConsumers"], 0);
     assert_eq!(after["process"]["native"]["pendingRadioRequests"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_start_accepts_and_retains_terminal_evidence_scope() {
+    let radio = Scripted::polar();
+    let (host, _wakes) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn-manager").expect("session");
+
+    let scan = ok(&call(
+        &session,
+        "scan.start",
+        &json!({
+            "serviceUuids": [],
+            "duplicatePolicy": "all",
+            "operationId": "scan-1",
+            "terminalEvidenceScope": {
+                "managerId": "manager-1",
+                "operationId": "terminal-scan-1",
+                "incarnation": "1"
+            }
+        })
+        .to_string(),
+    )
+    .await);
+    ok(&call(
+        &session,
+        "scan.stop",
+        &json!({"operationId": scan["operationId"]}).to_string(),
+    )
+    .await);
+    ok(&call(&session, "session.dispose", "{}").await);
+    host.shutdown().await;
 }
 
 /// A characteristic read reports the radio's own provenance: CoreBluetooth
@@ -4332,4 +4376,423 @@ async fn effectful_controls_preserve_the_platforms_accepted_rejected_and_observe
             assert_eq!(radio.count(kind), 1, "{op}");
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notification_source_failure_is_epoch_scoped_and_ends_stream() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("source-failure").unwrap();
+    connect(&session, "source-connect").await;
+    ok(&call(
+        &session,
+        "gatt.discover",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "source-discover"}).to_string(),
+    )
+    .await);
+    ok(&call(&session, "gatt.subscribe", &json!({"peerId": POLAR, "selector": selector(), "consumer": "hr", "deliveryMode": "require-notification", "operationId": "source-sub"}).to_string()).await);
+    let epoch = enable_epoch(&radio);
+    let instance = match hr_value(&[], epoch) {
+        RadioIngress::Notification { instance, .. } => instance,
+        _ => unreachable!(),
+    };
+    let failure = ubm_mobile::PlatformFailure {
+        gatt_status: Some(133),
+        native_name: Some("NOTIFICATION_DELIVERY_UNCERTAIN".into()),
+        ..ubm_mobile::PlatformFailure::new(
+            ubm_mobile::FailureKind::GattStatus,
+            "notification delivery uncertain",
+        )
+    };
+    host.ingest(RadioIngress::NotificationSourceFailed {
+        instance: instance.clone(),
+        epoch: epoch.saturating_add(1),
+        failure: failure.clone(),
+    });
+    host.ingest(hr_value(&[1], epoch));
+    let records = drain_until(&session, |r| !of_type(r, "value").is_empty()).await;
+    assert_eq!(of_type(&records, "value").len(), 1);
+    host.ingest(RadioIngress::NotificationSourceFailed {
+        instance,
+        epoch,
+        failure,
+    });
+    let records = drain_until(&session, |r| !of_type(r, "stream-end").is_empty()).await;
+    let ends = of_type(&records, "stream-end");
+    assert_eq!(ends.len(), 1);
+    assert_eq!(ends[0]["reason"], "source-failed");
+    assert_eq!(ends[0]["droppedItems"], 0);
+    assert_eq!(ends[0]["droppedBytes"], 0);
+    assert_eq!(
+        ends[0]["error"],
+        json!({"code":"platform.failure", "domain":"platform", "operation":"gatt.notification.source", "detail":"gatt-status: notification delivery uncertain (gatt-status=133)", "platform":{"domain":"android", "code":"NOTIFICATION_DELIVERY_UNCERTAIN", "message":"notification delivery uncertain", "metadata":{"androidGattStatus":133}}})
+    );
+    let snapshot = ok(&call(&session, "session.reconcile", "{}").await);
+    let terminal = snapshot["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["consumer"] == "hr")
+        .unwrap();
+    assert_eq!(terminal["error"], ends[0]["error"]);
+}
+
+#[tokio::test]
+async fn ordered_reservation_is_reclaimed_only_by_exact_capability_after_disposal() {
+    let radio = Scripted::new(Box::new(polar_responder));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let original = host.open_session("ordered-original").unwrap();
+    let replacement = host.open_session("ordered-replacement").unwrap();
+    connect(&original, "ordered-connect").await;
+    assert_eq!(
+        ok(&call(&original, "gatt.ordered.version", "{}").await),
+        json!({"wireVersion":2})
+    );
+    let reserved = ok(&call(
+        &original,
+        "gatt.ordered.reserve",
+        &json!({"peerId":POLAR}).to_string(),
+    )
+    .await);
+    let id = reserved["collectionId"].as_str().unwrap();
+    let capability = reserved["reclaimCapability"].as_str().unwrap();
+    let reclaim =
+        |cap: &str| json!({"peerId":POLAR,"collectionId":id,"reclaimCapability":cap}).to_string();
+    assert!(
+        !serde_json::from_str::<Value>(
+            &call(&replacement, "gatt.ordered.reclaim", &reclaim(capability)).await
+        )
+        .unwrap()["ok"]
+            .as_bool()
+            .unwrap()
+    );
+    let disposal = ok(&call(&original, "session.dispose", "{}").await);
+    assert_eq!(disposal["state"], "release-failed");
+    assert!(
+        !serde_json::from_str::<Value>(
+            &call(
+                &replacement,
+                "gatt.ordered.reclaim",
+                &reclaim(&"0".repeat(64))
+            )
+            .await
+        )
+        .unwrap()["ok"]
+            .as_bool()
+            .unwrap()
+    );
+    ok(&call(&replacement, "gatt.ordered.reclaim", &reclaim(capability)).await);
+    // Retry after a lost completion must not transfer ownership again.
+    ok(&call(&replacement, "gatt.ordered.reclaim", &reclaim(capability)).await);
+    let stranger = host.open_session("ordered-stranger").unwrap();
+    let denied: Value =
+        serde_json::from_str(&call(&stranger, "gatt.ordered.reclaim", &reclaim(capability)).await)
+            .unwrap();
+    assert_eq!(denied["ok"], false);
+    let group = json!({"peerId":POLAR,"collectionId":id});
+    let mut close = group.clone();
+    close["operationId"] = json!("ordered-close");
+    assert_eq!(
+        ok(&call(&replacement, "gatt.ordered.close", &close.to_string()).await),
+        "released"
+    );
+    ok(&call(&replacement, "gatt.ordered.ack-group", &group.to_string()).await);
+    ok(&call(&replacement, "gatt.ordered.ack-group", &group.to_string()).await);
+    let forget = json!({"peerId":POLAR,"collectionId":id,"reclaimCapability":capability});
+    ok(&call(
+        &replacement,
+        "gatt.ordered.forget-group",
+        &forget.to_string(),
+    )
+    .await);
+    ok(&call(
+        &replacement,
+        "gatt.ordered.forget-group",
+        &forget.to_string(),
+    )
+    .await);
+    let foreign = json!({"peerId":"other","collectionId":id,"reclaimCapability":capability});
+    assert!(
+        !serde_json::from_str::<Value>(
+            &call(
+                &replacement,
+                "gatt.ordered.forget-group",
+                &foreign.to_string()
+            )
+            .await
+        )
+        .unwrap()["ok"]
+            .as_bool()
+            .unwrap()
+    );
+    assert_eq!(
+        ok(&call(&original, "session.dispose", "{}").await)["state"],
+        "released"
+    );
+}
+
+#[tokio::test]
+async fn ordered_session_replays_delivery_before_ack_and_preserves_aba_and_loss() {
+    use std::sync::atomic::AtomicU64;
+    use std::sync::{Arc, Mutex};
+    use ubm_core::ordered_notifications::{LossScope, LossUnit, SourceGeneration};
+    use ubm_mobile::{
+        OrderedProvenance, OrderedRecord, OrderedRegistration, RadioCompletion, RadioRequest,
+    };
+    let a = OrderedRegistration {
+        member_id: 0,
+        source_member: 11,
+        epoch: 2,
+    };
+    let b = OrderedRegistration {
+        member_id: 1,
+        source_member: 12,
+        epoch: 3,
+    };
+    let records = Arc::new(Mutex::new(vec![
+        OrderedRecord::Value {
+            member: a,
+            ordinal: 1,
+            value: vec![1],
+            delivery: ubm_desktop::ObservedDelivery::Notification,
+            provenance: OrderedProvenance::Notification,
+        },
+        OrderedRecord::Value {
+            member: b,
+            ordinal: 2,
+            value: vec![2],
+            delivery: ubm_desktop::ObservedDelivery::Notification,
+            provenance: OrderedProvenance::Notification,
+        },
+        OrderedRecord::Value {
+            member: a,
+            ordinal: 3,
+            value: vec![3],
+            delivery: ubm_desktop::ObservedDelivery::Notification,
+            provenance: OrderedProvenance::Notification,
+        },
+        OrderedRecord::Loss {
+            scope: LossScope::Unknown,
+            unit: LossUnit::Values,
+            count: Some(2),
+            byte_count: None,
+        },
+    ]));
+    let source = records.clone();
+    let batch = Arc::new(AtomicU64::new(1));
+    let ids = batch.clone();
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::Discover { .. } => {
+            let mut services = polar_services();
+            let mut second = services[0].characteristics[0].clone();
+            second.uuid = "2A38".into();
+            services[0].characteristics.push(second);
+            Reply::Now(RadioCompletion::DiscoveredScoped {
+                services,
+                identity: ubm_desktop::boundary::GattSnapshotIdentity {
+                    owner: "graph".into(),
+                    attachment: 1,
+                    revision: 1,
+                },
+            })
+        }
+        RadioRequest::OrderedOpen { .. } => Reply::Now(RadioCompletion::OrderedOpened {
+            generation: SourceGeneration::Counter(7),
+            members: vec![a, b],
+        }),
+        RadioRequest::OrderedRetainClaim {
+            generation, member, ..
+        } => Reply::Now(RadioCompletion::OrderedClaim {
+            generation: generation.clone(),
+            member: *member,
+        }),
+        RadioRequest::OrderedEnableNotifications { .. } => Reply::Now(
+            RadioCompletion::NotifyEnabled(ubm_desktop::ObservedDelivery::Notification),
+        ),
+        RadioRequest::OrderedDrain { .. } => {
+            let records = std::mem::take(&mut *source.lock().unwrap());
+            Reply::Now(RadioCompletion::OrderedRecords {
+                batch_id: if records.is_empty() {
+                    None
+                } else {
+                    Some(ids.fetch_add(1, Ordering::SeqCst))
+                },
+                records,
+            })
+        }
+        _ => polar_responder(request),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("ordered-session-data").unwrap();
+    let connected = connect(&session, "ordered-data-connect").await;
+    let discovered = ok(&call(
+        &session,
+        "gatt.discover",
+        &json!({"peerId":POLAR,"lease":"lease-1","operationId":"ordered-data-discover"})
+            .to_string(),
+    )
+    .await);
+    let reserved = ok(&call(
+        &session,
+        "gatt.ordered.reserve",
+        &json!({"peerId":POLAR}).to_string(),
+    )
+    .await);
+    let id = reserved["collectionId"].as_str().unwrap();
+    let mut selector_b = selector();
+    selector_b["characteristicUuid"] = json!("2A38");
+    let options = json!({"wireVersion":2,"peerId":POLAR,"collectionId":id,"connectionGeneration":connected["connectionGeneration"],"databaseGeneration":discovered["databaseGeneration"],"publicConnectionGeneration":"public-connection","publicDatabaseGeneration":"public-database","members":[{"memberId":"0","publicMemberId":"a","selector":selector(),"requestedDelivery":"prefer-notification"},{"memberId":"1","publicMemberId":"b","selector":selector_b,"requestedDelivery":"prefer-notification"}],"maxItems":8,"maxBytes":128,"maxControls":8,"operationId":"ordered-data-open"});
+    let before = radio.kinds();
+    for version in [1, 3] {
+        let mut incompatible = options.clone();
+        incompatible["wireVersion"] = json!(version);
+        incompatible["operationId"] = json!(format!("ordered-version-{version}"));
+        let (error, _) =
+            failure(&call(&session, "gatt.ordered.open", &incompatible.to_string()).await);
+        assert_eq!(error["code"], "protocol.incompatible");
+        assert_eq!(radio.kinds(), before);
+    }
+    ok(&call(&session, "gatt.ordered.open", &options.to_string()).await);
+    host.ingest(RadioIngress::OrderedWake {
+        generation: SourceGeneration::Counter(7),
+        group_id: id.parse().unwrap(),
+    });
+    let group = json!({"peerId":POLAR,"collectionId":id});
+    let first = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let result = ok(&call(&session, "gatt.ordered.poll", &group.to_string()).await);
+            if !result["deliveryId"].is_null() {
+                break result;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        first,
+        ok(&call(&session, "gatt.ordered.poll", &group.to_string()).await)
+    );
+    let mut delivered = Vec::new();
+    let mut next = first;
+    for index in 0..4 {
+        let record: Value = serde_json::from_str(next["record"].as_str().unwrap()).unwrap();
+        delivered.push(record);
+        ok(&call(
+            &session,
+            "gatt.ordered.ack-delivery",
+            &json!({"peerId":POLAR,"collectionId":id,"deliveryId":next["deliveryId"]}).to_string(),
+        )
+        .await);
+        if index < 3 {
+            next = ok(&call(&session, "gatt.ordered.poll", &group.to_string()).await);
+        }
+    }
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|v| v["kind"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["value", "value", "value", "loss"]
+    );
+    assert_eq!(delivered[0]["memberId"], "0");
+    assert_eq!(delivered[1]["memberId"], "1");
+    assert_eq!(delivered[2]["memberId"], "0");
+    assert_eq!(delivered[0]["ordinal"], "1");
+    assert_eq!(delivered[1]["ordinal"], "2");
+    assert_eq!(delivered[2]["ordinal"], "3");
+    assert_eq!(delivered[0]["sourceMembership"]["member"], "11");
+    assert_eq!(delivered[0]["sourceMembership"]["epoch"], "2");
+    assert_eq!(delivered[1]["sourceMembership"]["member"], "12");
+    assert_eq!(delivered[3]["loss"]["count"], "2");
+}
+
+#[tokio::test]
+async fn ordered_failed_open_keeps_cleanup_receipt_through_ack_and_forget() {
+    use ubm_mobile::{OrderedOpenOwnership, RadioRequest};
+    let radio = Scripted::new(Box::new(|request| match request {
+        RadioRequest::Discover { .. } => Reply::Now(RadioCompletion::DiscoveredScoped {
+            services: polar_services(),
+            identity: ubm_desktop::boundary::GattSnapshotIdentity {
+                owner: "graph".into(),
+                attachment: 1,
+                revision: 1,
+            },
+        }),
+        RadioRequest::OrderedOpen { .. } => Reply::Now(RadioCompletion::OrderedOpenFailed {
+            failure: PlatformFailure::new(FailureKind::GattStatus, "injected failure"),
+            ownership: OrderedOpenOwnership::NotCreated,
+        }),
+        _ => polar_responder(request),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("ordered-failure").unwrap();
+    let connected = connect(&session, "ordered-failure-connect").await;
+    let discovered = ok(&call(
+        &session,
+        "gatt.discover",
+        &json!({"peerId":POLAR,"lease":"lease-1","operationId":"ordered-failure-discover"})
+            .to_string(),
+    )
+    .await);
+    let reserved = ok(&call(
+        &session,
+        "gatt.ordered.reserve",
+        &json!({"peerId":POLAR}).to_string(),
+    )
+    .await);
+    let id = reserved["collectionId"].as_str().unwrap();
+    let capability = reserved["reclaimCapability"].as_str().unwrap();
+    let group = json!({"peerId":POLAR,"collectionId":id});
+    let options = json!({"wireVersion":2,"peerId":POLAR,"collectionId":id,"connectionGeneration":connected["connectionGeneration"],"databaseGeneration":discovered["databaseGeneration"],"publicConnectionGeneration":"public-connection","publicDatabaseGeneration":"public-database","members":[{"memberId":"0","publicMemberId":"a","selector":selector(),"requestedDelivery":"prefer-notification"}],"maxItems":8,"maxBytes":128,"maxControls":8,"operationId":"ordered-failure-open"});
+    let response: Value =
+        serde_json::from_str(&call(&session, "gatt.ordered.open", &options.to_string()).await)
+            .unwrap();
+    assert_eq!(response["ok"], false);
+    let status = ok(&call(&session, "gatt.ordered.status", &group.to_string()).await);
+    assert!(!status["setupError"].is_null());
+    let mut altered = options.clone();
+    altered["operationId"] = json!("ordered-altered-open");
+    altered["members"][0]["publicMemberId"] = json!("forged");
+    let refused: Value =
+        serde_json::from_str(&call(&session, "gatt.ordered.open", &altered.to_string()).await)
+            .unwrap();
+    assert_eq!(refused["ok"], false);
+    assert_eq!(
+        ok(&call(&session, "session.dispose", "{}").await)["state"],
+        "release-failed"
+    );
+    let replacement = host.open_session("ordered-failure-recovery").unwrap();
+    let reclaim = json!({"peerId":POLAR,"collectionId":id,"reclaimCapability":capability});
+    let context = ok(&call(&replacement, "gatt.ordered.reclaim", &reclaim.to_string()).await);
+    assert_eq!(
+        context["connectionGeneration"],
+        connected["connectionGeneration"]
+    );
+    assert_eq!(
+        context["databaseGeneration"],
+        discovered["databaseGeneration"]
+    );
+    assert_eq!(context["publicConnectionGeneration"], "public-connection");
+    assert_eq!(context["publicDatabaseGeneration"], "public-database");
+    assert_eq!(context["members"][0]["publicMemberId"], "a");
+    assert_eq!(context["members"][0]["selector"], selector());
+    assert_eq!(context["maxBytes"], 128);
+    let close = json!({"peerId":POLAR,"collectionId":id,"operationId":"ordered-failure-close"});
+    assert_eq!(
+        ok(&call(&replacement, "gatt.ordered.close", &close.to_string()).await),
+        "released"
+    );
+    ok(&call(&replacement, "gatt.ordered.ack-group", &group.to_string()).await);
+    let forget = json!({"peerId":POLAR,"collectionId":id,"reclaimCapability":capability});
+    ok(&call(
+        &replacement,
+        "gatt.ordered.forget-group",
+        &forget.to_string(),
+    )
+    .await);
+    assert_eq!(
+        ok(&call(&session, "session.dispose", "{}").await)["state"],
+        "released"
+    );
 }

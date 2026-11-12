@@ -1,16 +1,30 @@
 // src/expo.ts — thin Expo-aware composition over the React Native factory
+import type {
+  ReactNativeOrderedRecovery,
+  ReactNativeOrderedRecoveryHandle
+} from './backends/reactnative/react-native-ordered-recovery'
+import type { OrderedNotificationStream } from './core/ordered-notification-contract'
+export type {
+  ReactNativeOrderedRecovery,
+  ReactNativeOrderedRecordingReclaimHandle,
+  ReactNativeOrderedRecordingRecoveryHandle,
+  ReactNativeOrderedRecoveryHandle
+} from './backends/reactnative/react-native-ordered-recovery'
 
 import { BackendContractError, contractError } from './backend-contract/errors'
 import type { BleErrorCode } from './backend-contract/errors'
 import { isAuthorizationBlocking } from './backend-contract/identity'
-import type { ContinuationRecordingController } from './core/continuation-recording'
+import type { ReactNativeContinuationRecordingController } from './react-native-continuation-recording'
 import type { RestorationAdoptionResult } from './backend-contract/restoration'
 import type { BackgroundContinuationResubscribeSelector } from './backend-contract/background-continuation'
 import type {
   ContinuationStatus,
   ContinuationRecoveryStatus,
-  ContinuationWakeStatus
+  ContinuationWakeStatus,
+  ContinuationRetainedPrefixV1,
+  ContinuationClaimAcknowledgement
 } from './backends/reactnative/react-native-continuation-claim'
+import type { NativeContinuationRetainedPrefixV2 } from './core/native-continuation-control'
 import { Platform, TurboModuleRegistry } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
 import { BleError } from './public/errors'
@@ -18,8 +32,9 @@ import type { BleAdapterState } from './public/ble-adapter'
 import type { BleManager } from './public/ble-manager'
 import { composeReactNativePublicManager } from './react-native-public-manager'
 import { normalizeBleManagerCreateOptions, type BleManagerCreateOptions } from './public/host-identity'
-import { createReactNativeApplicationHost } from './react-native-app-manager'
+import { createReactNativeApplicationHost, configureReactNativeTerminalEvidence } from './react-native-app-manager'
 import { createReactNativeManagerHost, type ReactNativeManagerHost } from './react-native-manager'
+import { createReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core-binding'
 import { getNativeUnifiedBleExpoRuntime } from './expo-native-runtime'
 import type {
   NativeExpoPermissionRequest,
@@ -36,11 +51,29 @@ export type { ReactNativeContinuationRecordingController } from './react-native-
 export type {
   ContinuationRecordingController,
   ContinuationRecordingStatus,
+  OrderedRecordingOwnerStatus,
+  OrderedRecordingHostStopResult,
+  OrderedRecordingStopReceipt,
+  OrderedRecordingStopFailure,
   ContinuationRecordingBatch,
   ContinuationRecordingMetadata,
   ContinuationRecordingFailure,
+  ContinuationRecordingDiagnosticMarker,
   ContinuationRecordingPrepareOptions
 } from './core/continuation-recording'
+export type {
+  OrderedRecordingBatch,
+  OrderedRecordingContext,
+  OrderedRecordingRecord,
+  OrderedRecordingMetadata,
+  OrderedRecordingMembership,
+  OrderedRecordingScope,
+  OrderedRecordingLoss,
+  OrderedRecordingFailure,
+  OrderedRecordingFailureValue,
+  OrderedRecordingRejection,
+  OrderedRecordingReason
+} from './core/ordered-recording'
 
 export type BlePermission = 'bluetooth'
 export type ExpoSettingsTarget = 'app' | 'bluetooth' | 'location-services'
@@ -150,9 +183,10 @@ export interface ExpoContinuationValue {
 
 export interface ExpoContinuationStreamEnd {
   readonly consumer: string
-  readonly reason: 'overflow' | 'invalidated' | 'closed'
+  readonly reason: 'overflow' | 'invalidated' | 'closed' | 'source-failed'
   readonly droppedItems: number
   readonly droppedBytes: number
+  readonly error?: import('./backend-contract/errors').NormalizedBleError
 }
 
 export interface ExpoContinuationBacklog {
@@ -166,13 +200,16 @@ export interface ExpoContinuationBacklog {
   /** Native intake observed after the continuation handoff cutoff. */
   readonly afterCutoffLoss: { readonly items: number; readonly bytes: number }
   readonly disposed: boolean
-  /**
-   * Why the wake's session could not be released, when it could not. The
-   * session is kept for the next claim rather than abandoned, so an
-   * application that sees `disposed: false` with a reason here must claim
-   * again; null when the release was clean.
-   */
+  /** Why cleanup was incomplete; claim again when the session remains owned. */
   readonly disposeFailure: string | null
+}
+
+export interface ExpoContinuationRetainedPrefixV1 extends ExpoContinuationBacklog {
+  readonly claimToken?: string
+  readonly acknowledge?: () => Promise<ContinuationClaimAcknowledgement>
+  readonly retireReceipt?: () => Promise<void>
+  readonly records: ContinuationRetainedPrefixV1['records']
+  readonly control: ContinuationRetainedPrefixV1['control']
 }
 
 export interface ExpoContinuationClaimRequest {
@@ -240,11 +277,43 @@ export interface ExpoBleManager extends BleManager {
    * accounting; a native module without the claim answers
    * `capability.unsupported`, never an invented empty backlog.
    */
+  /** Session-authorized controls for a live ordered recording owner. */
+  readonly orderedRecording: {
+    readonly reserveReclaim?: (
+      handle: import('./backends/reactnative/react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle
+    ) => import('./backends/reactnative/react-native-ordered-recovery').ReactNativeOrderedRecordingReclaimHandle
+    readonly recoveryHandle: (
+      id: string
+    ) => import('./backends/reactnative/react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle
+    readonly context: (id: string) => Promise<import('./core/ordered-recording').OrderedRecordingContext>
+    readonly stop: (id: string) => Promise<import('./core/continuation-recording').OrderedRecordingHostStopResult>
+  }
+  /** Explicit sensitive ownership handoff for a retained mobile ordered group. */
+  readonly orderedRecovery: {
+    readonly handle: (stream: OrderedNotificationStream) => ReactNativeOrderedRecoveryHandle
+    readonly reclaim: (handle: ReactNativeOrderedRecoveryHandle) => Promise<ReactNativeOrderedRecovery>
+  }
   readonly continuation: {
     /** Durable storage access independent of this manager's radio lifetime. */
-    readonly recordings: ContinuationRecordingController
+    readonly recordings: ReactNativeContinuationRecordingController
     readonly status: () => Promise<ExpoContinuationStatus>
     readonly claim: (request?: ExpoContinuationClaimRequest) => Promise<ExpoContinuationBacklog>
+    readonly claimRetainedV1?: (request?: ExpoContinuationClaimRequest) => Promise<ExpoContinuationRetainedPrefixV1>
+    /** Available only when the native V2 claim and recovery read/ack bundle is complete. */
+    readonly claimRetainedV2?: (request?: ExpoContinuationClaimRequest) => Promise<NativeContinuationRetainedPrefixV2>
+  }
+}
+
+/** Factory result with the additive retained-prefix method available for capability probing. */
+export interface ExpoBleManagerV1 extends ExpoBleManager {
+  readonly continuation: ExpoBleManager['continuation'] & {
+    readonly claimRetainedV1: (request?: ExpoContinuationClaimRequest) => Promise<ExpoContinuationRetainedPrefixV1>
+  }
+}
+
+export interface ExpoBleManagerV2 extends ExpoBleManagerV1 {
+  readonly continuation: ExpoBleManagerV1['continuation'] & {
+    readonly claimRetainedV2: (request?: ExpoContinuationClaimRequest) => Promise<NativeContinuationRetainedPrefixV2>
   }
 }
 
@@ -288,7 +357,7 @@ const EXPO_GO_MESSAGE = 'Expo Go is not supported; create an Expo development bu
 export async function createExpoBleManager(
   options: BleManagerCreateOptions = {},
   runtimeConfiguration?: ExpoRuntimeConfiguration
-): Promise<ExpoBleManager> {
+): Promise<ExpoBleManagerV1> {
   try {
     normalizeBleManagerCreateOptions(options)
     assertExpoRuntimeConfiguration(runtimeConfiguration)
@@ -330,11 +399,15 @@ export async function createExpoBleManager(
 
 export async function createExpoBleManagerWithEnvironment(
   environment: ExpoBleManagerEnvironment
-): Promise<ExpoBleManager> {
+): Promise<ExpoBleManagerV1> {
   try {
     const expo = environment.expo
     assertExpoRuntimeConfiguration(expo)
     const readinessConfiguration = environmentExpoRuntimeConfiguration(environment.platform, expo)
+    await configureReactNativeTerminalEvidence(
+      environment.rustCore ?? createReactNativeRustCoreBinding({ platform: environment.platform }),
+      environment.terminalEvidence
+    )
     const host = await createReactNativeManagerHost(environment)
     return withExpoRuntime(
       await composeReactNativePublicManager(host, environment.now),
@@ -594,7 +667,7 @@ function withExpoRuntime(
   permissionBridge?: ExpoPermissionBridge,
   runtimeConfiguration?: ExpoRuntimeConfiguration,
   runtimeConfigurationReader?: () => Promise<ExpoRuntimeConfiguration>
-): ExpoBleManager {
+): ExpoBleManagerV1 {
   const activeBackgroundLeases = new Set<string>()
   return Object.assign(manager, {
     readiness: async () =>
@@ -632,10 +705,37 @@ function withExpoRuntime(
       observe: (request: ExpoPresenceObservationRequest) => observeExpoPresence(request, host),
       unobserve: (request: ExpoPresenceObservationRequest) => unobserveExpoPresence(request, host)
     }),
+    orderedRecording: Object.freeze({
+      ...(host.services.reserveOrderedRecordingReclaim
+        ? {
+            reserveReclaim: (
+              handle: import('./backends/reactnative/react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle
+            ) => {
+              const reclaim = host.services.reserveOrderedRecordingReclaim
+              if (!reclaim) throw contractError('capability.unsupported', 'gatt', 'expo.ordered-recording.reclaim')
+              return reclaim(handle)
+            }
+          }
+        : {}),
+      recoveryHandle: (id: string) => host.services.orderedRecordingRecoveryHandle(id),
+      context: (id: string) => host.services.orderedRecordingContext(id),
+      stop: (id: string) => host.services.orderedRecordingStop(id)
+    }),
+    orderedRecovery: Object.freeze({
+      handle: (stream: OrderedNotificationStream) => host.services.orderedRecoveryHandle(stream),
+      reclaim: (handle: ReactNativeOrderedRecoveryHandle) => host.services.reclaimOrdered(handle)
+    }),
     continuation: Object.freeze({
       recordings: host.recordings,
       status: () => readExpoContinuationStatus(host),
-      claim: (request: ExpoContinuationClaimRequest = {}) => claimExpoContinuationBacklog(request, host)
+      claim: (request: ExpoContinuationClaimRequest = {}) => claimExpoContinuationBacklog(request, host),
+      claimRetainedV1: (request: ExpoContinuationClaimRequest = {}) => claimExpoContinuationRetainedV1(request, host),
+      ...(host.services.claimContinuationRetainedV2
+        ? {
+            claimRetainedV2: (request: ExpoContinuationClaimRequest = {}) =>
+              claimExpoContinuationRetainedV2(request, host)
+          }
+        : {})
     })
   })
 }
@@ -1352,5 +1452,34 @@ function normalizedSettingsErrorCode(nativeCode: string): BleErrorCode {
       return 'capability.unavailable'
     default:
       return 'platform.failure'
+  }
+}
+
+async function claimExpoContinuationRetainedV1(
+  request: ExpoContinuationClaimRequest,
+  host: ReactNativeManagerHost
+): Promise<ExpoContinuationRetainedPrefixV1> {
+  try {
+    const claim = host.services.claimContinuationRetainedV1
+    if (claim === undefined)
+      throw contractError('capability.unsupported', 'restoration', 'expo.continuation.retained-v1')
+    const backlog = await claim.call(host.services, { ...request })
+    return Object.freeze({ ...backlog })
+  } catch (error) {
+    throwOwnerError(error, 'expo.continuation.claimRetainedV1')
+  }
+}
+
+async function claimExpoContinuationRetainedV2(
+  request: ExpoContinuationClaimRequest,
+  host: ReactNativeManagerHost
+): Promise<NativeContinuationRetainedPrefixV2> {
+  try {
+    const claim = host.services.claimContinuationRetainedV2
+    if (claim === undefined)
+      throw contractError('capability.unsupported', 'restoration', 'expo.continuation.retained-v2')
+    return await claim.call(host.services, { ...request })
+  } catch (error) {
+    throwOwnerError(error, 'expo.continuation.claimRetainedV2')
   }
 }

@@ -1,5 +1,7 @@
 // src/web/web-bluetooth-handles.ts
 
+import { reserveWebRecordingMarker } from './web-recording-markers'
+import type { TerminalEvidenceFence } from '../core/terminal-evidence-fence'
 import type { BackendConnection, BackendSubscription, ConnectionLease, ScanLease } from '../backend-contract/backend'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { CleanupRecord } from '../backend-contract/errors'
@@ -45,6 +47,10 @@ import type {
 
 export interface WebGattDatabaseHost {
   readonly identity: { readonly attachment: AttachmentRecord<string> }
+  assertRecordingAvailable(operation: string): void
+  reserveOrderedRecordingStart(
+    database: WebGattDatabase
+  ): NonNullable<GattDatabase<string, string, string>['reserveOrderedRecordingStart']> extends () => infer T ? T : never
   disconnectConnection(connection: WebBackendConnection): Promise<CleanupRecord>
   disconnectRecord(record: WebConnectionRecord): Promise<CleanupRecord>
   staleGattError(operation: string): Error
@@ -70,6 +76,11 @@ export interface WebGattDatabaseHost {
     value: Readonly<Uint8Array>,
     options: WritePolicy
   ): Promise<WriteReceipt<string, string>>
+  subscribeOrderedDirect(
+    database: WebGattDatabase,
+    members: readonly import('./web-bluetooth-gatt').WebOrderedMember[],
+    options: SubscriptionOptions
+  ): Promise<import('../core/ordered-notification-contract').OrderedNotificationSetup>
   subscribeDirect(
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
@@ -218,6 +229,17 @@ export class WebGattDatabase implements GattDatabase<string, string, string> {
     }
   }
 
+  reserveOrderedRecordingMarker(recordingId: string) {
+    this.assertCurrent('web-recording.marker')
+    this.backend.assertRecordingAvailable('web-recording.marker')
+    return reserveWebRecordingMarker(this, recordingId)
+  }
+
+  reserveOrderedRecordingStart() {
+    this.assertCurrent('web-recording.reserve')
+    return this.backend.reserveOrderedRecordingStart(this)
+  }
+
   read(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
@@ -246,6 +268,13 @@ export class WebGattDatabase implements GattDatabase<string, string, string> {
     options: WritePolicy
   ): Promise<WriteReceipt<string, string>> {
     return this.backend.writeDescriptorDirect(this, path, value, options)
+  }
+
+  subscribeOrdered(
+    members: readonly import('./web-bluetooth-gatt').WebOrderedMember[],
+    options: SubscriptionOptions
+  ): Promise<import('../core/ordered-notification-contract').OrderedNotificationSetup> {
+    return this.backend.subscribeOrderedDirect(this, members, options)
   }
 
   subscribe(
@@ -298,6 +327,12 @@ export interface WebManagedSubscription {
   readonly listener: WebBluetoothNotificationListener
   readonly stream: CoreBoundedStream<NotificationValue>
   readonly terminal: OperationTerminalRecord<string, string>
+  readonly terminalEvidenceScope?: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  }
+  readonly terminalEvidenceFence?: TerminalEvidenceFence
   state: 'enabling' | 'ready' | 'stopping' | 'cleanup-failed' | 'stopped'
   startupSettled: boolean
   cleanupFailureReported: boolean

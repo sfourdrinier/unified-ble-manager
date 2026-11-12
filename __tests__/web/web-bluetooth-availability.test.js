@@ -255,10 +255,23 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     })
     expectConsoleErrorMatching(
       '[WebBluetoothBackend.connect] Browser connect rejected:',
-      expect.objectContaining({ normalized: expect.objectContaining({ code: 'adapter.unavailable' }) })
+      { errors: [{ name: 'BackendContractError' }] }
     )
     expect(mock.device.gatt.connect).not.toHaveBeenCalled()
     expect(backend.attachment.adapter.state).toMatchObject({ availability: 'unavailable' })
+    await backend.destroy()
+  })
+
+  test('does not accept a host-thrown typed error as a library availability preflight failure', async () => {
+    const mock = createBoundary()
+    const { backend } = await attachAvailableBackend(mock)
+    const selection = await backend.choose(chooserRequest(), noDeadline())
+    const { webRecordingContractError } = require('../../src/web/web-recording-errors')
+    mock.device.gatt.connect = async () => { throw webRecordingContractError('adapter.unavailable', 'adapter', 'host-secret') }
+    await expect(backend.connections.connect(selection.peerId, 'client', noDeadline())).rejects.toMatchObject({
+      normalized: { code: 'connection.failed', operation: 'web-connection.connect' }
+    })
+    expectConsoleError('[WebBluetoothBackend.connect] Browser connect rejected:', { errors: [{ name: 'BackendContractError' }] })
     await backend.destroy()
   })
 
@@ -325,7 +338,7 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     })
     expectConsoleErrorMatching(
       '[WebBluetoothGattRuntime.enableSubscription] Notification start rejected:',
-      expect.objectContaining({ message: 'Browser notification startup rejected' })
+      { errors: [{ name: 'Error' }] }
     )
     expect(mock.notificationListeners.size).toBe(0)
     expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 0, subscriptionConsumers: 0 })
@@ -477,7 +490,7 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     await expect(inFlightRead).rejects.toMatchObject({ normalized: { code: 'operation.reset' } })
     expectConsoleErrorMatching(
       '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
-      expect.objectContaining({ message: 'The browser refused disconnect cleanup' })
+      { errors: [{ name: 'Error' }] }
     )
     resolveRead(new Uint8Array([0, 72]))
     await Promise.resolve()
@@ -489,7 +502,7 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     })
     expectConsoleErrorMatching(
       '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
-      expect.objectContaining({ message: 'The browser refused disconnect cleanup' })
+      { errors: [{ name: 'Error' }] }
     )
     expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 0, physicalLinks: 1, databaseSnapshots: 0 })
     await expect(backend.choose(chooserRequest(), noDeadline())).rejects.toMatchObject({

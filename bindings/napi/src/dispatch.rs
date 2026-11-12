@@ -20,10 +20,13 @@
 //! with `capability.unsupported`, never silently.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex as StdMutex;
 
 use std::sync::Arc;
+
+use sha2::{Digest, Sha256};
 
 use ubm_desktop::central::ControllerFuture;
 
@@ -54,8 +57,8 @@ use ubm_desktop::{
     PairRequest, PairingGeneration, PairingGenerationController, PathSelector, PeerSnapshot,
     PlatformDetail, PlatformValue, PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent,
     Retryability, ScanFilterSpec, ScanStop, ScanTerminalEvent, SecureConnections, SecurityEvent,
-    SecurityState, ServiceAccess, ServiceData, ServiceSnapshot, UnpairOutcome, WriteLimits,
-    WriteReadinessEvent,
+    SecurityState, ServiceAccess, ServiceData, ServiceSnapshot, SourceUncertaintyEvent,
+    UnpairOutcome, WriteLimits, WriteReadinessEvent,
 };
 
 /// Typed dispatch failure carrying a frozen C-UBM identity. [`DesktopError`]
@@ -145,6 +148,7 @@ fn platform_wire(platform: &PlatformDetail) -> String {
     let metadata = platform
         .metadata
         .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "__proto__" | "constructor" | "prototype"))
         .map(|(key, value)| {
             let value = match value {
                 PlatformValue::Int(number)
@@ -160,15 +164,39 @@ fn platform_wire(platform: &PlatformDetail) -> String {
         })
         .collect::<Vec<_>>()
         .join(",");
+    let entries = platform
+        .metadata_entries
+        .as_ref()
+        .map_or_else(String::new, |entries| {
+            let entries = entries
+                .iter()
+                .map(|entry| {
+                    let (kind, value) = match &entry.value {
+                        PlatformValue::Int(number) => ("int", json_string(&number.to_string())),
+                        PlatformValue::Text(text) => ("text", json_string(text)),
+                        PlatformValue::Bool(flag) => ("bool", flag.to_string()),
+                    };
+                    format!(
+                        "{{\"key\":{},\"value\":{{\"kind\":\"{}\",\"value\":{}}}}}",
+                        json_string(&entry.key),
+                        kind,
+                        value
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(",\"metadataEntries\":[{entries}]")
+        });
     format!(
-        "{{\"domain\":{},\"code\":{},\"message\":{},\"metadata\":{{{}}}}}",
+        "{{\"domain\":{},\"code\":{},\"message\":{},\"metadata\":{{{}}}{}}}",
         json_string(&platform.domain),
         json_string(&platform.code),
         platform
             .message
             .as_deref()
             .map_or_else(|| "null".to_owned(), json_string),
-        metadata
+        metadata,
+        entries
     )
 }
 
@@ -244,7 +272,549 @@ impl DispatchRadio {
 
 // `async fn` satisfies the trait's `-> impl Future` seams; each arm's
 // future is `Send`, so the combined future is too.
+
 impl RadioBoundary for DispatchRadio {
+    fn ordered_marker_write_supported(&self) -> bool {
+        match self {
+            Self::Radio(radio) => radio.ordered_marker_write_supported(),
+            Self::Synthetic(radio) => radio.ordered_marker_write_supported(),
+        }
+    }
+    fn ordered_recording_reclaim_supported(&self) -> bool {
+        match self {
+            Self::Radio(radio) => radio.ordered_recording_reclaim_supported(),
+            Self::Synthetic(radio) => radio.ordered_recording_reclaim_supported(),
+        }
+    }
+    async fn open_ordered_reclaim_authority(
+        &self,
+        request: u64,
+    ) -> std::result::Result<u64, DesktopError> {
+        match self {
+            Self::Radio(r) => r.open_ordered_reclaim_authority(request).await,
+            Self::Synthetic(r) => r.open_ordered_reclaim_authority(request).await,
+        }
+    }
+    async fn forget_ordered_reclaim_open(
+        &self,
+        request: u64,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(r) => r.forget_ordered_reclaim_open(request).await,
+            Self::Synthetic(r) => r.forget_ordered_reclaim_open(request).await,
+        }
+    }
+    async fn close_ordered_reclaim_authority(
+        &self,
+        id: u64,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(r) => r.close_ordered_reclaim_authority(id).await,
+            Self::Synthetic(r) => r.close_ordered_reclaim_authority(id).await,
+        }
+    }
+    async fn forget_ordered_reclaim_authority(
+        &self,
+        id: u64,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(r) => r.forget_ordered_reclaim_authority(id).await,
+            Self::Synthetic(r) => r.forget_ordered_reclaim_authority(id).await,
+        }
+    }
+    async fn reserve_ordered_reclaim_permit(
+        &self,
+        request: &ubm_desktop::boundary::OrderedReclaimPermitRequest,
+    ) -> std::result::Result<u64, DesktopError> {
+        match self {
+            Self::Radio(r) => r.reserve_ordered_reclaim_permit(request).await,
+            Self::Synthetic(r) => r.reserve_ordered_reclaim_permit(request).await,
+        }
+    }
+    async fn forget_ordered_reclaim_permit_request(
+        &self,
+        request: &ubm_desktop::boundary::OrderedReclaimPermitRequest,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(r) => r.forget_ordered_reclaim_permit_request(request).await,
+            Self::Synthetic(r) => r.forget_ordered_reclaim_permit_request(request).await,
+        }
+    }
+    fn ordered_reclaim_requires_snapshot_binding(&self) -> bool {
+        match self {
+            Self::Radio(r) => r.ordered_reclaim_requires_snapshot_binding(),
+            Self::Synthetic(r) => r.ordered_reclaim_requires_snapshot_binding(),
+        }
+    }
+    fn bind_ordered_reclaim_snapshot(
+        &self,
+        peer: &str,
+        generation: &str,
+        identity: &ubm_desktop::boundary::GattSnapshotIdentity,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(r) => r.bind_ordered_reclaim_snapshot(peer, generation, identity),
+            Self::Synthetic(r) => r.bind_ordered_reclaim_snapshot(peer, generation, identity),
+        }
+    }
+    async fn acquire_ordered_reclaim_graph(
+        &self,
+        key: &ubm_desktop::boundary::OrderedReclaimGraphKey,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedReclaimGraphAcquire, DesktopError> {
+        match self {
+            Self::Radio(r) => r.acquire_ordered_reclaim_graph(key).await,
+            Self::Synthetic(r) => r.acquire_ordered_reclaim_graph(key).await,
+        }
+    }
+    async fn commit_ordered_reclaim_graph(
+        &self,
+        key: &ubm_desktop::boundary::OrderedReclaimGraphKey,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedReclaimGraphCommit, DesktopError> {
+        match self {
+            Self::Radio(r) => r.commit_ordered_reclaim_graph(key).await,
+            Self::Synthetic(r) => r.commit_ordered_reclaim_graph(key).await,
+        }
+    }
+    async fn release_ordered_reclaim_graph(
+        &self,
+        key: &ubm_desktop::boundary::OrderedReclaimGraphKey,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(r) => r.release_ordered_reclaim_graph(key).await,
+            Self::Synthetic(r) => r.release_ordered_reclaim_graph(key).await,
+        }
+    }
+    async fn forget_ordered_reclaim_graph(
+        &self,
+        key: &ubm_desktop::boundary::OrderedReclaimGraphKey,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(r) => r.forget_ordered_reclaim_graph(key).await,
+            Self::Synthetic(r) => r.forget_ordered_reclaim_graph(key).await,
+        }
+    }
+    async fn start_ordered_marker_write(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        request: &ubm_desktop::boundary::OrderedMarkerWriteRequest,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedMarkerWriteStatus, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.start_ordered_marker_write(lease, request).await,
+            Self::Synthetic(radio) => radio.start_ordered_marker_write(lease, request).await,
+        }
+    }
+    async fn ordered_marker_write_status(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        request: &ubm_desktop::boundary::OrderedMarkerWriteRequest,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedMarkerWriteStatus, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.ordered_marker_write_status(lease, request).await,
+            Self::Synthetic(radio) => radio.ordered_marker_write_status(lease, request).await,
+        }
+    }
+    async fn cancel_ordered_marker_write(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        request: &ubm_desktop::boundary::OrderedMarkerWriteRequest,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedMarkerWriteStatus, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.cancel_ordered_marker_write(lease, request).await,
+            Self::Synthetic(radio) => radio.cancel_ordered_marker_write(lease, request).await,
+        }
+    }
+    async fn forget_ordered_marker_write(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        request: &ubm_desktop::boundary::OrderedMarkerWriteRequest,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.forget_ordered_marker_write(lease, request).await,
+            Self::Synthetic(radio) => radio.forget_ordered_marker_write(lease, request).await,
+        }
+    }
+    fn reserve_ordered_marker(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        id: u64,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.reserve_ordered_marker(lease, id),
+            Self::Synthetic(radio) => radio.reserve_ordered_marker(lease, id),
+        }
+    }
+    fn ordered_marker_credit_pending(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        id: u64,
+    ) -> std::result::Result<bool, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.ordered_marker_credit_pending(lease, id),
+            Self::Synthetic(radio) => radio.ordered_marker_credit_pending(lease, id),
+        }
+    }
+    fn release_ordered_marker(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        id: u64,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.release_ordered_marker(lease, id),
+            Self::Synthetic(radio) => radio.release_ordered_marker(lease, id),
+        }
+    }
+    fn attach_ordered_wake(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        wake: std::sync::Arc<tokio::sync::Notify>,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.attach_ordered_wake(lease, wake),
+            Self::Synthetic(radio) => radio.attach_ordered_wake(lease, wake),
+        }
+    }
+    async fn flush_peer_notification_source(
+        &self,
+        peer: &str,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.flush_peer_notification_source(peer).await,
+            Self::Synthetic(radio) => radio.flush_peer_notification_source(peer).await,
+        }
+    }
+    fn ordered_source_requires_snapshot_identity(&self) -> bool {
+        match self {
+            Self::Radio(radio) => radio.ordered_source_requires_snapshot_identity(),
+            Self::Synthetic(radio) => radio.ordered_source_requires_snapshot_identity(),
+        }
+    }
+    async fn prepare_ordered_source(
+        &self,
+        request: ubm_desktop::boundary::OrderedSourceRequest,
+    ) -> std::result::Result<
+        ubm_desktop::boundary::OrderedSourceLease,
+        ubm_desktop::boundary::OrderedSourceFailure,
+    > {
+        match self {
+            Self::Radio(radio) => radio.prepare_ordered_source(request).await,
+            Self::Synthetic(radio) => radio.prepare_ordered_source(request).await,
+        }
+    }
+    async fn recover_ordered_source(
+        &self,
+        peer: &str,
+        id: u64,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedSourceRecovery, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.recover_ordered_source(peer, id).await,
+            Self::Synthetic(radio) => radio.recover_ordered_source(peer, id).await,
+        }
+    }
+    async fn ordered_source_installed(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.ordered_source_installed(lease).await,
+            Self::Synthetic(radio) => radio.ordered_source_installed(lease).await,
+        }
+    }
+    async fn retain_ordered_source_claim(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        activation: &ubm_desktop::boundary::PreparedNotificationActivation,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => {
+                radio
+                    .retain_ordered_source_claim(lease, id, membership, activation)
+                    .await
+            }
+            Self::Synthetic(radio) => {
+                radio
+                    .retain_ordered_source_claim(lease, id, membership, activation)
+                    .await
+            }
+        }
+    }
+    async fn confirm_ordered_source_cleanup(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        activation: &ubm_desktop::boundary::PreparedNotificationActivation,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => {
+                radio
+                    .confirm_ordered_source_cleanup(lease, id, membership, activation)
+                    .await
+            }
+            Self::Synthetic(radio) => {
+                radio
+                    .confirm_ordered_source_cleanup(lease, id, membership, activation)
+                    .await
+            }
+        }
+    }
+    async fn retire_ordered_member(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        member_id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => {
+                radio
+                    .retire_ordered_member(lease, member_id, membership)
+                    .await
+            }
+            Self::Synthetic(radio) => {
+                radio
+                    .retire_ordered_member(lease, member_id, membership)
+                    .await
+            }
+        }
+    }
+    async fn reregister_ordered_member(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        member: u64,
+        old: ubm_core::ordered_notifications::Membership,
+    ) -> std::result::Result<ubm_core::ordered_notifications::Membership, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.reregister_ordered_member(lease, member, old).await,
+            Self::Synthetic(radio) => radio.reregister_ordered_member(lease, member, old).await,
+        }
+    }
+    async fn abandon_ordered_renewal(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        member: u64,
+        old: ubm_core::ordered_notifications::Membership,
+        new: Option<ubm_core::ordered_notifications::Membership>,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedRenewalAbandon, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.abandon_ordered_renewal(lease, member, old, new).await,
+            Self::Synthetic(radio) => radio.abandon_ordered_renewal(lease, member, old, new).await,
+        }
+    }
+    fn rebind_ordered_member(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        member: u64,
+        old: ubm_core::ordered_notifications::Membership,
+        new: ubm_core::ordered_notifications::Membership,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.rebind_ordered_member(lease, member, old, new),
+            Self::Synthetic(radio) => radio.rebind_ordered_member(lease, member, old, new),
+        }
+    }
+    async fn resume_ordered_member(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        member: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.resume_ordered_member(lease, member, membership).await,
+            Self::Synthetic(radio) => radio.resume_ordered_member(lease, member, membership).await,
+        }
+    }
+    async fn poll_ordered_source(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+    ) -> std::result::Result<ubm_core::ordered_notifications::Poll, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.poll_ordered_source(lease).await,
+            Self::Synthetic(radio) => radio.poll_ordered_source(lease).await,
+        }
+    }
+    fn update_ordered_source(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        transition: ubm_desktop::boundary::OrderedSourceTransition,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.update_ordered_source(lease, transition),
+            Self::Synthetic(radio) => radio.update_ordered_source(lease, transition),
+        }
+    }
+    fn ordered_source_status(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedSourceStatus, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.ordered_source_status(lease),
+            Self::Synthetic(radio) => radio.ordered_source_status(lease),
+        }
+    }
+    fn increase_ordered_byte_capacity(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        max_bytes: usize,
+    ) -> std::result::Result<usize, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.increase_ordered_byte_capacity(lease, max_bytes),
+            Self::Synthetic(radio) => radio.increase_ordered_byte_capacity(lease, max_bytes),
+        }
+    }
+    async fn fence_ordered_source(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.fence_ordered_source(lease).await,
+            Self::Synthetic(radio) => radio.fence_ordered_source(lease).await,
+        }
+    }
+    async fn retire_ordered_source(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        reason: ubm_core::ordered_notifications::EndReason,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.retire_ordered_source(lease, reason).await,
+            Self::Synthetic(radio) => radio.retire_ordered_source(lease, reason).await,
+        }
+    }
+    async fn seal_ordered_source(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedSourceSeal, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.seal_ordered_source(lease).await,
+            Self::Synthetic(radio) => radio.seal_ordered_source(lease).await,
+        }
+    }
+    async fn release_ordered_source(
+        &self,
+        cleanup: &ubm_desktop::boundary::OrderedSourceCleanup,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedSourceRelease, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.release_ordered_source(cleanup).await,
+            Self::Synthetic(radio) => radio.release_ordered_source(cleanup).await,
+        }
+    }
+    async fn prepare_notification_activation(
+        &self,
+        scope: &ubm_desktop::boundary::InstanceKey,
+        epoch: u64,
+        requested: Option<DeliveryMode>,
+        preferred: Option<DeliveryMode>,
+    ) -> std::result::Result<ubm_desktop::boundary::PreparedNotificationActivation, DesktopError>
+    {
+        match self {
+            Self::Radio(radio) => {
+                radio
+                    .prepare_notification_activation(scope, epoch, requested, preferred)
+                    .await
+            }
+            Self::Synthetic(radio) => {
+                radio
+                    .prepare_notification_activation(scope, epoch, requested, preferred)
+                    .await
+            }
+        }
+    }
+    async fn dispatch_prepared_notification(
+        &self,
+        prepared: &ubm_desktop::boundary::PreparedNotificationActivation,
+    ) -> std::result::Result<ObservedDelivery, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.dispatch_prepared_notification(prepared).await,
+            Self::Synthetic(radio) => radio.dispatch_prepared_notification(prepared).await,
+        }
+    }
+    fn reserve_ordered_notification(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        member: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        prepared: &ubm_desktop::boundary::PreparedNotificationActivation,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => {
+                radio.reserve_ordered_notification(lease, member, membership, prepared)
+            }
+            Self::Synthetic(radio) => {
+                radio.reserve_ordered_notification(lease, member, membership, prepared)
+            }
+        }
+    }
+    async fn dispatch_ordered_notification(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        member: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        prepared: &ubm_desktop::boundary::PreparedNotificationActivation,
+    ) -> std::result::Result<ObservedDelivery, DesktopError> {
+        match self {
+            Self::Radio(radio) => {
+                radio
+                    .dispatch_ordered_notification(lease, member, membership, prepared)
+                    .await
+            }
+            Self::Synthetic(radio) => {
+                radio
+                    .dispatch_ordered_notification(lease, member, membership, prepared)
+                    .await
+            }
+        }
+    }
+    async fn ordered_notification_settlement(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        member: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        prepared: &ubm_desktop::boundary::PreparedNotificationActivation,
+    ) -> std::result::Result<ubm_desktop::boundary::OrderedNotificationSettlement, DesktopError>
+    {
+        match self {
+            Self::Radio(radio) => {
+                radio
+                    .ordered_notification_settlement(lease, member, membership, prepared)
+                    .await
+            }
+            Self::Synthetic(radio) => {
+                radio
+                    .ordered_notification_settlement(lease, member, membership, prepared)
+                    .await
+            }
+        }
+    }
+    async fn release_ordered_notification(
+        &self,
+        lease: &ubm_desktop::boundary::OrderedSourceLease,
+        member: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        prepared: &ubm_desktop::boundary::PreparedNotificationActivation,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => {
+                radio
+                    .release_ordered_notification(lease, member, membership, prepared)
+                    .await
+            }
+            Self::Synthetic(radio) => {
+                radio
+                    .release_ordered_notification(lease, member, membership, prepared)
+                    .await
+            }
+        }
+    }
+    async fn release_prepared_notification(
+        &self,
+        prepared: &ubm_desktop::boundary::PreparedNotificationActivation,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.release_prepared_notification(prepared).await,
+            Self::Synthetic(radio) => radio.release_prepared_notification(prepared).await,
+        }
+    }
     async fn acquire_gatt(
         &self,
         scope: &ubm_desktop::boundary::InstanceKey,
@@ -253,6 +823,43 @@ impl RadioBoundary for DispatchRadio {
         match self {
             Self::Radio(radio) => radio.acquire_gatt(scope, kind).await,
             Self::Synthetic(radio) => radio.acquire_gatt(scope, kind).await,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn reserve_physical_loss(
+        &self,
+        peer: &str,
+        generation: u64,
+        reason: u8,
+    ) -> ubm_desktop::boundary::PhysicalLossReservation {
+        match self {
+            Self::Radio(radio) => radio.reserve_physical_loss(peer, generation, reason),
+            Self::Synthetic(radio) => radio.reserve_physical_loss(peer, generation, reason),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn fence_reserved_physical_loss(
+        &self,
+        permit: &ubm_desktop::boundary::PhysicalLossPermit,
+    ) -> ubm_desktop::boundary::PhysicalLossFence {
+        match self {
+            Self::Radio(radio) => radio.fence_reserved_physical_loss(permit).await,
+            Self::Synthetic(radio) => radio.fence_reserved_physical_loss(permit).await,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn fence_physical_loss(
+        &self,
+        peer: &str,
+        generation: u64,
+        reason: u8,
+    ) -> ubm_desktop::boundary::PhysicalLossFence {
+        match self {
+            Self::Radio(radio) => radio.fence_physical_loss(peer, generation, reason).await,
+            Self::Synthetic(radio) => radio.fence_physical_loss(peer, generation, reason).await,
         }
     }
 
@@ -429,6 +1036,124 @@ impl RadioBoundary for DispatchRadio {
         match self {
             Self::Radio(radio) => radio.ingress_notification_drops(),
             Self::Synthetic(radio) => radio.ingress_notification_drops(),
+        }
+    }
+
+    fn read_peer_notification_failure_recovery(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        offset: u64,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<
+            ubm_core::oversized_evidence::PeerSourceFailureChunk,
+            DesktopError,
+        >,
+    > + Send
+           + '_ {
+        let descriptor = descriptor.clone();
+        async move {
+            match self {
+                Self::Radio(radio) => {
+                    radio
+                        .read_peer_notification_failure_recovery(&descriptor, offset)
+                        .await
+                }
+                Self::Synthetic(radio) => {
+                    radio
+                        .read_peer_notification_failure_recovery(&descriptor, offset)
+                        .await
+                }
+            }
+        }
+    }
+
+    fn ack_peer_notification_failure_recovery(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> impl std::future::Future<Output = std::result::Result<(), DesktopError>> + Send + '_ {
+        let descriptor = descriptor.clone();
+        async move {
+            match self {
+                Self::Radio(radio) => {
+                    radio
+                        .ack_peer_notification_failure_recovery(&descriptor)
+                        .await
+                }
+                Self::Synthetic(radio) => {
+                    radio
+                        .ack_peer_notification_failure_recovery(&descriptor)
+                        .await
+                }
+            }
+        }
+    }
+
+    fn prepare_peer_notification_failure_recovery_ack(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> impl std::future::Future<Output = std::result::Result<String, DesktopError>> + Send + '_
+    {
+        let descriptor = descriptor.clone();
+        async move {
+            match self {
+                Self::Radio(radio) => {
+                    radio
+                        .prepare_peer_notification_failure_recovery_ack(&descriptor)
+                        .await
+                }
+                Self::Synthetic(radio) => {
+                    radio
+                        .prepare_peer_notification_failure_recovery_ack(&descriptor)
+                        .await
+                }
+            }
+        }
+    }
+
+    fn begin_peer_notification_failure_recovery_ack(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        source_ack_id: &str,
+    ) -> impl std::future::Future<Output = std::result::Result<String, DesktopError>> + Send + '_
+    {
+        let descriptor = descriptor.clone();
+        let source_ack_id = source_ack_id.to_owned();
+        async move {
+            match self {
+                Self::Radio(radio) => {
+                    radio
+                        .begin_peer_notification_failure_recovery_ack(&descriptor, &source_ack_id)
+                        .await
+                }
+                Self::Synthetic(radio) => {
+                    radio
+                        .begin_peer_notification_failure_recovery_ack(&descriptor, &source_ack_id)
+                        .await
+                }
+            }
+        }
+    }
+
+    fn retire_peer_notification_failure_recovery_ack(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        source_ack_id: &str,
+    ) -> impl std::future::Future<Output = std::result::Result<(), DesktopError>> + Send + '_ {
+        let descriptor = descriptor.clone();
+        let source_ack_id = source_ack_id.to_owned();
+        async move {
+            match self {
+                Self::Radio(radio) => {
+                    radio
+                        .retire_peer_notification_failure_recovery_ack(&descriptor, &source_ack_id)
+                        .await
+                }
+                Self::Synthetic(radio) => {
+                    radio
+                        .retire_peer_notification_failure_recovery_ack(&descriptor, &source_ack_id)
+                        .await
+                }
+            }
         }
     }
 
@@ -1106,6 +1831,7 @@ fn parse_loss_cause(value: &str) -> std::result::Result<AdapterLossCause, Dispat
         "unauthorized" => Ok(AdapterLossCause::Unauthorized),
         "removed" => Ok(AdapterLossCause::Removed),
         "daemon-restarted" => Ok(AdapterLossCause::DaemonRestarted),
+        "source-observation-overflow" => Ok(AdapterLossCause::SourceObservationOverflow),
         other => Err(DispatchError::new(
             BleErrorCode::ArgumentInvalid.as_str(),
             BleErrorDomain::Core.as_str(),
@@ -1172,6 +1898,7 @@ fn lifecycle_kind_wire(kind: LifecycleKind) -> (&'static str, Option<bool>) {
         LifecycleKind::Released { requested } => ("released", Some(requested)),
         LifecycleKind::ServicesChanged => ("services-changed", None),
         LifecycleKind::AdapterLost => ("adapter-lost", None),
+        LifecycleKind::HostReset => ("host-reset", None),
     }
 }
 
@@ -1236,6 +1963,19 @@ pub struct OpenOptions {
     /// `security:pairing-generation` where an OS adapter can hold it.
     #[napi(js_name = "pairingGeneration")]
     pub pairing_generation: Option<bool>,
+    /// Explicit trusted main-process directory for raw native failure
+    /// evidence. Absent means no native spill store is configured.
+    #[napi(js_name = "failureEvidenceDirectory")]
+    pub failure_evidence_directory: Option<String>,
+    #[napi(js_name = "failureEvidenceMaxBytes")]
+    pub failure_evidence_max_bytes: Option<String>,
+    /// Trusted host-selected private directory and budget for durable terminal
+    /// evidence. This surface is deliberately absent from renderer IPC: the
+    /// Node/Electron-main host chooses the directory before a radio opens.
+    #[napi(js_name = "terminalEvidenceDirectory")]
+    pub terminal_evidence_directory: Option<String>,
+    #[napi(js_name = "terminalEvidenceMaxBytes")]
+    pub terminal_evidence_max_bytes: Option<String>,
 }
 
 fn parse_connection_policy(
@@ -1338,6 +2078,290 @@ pub struct SyntheticOptions {
     /// registers (default: this build's OS), so a hardware-free test of one
     /// platform's provider runs under that platform's truth on any host.
     pub platform: Option<String>,
+    /// Test-only equivalent of the trusted production host configuration.
+    #[napi(js_name = "terminalEvidenceDirectory")]
+    pub terminal_evidence_directory: Option<String>,
+    #[napi(js_name = "terminalEvidenceMaxBytes")]
+    pub terminal_evidence_max_bytes: Option<String>,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceScopeInput {
+    #[napi(js_name = "managerId")]
+    pub manager_id: String,
+    #[napi(js_name = "operationId")]
+    pub operation_id: String,
+    pub incarnation: String,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceReserveOptions {
+    pub producer: String,
+    #[napi(js_name = "maximumBytes")]
+    pub maximum_bytes: String,
+    #[napi(js_name = "formatVersion")]
+    pub format_version: u32,
+    pub scope: TerminalEvidenceScopeInput,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceReservationInfo {
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+    #[napi(js_name = "maximumBytes")]
+    pub maximum_bytes: String,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceCommitOptions {
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+    #[napi(js_name = "canonicalBytes")]
+    pub canonical_bytes: Buffer,
+    pub digest: String,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceCommitInfo {
+    pub kind: String,
+    pub reason: Option<String>,
+    #[napi(js_name = "ref")]
+    pub reference: Option<String>,
+    #[napi(js_name = "byteLength")]
+    pub byte_length: Option<String>,
+    pub digest: Option<String>,
+    #[napi(js_name = "formatVersion")]
+    pub format_version: Option<u32>,
+    pub durability: Option<String>,
+}
+
+/// A committed source-terminal receipt. This deliberately includes the
+/// inferred producer and immutable scope: the JS core rejects a receipt that
+/// merely points at valid bytes for another source incarnation.
+#[napi(object)]
+pub struct TerminalEvidenceReceiptInfo {
+    pub producer: String,
+    #[napi(js_name = "ref")]
+    pub reference: String,
+    #[napi(js_name = "byteLength")]
+    pub byte_length: String,
+    pub digest: String,
+    #[napi(js_name = "formatVersion")]
+    pub format_version: u32,
+    pub durability: String,
+    pub scope: TerminalEvidenceScopeInput,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceReadInfo {
+    pub kind: String,
+    #[napi(js_name = "canonicalBytes")]
+    pub canonical_bytes: Option<Buffer>,
+    pub digest: Option<String>,
+}
+
+/// Claims are selected by the trusted host's recovery entry. They are not
+/// renderer-provided IPC fields: the ledger verifies that the opaque ref was
+/// minted for this exact producer and recovery recipient before retirement.
+#[napi(object)]
+pub struct TerminalEvidenceRecoveryAcknowledgeOptions {
+    #[napi(js_name = "ref")]
+    pub reference: String,
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+    #[napi(js_name = "leaseId")]
+    pub lease_id: String,
+    pub producer: String,
+    pub recipient: String,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceRecoveredCommitOptions {
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+    #[napi(js_name = "leaseId")]
+    pub lease_id: String,
+    #[napi(js_name = "canonicalBytes")]
+    pub canonical_bytes: Buffer,
+    pub digest: String,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceRecoverOptions {
+    pub producer: String,
+    pub recipient: String,
+    #[napi(js_name = "leaseId")]
+    pub lease_id: String,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceRecoverableInfo {
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+    pub producer: String,
+    #[napi(js_name = "byteLength")]
+    pub byte_length: Option<String>,
+    pub digest: Option<String>,
+    #[napi(js_name = "formatVersion")]
+    pub format_version: Option<u32>,
+    #[napi(js_name = "ref")]
+    pub reference: Option<String>,
+    pub state: String,
+    #[napi(js_name = "canonicalBytes")]
+    pub canonical_bytes: Buffer,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceRecoverablePageInfo {
+    pub entries: Vec<TerminalEvidenceRecoverableInfo>,
+    pub busy: bool,
+}
+
+fn terminal_evidence_recoverable_info(
+    entry: ubm_desktop::terminal_evidence_ledger::RecoverableTerminalEvidence,
+) -> TerminalEvidenceRecoverableInfo {
+    TerminalEvidenceRecoverableInfo {
+        reservation_id: entry.reservation_id,
+        producer: entry.scope.producer,
+        byte_length: entry.byte_length.map(|value| value.to_string()),
+        digest: Some(terminal_digest_hex(entry.digest.unwrap_or_else(|| {
+            sha2::Sha256::digest(&entry.canonical_bytes).into()
+        }))),
+        format_version: Some(u32::from(entry.format_version.unwrap_or(1))),
+        reference: entry.reference,
+        state: match entry.state {
+            ubm_desktop::terminal_evidence_ledger::TerminalEvidenceRecoveryState::Staged => {
+                "staged".to_owned()
+            }
+            ubm_desktop::terminal_evidence_ledger::TerminalEvidenceRecoveryState::Committed => {
+                "committed".to_owned()
+            }
+        },
+        canonical_bytes: Buffer::from(entry.canonical_bytes),
+    }
+}
+
+fn parse_terminal_evidence_maximum(
+    value: &str,
+    operation: &'static str,
+) -> std::result::Result<u64, DispatchError> {
+    let maximum = value.parse::<u64>().map_err(|_| {
+        DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "maximumBytes must be a positive decimal u64",
+        )
+    })?;
+    if maximum == 0 {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "maximumBytes must be positive",
+        ));
+    }
+    Ok(maximum)
+}
+
+fn terminal_digest(
+    value: &str,
+    operation: &'static str,
+) -> std::result::Result<[u8; 32], DispatchError> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "digest must be 64 lowercase hexadecimal characters",
+        ));
+    }
+    let mut digest = [0; 32];
+    for (index, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).map_err(|_| {
+            DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                operation,
+                "digest must be hexadecimal",
+            )
+        })?;
+    }
+    Ok(digest)
+}
+
+fn terminal_digest_hex(digest: [u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn terminal_evidence_error(
+    failure: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError,
+    operation: &'static str,
+) -> DispatchError {
+    use ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError;
+    match failure {
+        TerminalEvidenceError::Quota => DispatchError::new(
+            BleErrorCode::StreamQuota.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "terminal evidence quota exhausted",
+        ),
+        TerminalEvidenceError::Busy => DispatchError::new(
+            BleErrorCode::PlatformFailure.as_str(),
+            BleErrorDomain::Platform.as_str(),
+            operation,
+            "terminal evidence storage is busy",
+        ),
+        TerminalEvidenceError::Missing | TerminalEvidenceError::Unresolved => DispatchError::new(
+            BleErrorCode::LifecycleInvalidState.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "terminal evidence reservation is unavailable",
+        ),
+        TerminalEvidenceError::Invalid(_) | TerminalEvidenceError::Conflict => DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "terminal evidence record conflicts with its reservation",
+        ),
+        TerminalEvidenceError::Corrupt | TerminalEvidenceError::Storage(_) => DispatchError::new(
+            BleErrorCode::PlatformFailure.as_str(),
+            BleErrorDomain::Platform.as_str(),
+            operation,
+            "terminal evidence storage failed",
+        ),
+    }
+}
+
+fn open_terminal_evidence_ledger(
+    directory: Option<&str>,
+    maximum: Option<&str>,
+    operation: &'static str,
+) -> std::result::Result<
+    Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>,
+    DispatchError,
+> {
+    match (directory, maximum) {
+        (None, None) => Ok(None),
+        (Some(directory), Some(maximum)) if !directory.is_empty() => {
+            let maximum = parse_terminal_evidence_maximum(maximum, operation)?;
+            let path = Path::new(directory).join("terminal-evidence-v1.sqlite");
+            let ledger =
+                ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(&path, maximum)
+                    .map_err(|error| terminal_evidence_error(error, operation))?;
+            Ok(Some(Arc::new(ledger)))
+        }
+        _ => Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "terminal evidence directory and byte limit must be supplied together",
+        )),
+    }
 }
 
 fn register_macos(core: &mut ubm_core::central::Central) -> std::result::Result<(), CoreError> {
@@ -1424,6 +2448,11 @@ pub struct ScanOptions {
     #[napi(js_name = "timeoutMs")]
     pub timeout_ms: Option<u32>,
     pub ticket: Option<String>,
+    /// Opaque scope of the reservation the trusted host acquired before it
+    /// asks the radio to activate this source.  The producer is inferred from
+    /// this entrypoint; JavaScript never supplies a reservation id.
+    #[napi(js_name = "terminalEvidenceScope")]
+    pub terminal_evidence_scope: Option<TerminalEvidenceScopeInput>,
 }
 
 /// `scan.stop` / cleanup arguments: an optional budget and ticket.
@@ -1476,6 +2505,7 @@ impl From<ubm_desktop::DirectoryPeer> for DirectoryPeerInfo {
 
 /// Live scan session: the core op id backing it.
 #[napi(object)]
+#[derive(Debug)]
 pub struct ScanSessionInfo {
     #[napi(js_name = "operationId")]
     pub operation_id: String,
@@ -1660,6 +2690,10 @@ pub struct PriorityOptions {
 pub struct DiscoveryInfo {
     #[napi(js_name = "pathsRegistered")]
     pub paths_registered: u32,
+    #[napi(js_name = "connectionGeneration")]
+    pub connection_generation: Option<String>,
+    #[napi(js_name = "databaseGeneration")]
+    pub database_generation: Option<String>,
 }
 
 /// One registered discovery path in the current snapshot.
@@ -1916,6 +2950,320 @@ fn write_mode(mode: Option<&str>) -> std::result::Result<&'static str, DispatchE
     }
 }
 
+/// One exact characteristic claim in an ordered group.
+#[napi(object)]
+pub struct OrderedMemberInput {
+    #[napi(js_name = "memberId")]
+    pub member_id: String,
+    pub selector: SelectorInput,
+    #[napi(js_name = "deliveryMode")]
+    pub delivery_mode: Option<String>,
+    #[napi(js_name = "preferredDeliveryMode")]
+    pub preferred_delivery_mode: Option<String>,
+}
+
+#[napi(object)]
+pub struct OrderedOpenOptions {
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "metadataVersion")]
+    pub metadata_version: Option<u32>,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "collectionId")]
+    pub collection_id: String,
+    pub lease: String,
+    #[napi(js_name = "connectionGeneration")]
+    pub connection_generation: String,
+    #[napi(js_name = "databaseGeneration")]
+    pub database_generation: String,
+    pub members: Vec<OrderedMemberInput>,
+    #[napi(js_name = "maxItems")]
+    pub max_items: u32,
+    #[napi(js_name = "maxBytes")]
+    pub max_bytes: u32,
+    #[napi(js_name = "maxControls")]
+    pub max_controls: u32,
+    #[napi(js_name = "timeoutMs")]
+    pub timeout_ms: Option<u32>,
+    pub ticket: Option<String>,
+}
+
+#[napi(object)]
+pub struct OrderedRecordingMemberInput {
+    #[napi(js_name = "memberId")]
+    pub member_id: String,
+    #[napi(js_name = "publicMemberId")]
+    pub public_member_id: String,
+    pub selector: SelectorInput,
+    #[napi(js_name = "deliveryMode")]
+    pub delivery_mode: Option<String>,
+    #[napi(js_name = "preferredDeliveryMode")]
+    pub preferred_delivery_mode: Option<String>,
+}
+#[napi(object)]
+pub struct OrderedRecordingStartOptions {
+    #[napi(js_name = "startHandle")]
+    pub start_handle: String,
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "metadataVersion")]
+    pub metadata_version: Option<u32>,
+    #[napi(js_name = "recordingId")]
+    pub recording_id: String,
+    #[napi(js_name = "recordingMaxBytes")]
+    pub recording_max_bytes: u32,
+    #[napi(js_name = "recordingMaxRecords")]
+    pub recording_max_records: u32,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    pub lease: String,
+    #[napi(js_name = "connectionGeneration")]
+    pub connection_generation: String,
+    #[napi(js_name = "databaseGeneration")]
+    pub database_generation: String,
+    pub members: Vec<OrderedRecordingMemberInput>,
+    #[napi(js_name = "maxItems")]
+    pub max_items: u32,
+    #[napi(js_name = "maxBytes")]
+    pub max_bytes: u32,
+    #[napi(js_name = "maxControls")]
+    pub max_controls: u32,
+    #[napi(js_name = "timeoutMs")]
+    pub timeout_ms: Option<u32>,
+    pub ticket: Option<String>,
+}
+
+#[napi(object)]
+pub struct RetainConnectionLeaseOptions {
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "sourceLease")]
+    pub source_lease: String,
+    #[napi(js_name = "destinationLease")]
+    pub destination_lease: String,
+    #[napi(js_name = "connectionGeneration")]
+    pub connection_generation: String,
+}
+
+#[derive(Default)]
+struct OrderedRecordingStartSlot {
+    signature: Option<String>,
+    retired: bool,
+    worker_failed: bool,
+    launch_pending: bool,
+    result: Option<String>,
+    owner: Option<Arc<ubm_desktop::ordered_recording::OrderedRecording<DispatchRadio>>>,
+    recovery_capability: Option<String>,
+}
+
+#[napi(object)]
+pub struct OrderedMarkerGroupOptions {
+    #[napi(js_name = "reservationKey")]
+    pub reservation_key: String,
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "collectionId")]
+    pub collection_id: String,
+}
+#[napi(object)]
+pub struct OrderedMarkerReservationOptions {
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "collectionId")]
+    pub collection_id: String,
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+}
+#[napi(object)]
+pub struct OrderedMarkerStartOptions {
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "collectionId")]
+    pub collection_id: String,
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+    pub selector: SelectorInput,
+    pub value: Buffer,
+    #[napi(js_name = "withResponse")]
+    pub with_response: bool,
+}
+
+#[napi(object)]
+pub struct RecordingMarkerGroupOptions {
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "recordingId")]
+    pub recording_id: String,
+    pub lease: String,
+    #[napi(js_name = "reservationKey")]
+    pub reservation_key: String,
+}
+
+#[napi(object)]
+pub struct RecordingReclaimOptions {
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "recordingId")]
+    pub recording_id: String,
+    pub capability: String,
+    pub lease: String,
+    #[napi(js_name = "callerKey")]
+    pub caller_key: String,
+    #[napi(js_name = "requestId")]
+    pub request_id: Option<String>,
+}
+
+struct RecordingReclaimHostReceipt {
+    id: u64,
+    capability: String,
+    forgotten: bool,
+}
+#[napi(object)]
+pub struct RecordingMarkerOptions {
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "recordingId")]
+    pub recording_id: String,
+    pub lease: String,
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+}
+#[napi(object)]
+pub struct RecordingMarkerStartOptions {
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "recordingId")]
+    pub recording_id: String,
+    pub lease: String,
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+    pub selector: SelectorInput,
+    pub value: Buffer,
+    #[napi(js_name = "withResponse")]
+    pub with_response: bool,
+}
+
+#[napi(object)]
+pub struct OrderedGroupOptions {
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "collectionId")]
+    pub collection_id: String,
+    #[napi(js_name = "timeoutMs")]
+    pub timeout_ms: Option<u32>,
+    pub ticket: Option<String>,
+}
+
+#[napi(object)]
+pub struct OrderedCapacityGeneration {
+    pub kind: String,
+    pub value: String,
+}
+
+#[napi(object)]
+pub struct OrderedCapacityOptions {
+    #[napi(js_name = "wireVersion")]
+    pub wire_version: u32,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "collectionId")]
+    pub collection_id: String,
+    #[napi(js_name = "sourceGeneration")]
+    pub source_generation: OrderedCapacityGeneration,
+    #[napi(js_name = "maxBytes")]
+    pub max_bytes: u32,
+}
+
+#[napi(object)]
+pub struct OrderedCapacityResult {
+    #[napi(js_name = "previousMaxBytes")]
+    pub previous_max_bytes: u32,
+    #[napi(js_name = "maxBytes")]
+    pub max_bytes: u32,
+    #[napi(js_name = "maximumMaxBytes")]
+    pub maximum_max_bytes: u32,
+}
+
+#[napi(object)]
+pub struct OrderedDeliveryOptions {
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "collectionId")]
+    pub collection_id: String,
+    #[napi(js_name = "deliveryId")]
+    pub delivery_id: String,
+}
+
+#[napi(object)]
+pub struct OrderedDeliveryInfo {
+    #[napi(js_name = "deliveryId")]
+    pub delivery_id: Option<String>,
+    pub record: String,
+}
+
+#[napi(object)]
+pub struct OrderedDiscardInfo {
+    #[napi(js_name = "receiptId")]
+    pub receipt_id: String,
+    #[napi(js_name = "discardedDeliveryId")]
+    pub discarded_delivery_id: String,
+    pub evidence: String,
+}
+
+fn ordered_discard_info(
+    receipt: ubm_desktop::central::OrderedDiscardReceipt,
+) -> Result<OrderedDiscardInfo> {
+    let encoded = ubm_desktop::ordered_wire::encode_discard_receipt_versioned(&receipt, 2)
+        .ok_or_else(ordered_encoding_error)?;
+    Ok(OrderedDiscardInfo {
+        receipt_id: receipt.receipt_id.to_string(),
+        discarded_delivery_id: receipt.discarded_delivery_id.to_string(),
+        evidence: encoded["evidence"].to_string(),
+    })
+}
+
+fn ordered_encoding_error() -> Error {
+    to_napi(DispatchError::new(
+        BleErrorCode::ProtocolIncompatible.as_str(),
+        BleErrorDomain::Core.as_str(),
+        "dispatch.ordered.encode",
+        "ordered evidence is not representable within the negotiated revision and size limit",
+    ))
+}
+
+fn ordered_u64(value: &str, operation: &'static str) -> std::result::Result<u64, DispatchError> {
+    let parsed = value.parse::<u64>().map_err(|_| {
+        DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Gatt.as_str(),
+            operation,
+            "expected canonical unsigned decimal",
+        )
+    })?;
+    if parsed.to_string() != value {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Gatt.as_str(),
+            operation,
+            "expected canonical unsigned decimal",
+        ));
+    }
+    Ok(parsed)
+}
+
 /// `gatt.subscribe` arguments. `deliveryMode` (`notification` /
 /// `indication`) is a hard requirement carried to the radio, which writes
 /// that CCCD mode or refuses before any effect; absent, the radio picks.
@@ -1935,6 +3283,10 @@ pub struct SubscribeOptions {
     /// (finding 131).
     #[napi(js_name = "overflowPolicy")]
     pub overflow_policy: Option<String>,
+    /// Opaque scope of the reservation the trusted host acquired before CCCD
+    /// enablement.  The producer is inferred as `subscription`.
+    #[napi(js_name = "terminalEvidenceScope")]
+    pub terminal_evidence_scope: Option<TerminalEvidenceScopeInput>,
     #[napi(js_name = "timeoutMs")]
     pub timeout_ms: Option<u32>,
     pub ticket: Option<String>,
@@ -2019,13 +3371,234 @@ pub struct NotificationPollInfo {
     pub kind: String,
     pub value: Option<Buffer>,
     pub receipt: Option<NotificationReceiptInfo>,
+    pub provenance: Option<String>,
+    #[napi(js_name = "sourceGeneration")]
+    pub source_generation: Option<String>,
+    #[napi(js_name = "sourceOrdinal")]
+    pub source_ordinal: Option<String>,
     pub cause: Option<String>,
+    #[napi(js_name = "peerId")]
+    pub peer_id: Option<String>,
+    pub generation: Option<String>,
+    #[napi(js_name = "skippedRecords")]
+    pub skipped_records: Option<String>,
     #[napi(js_name = "droppedItems")]
     pub dropped_items: Option<i64>,
     #[napi(js_name = "droppedBytes")]
     pub dropped_bytes: Option<i64>,
     #[napi(js_name = "replacedItems")]
     pub replaced_items: Option<i64>,
+    #[napi(js_name = "terminalEvidence")]
+    pub terminal_evidence: Option<TerminalEvidencePendingInfo>,
+}
+
+/// Opaque capability for a bounded retained peer-source failure. This is
+/// deliberately available only through the explicit V2 poll/read/ack route:
+/// adding a new discriminator to the established notification poll would let
+/// a 5.2.1 consumer mistake a recovery offer for an ordinary stream record.
+#[napi(object)]
+pub struct PeerSourceFailureRecoveryDescriptorInfo {
+    pub protocol: u32,
+    pub representation: String,
+    pub host: String,
+    pub peer: String,
+    #[napi(js_name = "sourceGenerationIdentity")]
+    pub source_generation_identity: String,
+    #[napi(js_name = "nativeGroup")]
+    pub native_group: String,
+    pub transfer: String,
+    pub recovery: String,
+    #[napi(js_name = "encodedLength")]
+    pub encoded_length: String,
+    #[napi(js_name = "chunkBytes")]
+    pub chunk_bytes: u32,
+    /// Opaque source-time recipient authority, issued only by V2 polling.
+    #[napi(js_name = "recipientLease")]
+    pub recipient_lease: Option<String>,
+}
+
+/// Additive V2 notification poll. Its `recovery` member is populated only
+/// when `kind` is `source-failure-recovery`.
+#[napi(object)]
+pub struct NotificationPollV2Info {
+    pub kind: String,
+    pub value: Option<Buffer>,
+    pub receipt: Option<NotificationReceiptInfo>,
+    pub provenance: Option<String>,
+    #[napi(js_name = "sourceGeneration")]
+    pub source_generation: Option<String>,
+    #[napi(js_name = "sourceOrdinal")]
+    pub source_ordinal: Option<String>,
+    pub cause: Option<String>,
+    #[napi(js_name = "peerId")]
+    pub peer_id: Option<String>,
+    pub generation: Option<String>,
+    #[napi(js_name = "skippedRecords")]
+    pub skipped_records: Option<String>,
+    #[napi(js_name = "droppedItems")]
+    pub dropped_items: Option<i64>,
+    #[napi(js_name = "droppedBytes")]
+    pub dropped_bytes: Option<i64>,
+    #[napi(js_name = "replacedItems")]
+    pub replaced_items: Option<i64>,
+    pub recovery: Option<PeerSourceFailureRecoveryDescriptorInfo>,
+    /// Exact producer failure carried with a V2 recovery offer. This is a
+    /// diagnostic projection; V1 receives the same error as its rejection.
+    #[napi(js_name = "recoveryError")]
+    pub recovery_error: Option<String>,
+    #[napi(js_name = "terminalEvidence")]
+    pub terminal_evidence: Option<TerminalEvidencePendingInfo>,
+}
+
+#[napi(object)]
+pub struct PeerSourceFailureRecoveryReadOptions {
+    pub descriptor: PeerSourceFailureRecoveryDescriptorInfo,
+    pub offset: String,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    pub selector: SelectorInput,
+    pub consumer: String,
+    #[napi(js_name = "recipientLease")]
+    pub recipient_lease: String,
+}
+
+#[napi(object)]
+pub struct PeerSourceFailureRecoveryAcknowledgeOptions {
+    pub descriptor: PeerSourceFailureRecoveryDescriptorInfo,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    pub selector: SelectorInput,
+    pub consumer: String,
+    #[napi(js_name = "recipientLease")]
+    pub recipient_lease: String,
+}
+
+#[napi(object)]
+pub struct PeerSourceFailureRecoveryChunkInfo {
+    pub offset: String,
+    #[napi(js_name = "nextOffset")]
+    pub next_offset: String,
+    pub bytes: Buffer,
+    pub done: bool,
+}
+
+/// A restored, exact recipient handle. The opaque lease is deliberately
+/// preserved verbatim: enumeration does not mint a new subscription, epoch,
+/// or authority after a desktop restart.
+#[napi(object)]
+pub struct DurablePeerSourceFailureRecoveryHandleInfo {
+    pub descriptor: PeerSourceFailureRecoveryDescriptorInfo,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    #[napi(js_name = "serviceUuid")]
+    pub service_uuid: String,
+    #[napi(js_name = "serviceOccurrence")]
+    pub service_occurrence: String,
+    #[napi(js_name = "characteristicUuid")]
+    pub characteristic_uuid: String,
+    #[napi(js_name = "characteristicOccurrence")]
+    pub characteristic_occurrence: String,
+    pub consumer: String,
+    #[napi(js_name = "recipientLease")]
+    pub recipient_lease: String,
+    #[napi(js_name = "contiguousRead")]
+    pub contiguous_read: String,
+    pub acknowledged: bool,
+    #[napi(js_name = "producerAck")]
+    pub producer_ack: String,
+}
+
+fn opaque_id_to_wire(id: [u8; 16]) -> String {
+    let mut out = String::with_capacity(32);
+    for byte in id {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
+fn opaque_id_from_wire(
+    value: &str,
+    operation: &'static str,
+) -> std::result::Result<[u8; 16], DispatchError> {
+    if value.len() != 32
+        || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || value != value.to_ascii_lowercase()
+    {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Gatt.as_str(),
+            operation,
+            "expected lowercase 16-byte hexadecimal identity",
+        ));
+    }
+    let mut bytes = [0_u8; 16];
+    for (index, slot) in bytes.iter_mut().enumerate() {
+        let start = index * 2;
+        *slot = u8::from_str_radix(&value[start..start + 2], 16).map_err(|_| {
+            DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Gatt.as_str(),
+                operation,
+                "expected lowercase 16-byte hexadecimal identity",
+            )
+        })?;
+    }
+    Ok(bytes)
+}
+
+fn peer_source_failure_descriptor_info(
+    descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+) -> PeerSourceFailureRecoveryDescriptorInfo {
+    PeerSourceFailureRecoveryDescriptorInfo {
+        protocol: u32::from(descriptor.protocol),
+        representation: descriptor.representation.to_owned(),
+        host: opaque_id_to_wire(descriptor.identity.host),
+        peer: opaque_id_to_wire(descriptor.identity.peer),
+        source_generation_identity: opaque_id_to_wire(descriptor.identity.source_generation),
+        native_group: opaque_id_to_wire(descriptor.identity.native_group),
+        transfer: opaque_id_to_wire(descriptor.identity.transfer),
+        recovery: opaque_id_to_wire(descriptor.identity.recovery),
+        encoded_length: descriptor.encoded_length.to_string(),
+        chunk_bytes: descriptor.chunk_bytes,
+        recipient_lease: None,
+    }
+}
+
+fn peer_source_failure_descriptor_from_info(
+    descriptor: PeerSourceFailureRecoveryDescriptorInfo,
+    operation: &'static str,
+) -> std::result::Result<ubm_core::oversized_evidence::PeerSourceFailureDescriptor, DispatchError> {
+    if descriptor.protocol != 1
+        || descriptor.representation
+            != ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION
+        || descriptor.chunk_bytes == 0
+    {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Gatt.as_str(),
+            operation,
+            "unsupported peer source failure recovery descriptor",
+        ));
+    }
+    let encoded_length = ordered_u64(&descriptor.encoded_length, operation)?;
+    Ok(ubm_core::oversized_evidence::PeerSourceFailureDescriptor {
+        protocol: 1,
+        representation: ubm_core::oversized_evidence::PEER_SOURCE_FAILURE_REPRESENTATION,
+        identity: ubm_core::oversized_evidence::PeerSourceFailureIdentity {
+            host: opaque_id_from_wire(&descriptor.host, operation)?,
+            peer: opaque_id_from_wire(&descriptor.peer, operation)?,
+            source_generation: opaque_id_from_wire(
+                &descriptor.source_generation_identity,
+                operation,
+            )?,
+            native_group: opaque_id_from_wire(&descriptor.native_group, operation)?,
+            transfer: opaque_id_from_wire(&descriptor.transfer, operation)?,
+            recovery: opaque_id_from_wire(&descriptor.recovery, operation)?,
+        },
+        encoded_length,
+        chunk_bytes: descriptor.chunk_bytes,
+    })
 }
 
 /// Cancel outcome: the winning terminal, never a guess.
@@ -2127,6 +3700,39 @@ fn lifecycle_event_wire(
         requested,
         missed: None,
         platform: event.platform.as_ref().map(platform_wire),
+    })
+}
+
+/// One native source callback that could not be associated with an accepted
+/// graph. It is intentionally separate from connection lifecycle events.
+#[napi(object)]
+pub struct SourceUncertaintyEventInfo {
+    pub kind: String,
+    pub sequence: Option<i64>,
+    #[napi(js_name = "peerId")]
+    pub peer_id: Option<String>,
+    pub code: Option<String>,
+    pub operation: Option<String>,
+    pub detail: Option<String>,
+    pub platform: Option<String>,
+    pub missed: Option<i64>,
+}
+
+fn source_uncertainty_event_wire(
+    event: SourceUncertaintyEvent,
+) -> std::result::Result<SourceUncertaintyEventInfo, DispatchError> {
+    Ok(SourceUncertaintyEventInfo {
+        kind: "source-uncertain".to_owned(),
+        sequence: Some(number_wire(
+            event.sequence,
+            "dispatch.take-source-uncertainty-event",
+        )?),
+        peer_id: Some(event.peer_id),
+        code: Some(event.error.code().as_str().to_owned()),
+        operation: Some(event.error.operation().to_owned()),
+        detail: event.error.detail().map(str::to_owned),
+        platform: event.error.platform().map(platform_wire),
+        missed: None,
     })
 }
 
@@ -2482,7 +4088,39 @@ pub struct ScanTerminalEventInfo {
     pub operation_id: Option<String>,
     pub aborted: Option<bool>,
     pub detail: Option<String>,
+    /// A retained source terminal awaiting JavaScript's canonical commit.
+    #[napi(js_name = "terminalEvidence")]
+    pub terminal_evidence: Option<TerminalEvidencePendingInfo>,
     pub missed: Option<i64>,
+}
+
+#[derive(Clone)]
+struct TerminalEvidenceBinding {
+    scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope,
+    reservation_id: String,
+}
+
+#[derive(Clone)]
+struct PendingSubscriptionTerminal {
+    binding: TerminalEvidenceBinding,
+    reason: String,
+    dropped_items: i64,
+    dropped_bytes: i64,
+    replaced_items: i64,
+}
+
+#[napi(object)]
+pub struct TerminalEvidencePendingInfo {
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+    #[napi(js_name = "pendingToken")]
+    pub pending_token: String,
+}
+
+#[napi(object)]
+pub struct TerminalEvidenceAcknowledgeOptions {
+    #[napi(js_name = "pendingToken")]
+    pub pending_token: String,
 }
 
 /// Rust-side execution witness: how many calls of each verb this central
@@ -3031,6 +4669,10 @@ fn fault_op(name: &str) -> std::result::Result<FaultOp, DispatchError> {
         "write-readiness" => Ok(FaultOp::WriteReadiness),
         "subscribe" => Ok(FaultOp::Subscribe),
         "unsubscribe" => Ok(FaultOp::Unsubscribe),
+        "ordered-open" => Ok(FaultOp::OrderedOpen),
+        "ordered-marker-before-admission" => Ok(FaultOp::OrderedMarkerBeforeAdmission),
+        "ordered-marker-start" => Ok(FaultOp::OrderedMarkerStart),
+        "ordered-marker-cancel" => Ok(FaultOp::OrderedMarkerCancel),
         "mtu" => Ok(FaultOp::Mtu),
         "adapter-name" => Ok(FaultOp::AdapterName),
         "rssi" => Ok(FaultOp::Rssi),
@@ -3091,8 +4733,19 @@ fn retain_parameter_failures_at_fence(
 #[napi]
 pub struct UbmCentral {
     central: DesktopCentral<DispatchRadio>,
+    /// Host-owned durable terminal evidence. It is intentionally separate
+    /// from the radio and central: source activation reserves through this
+    /// owner before it admits any terminal-bearing stream.
+    terminal_evidence: Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>,
+    /// Source bindings are established only after the preactivation attach
+    /// succeeds. They remain until their terminal is durably committed.
+    scan_terminal_evidence: StdMutex<HashMap<String, TerminalEvidenceBinding>>,
+    pending_scan_terminals: StdMutex<VecDeque<ScanTerminalEvent>>,
+    subscription_terminal_evidence: StdMutex<HashMap<String, TerminalEvidenceBinding>>,
+    pending_subscription_terminals: StdMutex<HashMap<String, PendingSubscriptionTerminal>>,
     continuation: ubm_desktop::continuation_adapter::DesktopContinuation,
     lifecycle: AsyncMutex<broadcast::Receiver<LifecycleEvent>>,
+    source_uncertainty: AsyncMutex<broadcast::Receiver<SourceUncertaintyEvent>>,
     adapter: AsyncMutex<broadcast::Receiver<AdapterEvent>>,
     security: AsyncMutex<broadcast::Receiver<SecurityEvent>>,
     write_readiness: AsyncMutex<broadcast::Receiver<WriteReadinessEvent>>,
@@ -3102,9 +4755,139 @@ pub struct UbmCentral {
     adapter_resets: AsyncMutex<broadcast::Receiver<AdapterResetEvent>>,
     tickets: StdMutex<HashMap<String, TicketRegistration>>,
     next_ticket: AtomicU64,
+    ordered_recording_starts: StdMutex<HashMap<u64, Arc<AsyncMutex<OrderedRecordingStartSlot>>>>,
+    recording_reclaim_sessions: Arc<StdMutex<std::collections::HashSet<(String, String)>>>,
+    recording_reclaim_requests:
+        StdMutex<HashMap<(String, String, String), RecordingReclaimHostReceipt>>,
+    next_ordered_recording_start: AtomicU64,
+    recording_start_gate: AsyncMutex<()>,
+    process_closing: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    ordered_recording_start_panic: AtomicU64,
     counters: DispatchCounters,
     generation: StdMutex<Option<Arc<dyn PairingGenerationController>>>,
     waker: Arc<EventWaker>,
+}
+
+async fn recorder_marker_authority(
+    central: &UbmCentral,
+    id: &str,
+    peer: &str,
+    lease: &str,
+) -> Result<Arc<ubm_desktop::marker_reservation::MarkerReservationOwner<DispatchRadio>>> {
+    if !central
+        .recording_reclaim_sessions
+        .lock()
+        .map_err(|_| {
+            to_napi(DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Cleanup.as_str(),
+                "dispatch.recording-marker.session",
+                "recording session registry interrupted",
+            ))
+        })?
+        .contains(&(id.to_owned(), lease.to_owned()))
+    {
+        return Err(to_napi(DispatchError::new(
+            BleErrorCode::OwnershipDenied.as_str(),
+            BleErrorDomain::Gatt.as_str(),
+            "dispatch.recording-marker.session",
+            "recording session is not authorized",
+        )));
+    }
+    let registry = central.continuation.engine.recording_registry();
+    let owner = registry
+        .ordered_owner(id, &central.central)
+        .map_err(|_| {
+            to_napi(DispatchError::new(
+                BleErrorCode::PlatformFailure.as_str(),
+                BleErrorDomain::Platform.as_str(),
+                "dispatch.recording-marker.owner",
+                "recording owner lookup failed",
+            ))
+        })?
+        .ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::OwnershipDenied.as_str(),
+                BleErrorDomain::Gatt.as_str(),
+                "dispatch.recording-marker.owner",
+                "recording owner unavailable",
+            ))
+        })?;
+    if owner.peer_id() != peer {
+        return Err(to_napi(DispatchError::new(
+            BleErrorCode::OwnershipDenied.as_str(),
+            BleErrorDomain::Gatt.as_str(),
+            "dispatch.recording-marker.owner",
+            "recording peer does not match",
+        )));
+    }
+    owner
+        .marker_reservation_owner()
+        .await
+        .map_err(|error| match error {
+            ubm_desktop::ordered_recording::RecordingError::Source(source) => fail(source),
+            _ => to_napi(DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.recording-marker.owner",
+                "recording owner unavailable",
+            )),
+        })
+}
+
+async fn recorder_reclaim_authority(
+    central: &UbmCentral,
+    options: &RecordingReclaimOptions,
+) -> Result<Arc<ubm_desktop::reclaim_reservation::ReclaimReservationOwner<DispatchRadio>>> {
+    let registry = central.continuation.engine.recording_registry();
+    let owner = registry
+        .ordered_owner(&options.recording_id, &central.central)
+        .map_err(|_| {
+            to_napi(DispatchError::new(
+                BleErrorCode::PlatformFailure.as_str(),
+                BleErrorDomain::Platform.as_str(),
+                "dispatch.recording-reclaim.owner",
+                "recording owner lookup failed",
+            ))
+        })?
+        .ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::OwnershipDenied.as_str(),
+                BleErrorDomain::Gatt.as_str(),
+                "dispatch.recording-reclaim.owner",
+                "recording owner unavailable",
+            ))
+        })?;
+    owner
+        .reclaim_reservation_owner(&options.capability)
+        .await
+        .map_err(|error| match error {
+            ubm_desktop::ordered_recording::RecordingError::Source(source) => fail(source),
+            _ => to_napi(DispatchError::new(
+                BleErrorCode::OwnershipDenied.as_str(),
+                BleErrorDomain::Gatt.as_str(),
+                "dispatch.recording-reclaim.owner",
+                "recording capability denied",
+            )),
+        })
+}
+
+fn reclaim_status_wire(
+    status: ubm_desktop::reclaim_reservation::ReclaimReservationStatus,
+) -> String {
+    use ubm_desktop::reclaim_reservation::ReclaimReservationStatus as S;
+    match status {
+        S::Reserved => serde_json::json!({"state":"reserved","error":null,"mappingCommitted":false}),
+        S::Pending => serde_json::json!({"state":"pending","error":null,"mappingCommitted":false}),
+        S::Ready => serde_json::json!({"state":"ready","error":null,"mappingCommitted":false}),
+        S::Committed => serde_json::json!({"state":"committed","error":null,"mappingCommitted":true}),
+        S::Releasing { mapping_committed } => serde_json::json!({"state":"releasing","error":null,"mappingCommitted":mapping_committed}),
+        S::Released { mapping_committed } => serde_json::json!({"state":"released","error":null,"mappingCommitted":mapping_committed}),
+        S::Retired { mapping_committed } => serde_json::json!({"state":"retired","error":null,"mappingCommitted":mapping_committed}),
+        S::ReleaseFailed { mapping_committed, error } => serde_json::json!({"state":"release-failed","error":DispatchError::from(error).wire_message(),"mappingCommitted":mapping_committed}),
+        S::Failed(error) => serde_json::json!({"state":"failed","error":DispatchError::from(error).wire_message(),"mappingCommitted":false}),
+    }.to_string()
 }
 
 /// Wakes the host when the central has new work (an advertisement, a
@@ -3163,11 +4946,161 @@ impl EventWaker {
 }
 
 impl UbmCentral {
-    fn from_central(central: DesktopCentral<DispatchRadio>, waker: Arc<EventWaker>) -> Self {
+    fn subscription_terminal_key(
+        peer_id: &str,
+        selector: &SelectorInput,
+        consumer: &str,
+    ) -> String {
+        format!(
+            "{}\u{0}{:?}\u{0}{:?}\u{0}{:?}\u{0}{:?}\u{0}{}",
+            peer_id,
+            selector.service_uuid,
+            selector.service_occurrence,
+            selector.characteristic_uuid,
+            selector.characteristic_occurrence,
+            consumer
+        )
+    }
+    fn commit_scan_terminal_evidence(
+        &self,
+        event: &ScanTerminalEvent,
+    ) -> std::result::Result<Option<TerminalEvidenceReceiptInfo>, DispatchError> {
+        let binding = self
+            .scan_terminal_evidence
+            .lock()
+            .map_err(|_| {
+                DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    "dispatch.take-scan-terminal-event",
+                    "terminal evidence binding lock failed",
+                )
+            })?
+            .get(event.operation_id.as_str())
+            .cloned();
+        let Some(binding) = binding else {
+            return Ok(None);
+        };
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                "dispatch.take-scan-terminal-event",
+                "terminal evidence binding outlived its ledger",
+            )
+        })?;
+        // Keep this representation byte-for-byte aligned with
+        // `encodeTerminalEvidence`: JSON maps serialize in lexical key order,
+        // and the terminal snapshot contains only its public fields.
+        let canonical = serde_json::to_vec(&serde_json::json!({
+            "formatVersion": 1,
+            "scope": {
+                "managerId": binding.scope.manager_id,
+                "operationId": binding.scope.operation_id,
+                "incarnation": binding.scope.incarnation,
+            },
+            "terminal": {
+                "kind": "terminal",
+                "reason": if event.aborted { "source-failed" } else { "closed" },
+                "droppedItems": 0,
+                "droppedBytes": 0,
+                "replacedItems": 0,
+            },
+        }))
+        .map_err(|_| {
+            DispatchError::new(
+                BleErrorCode::PlatformFailure.as_str(),
+                BleErrorDomain::Platform.as_str(),
+                "dispatch.take-scan-terminal-event",
+                "terminal evidence encoding failed",
+            )
+        })?;
+        let digest: [u8; 32] = Sha256::digest(&canonical).into();
+        let committed = ledger
+            .commit(&binding.reservation_id, &canonical, digest)
+            .map_err(|error| terminal_evidence_error(error, "dispatch.take-scan-terminal-event"))?;
+        self.scan_terminal_evidence
+            .lock()
+            .map_err(|_| {
+                DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    "dispatch.take-scan-terminal-event",
+                    "terminal evidence binding lock failed",
+                )
+            })?
+            .remove(event.operation_id.as_str());
+        Ok(Some(TerminalEvidenceReceiptInfo {
+            producer: binding.scope.producer,
+            reference: committed.reference,
+            byte_length: committed.byte_length.to_string(),
+            digest: terminal_digest_hex(committed.digest),
+            format_version: u32::from(committed.format_version),
+            durability: "committed".to_owned(),
+            scope: TerminalEvidenceScopeInput {
+                manager_id: binding.scope.manager_id,
+                operation_id: binding.scope.operation_id,
+                incarnation: binding.scope.incarnation,
+            },
+        }))
+    }
+
+    /// Fence source activation to the exact reservation that the trusted host
+    /// created before it called the source entrypoint.  In particular this is
+    /// deliberately an `attach`, never `reserve`: accepting a scope here must
+    /// not allocate a second slot or let a caller choose an arbitrary id.
+    fn attach_terminal_evidence_scope(
+        &self,
+        producer: &str,
+        scope: Option<&TerminalEvidenceScopeInput>,
+        operation: &'static str,
+    ) -> std::result::Result<Option<TerminalEvidenceBinding>, DispatchError> {
+        let Some(scope) = scope else {
+            return Ok(None);
+        };
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                operation,
+                "trusted terminal evidence storage was not configured",
+            )
+        })?;
+        ledger
+            .attach(
+                &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                    producer: producer.to_owned(),
+                    manager_id: scope.manager_id.clone(),
+                    operation_id: scope.operation_id.clone(),
+                    incarnation: scope.incarnation.clone(),
+                },
+            )
+            .map(|reservation| {
+                Some(TerminalEvidenceBinding {
+                    reservation_id: reservation.reservation_id,
+                    scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: producer.to_owned(),
+                        manager_id: scope.manager_id.clone(),
+                        operation_id: scope.operation_id.clone(),
+                        incarnation: scope.incarnation.clone(),
+                    },
+                })
+            })
+            .map_err(|error| terminal_evidence_error(error, operation))
+    }
+
+    fn from_central(
+        central: DesktopCentral<DispatchRadio>,
+        waker: Arc<EventWaker>,
+        terminal_evidence: Option<
+            Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>,
+        >,
+    ) -> Self {
         // Receivers subscribe before the central is handed to JS: no
         // lifecycle or adapter event can be published unobserved between
         // open and the first take.
         let lifecycle = AsyncMutex::new(central.lifecycle_events());
+        let source_uncertainty = AsyncMutex::new(central.source_uncertainty_events());
         let adapter = AsyncMutex::new(central.adapter_events());
         let security = AsyncMutex::new(central.security_events());
         let write_readiness = AsyncMutex::new(central.write_readiness_events());
@@ -3175,12 +5108,18 @@ impl UbmCentral {
         let scan_terminals = AsyncMutex::new(central.scan_terminal_events());
         let adapter_resets = AsyncMutex::new(central.adapter_reset_events());
         Self {
+            terminal_evidence,
+            scan_terminal_evidence: StdMutex::new(HashMap::new()),
+            pending_scan_terminals: StdMutex::new(VecDeque::new()),
+            subscription_terminal_evidence: StdMutex::new(HashMap::new()),
+            pending_subscription_terminals: StdMutex::new(HashMap::new()),
             continuation: ubm_desktop::continuation_adapter::DesktopContinuation::new(
                 central.clone(),
                 desktop_runtime(),
             ),
             central,
             lifecycle,
+            source_uncertainty,
             adapter,
             security,
             write_readiness,
@@ -3190,6 +5129,14 @@ impl UbmCentral {
             adapter_resets,
             tickets: StdMutex::new(HashMap::new()),
             next_ticket: AtomicU64::new(1),
+            ordered_recording_starts: StdMutex::new(HashMap::new()),
+            recording_reclaim_sessions: Arc::new(StdMutex::new(std::collections::HashSet::new())),
+            recording_reclaim_requests: StdMutex::new(HashMap::new()),
+            next_ordered_recording_start: AtomicU64::new(1),
+            recording_start_gate: AsyncMutex::new(()),
+            process_closing: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            ordered_recording_start_panic: AtomicU64::new(0),
             counters: DispatchCounters::default(),
             generation: StdMutex::new(None),
             waker,
@@ -3323,6 +5270,68 @@ impl UbmCentral {
             parse_connection_policy(options.connection_policy, &options.platform)
                 .map_err(to_napi)?;
         let bus = parse_bluez_bus(options.bluez_bus.as_deref()).map_err(to_napi)?;
+        let terminal_evidence = open_terminal_evidence_ledger(
+            options.terminal_evidence_directory.as_deref(),
+            options.terminal_evidence_max_bytes.as_deref(),
+            "dispatch.terminal-evidence-store",
+        )
+        .map_err(to_napi)?;
+        let failure_evidence_store = match (
+            options.failure_evidence_directory.as_deref(),
+            options.failure_evidence_max_bytes.as_deref(),
+        ) {
+            (None, None) => None,
+            (Some(directory), Some(max_bytes)) if !directory.is_empty() => {
+                let max_bytes = max_bytes.parse::<u64>().map_err(|_| {
+                    to_napi(DispatchError::new(
+                        BleErrorCode::ArgumentInvalid.as_str(),
+                        BleErrorDomain::Restoration.as_str(),
+                        "dispatch.failure-evidence-store",
+                        "failureEvidenceMaxBytes must be a positive integer",
+                    ))
+                })?;
+                let max_bytes = usize::try_from(max_bytes).map_err(|_| {
+                    to_napi(DispatchError::new(
+                        BleErrorCode::ArgumentInvalid.as_str(),
+                        BleErrorDomain::Restoration.as_str(),
+                        "dispatch.failure-evidence-store",
+                        "failureEvidenceMaxBytes exceeds this host's supported size",
+                    ))
+                })?;
+                if max_bytes == 0 {
+                    return Err(to_napi(DispatchError::new(
+                        BleErrorCode::ArgumentInvalid.as_str(),
+                        BleErrorDomain::Restoration.as_str(),
+                        "dispatch.failure-evidence-store",
+                        "failureEvidenceMaxBytes must be positive",
+                    )));
+                }
+                Some(Arc::new(
+                    btleplug::ubm_peer_notification_ingress::FileFailureEvidenceStore::open(
+                        directory, max_bytes,
+                    )
+                    .map_err(|error| {
+                        to_napi(DispatchError::new(
+                            BleErrorCode::PlatformFailure.as_str(),
+                            BleErrorDomain::Restoration.as_str(),
+                            "dispatch.failure-evidence-store",
+                            error.to_string(),
+                        ))
+                    })?,
+                )
+                    as Arc<
+                        dyn btleplug::ubm_peer_notification_ingress::FailureEvidenceStore,
+                    >)
+            }
+            _ => {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::ArgumentInvalid.as_str(),
+                    BleErrorDomain::Restoration.as_str(),
+                    "dispatch.failure-evidence-store",
+                    "failure evidence directory and byte limit must be supplied together",
+                )));
+            }
+        };
         let mut profile = CentralProfile::desktop(&options.owner);
         let waker = Arc::new(EventWaker::default());
         profile.observer = Some(EventWaker::observer(&waker));
@@ -3338,17 +5347,18 @@ impl UbmCentral {
         // central's event loop on a dead handle. Both open on the shared
         // desktop executor, which outlives every central.
         let central = open_on_desktop_runtime(async move {
-            let radio = BtleplugRadio::open_on_with_policy(
+            let radio = BtleplugRadio::open_on_with_policy_and_failure_evidence_store(
                 desktop_runtime(),
                 profile.adapter_id.clone(),
                 profile.bluez_bus,
                 connection_policy,
+                failure_evidence_store,
             )
             .await?;
             DesktopCentral::open_with(DispatchRadio::Radio(Box::new(radio)), profile).await
         })
         .await?;
-        Ok(Self::from_central(central, waker))
+        Ok(Self::from_central(central, waker, terminal_evidence))
     }
 
     /// Open on the deterministic synthetic radio (hardware-free CI leg).
@@ -3368,12 +5378,25 @@ impl UbmCentral {
         let waker = Arc::new(EventWaker::default());
         profile.observer = Some(EventWaker::observer(&waker));
         profile.identity = Arc::new(ubm_desktop::DesktopIdentity::new("synthetic", &owner));
-        let (platform, pairing_generation) = options.map_or((None, false), |options| {
+        let (
+            platform,
+            pairing_generation,
+            terminal_evidence_directory,
+            terminal_evidence_max_bytes,
+        ) = options.map_or((None, false, None, None), |options| {
             (
                 options.platform,
                 options.pairing_generation.unwrap_or(false),
+                options.terminal_evidence_directory,
+                options.terminal_evidence_max_bytes,
             )
         });
+        let terminal_evidence = open_terminal_evidence_ledger(
+            terminal_evidence_directory.as_deref(),
+            terminal_evidence_max_bytes.as_deref(),
+            "dispatch.open-synthetic.terminal-evidence-store",
+        )
+        .map_err(to_napi)?;
         profile.register_capabilities =
             synthetic_registration(platform.as_deref(), pairing_generation).map_err(to_napi)?;
         // The synthetic radio models the named platform's legacy admission
@@ -3391,7 +5414,377 @@ impl UbmCentral {
             DesktopCentral::open_with(DispatchRadio::Synthetic(Box::new(radio)), profile).await
         })
         .await?;
-        Ok(Self::from_central(central, waker))
+        Ok(Self::from_central(central, waker, terminal_evidence))
+    }
+
+    /// Reserve host-owned durable capacity before shared core activates a
+    /// scan or subscription source. The opaque reservation id is derived
+    /// only from the producer and exact scope; callers never choose paths.
+    #[napi(catch_unwind)]
+    pub async fn reserve_terminal_evidence(
+        &self,
+        options: TerminalEvidenceReserveOptions,
+    ) -> Result<TerminalEvidenceReservationInfo> {
+        const OP: &str = "dispatch.terminal-evidence.reserve";
+        if options.format_version != 1
+            || !matches!(options.producer.as_str(), "scan" | "subscription")
+        {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "producer must be scan or subscription and formatVersion must be 1",
+            )));
+        }
+        let maximum_bytes =
+            parse_terminal_evidence_maximum(&options.maximum_bytes, OP).map_err(to_napi)?;
+        let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+            producer: options.producer,
+            manager_id: options.scope.manager_id,
+            operation_id: options.scope.operation_id,
+            incarnation: options.scope.incarnation,
+        };
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        let reservation = ledger
+            .reserve(&scope, maximum_bytes)
+            .map_err(|error| to_napi(terminal_evidence_error(error, OP)))?;
+        Ok(TerminalEvidenceReservationInfo {
+            reservation_id: reservation.reservation_id,
+            maximum_bytes: reservation.maximum_bytes.to_string(),
+        })
+    }
+
+    /// Commit exactly the bytes supplied by the terminal source. Quota and
+    /// storage unavailability remain explicit result states, never a memory
+    /// fallback or silently dropped evidence.
+    #[napi(catch_unwind)]
+    pub async fn commit_terminal_evidence(
+        &self,
+        options: TerminalEvidenceCommitOptions,
+    ) -> Result<TerminalEvidenceCommitInfo> {
+        const OP: &str = "dispatch.terminal-evidence.commit";
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        let maximum = ledger
+            .reservation_maximum_bytes(&options.reservation_id)
+            .map_err(|error| to_napi(terminal_evidence_error(error, OP)))?;
+        if options.canonical_bytes.len() as u64 > maximum {
+            return Ok(TerminalEvidenceCommitInfo {
+                kind: "refused".to_owned(),
+                reason: Some("quota-exhausted".to_owned()),
+                reference: None,
+                byte_length: None,
+                digest: None,
+                format_version: None,
+                durability: None,
+            });
+        }
+        let digest = terminal_digest(&options.digest, OP).map_err(to_napi)?;
+        match ledger.commit(&options.reservation_id, &options.canonical_bytes, digest) {
+            Ok(committed) => Ok(TerminalEvidenceCommitInfo {
+                kind: "committed".to_owned(),
+                reason: None,
+                reference: Some(committed.reference),
+                byte_length: Some(committed.byte_length.to_string()),
+                digest: Some(terminal_digest_hex(committed.digest)),
+                format_version: Some(u32::from(committed.format_version)),
+                durability: Some("committed".to_owned()),
+            }),
+            Err(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Quota) => {
+                Ok(TerminalEvidenceCommitInfo {
+                    kind: "refused".to_owned(),
+                    reason: Some("quota-exhausted".to_owned()),
+                    reference: None,
+                    byte_length: None,
+                    digest: None,
+                    format_version: None,
+                    durability: None,
+                })
+            }
+            Err(
+                ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Busy
+                | ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Storage(_)
+                | ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Corrupt,
+            ) => Ok(TerminalEvidenceCommitInfo {
+                kind: "refused".to_owned(),
+                reason: Some("storage-unavailable".to_owned()),
+                reference: None,
+                byte_length: None,
+                digest: None,
+                format_version: None,
+                durability: None,
+            }),
+            Err(error) => Err(to_napi(terminal_evidence_error(error, OP))),
+        }
+    }
+
+    /// Recover exact committed bytes under the caller's explicit bound.
+    #[napi(catch_unwind)]
+    pub async fn read_terminal_evidence(
+        &self,
+        reference: String,
+        maximum_bytes: String,
+    ) -> Result<TerminalEvidenceReadInfo> {
+        const OP: &str = "dispatch.terminal-evidence.read";
+        let maximum_bytes = parse_terminal_evidence_maximum(&maximum_bytes, OP).map_err(to_napi)?;
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        match ledger.read(&reference, maximum_bytes) {
+            Ok((bytes, digest)) => Ok(TerminalEvidenceReadInfo {
+                kind: "committed".to_owned(),
+                canonical_bytes: Some(Buffer::from(bytes)),
+                digest: Some(terminal_digest_hex(digest)),
+            }),
+            Err(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Missing) => {
+                Ok(TerminalEvidenceReadInfo {
+                    kind: "missing".to_owned(),
+                    canonical_bytes: None,
+                    digest: None,
+                })
+            }
+            Err(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Unresolved) => {
+                Ok(TerminalEvidenceReadInfo {
+                    kind: "unresolved".to_owned(),
+                    canonical_bytes: None,
+                    digest: None,
+                })
+            }
+            Err(error) => Err(to_napi(terminal_evidence_error(error, OP))),
+        }
+    }
+
+    /// Relinquish only a transient reservation lease. This frees an unused
+    /// reservation, while staged and committed bytes remain durably
+    /// recoverable until the authenticated recovery recipient acknowledges
+    /// their opaque reference.
+    #[napi(catch_unwind)]
+    pub async fn release_terminal_evidence(&self, reservation_id: String) -> Result<()> {
+        const OP: &str = "dispatch.terminal-evidence.release";
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        ledger
+            .abandon(&reservation_id)
+            .map(|_| ())
+            .map_err(|error| to_napi(terminal_evidence_error(error, OP)))
+    }
+
+    /// Retire committed terminal evidence after the authorized recovery
+    /// recipient has explicitly acknowledged its opaque reference. Retrying a
+    /// completed acknowledgement is idempotent; a failed acknowledgement
+    /// leaves the durable bytes and quota intact for a later retry.
+    #[napi(catch_unwind)]
+    pub async fn acknowledge_recovered_terminal_evidence(
+        &self,
+        options: TerminalEvidenceRecoveryAcknowledgeOptions,
+    ) -> Result<()> {
+        const OP: &str = "dispatch.terminal-evidence.recovery-ack";
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        ledger
+            .acknowledge_recovered(
+                &options.lease_id,
+                &options.reservation_id,
+                &options.reference,
+                &options.producer,
+                &options.recipient,
+            )
+            .map_err(|error| to_napi(terminal_evidence_error(error, OP)))
+    }
+
+    /// Promote exact bytes selected by the host-private recovery lease.
+    #[napi(catch_unwind)]
+    pub async fn commit_recovered_terminal_evidence(
+        &self,
+        options: TerminalEvidenceRecoveredCommitOptions,
+    ) -> Result<TerminalEvidenceCommitInfo> {
+        const OP: &str = "dispatch.terminal-evidence.recover-commit";
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        let digest = terminal_digest(&options.digest, OP).map_err(to_napi)?;
+        match ledger.commit_recovered(
+            &options.lease_id,
+            &options.reservation_id,
+            &options.canonical_bytes,
+            digest,
+        ) {
+            Ok(committed) => Ok(TerminalEvidenceCommitInfo {
+                kind: "committed".to_owned(),
+                reason: None,
+                reference: Some(committed.reference),
+                byte_length: Some(committed.byte_length.to_string()),
+                digest: Some(terminal_digest_hex(committed.digest)),
+                format_version: Some(u32::from(committed.format_version)),
+                durability: Some("committed".to_owned()),
+            }),
+            Err(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Quota) => {
+                Ok(TerminalEvidenceCommitInfo {
+                    kind: "refused".to_owned(),
+                    reason: Some("quota-exhausted".to_owned()),
+                    reference: None,
+                    byte_length: None,
+                    digest: None,
+                    format_version: None,
+                    durability: None,
+                })
+            }
+            Err(
+                ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Busy
+                | ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Storage(_)
+                | ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Corrupt,
+            ) => Ok(TerminalEvidenceCommitInfo {
+                kind: "refused".to_owned(),
+                reason: Some("storage-unavailable".to_owned()),
+                reference: None,
+                byte_length: None,
+                digest: None,
+                format_version: None,
+                durability: None,
+            }),
+            Err(error) => Err(to_napi(terminal_evidence_error(error, OP))),
+        }
+    }
+
+    /// Trusted-host recovery enumeration. The recipient is chosen by the host
+    /// from its authenticated caller identity, never renderer IPC.
+    #[napi(catch_unwind)]
+    pub async fn recover_terminal_evidence(
+        &self,
+        options: TerminalEvidenceRecoverOptions,
+    ) -> Result<Vec<TerminalEvidenceRecoverableInfo>> {
+        const OP: &str = "dispatch.terminal-evidence.recover";
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        Ok(ledger
+            .recoverable_page_for_lease(
+                &options.producer,
+                &options.recipient,
+                &options.lease_id,
+                u32::MAX,
+                u64::MAX,
+            )
+            .map_err(|error| to_napi(terminal_evidence_error(error, OP)))?
+            .entries
+            .into_iter()
+            .map(terminal_evidence_recoverable_info)
+            .collect())
+    }
+
+    /// Recovery enumeration that reports contended producer rows instead of
+    /// flattening them into an empty successful result.
+    #[napi(catch_unwind)]
+    pub async fn recover_terminal_evidence_with_status(
+        &self,
+        options: TerminalEvidenceRecoverOptions,
+    ) -> Result<TerminalEvidenceRecoverablePageInfo> {
+        const OP: &str = "dispatch.terminal-evidence.recover-status";
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        let page = ledger
+            .recoverable_page_for_lease_with_contention(
+                &options.producer,
+                &options.recipient,
+                &options.lease_id,
+                u32::MAX,
+                u64::MAX,
+            )
+            .map_err(|error| to_napi(terminal_evidence_error(error, OP)))?;
+        Ok(TerminalEvidenceRecoverablePageInfo {
+            entries: page
+                .entries
+                .into_iter()
+                .map(terminal_evidence_recoverable_info)
+                .collect(),
+            busy: page.busy,
+        })
+    }
+
+    /// Relinquish only rows claimed by one private recovery controller.
+    #[napi(catch_unwind)]
+    pub async fn release_terminal_evidence_recovery_lease(&self, lease_id: String) -> Result<()> {
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                "dispatch.terminal-evidence.recover-release",
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        ledger.release_recovery_lease(&lease_id).map_err(|error| {
+            to_napi(terminal_evidence_error(
+                error,
+                "dispatch.terminal-evidence.recover-release",
+            ))
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn stage_terminal_evidence(
+        &self,
+        reservation_id: String,
+        recipient: String,
+        canonical_bytes: Buffer,
+    ) -> Result<()> {
+        const OP: &str = "dispatch.terminal-evidence.stage";
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        ledger
+            .stage(&reservation_id, &recipient, canonical_bytes.as_ref())
+            .map_err(|error| to_napi(terminal_evidence_error(error, OP)))
     }
 
     /// List the adapters the OS radio stack exposes, in OS order. A listing
@@ -3646,6 +6039,43 @@ impl UbmCentral {
                 requested: None,
                 missed: None,
                 platform: None,
+            })),
+        }
+    }
+
+    /// Take one graph-less native source diagnostic. It does not represent a
+    /// connection or database transition and must never be used to mutate a
+    /// peer selected only by UUID.
+    #[napi(catch_unwind)]
+    pub async fn take_source_uncertainty_event(
+        &self,
+    ) -> Result<Option<SourceUncertaintyEventInfo>> {
+        const OP: &str = "dispatch.take-source-uncertainty-event";
+        let mut receiver = self.source_uncertainty.lock().await;
+        match receiver.try_recv() {
+            Ok(event) => source_uncertainty_event_wire(event)
+                .map(Some)
+                .map_err(to_napi),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Lagged(missed)) => Ok(Some(SourceUncertaintyEventInfo {
+                kind: "lagged".to_owned(),
+                sequence: None,
+                peer_id: None,
+                code: None,
+                operation: None,
+                detail: None,
+                platform: None,
+                missed: Some(number_wire(missed, OP).map_err(to_napi)?),
+            })),
+            Err(TryRecvError::Closed) => Ok(Some(SourceUncertaintyEventInfo {
+                kind: "closed".to_owned(),
+                sequence: None,
+                peer_id: None,
+                code: None,
+                operation: None,
+                detail: None,
+                platform: None,
+                missed: None,
             })),
         }
     }
@@ -4219,24 +6649,155 @@ impl UbmCentral {
             operation_id: None,
             aborted: None,
             detail: None,
+            terminal_evidence: None,
             missed,
         };
-        match receiver.try_recv() {
-            Ok(event) => Ok(Some(ScanTerminalEventInfo {
-                kind: "terminal".to_owned(),
-                sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
-                operation_id: Some(event.operation_id.as_str().to_owned()),
-                aborted: Some(event.aborted),
-                detail: Some(event.detail),
-                missed: None,
-            })),
-            Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Lagged(missed)) => Ok(Some(gap(
-                "lagged",
-                Some(number_wire(missed, OP).map_err(to_napi)?),
-            ))),
-            Err(TryRecvError::Closed) => Ok(Some(gap("closed", None))),
+        let event = if let Some(event) = self
+            .pending_scan_terminals
+            .lock()
+            .map_err(|_| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "terminal retry queue lock failed",
+                ))
+            })?
+            .pop_front()
+        {
+            event
+        } else {
+            match receiver.try_recv() {
+                Ok(event) => event,
+                Err(TryRecvError::Empty) => return Ok(None),
+                Err(TryRecvError::Lagged(missed)) => {
+                    return Ok(Some(gap(
+                        "lagged",
+                        Some(number_wire(missed, OP).map_err(to_napi)?),
+                    )))
+                }
+                Err(TryRecvError::Closed) => return Ok(Some(gap("closed", None))),
+            }
+        };
+        let binding = self
+            .scan_terminal_evidence
+            .lock()
+            .map_err(|_| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "terminal evidence binding lock failed",
+                ))
+            })?
+            .get(event.operation_id.as_str())
+            .cloned();
+        // A destructive broadcast receive must not become an acknowledgement:
+        // the exact terminal remains first until its JS canonical commit is
+        // confirmed with the token below.
+        if binding.is_some() {
+            self.pending_scan_terminals
+                .lock()
+                .map_err(|_| {
+                    to_napi(DispatchError::new(
+                        BleErrorCode::LifecycleInvalidState.as_str(),
+                        BleErrorDomain::Stream.as_str(),
+                        OP,
+                        "terminal retry queue lock failed",
+                    ))
+                })?
+                .push_front(event.clone());
         }
+        Ok(Some(ScanTerminalEventInfo {
+            kind: "terminal".to_owned(),
+            sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
+            operation_id: Some(event.operation_id.as_str().to_owned()),
+            aborted: Some(event.aborted),
+            detail: Some(event.detail),
+            terminal_evidence: binding.map(|binding| TerminalEvidencePendingInfo {
+                reservation_id: binding.reservation_id,
+                pending_token: format!("scan:{}:{}", event.operation_id.as_str(), event.sequence),
+            }),
+            missed: None,
+        }))
+    }
+
+    /// Acknowledge exactly the scan terminal whose canonical bytes JavaScript
+    /// committed. A refusal or failed commit deliberately leaves it pending.
+    #[napi(catch_unwind)]
+    pub fn acknowledge_terminal_evidence(
+        &self,
+        options: TerminalEvidenceAcknowledgeOptions,
+    ) -> Result<()> {
+        const OP: &str = "dispatch.terminal-evidence.acknowledge";
+        let mut pending = self.pending_scan_terminals.lock().map_err(|_| {
+            to_napi(DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "terminal retry queue lock failed",
+            ))
+        })?;
+        let Some(event) = pending.front() else {
+            drop(pending);
+            let mut subscriptions = self.pending_subscription_terminals.lock().map_err(|_| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "subscription terminal lock failed",
+                ))
+            })?;
+            let key = subscriptions.iter().find_map(|(key, value)| {
+                (format!("subscription:{}", value.binding.reservation_id) == options.pending_token)
+                    .then(|| key.clone())
+            });
+            let Some(key) = key else {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "no terminal evidence is pending",
+                )));
+            };
+            subscriptions.remove(&key);
+            self.subscription_terminal_evidence
+                .lock()
+                .map_err(|_| {
+                    to_napi(DispatchError::new(
+                        BleErrorCode::LifecycleInvalidState.as_str(),
+                        BleErrorDomain::Stream.as_str(),
+                        OP,
+                        "subscription binding lock failed",
+                    ))
+                })?
+                .remove(&key);
+            return Ok(());
+        };
+        let expected = format!("scan:{}:{}", event.operation_id.as_str(), event.sequence);
+        if options.pending_token != expected {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::OwnershipDenied.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "terminal evidence token does not own the pending terminal",
+            )));
+        }
+        let operation_id = event.operation_id.as_str().to_owned();
+        pending.pop_front();
+        drop(pending);
+        self.scan_terminal_evidence
+            .lock()
+            .map_err(|_| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "terminal evidence binding lock failed",
+                ))
+            })?
+            .remove(&operation_id);
+        Ok(())
     }
 
     /// Every resolved radio peer with the core's connection facts, ordered
@@ -4352,6 +6913,16 @@ impl UbmCentral {
     #[napi(catch_unwind)]
     pub async fn start_scan(&self, options: ScanOptions) -> Result<ScanSessionInfo> {
         use ubm_desktop::boundary::{WindowsScanOptions, WindowsScanningMode};
+        // This happens before control/admission and therefore before the
+        // radio can observe an active scan.  A missing, released, or foreign
+        // reservation is a refusal, not a best-effort diagnostic.
+        let terminal_evidence = self
+            .attach_terminal_evidence_scope(
+                "scan",
+                options.terminal_evidence_scope.as_ref(),
+                "dispatch.scan-start",
+            )
+            .map_err(to_napi)?;
         let windows = if options.winrt_scanning_mode.is_some()
             || options.winrt_allow_extended_advertisements.is_some()
         {
@@ -4399,6 +6970,19 @@ impl UbmCentral {
             )
             .await
             .map_err(fail)?;
+        if let Some(binding) = terminal_evidence {
+            self.scan_terminal_evidence
+                .lock()
+                .map_err(|_| {
+                    to_napi(DispatchError::new(
+                        BleErrorCode::LifecycleInvalidState.as_str(),
+                        BleErrorDomain::Stream.as_str(),
+                        "dispatch.scan-start",
+                        "terminal evidence binding lock failed",
+                    ))
+                })?
+                .insert(session.operation_id().as_str().to_owned(), binding);
+        }
         Ok(ScanSessionInfo {
             operation_id: session.operation_id().as_str().to_owned(),
         })
@@ -4509,9 +7093,86 @@ impl UbmCentral {
         Ok(ubm_desktop::continuation::envelope(result))
     }
 
+    /// Established retained-prefix V1 operation. It remains a distinct
+    /// method from V2 so an older bridge can neither request nor decode a
+    /// richer continuation claim.
+    #[napi(catch_unwind)]
+    pub async fn continuation_prepare_retained_claim_v1(
+        &self,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Result<String> {
+        let result = self
+            .continuation
+            .engine
+            .prepare_claim_versioned(
+                ubm_desktop::continuation::CONTINUATION_HANDOFF_V1,
+                max_items,
+                max_bytes,
+            )
+            .await;
+        Ok(ubm_desktop::continuation::envelope(result))
+    }
+
+    /// Explicit retained-prefix V2 negotiation. The caller must also use
+    /// the V2 notification recovery transport; V1 never receives V2
+    /// descriptor records.
+    #[napi(catch_unwind)]
+    pub async fn continuation_prepare_retained_claim_v2(
+        &self,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Result<String> {
+        let result = self
+            .continuation
+            .engine
+            .prepare_claim_versioned(
+                ubm_desktop::continuation::CONTINUATION_HANDOFF_V2,
+                max_items,
+                max_bytes,
+            )
+            .await;
+        Ok(ubm_desktop::continuation::envelope(result))
+    }
+
     #[napi(catch_unwind)]
     pub async fn continuation_acknowledge_claim(&self, token: String) -> Result<String> {
         let result = self.continuation.engine.acknowledge_claim(&token).await;
+        Ok(ubm_desktop::continuation::envelope(result))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn continuation_acknowledge_retained_claim_v1(
+        &self,
+        token: String,
+    ) -> Result<String> {
+        let result = self.continuation.engine.acknowledge_claim_v1(&token).await;
+        Ok(ubm_desktop::continuation::envelope(result))
+    }
+
+    /// Retires an acknowledged V1 retained-prefix receipt.  This remains a
+    /// separate bridge operation so the receipt owner is not implicitly
+    /// released when acknowledgement is retried after a lost response.
+    #[napi(catch_unwind)]
+    pub async fn continuation_retire_retained_claim_receipt_v1(
+        &self,
+        token: String,
+    ) -> Result<String> {
+        let result = self
+            .continuation
+            .engine
+            .retire_claim_receipt_v1(&token)
+            .await
+            .map(|()| serde_json::json!({}));
+        Ok(ubm_desktop::continuation::envelope(result))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn continuation_acknowledge_retained_claim_v2(
+        &self,
+        token: String,
+    ) -> Result<String> {
+        let result = self.continuation.engine.acknowledge_claim_v2(&token).await;
         Ok(ubm_desktop::continuation::envelope(result))
     }
 
@@ -4525,6 +7186,85 @@ impl UbmCentral {
     #[napi(catch_unwind)]
     pub fn continuation_recording_store(&self) -> crate::recording::ContinuationRecordingStore {
         crate::recording::ContinuationRecordingStore::from_engine(self.continuation.engine.clone())
+    }
+
+    /// Bind an already-open, host-authorized recording to retained peer-source
+    /// failure recovery. The caller supplies only the registry recording id;
+    /// filesystem paths and implicit journal creation never cross this route.
+    #[napi(catch_unwind)]
+    pub async fn attach_peer_failure_recovery_recording(&self, id: String) -> Result<()> {
+        let registry = self.continuation.engine.recording_registry();
+        let journal = ubm_desktop::continuation_journal::run_blocking_result(move || {
+            registry
+                .get(&id)
+                .map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+        let ledger = ubm_desktop::continuation_journal::run_blocking_result(move || {
+            journal
+                .peer_failure_recovery_ledger()
+                .map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+        self.central
+            .attach_peer_failure_recovery_ledger(ledger)
+            .await
+            .map_err(fail)
+    }
+
+    /// Trusted Node/main-process retry for offers retained after a transient
+    /// durable-stage refusal. It is intentionally not forwarded over IPC.
+    #[napi(catch_unwind)]
+    pub async fn retry_peer_failure_recovery_staging(&self) -> Result<u32> {
+        let staged = self
+            .central
+            .retry_pending_peer_failure_recoveries()
+            .await
+            .map_err(fail)?;
+        u32::try_from(staged).map_err(|_| Error::from_reason("peer failure retry count overflow"))
+    }
+
+    /// Enumerate durable recipient handles restored from the host-attached
+    /// recording. This is trusted main-process data: it exposes the original
+    /// opaque lease and provenance, never a substituted live subscription.
+    #[napi(catch_unwind)]
+    pub fn list_peer_notification_failure_recoveries(
+        &self,
+    ) -> Vec<DurablePeerSourceFailureRecoveryHandleInfo> {
+        self.central
+            .durable_peer_failure_recoveries()
+            .into_iter()
+            .flat_map(|occurrence| {
+                let producer_ack = match occurrence.producer_ack {
+                    ubm_desktop::central::DurablePeerFailureProducerAck::NotStarted => {
+                        "not-started"
+                    }
+                    ubm_desktop::central::DurablePeerFailureProducerAck::InFlight => "in-flight",
+                    ubm_desktop::central::DurablePeerFailureProducerAck::Committed => "committed",
+                }
+                .to_owned();
+                occurrence.recipients.into_iter().map(move |recipient| {
+                    let mut descriptor =
+                        peer_source_failure_descriptor_info(occurrence.descriptor.clone());
+                    descriptor.recipient_lease = Some(recipient.recipient_lease.clone());
+                    DurablePeerSourceFailureRecoveryHandleInfo {
+                        descriptor,
+                        peer_id: recipient.scope.0,
+                        service_uuid: recipient.scope.1,
+                        service_occurrence: recipient.scope.2.to_string(),
+                        characteristic_uuid: recipient.scope.3,
+                        characteristic_occurrence: recipient.scope.4.to_string(),
+                        consumer: recipient.consumer,
+                        recipient_lease: recipient.recipient_lease,
+                        contiguous_read: recipient.contiguous_read.to_string(),
+                        acknowledged: recipient.acknowledged,
+                        producer_ack: producer_ack.clone(),
+                    }
+                })
+            })
+            .collect()
     }
 
     #[napi(catch_unwind)]
@@ -4636,6 +7376,22 @@ impl UbmCentral {
     /// Release this caller's connection lease. `"released"` confirms that
     /// lease's release, not physical disconnection when another owner remains.
     #[napi(catch_unwind)]
+    pub async fn retain_connection_lease(
+        &self,
+        options: RetainConnectionLeaseOptions,
+    ) -> Result<()> {
+        self.central
+            .retain_connection_lease(
+                &options.peer_id,
+                &options.source_lease,
+                &options.destination_lease,
+                &options.connection_generation,
+            )
+            .await
+            .map_err(fail)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn disconnect(&self, options: LeaseOptions) -> Result<ConnectionReleaseInfo> {
         let ctl = self
             .control(
@@ -4716,7 +7472,11 @@ impl UbmCentral {
             .map_err(fail)?;
         let paths_registered =
             count_wire(report.paths_registered as u64, "dispatch.discover").map_err(to_napi)?;
-        Ok(DiscoveryInfo { paths_registered })
+        Ok(DiscoveryInfo {
+            paths_registered,
+            connection_generation: report.connection_generation,
+            database_generation: report.database_generation,
+        })
     }
 
     /// Read the peer's current discovery tree in registration order.
@@ -4917,10 +7677,1202 @@ impl UbmCentral {
             .map_err(fail)
     }
 
+    /// Ordered-group wire versions supported by this native binding.
+    #[napi(catch_unwind)]
+    pub fn ordered_group_wire_version(&self) -> u32 {
+        5
+    }
+
+    #[napi(catch_unwind)]
+    pub fn ordered_capacity_wire_version(&self) -> u32 {
+        1
+    }
+
+    /// Increase the budget of the exact retained collection and source generation.
+    #[napi(catch_unwind)]
+    pub async fn increase_ordered_byte_capacity(
+        &self,
+        options: OrderedCapacityOptions,
+    ) -> Result<OrderedCapacityResult> {
+        if options.wire_version != 1 {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.ordered.capacity.version",
+                "ordered capacity wire version must be 1",
+            )));
+        }
+        let id = ordered_u64(&options.collection_id, "dispatch.ordered.increase-capacity")
+            .map_err(to_napi)?;
+        let generation = match options.source_generation.kind.as_str() {
+            "counter" => ubm_core::ordered_notifications::SourceGeneration::Counter(
+                ordered_u64(
+                    &options.source_generation.value,
+                    "dispatch.ordered.increase-capacity",
+                )
+                .map_err(to_napi)?,
+            ),
+            "opaque" if !options.source_generation.value.is_empty() => {
+                ubm_core::ordered_notifications::SourceGeneration::Opaque(
+                    options.source_generation.value,
+                )
+            }
+            _ => {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::ArgumentInvalid.as_str(),
+                    BleErrorDomain::Gatt.as_str(),
+                    "dispatch.ordered.increase-capacity",
+                    "invalid source generation",
+                )));
+            }
+        };
+        let previous = self
+            .central
+            .increase_ordered_batch_byte_capacity(
+                &options.peer_id,
+                id,
+                &generation,
+                options.max_bytes as usize,
+            )
+            .await
+            .map_err(fail)?;
+        Ok(OrderedCapacityResult {
+            previous_max_bytes: previous as u32,
+            max_bytes: options.max_bytes,
+            maximum_max_bytes: ubm_core::contracts::MAX_STREAM_BYTE_CAPACITY as u32,
+        })
+    }
+
+    /// Exact metadata revision required before opening ordered sources.
+    #[napi(catch_unwind)]
+    pub fn ordered_metadata_version(&self) -> u32 {
+        2
+    }
+
+    /// Receipt schema emitted by this central's ordered recording owner.
+    #[napi(catch_unwind)]
+    pub fn ordered_recording_receipt_version(&self) -> u32 {
+        crate::recording::ordered_recording_receipt_version()
+    }
+
+    /// Reserve an opaque group identity before asynchronous setup begins.
+    #[napi(catch_unwind)]
+    pub fn reserve_ordered_group(&self, peer_id: String) -> Result<String> {
+        self.central
+            .reserve_ordered_batch(&peer_id)
+            .map(|id| id.to_string())
+            .map_err(fail)
+    }
+
+    /// Install one ordered source before enabling its members.
+    #[napi(catch_unwind)]
+    pub async fn open_ordered_group(&self, options: OrderedOpenOptions) -> Result<()> {
+        if options.wire_version != 5 || options.metadata_version != Some(2) {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.ordered.version",
+                "ordered group wire version must be 5 and metadata version must be 2",
+            )));
+        }
+        let id = ordered_u64(&options.collection_id, "dispatch.ordered.open").map_err(to_napi)?;
+        let mut requests = Vec::with_capacity(options.members.len());
+        for member in &options.members {
+            let member_id =
+                ordered_u64(&member.member_id, "dispatch.ordered.member").map_err(to_napi)?;
+            requests.push(ubm_desktop::central::OrderedClaimRequest {
+                member_id,
+                selector: selector_of(&member.selector).map_err(to_napi)?,
+                consumer: format!("ordered-{id}-{member_id}"),
+                delivery: delivery_mode(member.delivery_mode.as_deref()).map_err(to_napi)?,
+                preference: delivery_mode(member.preferred_delivery_mode.as_deref())
+                    .map_err(to_napi)?,
+            });
+        }
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "dispatch.ordered.open",
+            )
+            .map_err(to_napi)?
+            .with_connection_lease(options.lease);
+        self.central
+            .open_reserved_ordered_batch(
+                &options.peer_id,
+                id,
+                &options.connection_generation,
+                &options.database_generation,
+                &requests,
+                options.max_items as usize,
+                options.max_bytes as usize,
+                options.max_controls as usize,
+                ctl,
+            )
+            .await
+            .map_err(fail)
+    }
+
+    /// Reserve a session-owned replay handle before native recording effects.
+    #[napi(catch_unwind)]
+    pub fn reserve_ordered_recording_start(&self) -> Result<String> {
+        if self.process_closing.load(Ordering::SeqCst) {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::LifecycleDestroyed.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.ordered-recording.start",
+                "process host is closing",
+            )));
+        }
+        let mut slots = self
+            .ordered_recording_starts
+            .lock()
+            .map_err(|_| Error::from_reason("recording start registry interrupted"))?;
+        if slots.len() >= 256 {
+            return Err(Error::from_reason("recording start capacity reached"));
+        }
+        let id = self
+            .next_ordered_recording_start
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| Error::from_reason("recording start identity exhausted"))?;
+        slots.insert(
+            id,
+            Arc::new(AsyncMutex::new(OrderedRecordingStartSlot::default())),
+        );
+        Ok(id.to_string())
+    }
+
+    /// Start is retained in a detached worker; repeated exact requests replay its receipt.
+    #[napi(catch_unwind)]
+    pub async fn start_ordered_recording(
+        &self,
+        options: OrderedRecordingStartOptions,
+    ) -> Result<String> {
+        let admission = self.recording_start_gate.lock().await;
+        if options.wire_version != 5 || options.metadata_version != Some(2) {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.ordered-recording.version",
+                "ordered group wire version must be 5 and metadata version must be 2",
+            )));
+        }
+        let handle = ordered_u64(&options.start_handle, "dispatch.ordered-recording.start")
+            .map_err(to_napi)?;
+        let slot = self
+            .ordered_recording_starts
+            .lock()
+            .map_err(|_| Error::from_reason("recording start registry interrupted"))?
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| Error::from_reason("unknown recording start handle"))?;
+        let mut members = Vec::with_capacity(options.members.len());
+        for member in &options.members {
+            members.push(ubm_desktop::ordered_recording::OrderedRecordingMember {
+                member_id: ordered_u64(&member.member_id, "dispatch.ordered-recording.member")
+                    .map_err(to_napi)?,
+                public_member_id: member.public_member_id.clone(),
+                selector: selector_of(&member.selector).map_err(to_napi)?,
+                delivery: delivery_mode(member.delivery_mode.as_deref()).map_err(to_napi)?,
+                preference: delivery_mode(member.preferred_delivery_mode.as_deref())
+                    .map_err(to_napi)?,
+            });
+        }
+        let declaration = ubm_desktop::ordered_recording::OrderedRecordingDeclaration {
+            peer_id: options.peer_id,
+            connection_generation: options.connection_generation,
+            database_generation: options.database_generation,
+            members,
+            max_items: options.max_items as usize,
+            max_bytes: options.max_bytes as usize,
+            max_controls: options.max_controls as usize,
+        };
+        let context = declaration
+            .context()
+            .map_err(|_| Error::from_reason("invalid ordered recording declaration"))?;
+        let signature = serde_json::json!({"declaration":context,"recordingId":options.recording_id,"maxBytes":options.recording_max_bytes,"maxRecords":options.recording_max_records,"lease":options.lease}).to_string();
+        let central = Arc::new(self.central.clone());
+        let registry = self.continuation.engine.recording_registry();
+        let id = options.recording_id;
+        let original_lease = options.lease.clone();
+        let quota = ubm_desktop::continuation_journal::JournalQuota {
+            max_bytes: u64::from(options.recording_max_bytes),
+            max_records: u64::from(options.recording_max_records),
+        };
+        let control = {
+            let mut state = slot.lock().await;
+            if state.retired {
+                return Err(Error::from_reason("recording start handle retired"));
+            }
+            if state.worker_failed {
+                return Err(Error::from_reason(
+                    "recording start worker failed; owner retained for cleanup",
+                ));
+            }
+            if let Some(existing) = &state.signature {
+                if existing != &signature {
+                    return Err(Error::from_reason("recording start handle request differs"));
+                }
+                if let Some(result) = &state.result {
+                    return Ok(result.clone());
+                }
+                return Err(Error::from_reason("recording start result unresolved"));
+            }
+            if self.process_closing.load(Ordering::SeqCst) {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleDestroyed.as_str(),
+                    BleErrorDomain::Core.as_str(),
+                    "dispatch.ordered-recording.start",
+                    "process host is closing",
+                )));
+            }
+            let control = self
+                .control(
+                    options.timeout_ms,
+                    options.ticket.as_deref(),
+                    "dispatch.ordered-recording.start",
+                )
+                .map_err(to_napi)?
+                .with_connection_lease(options.lease);
+            state.signature = Some(signature);
+            state.launch_pending = true;
+            control
+        };
+        #[cfg(test)]
+        let panic_phase = self.ordered_recording_start_panic.swap(0, Ordering::SeqCst);
+        let sessions = Arc::clone(&self.recording_reclaim_sessions);
+        let supervisor = tokio::spawn(async move {
+            let worker_slot = Arc::clone(&slot);
+            let worker = tokio::spawn(async move {
+                let mut state = worker_slot.lock().await;
+                let recording_id = id.clone();
+                #[cfg(test)]
+                if panic_phase == 1 {
+                    panic!("synthetic start worker before owner");
+                }
+                let result = match ubm_desktop::ordered_recording::OrderedRecording::prepare(central, registry, id, quota, declaration).await {
+                Err(error) => {
+                    serde_json::json!({"kind":"prepare-failed","receipt":ubm_desktop::ordered_recording::prepare_failure_receipt(&recording_id, &error)}).to_string()
+                },
+                Ok(owner) => {
+                    state.owner = Some(Arc::clone(&owner));
+                    #[cfg(test)]
+                    if panic_phase == 2 { panic!("synthetic start worker after owner"); }
+                    match owner.issue_recovery_capability() {
+                        Err(error) => ubm_desktop::ordered_recording::owner_failure_receipt(owner.recording_id(), owner.collection_id(), &error).to_string(),
+                        Ok(capability) => {
+                            state.recovery_capability = Some(capability);
+                            match owner.start_receipt(control).await {
+                                Ok(receipt) => {
+                                    if receipt["state"] == "active" {
+                                        match sessions.lock() {
+                                            Ok(mut bindings) => {
+                                                bindings.retain(|(recording, _)| recording != &recording_id);
+                                                bindings.insert((recording_id.clone(), original_lease));
+                                                serde_json::json!({"kind":"started","receipt":receipt}).to_string()
+                                            },
+                                            Err(_) => {
+                                                let error = ubm_desktop::ordered_recording::RecordingError::Source(DesktopError::new(BleErrorCode::LifecycleInvalidState, BleErrorDomain::Cleanup, "dispatch.ordered-recording.session").with_detail("recording session registry interrupted"));
+                                                ubm_desktop::ordered_recording::owner_failure_receipt(owner.recording_id(), owner.collection_id(), &error).to_string()
+                                            }
+                                        }
+                                    } else {
+                                        serde_json::json!({"kind":"started","receipt":receipt}).to_string()
+                                    }
+                                },
+                                Err(error) => ubm_desktop::ordered_recording::owner_failure_receipt(owner.recording_id(), owner.collection_id(), &error).to_string(),
+                            }
+                        }
+                    }
+                }
+            };
+                state.result = Some(result.clone());
+                state.launch_pending = false;
+                Ok(result)
+            });
+            match worker.await {
+                Ok(result) => result,
+                Err(_) => {
+                    let mut state = slot.lock().await;
+                    state.worker_failed = true;
+                    state.launch_pending = false;
+                    Err(Error::from_reason("recording start worker interrupted"))
+                }
+            }
+        });
+        drop(admission);
+        supervisor
+            .await
+            .map_err(|_| Error::from_reason("recording start supervisor interrupted"))?
+    }
+
+    #[napi(catch_unwind)]
+    pub fn ordered_recording_start_status(&self, start_handle: String) -> Result<String> {
+        let handle =
+            ordered_u64(&start_handle, "dispatch.ordered-recording.status").map_err(to_napi)?;
+        let slot = self
+            .ordered_recording_starts
+            .lock()
+            .map_err(|_| Error::from_reason("recording start registry interrupted"))?
+            .get(&handle)
+            .cloned();
+        let Some(slot) = slot else {
+            let issued =
+                handle > 0 && handle < self.next_ordered_recording_start.load(Ordering::SeqCst);
+            return Ok(
+                serde_json::json!({"state":if issued { "retired" } else { "unknown" }}).to_string(),
+            );
+        };
+        let outcome = match slot.try_lock() {
+            Ok(state) => Ok(match &state.result { _ if state.worker_failed => serde_json::json!({"state":"failed","receipt":null}).to_string(), Some(result) => serde_json::json!({"state":"result","result":serde_json::from_str::<serde_json::Value>(result).map_err(|_| Error::from_reason("recording start receipt invalid"))?}).to_string(), None => serde_json::json!({"state":"pending"}).to_string() }),
+            Err(_) => Ok(serde_json::json!({"state":"pending"}).to_string()),
+        };
+        outcome
+    }
+
+    /// Trusted process host only: issue the original owner's recovery secret
+    /// while its authenticated start receipt is still retained.
+    #[napi(catch_unwind)]
+    pub async fn issue_ordered_recording_recovery(&self, start_handle: String) -> Result<String> {
+        let handle =
+            ordered_u64(&start_handle, "dispatch.ordered-recording.recovery").map_err(to_napi)?;
+        let slot = self
+            .ordered_recording_starts
+            .lock()
+            .map_err(|_| Error::from_reason("recording start registry interrupted"))?
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| Error::from_reason("unknown recording start handle"))?;
+        let state = slot.lock().await;
+        let owner = state
+            .owner
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("recording owner unavailable"))?;
+        let result = state
+            .result
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("recording start unresolved"))?;
+        let parsed: serde_json::Value = serde_json::from_str(result)
+            .map_err(|_| Error::from_reason("invalid recording start receipt"))?;
+        if parsed["kind"] != "started" || parsed["receipt"]["state"] != "active" {
+            return Err(Error::from_reason("recording start is not active"));
+        }
+        let capability = state
+            .recovery_capability
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("recording recovery capability unavailable"))?;
+        Ok(serde_json::json!({"recordingId":owner.recording_id(),"peerId":owner.peer_id(),"collectionId":owner.collection_id().to_string(),"capability":capability}).to_string())
+    }
+
+    /// Trusted host bridge. The capability, lease and caller key are checked
+    /// by the shared native reservation on every operation.
+    #[napi(catch_unwind)]
+    pub async fn ordered_recording_reclaim(
+        &self,
+        action: String,
+        options: RecordingReclaimOptions,
+    ) -> Result<String> {
+        if options.wire_version != 2 {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.recording-reclaim.version",
+                "recording reclaim wire version must be 2",
+            )));
+        }
+        let request_key = (
+            options.recording_id.clone(),
+            options.lease.clone(),
+            options.caller_key.clone(),
+        );
+        if action == "next" {
+            let _admission = self.recording_start_gate.lock().await;
+            {
+                let requests = self
+                    .recording_reclaim_requests
+                    .lock()
+                    .map_err(|_| Error::from_reason("reclaim request registry interrupted"))?;
+                if let Some(receipt) = requests.get(&request_key) {
+                    if receipt.capability != options.capability || receipt.forgotten {
+                        return Err(Error::from_reason("reclaim request is not available"));
+                    }
+                    return Ok(receipt.id.to_string());
+                }
+            }
+            let refuse = |error: DispatchError| {
+                serde_json::json!({"state":"not-reserved","error":error.wire_message()}).to_string()
+            };
+            if self.process_closing.load(Ordering::SeqCst) {
+                return Ok(refuse(DispatchError::new(
+                    BleErrorCode::LifecycleDestroyed.as_str(),
+                    BleErrorDomain::Core.as_str(),
+                    "dispatch.recording-reclaim.next",
+                    "process host is closing",
+                )));
+            }
+            let owner = match recorder_reclaim_authority(self, &options).await {
+                Ok(owner) => owner,
+                Err(error) => {
+                    return Ok(
+                        serde_json::json!({"state":"not-reserved","error":error.reason})
+                            .to_string(),
+                    );
+                }
+            };
+            let mut requests = self
+                .recording_reclaim_requests
+                .lock()
+                .map_err(|_| Error::from_reason("reclaim request registry interrupted"))?;
+            if requests.len() >= 256 {
+                return Ok(refuse(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Cleanup.as_str(),
+                    "dispatch.recording-reclaim.next",
+                    "reclaim request capacity reached",
+                )));
+            }
+            let id = match owner.next_request_id(&options.capability) {
+                Ok(id) => id,
+                Err(error) => return Ok(refuse(DispatchError::from(error))),
+            };
+            if let Err(error) =
+                owner.reserve(id, &options.capability, &options.lease, &options.caller_key)
+            {
+                return Ok(refuse(DispatchError::from(error)));
+            }
+            requests.insert(
+                request_key,
+                RecordingReclaimHostReceipt {
+                    id,
+                    capability: options.capability.clone(),
+                    forgotten: false,
+                },
+            );
+            return Ok(id.to_string());
+        }
+        let id = ordered_u64(
+            options
+                .request_id
+                .as_deref()
+                .ok_or_else(|| Error::from_reason("reclaim request ID required"))?,
+            "dispatch.recording-reclaim.request",
+        )
+        .map_err(to_napi)?;
+        {
+            let requests = self
+                .recording_reclaim_requests
+                .lock()
+                .map_err(|_| Error::from_reason("reclaim request registry interrupted"))?;
+            if !requests
+                .get(&request_key)
+                .is_some_and(|receipt| receipt.id == id && receipt.capability == options.capability)
+            {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::OwnershipDenied.as_str(),
+                    BleErrorDomain::Gatt.as_str(),
+                    "dispatch.recording-reclaim.request",
+                    "reclaim request is not owned",
+                )));
+            }
+        }
+        if action == "forget-retirement" {
+            let requests = self
+                .recording_reclaim_requests
+                .lock()
+                .map_err(|_| Error::from_reason("reclaim request registry interrupted"))?;
+            if requests.get(&request_key).is_some_and(|receipt| {
+                receipt.id == id && receipt.capability == options.capability && receipt.forgotten
+            }) {
+                return Ok(serde_json::json!({"state":"forgotten"}).to_string());
+            }
+        }
+        let owner = recorder_reclaim_authority(self, &options).await?;
+        let cap = options.capability.as_str();
+        let lease = options.lease.as_str();
+        let key = options.caller_key.as_str();
+        match action.as_str() {
+            "reserve" => owner.reserve(id, cap, lease, key).map_err(fail)?,
+            "start" => owner.start(id, cap, lease, key).map_err(fail)?,
+            "status" => {}
+            "commit" => {
+                let sessions = Arc::clone(&self.recording_reclaim_sessions);
+                let binding = (options.recording_id.clone(), options.lease.clone());
+                owner
+                    .commit(id, cap, lease, key, || {
+                        let mut sessions = sessions.lock().map_err(|_| {
+                            DesktopError::new(
+                                BleErrorCode::LifecycleInvalidState,
+                                BleErrorDomain::Cleanup,
+                                "dispatch.recording-reclaim.commit",
+                            )
+                        })?;
+                        sessions.retain(|(recording, _)| recording != &binding.0);
+                        sessions.insert(binding);
+                        Ok(())
+                    })
+                    .map_err(fail)?;
+            }
+            "cancel" => owner.cancel(id, cap, lease, key).map_err(fail)?,
+            "release" => owner.release(id, cap, lease, key).map_err(fail)?,
+            "retire" => {
+                owner.retire(id, cap, lease, key).map_err(fail)?;
+                return Ok(serde_json::json!({"state":"retired"}).to_string());
+            }
+            "ack-retirement" => {
+                owner
+                    .acknowledge_retirement(id, cap, lease, key)
+                    .map_err(fail)?;
+                return Ok(serde_json::json!({"state":"acknowledged"}).to_string());
+            }
+            "forget-retirement" => {
+                let mut requests = self
+                    .recording_reclaim_requests
+                    .lock()
+                    .map_err(|_| Error::from_reason("reclaim request registry interrupted"))?;
+                let receipt = requests
+                    .get_mut(&request_key)
+                    .filter(|receipt| receipt.id == id && receipt.capability == options.capability)
+                    .ok_or_else(|| Error::from_reason("reclaim request receipt unavailable"))?;
+                owner.forget_retirement(id, cap, lease, key).map_err(fail)?;
+                receipt.forgotten = true;
+                return Ok(serde_json::json!({"state":"forgotten"}).to_string());
+            }
+            _ => return Err(Error::from_reason("unknown reclaim operation")),
+        }
+        Ok(reclaim_status_wire(
+            owner.status(id, cap, lease, key).map_err(fail)?,
+        ))
+    }
+
+    /// Synchronous trusted-process acknowledgement after JS observed the
+    /// forgotten receipt. No native source operation occurs here.
+    #[napi(catch_unwind)]
+    pub fn confirm_ordered_recording_reclaim(
+        &self,
+        options: RecordingReclaimOptions,
+    ) -> Result<()> {
+        if options.wire_version != 2 {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.recording-reclaim.version",
+                "recording reclaim wire version must be 2",
+            )));
+        }
+        let id = ordered_u64(
+            options
+                .request_id
+                .as_deref()
+                .ok_or_else(|| Error::from_reason("reclaim request ID required"))?,
+            "dispatch.recording-reclaim.confirm",
+        )
+        .map_err(to_napi)?;
+        let key = (options.recording_id, options.lease, options.caller_key);
+        let mut requests = self
+            .recording_reclaim_requests
+            .lock()
+            .map_err(|_| Error::from_reason("reclaim request registry interrupted"))?;
+        if !requests.get(&key).is_some_and(|receipt| {
+            receipt.id == id && receipt.capability == options.capability && receipt.forgotten
+        }) {
+            return Err(Error::from_reason("reclaim forgotten receipt unavailable"));
+        }
+        requests.remove(&key);
+        Ok(())
+    }
+
+    /// Forget a process session only after its supervisor has been removed.
+    #[napi(catch_unwind)]
+    pub fn forget_ordered_recording_session(&self, recording_id: String) -> Result<()> {
+        let registry = self.continuation.engine.recording_registry();
+        if self
+            .recording_reclaim_requests
+            .lock()
+            .map_err(|_| Error::from_reason("reclaim request registry interrupted"))?
+            .keys()
+            .any(|(recording, _, _)| recording == &recording_id)
+        {
+            return Err(Error::from_reason(
+                "recording reclaim receipt remains retained",
+            ));
+        }
+        if registry
+            .ordered_owner(&recording_id, &self.central)
+            .map_err(|_| Error::from_reason("recording owner lookup failed"))?
+            .is_some()
+        {
+            return Err(Error::from_reason("recording owner still active"));
+        }
+        // Removing authorization is safe even if a panic left the set untrusted;
+        // keep it poisoned so no subsequent operation can grant or use a lease.
+        self.recording_reclaim_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(recording, _)| recording != &recording_id);
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn retire_ordered_recording_start(&self, start_handle: String) -> Result<()> {
+        let handle =
+            ordered_u64(&start_handle, "dispatch.ordered-recording.retire").map_err(to_napi)?;
+        let slot = self
+            .ordered_recording_starts
+            .lock()
+            .map_err(|_| Error::from_reason("recording start registry interrupted"))?
+            .get(&handle)
+            .cloned();
+        let Some(slot) = slot else {
+            if handle > 0 && handle < self.next_ordered_recording_start.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            return Err(Error::from_reason("unknown recording start handle"));
+        };
+        let mut state = slot.lock().await;
+        if state.signature.is_some() && state.result.is_none() && !state.worker_failed {
+            return Err(Error::from_reason("recording start is pending"));
+        }
+        if let Some(owner) = &state.owner {
+            let status = owner.start_status();
+            if matches!(status["state"].as_str(), Some("ready" | "failed")) {
+                owner
+                    .retire_start_receipt()
+                    .await
+                    .map_err(|_| Error::from_reason("recording receipt could not be retired"))?;
+            }
+        }
+        state.retired = true;
+        self.ordered_recording_starts
+            .lock()
+            .map_err(|_| Error::from_reason("recording start registry interrupted"))?
+            .remove(&handle);
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
+    pub fn ordered_marker_wire_version(&self) -> u32 {
+        2
+    }
+
+    #[napi(catch_unwind)]
+    pub fn ordered_marker_write_supported(&self) -> bool {
+        self.central.boundary().ordered_marker_write_supported()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn ordered_recording_reclaim_supported(&self) -> bool {
+        self.central
+            .boundary()
+            .ordered_recording_reclaim_supported()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn ordered_recording_reclaim_wire_version(&self) -> u32 {
+        2
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn reserve_ordered_marker_write(
+        &self,
+        options: OrderedMarkerGroupOptions,
+    ) -> Result<String> {
+        if options.wire_version != 2 {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.ordered-marker.version",
+                "ordered marker wire version must be 2",
+            )));
+        }
+        let collection = ordered_u64(&options.collection_id, "dispatch.ordered-marker.collection")
+            .map_err(to_napi)?;
+        let owner = self
+            .central
+            .marker_reservation_owner(&options.peer_id, collection, None)
+            .await
+            .map_err(fail)?;
+        Ok(owner
+            .reserve(&options.reservation_key)
+            .await
+            .map_err(fail)?
+            .to_string())
+    }
+    #[napi(catch_unwind)]
+    pub async fn start_ordered_marker_write(
+        &self,
+        options: OrderedMarkerStartOptions,
+    ) -> Result<String> {
+        if options.wire_version != 2 {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.ordered-marker.version",
+                "ordered marker wire version must be 2",
+            )));
+        }
+        let collection = ordered_u64(&options.collection_id, "dispatch.ordered-marker.collection")
+            .map_err(to_napi)?;
+        let handle = ordered_u64(
+            &options.reservation_id,
+            "dispatch.ordered-marker.reservation",
+        )
+        .map_err(to_napi)?;
+        let selector = selector_of(&options.selector).map_err(to_napi)?;
+        let owner = self
+            .central
+            .marker_reservation_owner(&options.peer_id, collection, None)
+            .await
+            .map_err(fail)?;
+        let status = owner
+            .start(
+                handle,
+                selector,
+                options.value.to_vec(),
+                options.with_response,
+            )
+            .await
+            .map_err(fail)?;
+        Ok(
+            ubm_desktop::ordered_wire::encode_marker_write_versioned(&status, 2)
+                .ok_or_else(ordered_encoding_error)?
+                .to_string(),
+        )
+    }
+    #[napi(catch_unwind)]
+    pub async fn ordered_marker_write_status(
+        &self,
+        options: OrderedMarkerReservationOptions,
+    ) -> Result<String> {
+        if options.wire_version != 2 {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.ordered-marker.version",
+                "ordered marker wire version must be 2",
+            )));
+        }
+        let collection = ordered_u64(&options.collection_id, "dispatch.ordered-marker.collection")
+            .map_err(to_napi)?;
+        let handle = ordered_u64(
+            &options.reservation_id,
+            "dispatch.ordered-marker.reservation",
+        )
+        .map_err(to_napi)?;
+        let owner = self
+            .central
+            .marker_reservation_owner(&options.peer_id, collection, None)
+            .await
+            .map_err(fail)?;
+        Ok(ubm_desktop::ordered_wire::encode_marker_write_versioned(
+            &owner.status(handle).await.map_err(fail)?,
+            2,
+        )
+        .ok_or_else(ordered_encoding_error)?
+        .to_string())
+    }
+    #[napi(catch_unwind)]
+    pub async fn cancel_ordered_marker_write(
+        &self,
+        options: OrderedMarkerReservationOptions,
+    ) -> Result<String> {
+        if options.wire_version != 2 {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.ordered-marker.version",
+                "ordered marker wire version must be 2",
+            )));
+        }
+        let collection = ordered_u64(&options.collection_id, "dispatch.ordered-marker.collection")
+            .map_err(to_napi)?;
+        let handle = ordered_u64(
+            &options.reservation_id,
+            "dispatch.ordered-marker.reservation",
+        )
+        .map_err(to_napi)?;
+        let owner = self
+            .central
+            .marker_reservation_owner(&options.peer_id, collection, None)
+            .await
+            .map_err(fail)?;
+        Ok(ubm_desktop::ordered_wire::encode_marker_write_versioned(
+            &owner.cancel(handle).await.map_err(fail)?,
+            2,
+        )
+        .ok_or_else(ordered_encoding_error)?
+        .to_string())
+    }
+    #[napi(catch_unwind)]
+    pub async fn forget_ordered_marker_write(
+        &self,
+        options: OrderedMarkerReservationOptions,
+    ) -> Result<()> {
+        if options.wire_version != 2 {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::ProtocolIncompatible.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.ordered-marker.version",
+                "ordered marker wire version must be 2",
+            )));
+        }
+        let collection = ordered_u64(&options.collection_id, "dispatch.ordered-marker.collection")
+            .map_err(to_napi)?;
+        let handle = ordered_u64(
+            &options.reservation_id,
+            "dispatch.ordered-marker.reservation",
+        )
+        .map_err(to_napi)?;
+        let owner = self
+            .central
+            .marker_reservation_owner(&options.peer_id, collection, None)
+            .await
+            .map_err(fail)?;
+        owner.forget(handle).await.map_err(fail)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn reserve_recording_marker_write(
+        &self,
+        options: RecordingMarkerGroupOptions,
+    ) -> Result<String> {
+        if options.wire_version != 2 {
+            return Err(Error::from_reason("incompatible marker wire version"));
+        }
+        let owner = recorder_marker_authority(
+            self,
+            &options.recording_id,
+            &options.peer_id,
+            &options.lease,
+        )
+        .await?;
+        Ok(owner
+            .reserve(&options.reservation_key)
+            .await
+            .map_err(fail)?
+            .to_string())
+    }
+    #[napi(catch_unwind)]
+    pub async fn start_recording_marker_write(
+        &self,
+        options: RecordingMarkerStartOptions,
+    ) -> Result<String> {
+        if options.wire_version != 2 {
+            return Err(Error::from_reason("incompatible marker wire version"));
+        }
+        let handle = ordered_u64(
+            &options.reservation_id,
+            "dispatch.recording-marker.reservation",
+        )
+        .map_err(to_napi)?;
+        let selector = selector_of(&options.selector).map_err(to_napi)?;
+        let owner = recorder_marker_authority(
+            self,
+            &options.recording_id,
+            &options.peer_id,
+            &options.lease,
+        )
+        .await?;
+        Ok(ubm_desktop::ordered_wire::encode_marker_write_versioned(
+            &owner
+                .start(
+                    handle,
+                    selector,
+                    options.value.to_vec(),
+                    options.with_response,
+                )
+                .await
+                .map_err(fail)?,
+            2,
+        )
+        .ok_or_else(ordered_encoding_error)?
+        .to_string())
+    }
+    #[napi(catch_unwind)]
+    pub async fn recording_marker_write_status(
+        &self,
+        options: RecordingMarkerOptions,
+    ) -> Result<String> {
+        if options.wire_version != 2 {
+            return Err(Error::from_reason("incompatible marker wire version"));
+        }
+        let handle = ordered_u64(
+            &options.reservation_id,
+            "dispatch.recording-marker.reservation",
+        )
+        .map_err(to_napi)?;
+        let owner = recorder_marker_authority(
+            self,
+            &options.recording_id,
+            &options.peer_id,
+            &options.lease,
+        )
+        .await?;
+        Ok(ubm_desktop::ordered_wire::encode_marker_write_versioned(
+            &owner.status(handle).await.map_err(fail)?,
+            2,
+        )
+        .ok_or_else(ordered_encoding_error)?
+        .to_string())
+    }
+    #[napi(catch_unwind)]
+    pub async fn cancel_recording_marker_write(
+        &self,
+        options: RecordingMarkerOptions,
+    ) -> Result<String> {
+        if options.wire_version != 2 {
+            return Err(Error::from_reason("incompatible marker wire version"));
+        }
+        let handle = ordered_u64(
+            &options.reservation_id,
+            "dispatch.recording-marker.reservation",
+        )
+        .map_err(to_napi)?;
+        let owner = recorder_marker_authority(
+            self,
+            &options.recording_id,
+            &options.peer_id,
+            &options.lease,
+        )
+        .await?;
+        Ok(ubm_desktop::ordered_wire::encode_marker_write_versioned(
+            &owner.cancel(handle).await.map_err(fail)?,
+            2,
+        )
+        .ok_or_else(ordered_encoding_error)?
+        .to_string())
+    }
+    #[napi(catch_unwind)]
+    pub async fn forget_recording_marker_write(
+        &self,
+        options: RecordingMarkerOptions,
+    ) -> Result<()> {
+        if options.wire_version != 2 {
+            return Err(Error::from_reason("incompatible marker wire version"));
+        }
+        let handle = ordered_u64(
+            &options.reservation_id,
+            "dispatch.recording-marker.reservation",
+        )
+        .map_err(to_napi)?;
+        let owner = recorder_marker_authority(
+            self,
+            &options.recording_id,
+            &options.peer_id,
+            &options.lease,
+        )
+        .await?;
+        owner.forget(handle).await.map_err(fail)
+    }
+
+    /// Poll exactly one native source record; wide integers stay decimal strings.
+    #[napi(catch_unwind)]
+    pub async fn poll_ordered_group(
+        &self,
+        options: OrderedGroupOptions,
+    ) -> Result<OrderedDeliveryInfo> {
+        let id = ordered_u64(&options.collection_id, "dispatch.ordered.poll").map_err(to_napi)?;
+        let delivery = self
+            .central
+            .poll_ordered_delivery(&options.peer_id, id)
+            .await
+            .map_err(fail)?;
+        Ok(OrderedDeliveryInfo {
+            delivery_id: delivery.delivery_id.map(|id| id.to_string()),
+            record: ubm_desktop::ordered_wire::encode_versioned(delivery.poll, 2)
+                .ok_or_else(ordered_encoding_error)?
+                .to_string(),
+        })
+    }
+
+    /// Acknowledge only a record already validated and retained by the caller.
+    #[napi(catch_unwind)]
+    pub async fn acknowledge_ordered_delivery(
+        &self,
+        options: OrderedDeliveryOptions,
+    ) -> Result<()> {
+        let id = ordered_u64(&options.collection_id, "dispatch.ordered.delivery-ack")
+            .map_err(to_napi)?;
+        let delivery =
+            ordered_u64(&options.delivery_id, "dispatch.ordered.delivery-ack").map_err(to_napi)?;
+        self.central
+            .acknowledge_ordered_delivery(&options.peer_id, id, delivery)
+            .await
+            .map_err(fail)
+    }
+
+    /// Settle a validated delivery identity using native typed discard evidence.
+    #[napi(catch_unwind)]
+    pub async fn discard_ordered_delivery(
+        &self,
+        options: OrderedDeliveryOptions,
+    ) -> Result<OrderedDiscardInfo> {
+        let id =
+            ordered_u64(&options.collection_id, "dispatch.ordered.discard").map_err(to_napi)?;
+        let delivery =
+            ordered_u64(&options.delivery_id, "dispatch.ordered.discard").map_err(to_napi)?;
+        self.central
+            .discard_ordered_delivery(&options.peer_id, id, delivery)
+            .await
+            .map_err(fail)
+            .and_then(ordered_discard_info)
+    }
+
+    /// Replay discard evidence until the caller acknowledges its exact receipt.
+    #[napi(catch_unwind)]
+    pub async fn poll_ordered_discard_receipt(
+        &self,
+        options: OrderedGroupOptions,
+    ) -> Result<Option<OrderedDiscardInfo>> {
+        let id = ordered_u64(&options.collection_id, "dispatch.ordered.discard-poll")
+            .map_err(to_napi)?;
+        self.central
+            .poll_ordered_discard_receipt(&options.peer_id, id)
+            .await
+            .map_err(fail)
+            .and_then(|receipt| receipt.map(ordered_discard_info).transpose())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn acknowledge_ordered_discard_receipt(
+        &self,
+        options: OrderedDeliveryOptions,
+    ) -> Result<()> {
+        let id =
+            ordered_u64(&options.collection_id, "dispatch.ordered.discard-ack").map_err(to_napi)?;
+        let receipt =
+            ordered_u64(&options.delivery_id, "dispatch.ordered.discard-ack").map_err(to_napi)?;
+        self.central
+            .acknowledge_ordered_discard_receipt(&options.peer_id, id, receipt)
+            .await
+            .map_err(fail)
+    }
+
+    /// Inspect setup and cleanup without discarding any queued observation.
+    #[napi(catch_unwind)]
+    pub async fn ordered_group_status(&self, options: OrderedGroupOptions) -> Result<String> {
+        let id = ordered_u64(&options.collection_id, "dispatch.ordered.status").map_err(to_napi)?;
+        let cleanup_complete = self
+            .central
+            .ordered_batch_cleanup_complete(&options.peer_id, id)
+            .await
+            .map_err(fail)?;
+        let lease = self
+            .central
+            .ordered_batch_source_lease(&options.peer_id, id)
+            .await
+            .map_err(fail)?;
+        let (setup_error, fence_error) = self
+            .central
+            .retained_ordered_batch_errors(&options.peer_id, id)
+            .await
+            .map_err(fail)?;
+        let generation = lease.map(|lease| match lease.source_generation {
+            ubm_core::ordered_notifications::SourceGeneration::Counter(value) => {
+                serde_json::json!({"kind":"counter", "value":value.to_string()})
+            }
+            ubm_core::ordered_notifications::SourceGeneration::Opaque(value) => {
+                serde_json::json!({"kind":"opaque", "value":value})
+            }
+        });
+        let inventory = self
+            .central
+            .ordered_batch_member_status(&options.peer_id, id)
+            .await
+            .map_err(fail)?;
+        let encode_failure = |error: DesktopError| {
+            ubm_desktop::ordered_wire::failure_versioned(
+                &ubm_desktop::ordered_notification_groups::failure_from_desktop(&error),
+                2,
+            )
+            .ok_or_else(ordered_encoding_error)
+        };
+        let members: Vec<_> = inventory.into_iter().map(|member| {
+            use ubm_desktop::central::OrderedMemberAcquisition;
+            let acquisition = match member.acquisition {
+                OrderedMemberAcquisition::NotStarted => "not-started",
+                OrderedMemberAcquisition::Acquired => "acquired",
+                OrderedMemberAcquisition::Indeterminate => "indeterminate",
+            };
+            let delivery = match member.effective_delivery {
+                ObservedDelivery::Notification => "notification",
+                ObservedDelivery::Indication => "indication",
+                ObservedDelivery::Unknown => "unknown",
+            };
+            Ok(serde_json::json!({"memberId":member.member_id.to_string(), "acquisition":acquisition, "effectiveDelivery":delivery,
+                "cleanupReleased":member.cleanup_released,
+                "cleanupError":member.cleanup_error.map(&encode_failure).transpose()?}))
+        }).collect::<Result<Vec<_>>>()?;
+        let result = serde_json::json!({"sourceGeneration":generation, "members":members,
+            "cleanupComplete":cleanup_complete,
+            "setupError":setup_error.map(&encode_failure).transpose()?,
+            "fenceError":fence_error.map(&encode_failure).transpose()?});
+        let encoded = result.to_string();
+        if encoded.len() > 1_048_576 {
+            return Err(ordered_encoding_error());
+        }
+        Ok(encoded)
+    }
+
+    /// Retry exact cleanup. A pending FIFO must be drained before release.
+    #[napi(catch_unwind)]
+    pub async fn close_ordered_group(&self, options: OrderedGroupOptions) -> Result<String> {
+        let id = ordered_u64(&options.collection_id, "dispatch.ordered.close").map_err(to_napi)?;
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "dispatch.ordered.close",
+            )
+            .map_err(to_napi)?;
+        let outcome = self
+            .central
+            .retry_retained_ordered_batch(&options.peer_id, id, ctl)
+            .await
+            .map_err(fail)?;
+        Ok(match outcome {
+            ubm_desktop::central::OrderedCleanupOutcome::Released => "released",
+            ubm_desktop::central::OrderedCleanupOutcome::PendingSource => "pending-source",
+            ubm_desktop::central::OrderedCleanupOutcome::PendingDrain => "pending-drain",
+        }
+        .to_owned())
+    }
+
+    /// Release the retained cleanup receipt after it has been copied by the caller.
+    #[napi(catch_unwind)]
+    pub async fn acknowledge_ordered_group(&self, options: OrderedGroupOptions) -> Result<()> {
+        let id =
+            ordered_u64(&options.collection_id, "dispatch.ordered.acknowledge").map_err(to_napi)?;
+        self.central
+            .acknowledge_ordered_batch(&options.peer_id, id)
+            .await
+            .map_err(fail)
+    }
+
+    /// Forget a previously acknowledged receipt; retrying an issued ID is safe.
+    #[napi(catch_unwind)]
+    pub async fn forget_ordered_group(&self, options: OrderedGroupOptions) -> Result<()> {
+        let id = ordered_u64(&options.collection_id, "dispatch.ordered.forget").map_err(to_napi)?;
+        self.central
+            .forget_ordered_batch(&options.peer_id, id)
+            .await
+            .map_err(fail)
+    }
+
     /// Subscribe one consumer; the physical CCCD enable is owned by Rust.
     /// Resolves with the delivery the radio reported.
     #[napi(catch_unwind)]
     pub async fn subscribe(&self, options: SubscribeOptions) -> Result<SubscribeInfo> {
+        // Reserve/attach before CCCD enablement.  The source is not allowed
+        // to activate if its terminal cannot be durably owned.
+        let terminal_evidence = self
+            .attach_terminal_evidence_scope(
+                "subscription",
+                options.terminal_evidence_scope.as_ref(),
+                "dispatch.subscribe",
+            )
+            .map_err(to_napi)?;
         let selector = selector_of(&options.selector).map_err(to_napi)?;
         let delivery = delivery_mode(options.delivery_mode.as_deref()).map_err(to_napi)?;
         let preference =
@@ -4958,6 +8910,26 @@ impl UbmCentral {
             )
             .await
             .map_err(fail)?;
+        if let Some(binding) = terminal_evidence {
+            self.subscription_terminal_evidence
+                .lock()
+                .map_err(|_| {
+                    to_napi(DispatchError::new(
+                        BleErrorCode::LifecycleInvalidState.as_str(),
+                        BleErrorDomain::Stream.as_str(),
+                        "dispatch.subscribe",
+                        "terminal evidence binding lock failed",
+                    ))
+                })?
+                .insert(
+                    Self::subscription_terminal_key(
+                        &options.peer_id,
+                        &options.selector,
+                        &options.consumer,
+                    ),
+                    binding,
+                );
+        }
         Ok(SubscribeInfo {
             delivery: observed.as_str().to_owned(),
         })
@@ -5056,6 +9028,42 @@ impl UbmCentral {
         options: SubscriptionOptions,
     ) -> Result<NotificationPollInfo> {
         const OP: &str = "dispatch.poll-notification";
+        let terminal_key =
+            Self::subscription_terminal_key(&options.peer_id, &options.selector, &options.consumer);
+        if let Some(pending) = self
+            .pending_subscription_terminals
+            .lock()
+            .map_err(|_| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "subscription terminal lock failed",
+                ))
+            })?
+            .get(&terminal_key)
+            .cloned()
+        {
+            return Ok(NotificationPollInfo {
+                kind: "terminal".to_owned(),
+                value: None,
+                receipt: None,
+                provenance: None,
+                source_generation: None,
+                source_ordinal: None,
+                cause: Some(pending.reason),
+                peer_id: None,
+                generation: None,
+                skipped_records: None,
+                dropped_items: Some(pending.dropped_items),
+                dropped_bytes: Some(pending.dropped_bytes),
+                replaced_items: Some(pending.replaced_items),
+                terminal_evidence: Some(TerminalEvidencePendingInfo {
+                    reservation_id: pending.binding.reservation_id.clone(),
+                    pending_token: format!("subscription:{}", pending.binding.reservation_id),
+                }),
+            });
+        }
         let selector = selector_of(&options.selector).map_err(to_napi)?;
         let poll = self
             .central
@@ -5066,10 +9074,17 @@ impl UbmCentral {
             kind: kind.to_owned(),
             value: None,
             receipt: None,
+            provenance: None,
+            source_generation: None,
+            source_ordinal: None,
             cause: cause.map(str::to_owned),
+            peer_id: None,
+            generation: None,
+            skipped_records: None,
             dropped_items: None,
             dropped_bytes: None,
             replaced_items: None,
+            terminal_evidence: None,
         };
         Ok(match poll {
             NotificationPoll::Value(value) => {
@@ -5092,8 +9107,260 @@ impl UbmCentral {
                     ..empty("value", None)
                 }
             }
+            NotificationPoll::ValueWithProvenance {
+                value,
+                receipt,
+                provenance,
+                source_generation,
+                source_ordinal,
+            } => {
+                bump(&self.counters.notification_values);
+                NotificationPollInfo {
+                    value: Some(Buffer::from(value)),
+                    receipt: receipt.map(|receipt| NotificationReceiptInfo {
+                        received_at_utc_ms: receipt.received_at_utc_ms,
+                        received_at_monotonic_ms: receipt.received_at_monotonic_ms,
+                        clock_id: receipt.clock_id,
+                        origin: "native".to_owned(),
+                    }),
+                    provenance: Some(provenance.as_str().to_owned()),
+                    source_generation: Some(source_generation.to_string()),
+                    source_ordinal: Some(source_ordinal.to_string()),
+                    ..empty("value", None)
+                }
+            }
+            NotificationPoll::PeerSourceLoss {
+                peer_id,
+                generation,
+                skipped_records,
+            } => NotificationPollInfo {
+                peer_id: Some(peer_id),
+                generation: Some(generation.to_string()),
+                skipped_records: skipped_records.map(|count| count.to_string()),
+                ..empty("peer-source-loss", None)
+            },
             NotificationPoll::Empty => empty("empty", None),
+            NotificationPoll::SourceFailed(error) => return Err(fail(error)),
+            // This is the established V1 entrypoint. A recovery offer is
+            // intentionally represented as the same structured source
+            // failure V1 has always understood, never as a new poll kind.
+            NotificationPoll::SourceFailureRecovery(offer) => {
+                return Err(fail(offer.error.unwrap_or_else(|| {
+                    DesktopError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        BleErrorDomain::Restoration,
+                        "gatt.notification.source-failure-recovery",
+                    )
+                    .with_detail("historical recovery offer has no producer error evidence")
+                })));
+            }
             NotificationPoll::Terminal(terminal) => NotificationPollInfo {
+                dropped_items: Some(number_wire(terminal.dropped_items(), OP).map_err(to_napi)?),
+                dropped_bytes: Some(number_wire(terminal.dropped_bytes(), OP).map_err(to_napi)?),
+                replaced_items: Some(number_wire(terminal.replaced_items(), OP).map_err(to_napi)?),
+                terminal_evidence: {
+                    let key = Self::subscription_terminal_key(
+                        &options.peer_id,
+                        &options.selector,
+                        &options.consumer,
+                    );
+                    let binding = self
+                        .subscription_terminal_evidence
+                        .lock()
+                        .map_err(|_| {
+                            to_napi(DispatchError::new(
+                                BleErrorCode::LifecycleInvalidState.as_str(),
+                                BleErrorDomain::Stream.as_str(),
+                                OP,
+                                "subscription binding lock failed",
+                            ))
+                        })?
+                        .get(&key)
+                        .cloned();
+                    if let Some(binding) = binding {
+                        self.pending_subscription_terminals
+                            .lock()
+                            .map_err(|_| {
+                                to_napi(DispatchError::new(
+                                    BleErrorCode::LifecycleInvalidState.as_str(),
+                                    BleErrorDomain::Stream.as_str(),
+                                    OP,
+                                    "subscription terminal lock failed",
+                                ))
+                            })?
+                            .entry(key)
+                            .or_insert(PendingSubscriptionTerminal {
+                                binding: binding.clone(),
+                                reason: terminal.reason().to_owned(),
+                                dropped_items: number_wire(terminal.dropped_items(), OP)
+                                    .map_err(to_napi)?,
+                                dropped_bytes: number_wire(terminal.dropped_bytes(), OP)
+                                    .map_err(to_napi)?,
+                                replaced_items: number_wire(terminal.replaced_items(), OP)
+                                    .map_err(to_napi)?,
+                            });
+                        Some(TerminalEvidencePendingInfo {
+                            reservation_id: binding.reservation_id.clone(),
+                            pending_token: format!("subscription:{}", binding.reservation_id),
+                        })
+                    } else {
+                        None
+                    }
+                },
+                ..empty("terminal", Some(terminal.reason()))
+            },
+            NotificationPoll::Invalidated(InvalidationCause::ServicesChanged) => {
+                empty("invalidated", Some("services-changed"))
+            }
+            NotificationPoll::Invalidated(InvalidationCause::LinkEnded) => {
+                empty("invalidated", Some("link-ended"))
+            }
+            NotificationPoll::Invalidated(InvalidationCause::AdapterReset) => {
+                empty("invalidated", Some("adapter-reset"))
+            }
+            NotificationPoll::Closed => empty("closed", None),
+        })
+    }
+
+    /// Explicitly negotiated V2 notification poll. This is separate from
+    /// `poll_notification` so installed 5.2.1 clients continue to receive
+    /// their closed result vocabulary even when the source has retained a
+    /// recoverable oversized failure.
+    #[napi(catch_unwind)]
+    pub async fn poll_notification_v2(
+        &self,
+        options: SubscriptionOptions,
+    ) -> Result<NotificationPollV2Info> {
+        const OP: &str = "dispatch.poll-notification-v2";
+        let terminal_key =
+            Self::subscription_terminal_key(&options.peer_id, &options.selector, &options.consumer);
+        if let Some(pending) = self
+            .pending_subscription_terminals
+            .lock()
+            .map_err(|_| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "subscription terminal lock failed",
+                ))
+            })?
+            .get(&terminal_key)
+            .cloned()
+        {
+            return Ok(NotificationPollV2Info {
+                kind: "terminal".to_owned(),
+                value: None,
+                receipt: None,
+                provenance: None,
+                source_generation: None,
+                source_ordinal: None,
+                cause: Some(pending.reason),
+                peer_id: None,
+                generation: None,
+                skipped_records: None,
+                dropped_items: Some(pending.dropped_items),
+                dropped_bytes: Some(pending.dropped_bytes),
+                replaced_items: Some(pending.replaced_items),
+                recovery: None,
+                recovery_error: None,
+                terminal_evidence: Some(TerminalEvidencePendingInfo {
+                    reservation_id: pending.binding.reservation_id.clone(),
+                    pending_token: format!("subscription:{}", pending.binding.reservation_id),
+                }),
+            });
+        }
+        let selector = selector_of(&options.selector).map_err(to_napi)?;
+        let poll = self
+            .central
+            .poll_notification(&options.peer_id, &selector, &options.consumer)
+            .await
+            .map_err(fail)?;
+        let empty = |kind: &str, cause: Option<&str>| NotificationPollV2Info {
+            kind: kind.to_owned(),
+            value: None,
+            receipt: None,
+            provenance: None,
+            source_generation: None,
+            source_ordinal: None,
+            cause: cause.map(str::to_owned),
+            peer_id: None,
+            generation: None,
+            skipped_records: None,
+            dropped_items: None,
+            dropped_bytes: None,
+            replaced_items: None,
+            recovery: None,
+            recovery_error: None,
+            terminal_evidence: None,
+        };
+        Ok(match poll {
+            NotificationPoll::Value(value) => {
+                bump(&self.counters.notification_values);
+                NotificationPollV2Info {
+                    value: Some(Buffer::from(value)),
+                    ..empty("value", None)
+                }
+            }
+            NotificationPoll::ValueWithReceipt { value, receipt } => {
+                bump(&self.counters.notification_values);
+                NotificationPollV2Info {
+                    value: Some(Buffer::from(value)),
+                    receipt: Some(NotificationReceiptInfo {
+                        received_at_utc_ms: receipt.received_at_utc_ms,
+                        received_at_monotonic_ms: receipt.received_at_monotonic_ms,
+                        clock_id: receipt.clock_id,
+                        origin: "native".to_owned(),
+                    }),
+                    ..empty("value", None)
+                }
+            }
+            NotificationPoll::ValueWithProvenance {
+                value,
+                receipt,
+                provenance,
+                source_generation,
+                source_ordinal,
+            } => {
+                bump(&self.counters.notification_values);
+                NotificationPollV2Info {
+                    value: Some(Buffer::from(value)),
+                    receipt: receipt.map(|receipt| NotificationReceiptInfo {
+                        received_at_utc_ms: receipt.received_at_utc_ms,
+                        received_at_monotonic_ms: receipt.received_at_monotonic_ms,
+                        clock_id: receipt.clock_id,
+                        origin: "native".to_owned(),
+                    }),
+                    provenance: Some(provenance.as_str().to_owned()),
+                    source_generation: Some(source_generation.to_string()),
+                    source_ordinal: Some(source_ordinal.to_string()),
+                    ..empty("value", None)
+                }
+            }
+            NotificationPoll::PeerSourceLoss {
+                peer_id,
+                generation,
+                skipped_records,
+            } => NotificationPollV2Info {
+                peer_id: Some(peer_id),
+                generation: Some(generation.to_string()),
+                skipped_records: skipped_records.map(|count| count.to_string()),
+                ..empty("peer-source-loss", None)
+            },
+            NotificationPoll::Empty => empty("empty", None),
+            NotificationPoll::SourceFailed(error) => return Err(fail(error)),
+            NotificationPoll::SourceFailureRecovery(offer) => NotificationPollV2Info {
+                recovery_error: offer
+                    .error
+                    .as_ref()
+                    .map(|error| DispatchError::from(error.clone()).wire_message()),
+                recovery: Some(PeerSourceFailureRecoveryDescriptorInfo {
+                    recipient_lease: Some(offer.recipient_lease),
+                    ..peer_source_failure_descriptor_info(offer.descriptor)
+                }),
+                ..empty("source-failure-recovery", None)
+            },
+            NotificationPoll::Terminal(terminal) => NotificationPollV2Info {
                 dropped_items: Some(number_wire(terminal.dropped_items(), OP).map_err(to_napi)?),
                 dropped_bytes: Some(number_wire(terminal.dropped_bytes(), OP).map_err(to_napi)?),
                 replaced_items: Some(number_wire(terminal.replaced_items(), OP).map_err(to_napi)?),
@@ -5110,6 +9377,63 @@ impl UbmCentral {
             }
             NotificationPoll::Closed => empty("closed", None),
         })
+    }
+
+    /// Read one exact bounded page from an offer observed through
+    /// `poll_notification_v2`. The central and radio both validate the full
+    /// descriptor; this method cannot forge or broaden an offer.
+    #[napi(catch_unwind)]
+    pub async fn read_peer_notification_failure_recovery(
+        &self,
+        options: PeerSourceFailureRecoveryReadOptions,
+    ) -> Result<PeerSourceFailureRecoveryChunkInfo> {
+        const OP: &str = "dispatch.peer-source-failure-recovery.read";
+        let descriptor =
+            peer_source_failure_descriptor_from_info(options.descriptor, OP).map_err(to_napi)?;
+        let offset = ordered_u64(&options.offset, OP).map_err(to_napi)?;
+        let selector = selector_of(&options.selector).map_err(to_napi)?;
+        let chunk = self
+            .central
+            .read_peer_notification_failure_recovery(
+                &descriptor,
+                &options.peer_id,
+                &selector,
+                &options.consumer,
+                &options.recipient_lease,
+                offset,
+            )
+            .await
+            .map_err(fail)?;
+        Ok(PeerSourceFailureRecoveryChunkInfo {
+            offset: chunk.offset.to_string(),
+            next_offset: chunk.next_offset.to_string(),
+            bytes: Buffer::from(chunk.bytes),
+            done: chunk.done,
+        })
+    }
+
+    /// Commit one completely read retained offer. Incomplete, stale, foreign
+    /// or reconnect-invalidated descriptors are refused without advancing the
+    /// producer's source head.
+    #[napi(catch_unwind)]
+    pub async fn acknowledge_peer_notification_failure_recovery(
+        &self,
+        options: PeerSourceFailureRecoveryAcknowledgeOptions,
+    ) -> Result<()> {
+        const OP: &str = "dispatch.peer-source-failure-recovery.ack";
+        let descriptor =
+            peer_source_failure_descriptor_from_info(options.descriptor, OP).map_err(to_napi)?;
+        let selector = selector_of(&options.selector).map_err(to_napi)?;
+        self.central
+            .ack_peer_notification_failure_recovery(
+                &descriptor,
+                &options.peer_id,
+                &selector,
+                &options.consumer,
+                &options.recipient_lease,
+            )
+            .await
+            .map_err(fail)
     }
 
     /// Unsubscribe one consumer; returns whether the physical CCCD was
@@ -5149,6 +9473,105 @@ impl UbmCentral {
     /// scan stop — never a clean answer over a failed release.
     #[napi(catch_unwind)]
     pub async fn close(&self) -> Result<CloseReportInfo> {
+        let _admission = self.recording_start_gate.lock().await;
+        self.process_closing.store(true, Ordering::SeqCst);
+        self.central.seal_ordered_recording_registration();
+        if !self
+            .recording_reclaim_requests
+            .lock()
+            .map_err(|_| Error::from_reason("reclaim request registry interrupted"))?
+            .is_empty()
+        {
+            return Ok(CloseReportInfo {
+                state: "release-failed".into(),
+                failures: vec![CloseFailureInfo {
+                    resource_kind: "ordered-recording-reclaim".into(),
+                    error: DispatchError::new(
+                        BleErrorCode::LifecycleInvalidState.as_str(),
+                        BleErrorDomain::Cleanup.as_str(),
+                        "dispatch.close.reclaim-pending",
+                        "recording reclaim receipt remains retained; complete cleanup and retry",
+                    )
+                    .wire_message(),
+                }],
+            });
+        }
+        let starts: Vec<_> = self
+            .ordered_recording_starts
+            .lock()
+            .map_err(|_| Error::from_reason("recording start registry interrupted"))?
+            .values()
+            .cloned()
+            .collect();
+        for slot in starts {
+            let pending = match slot.try_lock() {
+                Ok(state) => state.launch_pending,
+                Err(_) => true,
+            };
+            if pending {
+                return Ok(CloseReportInfo {
+                    state: "release-failed".into(),
+                    failures: vec![CloseFailureInfo {
+                        resource_kind: "ordered-recording".into(),
+                        error: DispatchError::new(
+                            BleErrorCode::LifecycleInvalidState.as_str(),
+                            BleErrorDomain::Cleanup.as_str(),
+                            "dispatch.close.recording-start-pending",
+                            "ordered recording start remains pending; retry shutdown",
+                        )
+                        .wire_message(),
+                    }],
+                });
+            }
+        }
+        let owners =
+            ubm_desktop::continuation_journal::JournalRegistry::supervised_ordered_for_central(
+                &self.central,
+            )
+            .map_err(|_| Error::from_reason("ordered recorder owner enumeration failed"))?;
+        let mut failures = Vec::new();
+        for owner in owners {
+            let receipt = owner.shutdown_host_receipt().await;
+            if receipt["recording"]["state"] != "finished"
+                || !matches!(
+                    receipt["hostCleanup"]["state"].as_str(),
+                    Some("released" | "not-applicable")
+                )
+            {
+                failures.push(CloseFailureInfo {
+                    resource_kind: "ordered-recording".into(),
+                    error: DispatchError::new(
+                        BleErrorCode::LifecycleInvalidState.as_str(),
+                        BleErrorDomain::Cleanup.as_str(),
+                        "dispatch.close.recording-pending",
+                        "ordered recording cleanup remains pending; drain and retry",
+                    )
+                    .wire_message(),
+                });
+            }
+        }
+        if !failures.is_empty() {
+            return Ok(CloseReportInfo {
+                state: "release-failed".into(),
+                failures,
+            });
+        }
+        let starts: Vec<_> = self
+            .ordered_recording_starts
+            .lock()
+            .map_err(|_| Error::from_reason("recording start registry interrupted"))?
+            .values()
+            .cloned()
+            .collect();
+        for slot in starts {
+            let retained = match slot.try_lock() {
+                Ok(state) => state.signature.is_some(),
+                Err(_) => true,
+            };
+            if retained {
+                return Ok(CloseReportInfo { state: "release-failed".into(), failures: vec![CloseFailureInfo { resource_kind: "ordered-recording-receipt".into(), error: DispatchError::new(BleErrorCode::LifecycleInvalidState.as_str(), BleErrorDomain::Cleanup.as_str(), "dispatch.close.recording-receipt-pending", "ordered recording start receipt remains retained; retire and retry shutdown").wire_message() }] });
+            }
+        }
         self.continuation.engine.stop_recovery();
         let report = self.central.shutdown().await;
         if let Ok(mut function) = self.waker.function.lock() {
@@ -5166,7 +9589,9 @@ impl UbmCentral {
             .synthetic("dispatch.stage-advertisement")
             .map_err(to_napi)?;
         let snapshot = staged_snapshot(&input).map_err(to_napi)?;
-        radio.push_event(RadioEvent::Advertisement(snapshot));
+        radio
+            .push_event(RadioEvent::Advertisement(snapshot))
+            .map_err(fail)?;
         Ok(())
     }
 
@@ -5211,6 +9636,52 @@ impl UbmCentral {
         Ok(())
     }
 
+    /// Settle an exact synthetic native marker write.
+    #[napi(catch_unwind)]
+    pub fn stage_settle_marker_write(
+        &self,
+        collection_id: String,
+        marker_id: String,
+    ) -> Result<()> {
+        let collection =
+            ordered_u64(&collection_id, "dispatch.stage-marker-settlement").map_err(to_napi)?;
+        let marker =
+            ordered_u64(&marker_id, "dispatch.stage-marker-settlement").map_err(to_napi)?;
+        self.central
+            .boundary()
+            .synthetic("dispatch.stage-marker-settlement")
+            .map_err(to_napi)?
+            .settle_marker_write(collection, marker);
+        Ok(())
+    }
+
+    /// Set the synthetic discovery snapshot identity; production radios reject staging.
+    #[napi(catch_unwind)]
+    pub fn stage_gatt_snapshot_identity(
+        &self,
+        peer_id: String,
+        owner: String,
+        attachment: String,
+        revision: String,
+    ) -> Result<()> {
+        let attachment =
+            ordered_u64(&attachment, "dispatch.stage-gatt-identity").map_err(to_napi)?;
+        let revision = ordered_u64(&revision, "dispatch.stage-gatt-identity").map_err(to_napi)?;
+        self.central
+            .boundary()
+            .synthetic("dispatch.stage-gatt-identity")
+            .map_err(to_napi)?
+            .set_gatt_snapshot_identity(
+                &peer_id,
+                ubm_desktop::boundary::GattSnapshotIdentity {
+                    owner,
+                    attachment,
+                    revision,
+                },
+            );
+        Ok(())
+    }
+
     /// Stage the synthetic GATT database for one peer (synthetic only).
     #[napi(catch_unwind)]
     pub async fn stage_services(&self, peer_id: String, services: Vec<StageService>) -> Result<()> {
@@ -5242,6 +9713,74 @@ impl UbmCentral {
         })?;
         radio.set_mtu(&peer_id, mtu);
         Ok(())
+    }
+
+    /// Inject one source-wide loss control on the synthetic FIFO.
+    #[napi(catch_unwind)]
+    pub fn stage_ordered_source_loss(&self, peer_id: String, count: Option<String>) -> Result<()> {
+        let count = count
+            .as_deref()
+            .map(|value| ordered_u64(value, "dispatch.ordered.stage-loss"))
+            .transpose()
+            .map_err(to_napi)?;
+        self.central
+            .boundary()
+            .synthetic("dispatch.ordered.stage-loss")
+            .map_err(to_napi)?
+            .stage_ordered_source_loss(&peer_id, count)
+            .map_err(fail)
+    }
+
+    /// Inject a deterministic typed failure into the synthetic source only.
+    #[napi(catch_unwind)]
+    pub fn stage_ordered_failure_observation(
+        &self,
+        peer_id: String,
+        collection_id: String,
+        label: String,
+    ) -> Result<()> {
+        use ubm_core::ordered_notifications::{
+            FailureMetadataEntry, FailurePlatformDetail, FailureValue,
+        };
+        let collection =
+            ordered_u64(&collection_id, "dispatch.ordered.stage-failure").map_err(to_napi)?;
+        let mut platform = PlatformDetail::new("synthetic", "source-failed");
+        platform.metadata_entries = Some(vec![
+            ubm_desktop::errors::PlatformMetadataEntry {
+                key: "duplicate".into(),
+                value: PlatformValue::Int(i64::MIN),
+            },
+            ubm_desktop::errors::PlatformMetadataEntry {
+                key: "duplicate".into(),
+                value: PlatformValue::Text(label.clone()),
+            },
+        ]);
+        let mut failure = ubm_desktop::ordered_notification_groups::failure_from_desktop(
+            &DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Gatt,
+                "synthetic.source",
+            )
+            .with_platform(platform),
+        );
+        failure.platform_cleanup.push(FailurePlatformDetail {
+            domain: "synthetic-cleanup".into(),
+            code: label,
+            message: None,
+            metadata: Default::default(),
+            metadata_entries: Some(vec![FailureMetadataEntry {
+                key: "retry".into(),
+                value: FailureValue::Bool(false),
+            }]),
+            cleanup: Vec::new(),
+            cleanup_failures: Vec::new(),
+        });
+        self.central
+            .boundary()
+            .synthetic("dispatch.ordered.stage-failure")
+            .map_err(to_napi)?
+            .stage_ordered_failure_observation(&peer_id, collection, failure)
+            .map_err(fail)
     }
 
     /// Stage one synthetic notification (synthetic radio only).
@@ -5292,7 +9831,7 @@ impl UbmCentral {
                 value: input.value.as_ref().to_vec(),
             }
         };
-        radio.push_event(event);
+        radio.try_push_event(event).map_err(fail)?;
         Ok(())
     }
 
@@ -5324,15 +9863,17 @@ impl UbmCentral {
                     .await
             }
         };
-        radio.push_event(RadioEvent::NotificationsLost {
-            peer_id: input.peer_id,
-            service_uuid: input.service_uuid,
-            service_occurrence: u64::from(input.service_occurrence.unwrap_or(0)),
-            characteristic_uuid: input.characteristic_uuid,
-            characteristic_occurrence: u64::from(input.characteristic_occurrence.unwrap_or(0)),
-            epoch,
-            lost: u64::from(lost),
-        });
+        radio
+            .push_event(RadioEvent::NotificationsLost {
+                peer_id: input.peer_id,
+                service_uuid: input.service_uuid,
+                service_occurrence: u64::from(input.service_occurrence.unwrap_or(0)),
+                characteristic_uuid: input.characteristic_uuid,
+                characteristic_occurrence: u64::from(input.characteristic_occurrence.unwrap_or(0)),
+                epoch,
+                lost: u64::from(lost),
+            })
+            .map_err(fail)?;
         Ok(())
     }
 
@@ -5474,7 +10015,9 @@ impl UbmCentral {
             parse_adapter_power(&state, "dispatch.stage-adapter-state").map_err(to_napi)?;
         radio.set_adapter_state(parsed);
         if announce.unwrap_or(false) {
-            radio.push_event(RadioEvent::AdapterState(parsed));
+            radio
+                .push_event(RadioEvent::AdapterState(parsed))
+                .map_err(fail)?;
         }
         Ok(())
     }
@@ -5487,7 +10030,9 @@ impl UbmCentral {
             .boundary()
             .synthetic("dispatch.stage-link-loss")
             .map_err(to_napi)?;
-        radio.push_event(RadioEvent::Disconnected(peer_id));
+        radio
+            .push_event(RadioEvent::Disconnected(peer_id))
+            .map_err(fail)?;
         Ok(())
     }
 
@@ -5500,7 +10045,9 @@ impl UbmCentral {
             .boundary()
             .synthetic("dispatch.stage-services-changed")
             .map_err(to_napi)?;
-        radio.push_event(RadioEvent::ServicesChanged(peer_id));
+        radio
+            .push_event(RadioEvent::ServicesChanged(peer_id))
+            .map_err(fail)?;
         Ok(())
     }
 
@@ -5574,7 +10121,9 @@ impl UbmCentral {
         };
         radio.set_adapter_authorization(parsed);
         if announce.unwrap_or(false) {
-            radio.push_event(RadioEvent::AdapterAuthorization(parsed));
+            radio
+                .push_event(RadioEvent::AdapterAuthorization(parsed))
+                .map_err(fail)?;
         }
         Ok(())
     }
@@ -5588,9 +10137,11 @@ impl UbmCentral {
             .boundary()
             .synthetic("dispatch.stage-adapter-reset")
             .map_err(to_napi)?;
-        radio.push_event(RadioEvent::AdapterLost(
-            parse_loss_cause(&cause).map_err(to_napi)?,
-        ));
+        radio
+            .push_event(RadioEvent::AdapterLost(
+                parse_loss_cause(&cause).map_err(to_napi)?,
+            ))
+            .map_err(fail)?;
         Ok(())
     }
 
@@ -5923,7 +10474,9 @@ impl UbmCentral {
             .map_err(to_napi)?;
         radio.set_write_readiness(&peer_id, ready);
         if announce.unwrap_or(false) {
-            radio.push_event(RadioEvent::WriteReadiness { peer_id, ready });
+            radio
+                .push_event(RadioEvent::WriteReadiness { peer_id, ready })
+                .map_err(fail)?;
         }
         Ok(())
     }
@@ -5994,12 +10547,14 @@ impl UbmCentral {
             },
         );
         if announce.unwrap_or(false) {
-            radio.push_event(RadioEvent::ConnectionParameters {
-                peer_id,
-                interval_us,
-                latency,
-                supervision_timeout_us,
-            });
+            radio
+                .push_event(RadioEvent::ConnectionParameters {
+                    peer_id,
+                    interval_us,
+                    latency,
+                    supervision_timeout_us,
+                })
+                .map_err(fail)?;
         }
         Ok(())
     }
@@ -6024,7 +10579,9 @@ impl UbmCentral {
             PlatformDetail::new("winrt", "hresult")
                 .with_metadata("hresult", PlatformValue::Text(hresult)),
         );
-        radio.push_event(RadioEvent::ConnectionParameterSourceFailed { peer_id, error });
+        radio
+            .push_event(RadioEvent::ConnectionParameterSourceFailed { peer_id, error })
+            .map_err(fail)?;
         Ok(())
     }
 
@@ -6035,10 +10592,12 @@ impl UbmCentral {
             .boundary()
             .synthetic("dispatch.stage-parameter-gap")
             .map_err(to_napi)?;
-        radio.push_event(RadioEvent::ConnectionParameterGap {
-            peer_id,
-            missed: u64::from(missed),
-        });
+        radio
+            .push_event(RadioEvent::ConnectionParameterGap {
+                peer_id,
+                missed: u64::from(missed),
+            })
+            .map_err(fail)?;
         Ok(())
     }
 
@@ -6050,7 +10609,9 @@ impl UbmCentral {
             .boundary()
             .synthetic("dispatch.stage-scan-terminated")
             .map_err(to_napi)?;
-        radio.push_event(RadioEvent::ScanTerminated { aborted, detail });
+        radio
+            .push_event(RadioEvent::ScanTerminated { aborted, detail })
+            .map_err(fail)?;
         Ok(())
     }
 
@@ -6494,6 +11055,18 @@ mod tests {
     }
 
     #[test]
+    fn source_observation_overflow_is_a_host_reset() {
+        assert_eq!(
+            lifecycle_kind_wire(LifecycleKind::HostReset),
+            ("host-reset", None)
+        );
+        assert_eq!(
+            parse_loss_cause("source-observation-overflow").unwrap(),
+            AdapterLossCause::SourceObservationOverflow
+        );
+    }
+
+    #[test]
     fn lifecycle_projection_preserves_platform_detail_without_changing_the_public_kind() {
         let platform = PlatformDetail::new("bluez-mgmt", "1")
             .with_metadata("disconnectReason", PlatformValue::Int(1))
@@ -6575,7 +11148,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let central = UbmCentral::from_central(central, Arc::new(EventWaker::default()));
+            let central = UbmCentral::from_central(central, Arc::new(EventWaker::default()), None);
             let rows = central.runtime_capability_states().await;
             let direct = rows
                 .iter()
@@ -6641,6 +11214,7 @@ mod tests {
             .unwrap()),
             radio_close_failures: vec![],
             transport_close_failures: vec![],
+            peer_failure_recovery_debts: vec![],
             half_open_close_failures: vec![error.clone()],
             destroy_steps: 1,
             scan_stop_failure: None,
@@ -6776,7 +11350,7 @@ mod tests {
             .unwrap();
         let offline = crate::recording::ContinuationRecordingStore::new();
         offline
-            .configure_directory(directory.to_string_lossy().into_owned())
+            .configure_directory_trusted(directory.to_string_lossy().into_owned())
             .await
             .unwrap();
         let offline_status: serde_json::Value =
@@ -7117,6 +11691,317 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn poisoned_recording_session_registry_retains_failure_and_cleanup() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-session-poison-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let central = Arc::new(connected_synthetic("session-poison").await);
+        central
+            .continuation_configure_recording_directory(directory.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        central
+            .stage_services("peer-1".into(), hrm_services())
+            .await
+            .unwrap();
+        central.discover(lease(Some(5000))).await.unwrap();
+        let peer = central
+            .peer_records()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|peer| peer.peer_id == "peer-1")
+            .unwrap();
+        let handle = central.reserve_ordered_recording_start().unwrap();
+        let make_options = || OrderedRecordingStartOptions {
+            start_handle: handle.clone(),
+            wire_version: 5,
+            metadata_version: Some(2),
+            recording_id: "poisoned".into(),
+            recording_max_bytes: 1048576,
+            recording_max_records: 4,
+            peer_id: "peer-1".into(),
+            lease: "lease-a".into(),
+            connection_generation: peer.connection_generation.clone().unwrap(),
+            database_generation: peer.database_generation.clone().unwrap(),
+            members: vec![OrderedRecordingMemberInput {
+                member_id: "0".into(),
+                public_member_id: "heart".into(),
+                selector: selector_input(),
+                delivery_mode: None,
+                preferred_delivery_mode: None,
+            }],
+            max_items: 8,
+            max_bytes: 1024,
+            max_controls: 4,
+            timeout_ms: Some(5000),
+            ticket: None,
+        };
+        let sessions = Arc::clone(&central.recording_reclaim_sessions);
+        assert!(std::thread::spawn(move || {
+            let mut guard = sessions.lock().unwrap();
+            guard.insert(("poisoned".into(), "stale-lease".into()));
+            guard.insert(("other".into(), "other-lease".into()));
+            panic!("poison session registry");
+        })
+        .join()
+        .is_err());
+        // Discard the first response, then use only public dispatch status and retry.
+        let caller = Arc::clone(&central);
+        let options = make_options();
+        tokio::spawn(async move {
+            let _ = caller.start_ordered_recording(options).await;
+        })
+        .await
+        .unwrap();
+        let status: serde_json::Value = serde_json::from_str(
+            &central
+                .ordered_recording_start_status(handle.clone())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["state"], "result");
+        let failure = &status["result"];
+        assert_eq!(failure["kind"], "owner-failed");
+        assert_eq!(failure["recordingId"], "poisoned");
+        assert_eq!(failure["error"]["kind"], "source");
+        assert_eq!(
+            failure["error"]["source"]["code"],
+            "lifecycle.invalid-state"
+        );
+        assert_eq!(failure["error"]["source"]["domain"], "cleanup");
+        assert_eq!(
+            failure["error"]["source"]["operation"],
+            "dispatch.ordered-recording.session"
+        );
+        assert_eq!(
+            failure["error"]["source"]["detail"],
+            "recording session registry interrupted"
+        );
+        let calls = central.staged_radio_calls().await.unwrap();
+        let retry: serde_json::Value = serde_json::from_str(
+            &central
+                .start_ordered_recording(make_options())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(&retry, failure);
+        assert_eq!(central.staged_radio_calls().await.unwrap(), calls);
+        assert!(central
+            .issue_ordered_recording_recovery(handle.clone())
+            .await
+            .is_err());
+        let marker = central
+            .reserve_recording_marker_write(RecordingMarkerGroupOptions {
+                wire_version: 2,
+                recording_id: "poisoned".into(),
+                peer_id: "peer-1".into(),
+                lease: "lease-a".into(),
+                reservation_key: "marker".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(marker
+            .reason
+            .starts_with("lifecycle.invalid-state|cleanup|dispatch.recording-marker.session|"));
+        let owner = central
+            .continuation
+            .engine
+            .recording_registry()
+            .ordered_owner("poisoned", &central.central)
+            .unwrap()
+            .unwrap();
+        let slot = central
+            .ordered_recording_starts
+            .lock()
+            .unwrap()
+            .get(&handle.parse::<u64>().unwrap())
+            .cloned()
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &owner,
+            slot.lock().await.owner.as_ref().unwrap()
+        ));
+        assert_eq!(
+            owner.collection_id().to_string(),
+            failure["collectionId"].as_str().unwrap()
+        );
+        assert_eq!(owner.start_status()["receipt"]["state"], "active");
+        let store = central.continuation_recording_store();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let stopped: serde_json::Value =
+                    serde_json::from_str(&store.stop_ordered("poisoned".into()).await.unwrap())
+                        .unwrap();
+                if stopped["value"]["recording"]["state"] == "finished" {
+                    assert_eq!(stopped["value"]["hostCleanup"]["state"], "released");
+                    break;
+                }
+                let page: serde_json::Value = serde_json::from_str(
+                    &store.prepare("poisoned".into(), 16, 4096).await.unwrap(),
+                )
+                .unwrap();
+                if let Some(token) = page["value"]["token"].as_str() {
+                    store
+                        .acknowledge("poisoned".into(), token.into())
+                        .await
+                        .unwrap();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owner must remain reachable for cleanup");
+        central
+            .retire_ordered_recording_start(handle)
+            .await
+            .unwrap();
+        central
+            .forget_ordered_recording_session("poisoned".into())
+            .unwrap();
+        let bindings = central
+            .recording_reclaim_sessions
+            .lock()
+            .unwrap_err()
+            .into_inner();
+        assert!(!bindings.iter().any(|(id, _)| id == "poisoned"));
+        assert!(bindings.contains(&("other".into(), "other-lease".into())));
+        drop(bindings);
+        assert_eq!(central.close().await.unwrap().state, "released");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordered_recording_worker_panic_retains_status_and_owner() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-start-panic-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let central = Arc::new(
+            UbmCentral::open_synthetic("start-panic".into(), None)
+                .await
+                .unwrap(),
+        );
+        central
+            .continuation_configure_recording_directory(directory.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        for phase in [1, 2] {
+            let handle = central.reserve_ordered_recording_start().unwrap();
+            central
+                .ordered_recording_start_panic
+                .store(phase, Ordering::SeqCst);
+            let recording_id = format!("panic-{phase}");
+            let make_options = || OrderedRecordingStartOptions {
+                start_handle: handle.clone(),
+                wire_version: 5,
+                metadata_version: Some(2),
+                recording_id: recording_id.clone(),
+                recording_max_bytes: 1048576,
+                recording_max_records: 4,
+                peer_id: "peer".into(),
+                lease: "lease".into(),
+                connection_generation: "connection".into(),
+                database_generation: "database".into(),
+                members: vec![OrderedRecordingMemberInput {
+                    member_id: "0".into(),
+                    public_member_id: "heart".into(),
+                    selector: SelectorInput {
+                        service_uuid: HRM_SERVICE.into(),
+                        service_occurrence: Some(0),
+                        characteristic_uuid: Some(HRM_MEASUREMENT.into()),
+                        characteristic_occurrence: Some(0),
+                        descriptor_uuid: None,
+                        descriptor_occurrence: None,
+                    },
+                    delivery_mode: None,
+                    preferred_delivery_mode: None,
+                }],
+                max_items: 8,
+                max_bytes: 1024,
+                max_controls: 4,
+                timeout_ms: Some(5000),
+                ticket: None,
+            };
+            let options = make_options();
+            let caller = Arc::clone(&central);
+            let waiter = tokio::spawn(async move { caller.start_ordered_recording(options).await });
+            if phase == 2 {
+                while central.ordered_recording_start_panic.load(Ordering::SeqCst) != 0 {
+                    tokio::task::yield_now().await;
+                }
+                waiter.abort();
+            } else {
+                assert!(waiter.await.unwrap().is_err());
+            }
+            let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let status: serde_json::Value = serde_json::from_str(
+                        &central
+                            .ordered_recording_start_status(handle.clone())
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    if status["state"] == "failed" {
+                        break status;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("detached failure must remain observable");
+            assert_eq!(status["receipt"], serde_json::Value::Null);
+            // A lost failure response cannot authorize redispatch under this handle.
+            assert!(central
+                .start_ordered_recording(make_options())
+                .await
+                .is_err());
+            let replay: serde_json::Value = serde_json::from_str(
+                &central
+                    .ordered_recording_start_status(handle.clone())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(replay, status);
+            let owner = central
+                .continuation
+                .engine
+                .recording_registry()
+                .ordered_owner(&recording_id, &central.central)
+                .unwrap();
+            assert_eq!(owner.is_some(), phase == 2);
+            if owner.is_some() {
+                let _ = central
+                    .continuation
+                    .engine
+                    .recording_registry()
+                    .stop_ordered_receipt(&recording_id)
+                    .await;
+            }
+            central
+                .retire_ordered_recording_start(handle)
+                .await
+                .unwrap();
+        }
+        let _ = central.close().await;
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
     #[test]
     fn staged_service_graph_preserves_explicit_null_as_unknown() {
         let mut services = hrm_services();
@@ -7326,6 +12211,297 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordered_wire_version_refuses_before_radio_effect() {
+        let central = UbmCentral::open_synthetic("ordered-version".into(), None)
+            .await
+            .unwrap();
+        let id = central.reserve_ordered_group("peer".into()).unwrap();
+        let before = central.staged_radio_calls().await.unwrap();
+        let result = central
+            .open_ordered_group(OrderedOpenOptions {
+                wire_version: 4,
+                metadata_version: Some(2),
+                peer_id: "peer".into(),
+                collection_id: id,
+                lease: "lease".into(),
+                connection_generation: "connection".into(),
+                database_generation: "database".into(),
+                members: vec![],
+                max_items: 1,
+                max_bytes: 1,
+                max_controls: 1,
+                timeout_ms: Some(100),
+                ticket: None,
+            })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(central.staged_radio_calls().await.unwrap(), before);
+        central.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordered_public_native_flow_preserves_interleaving_loss_and_close() {
+        let central = std::sync::Arc::new(
+            UbmCentral::open_synthetic("ordered-flow".to_owned(), None)
+                .await
+                .unwrap(),
+        );
+        central
+            .stage_advertisement(StageAdvertisementInput {
+                address_type: None,
+                peer_id: "peer-1".into(),
+                address: None,
+                rssi: Some(-50),
+                local_name: None,
+                service_uuids: Some(vec![HRM_SERVICE.into()]),
+                manufacturer_data: None,
+                service_data: None,
+                tx_power: None,
+                solicited_service_uuids: None,
+                overflow_service_uuids: None,
+                connectable: None,
+                source: None,
+            })
+            .await
+            .unwrap();
+        central
+            .connect(ConnectOptions {
+                peer_id: "peer-1".into(),
+                lease: "lease-a".into(),
+                timeout_ms: Some(5000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        let mut services = hrm_services();
+        services[0].characteristics.push(StageCharacteristic {
+            uuid: HRM_MEASUREMENT.into(),
+            occurrence: 1,
+            properties: StageProperties {
+                read: true,
+                write: false,
+                write_without_response: false,
+                notify: true,
+                indicate: false,
+            },
+            descriptors: vec![],
+        });
+        central
+            .stage_services("peer-1".into(), services)
+            .await
+            .unwrap();
+        central
+            .discover(LeaseOptions {
+                peer_id: "peer-1".into(),
+                lease: "lease-a".into(),
+                timeout_ms: Some(5000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        central
+            .connect(ConnectOptions {
+                peer_id: "peer-1".into(),
+                lease: "lease-b".into(),
+                timeout_ms: Some(5000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        let peer = central
+            .peer_records()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|peer| peer.peer_id == "peer-1")
+            .unwrap();
+        central
+            .subscribe(SubscribeOptions {
+                peer_id: "peer-1".into(),
+                lease: "lease-a".into(),
+                selector: selector_input(),
+                consumer: "lease-a-consumer".into(),
+                delivery_mode: None,
+                preferred_delivery_mode: None,
+                overflow_policy: None,
+                terminal_evidence_scope: None,
+                timeout_ms: Some(5000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        let id = central.reserve_ordered_group("peer-1".into()).unwrap();
+        let members = (0..2)
+            .map(|occurrence| {
+                let mut selector = selector_input();
+                selector.characteristic_occurrence = Some(occurrence);
+                OrderedMemberInput {
+                    member_id: occurrence.to_string(),
+                    selector,
+                    delivery_mode: None,
+                    preferred_delivery_mode: None,
+                }
+            })
+            .collect();
+        central
+            .open_ordered_group(OrderedOpenOptions {
+                wire_version: 5,
+                metadata_version: Some(2),
+                peer_id: "peer-1".into(),
+                collection_id: id.clone(),
+                lease: "lease-b".into(),
+                connection_generation: peer.connection_generation.unwrap(),
+                database_generation: peer.database_generation.unwrap(),
+                members,
+                max_items: 16,
+                max_bytes: 1024,
+                max_controls: 4,
+                timeout_ms: Some(5000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        let fake = central
+            .central
+            .boundary()
+            .synthetic("ordered-race")
+            .unwrap();
+        let fences_before = fake
+            .calls()
+            .iter()
+            .filter(|call| *call == "notification_fence")
+            .count();
+        fake.block_op(FaultOp::NotificationFence);
+        let releasing = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .disconnect(LeaseOptions {
+                        peer_id: "peer-1".into(),
+                        lease: "lease-a".into(),
+                        timeout_ms: Some(5000),
+                        ticket: None,
+                    })
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while fake
+                .calls()
+                .iter()
+                .filter(|call| *call == "notification_fence")
+                .count()
+                == fences_before
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let joining = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .connect(ConnectOptions {
+                        peer_id: "peer-1".into(),
+                        lease: "lease-c".into(),
+                        timeout_ms: Some(5000),
+                        ticket: None,
+                    })
+                    .await
+            })
+        };
+        // A different lease may join while this lease releases; the existing
+        // ordered owner keeps its connection alive independently.
+        fake.unblock_op(FaultOp::NotificationFence);
+        releasing.await.unwrap().unwrap();
+        joining.await.unwrap().unwrap();
+        for (occurrence, byte) in [(0, 1), (1, 2), (0, 3)] {
+            central
+                .stage_notification(StageNotificationInput {
+                    peer_id: "peer-1".into(),
+                    service_uuid: HRM_SERVICE.into(),
+                    service_occurrence: Some(0),
+                    characteristic_uuid: HRM_MEASUREMENT.into(),
+                    characteristic_occurrence: Some(occurrence),
+                    epoch: None,
+                    value: Buffer::from(vec![byte]),
+                    source_failure: None,
+                })
+                .await
+                .unwrap();
+        }
+        central
+            .stage_ordered_source_loss("peer-1".into(), Some("7".into()))
+            .unwrap();
+        let options = || OrderedGroupOptions {
+            peer_id: "peer-1".into(),
+            collection_id: id.clone(),
+            timeout_ms: Some(5000),
+            ticket: None,
+        };
+        let mut records = Vec::new();
+        for _ in 0..20 {
+            let envelope = central.poll_ordered_group(options()).await.unwrap();
+            if let Some(delivery_id) = envelope.delivery_id {
+                central
+                    .acknowledge_ordered_delivery(OrderedDeliveryOptions {
+                        peer_id: "peer-1".into(),
+                        collection_id: id.clone(),
+                        delivery_id,
+                    })
+                    .await
+                    .unwrap();
+                records.push(serde_json::from_str::<serde_json::Value>(&envelope.record).unwrap());
+            }
+            if records.len() == 4 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record["kind"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["value", "value", "value", "loss"]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .take(3)
+                .map(|record| record["memberId"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["0", "1", "0"]
+        );
+        assert_eq!(records[3]["loss"]["count"], "7");
+        assert_eq!(
+            central.close_ordered_group(options()).await.unwrap(),
+            "pending-drain"
+        );
+        let terminal = central.poll_ordered_group(options()).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&terminal.record).unwrap()["kind"],
+            "terminal"
+        );
+        central
+            .acknowledge_ordered_delivery(OrderedDeliveryOptions {
+                peer_id: "peer-1".into(),
+                collection_id: id.clone(),
+                delivery_id: terminal.delivery_id.unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            central.close_ordered_group(options()).await.unwrap(),
+            "released"
+        );
+        central.acknowledge_ordered_group(options()).await.unwrap();
+        central.forget_ordered_group(options()).await.unwrap();
+        central.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn synthetic_flow_runs_ops_in_rust() {
         let central = UbmCentral::open_synthetic("dispatch-test-a".to_owned(), None)
             .await
@@ -7340,6 +12516,7 @@ mod tests {
                 service_uuids: None,
                 timeout_ms: Some(5000),
                 ticket: None,
+                terminal_evidence_scope: None,
             })
             .await
             .expect("scan");
@@ -7454,6 +12631,7 @@ mod tests {
                 delivery_mode: None,
                 preferred_delivery_mode: None,
                 overflow_policy: None,
+                terminal_evidence_scope: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })
@@ -7510,6 +12688,39 @@ mod tests {
             })
             .await
             .expect("disconnect");
+        central.close().await.expect("close");
+    }
+
+    #[tokio::test]
+    async fn terminal_scope_refuses_scan_activation_without_its_preactivated_reservation() {
+        let central = UbmCentral::open_synthetic("dispatch-terminal-scope".to_owned(), None)
+            .await
+            .expect("open");
+        let failure = central
+            .start_scan(ScanOptions {
+                owner: "dispatch-terminal-scope".to_owned(),
+                duplicate_policy: None,
+                local_name_prefix: None,
+                winrt_scanning_mode: None,
+                winrt_allow_extended_advertisements: None,
+                service_uuids: None,
+                terminal_evidence_scope: Some(TerminalEvidenceScopeInput {
+                    manager_id: "manager".to_owned(),
+                    operation_id: "operation".to_owned(),
+                    incarnation: "incarnation".to_owned(),
+                }),
+                timeout_ms: Some(5000),
+                ticket: None,
+            })
+            .await
+            .expect_err("a scope without the trusted reservation must not activate a radio source");
+        assert!(
+            failure
+                .reason
+                .starts_with("capability.unsupported|stream|dispatch.scan-start"),
+            "{}",
+            failure.reason
+        );
         central.close().await.expect("close");
     }
 
@@ -7582,6 +12793,7 @@ mod tests {
                 service_uuids: None,
                 timeout_ms: Some(100),
                 ticket: None,
+                terminal_evidence_scope: None,
             })
             .await
         {
@@ -7610,6 +12822,7 @@ mod tests {
                 service_uuids: None,
                 timeout_ms: Some(5000),
                 ticket: None,
+                terminal_evidence_scope: None,
             })
             .await
             .expect("scan");
@@ -7630,6 +12843,7 @@ mod tests {
                 service_uuids: None,
                 timeout_ms: Some(5000),
                 ticket: None,
+                terminal_evidence_scope: None,
             })
             .await
             .expect("restart");
@@ -7765,6 +12979,7 @@ mod tests {
                     delivery_mode: None,
                     preferred_delivery_mode: None,
                     overflow_policy: None,
+                    terminal_evidence_scope: None,
                     timeout_ms: Some(5000),
                     ticket: None,
                 })
@@ -7855,6 +13070,7 @@ mod tests {
                     delivery_mode: None,
                     preferred_delivery_mode: None,
                     overflow_policy: None,
+                    terminal_evidence_scope: None,
                     timeout_ms: Some(5000),
                     ticket: None,
                 })
@@ -7929,6 +13145,86 @@ mod tests {
             .unsubscribe(subscription("consumer-b"))
             .await
             .unwrap());
+        assert_eq!(central.close().await.unwrap().state, "released");
+    }
+
+    #[tokio::test]
+    async fn notification_source_failure_reaches_napi_as_structured_error() {
+        let central = connected_synthetic("notification-source-failure").await;
+        central
+            .stage_services("peer-1".to_owned(), hrm_services())
+            .await
+            .unwrap();
+        central.discover(lease(None)).await.unwrap();
+        central
+            .subscribe(SubscribeOptions {
+                peer_id: "peer-1".to_owned(),
+                lease: "lease-a".to_owned(),
+                selector: selector_input(),
+                consumer: "consumer".to_owned(),
+                delivery_mode: None,
+                preferred_delivery_mode: None,
+                overflow_policy: None,
+                terminal_evidence_scope: None,
+                timeout_ms: Some(5000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        let stage = |source_failure| StageNotificationInput {
+            peer_id: "peer-1".to_owned(),
+            service_uuid: HRM_SERVICE.to_owned(),
+            service_occurrence: Some(0),
+            characteristic_uuid: HRM_MEASUREMENT.to_owned(),
+            characteristic_occurrence: Some(0),
+            epoch: None,
+            value: Buffer::from(vec![7]),
+            source_failure,
+        };
+        central.stage_notification(stage(None)).await.unwrap();
+        central
+            .stage_notification(stage(Some(StagePlatformDetail {
+                domain: "test-radio".to_owned(),
+                code: "radio-failed".to_owned(),
+                message: Some("source stopped".to_owned()),
+                metadata: None,
+            })))
+            .await
+            .unwrap();
+        let options = || SubscriptionOptions {
+            peer_id: "peer-1".to_owned(),
+            selector: selector_input(),
+            consumer: "consumer".to_owned(),
+            timeout_ms: Some(5000),
+            ticket: None,
+        };
+        let (value, failure) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut value = None;
+            loop {
+                match central.poll_notification(options()).await {
+                    Ok(poll) if poll.kind == "value" => value = poll.value,
+                    Ok(poll) if poll.kind == "empty" => tokio::task::yield_now().await,
+                    Ok(poll) => panic!("unexpected notification outcome {}", poll.kind),
+                    Err(error) => break (value, error),
+                }
+            }
+        })
+        .await
+        .expect("source failure is observable");
+        assert_eq!(value.unwrap().as_ref(), &[7]);
+        assert!(
+            failure
+                .reason
+                .starts_with("platform.failure|gatt|gatt.notification|"),
+            "{}",
+            failure.reason
+        );
+        assert!(
+            failure.reason.contains("radio-failed"),
+            "{}",
+            failure.reason
+        );
+        central.unsubscribe(options()).await.unwrap();
         assert_eq!(central.close().await.unwrap().state, "released");
     }
 
@@ -8217,6 +13513,7 @@ mod tests {
                 delivery_mode: Some("notification".to_owned()),
                 preferred_delivery_mode: None,
                 overflow_policy: None,
+                terminal_evidence_scope: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })
@@ -8446,4 +13743,137 @@ mod tests {
         let descriptor: &DescriptorSnapshot = &characteristic.descriptors[0];
         assert_eq!(descriptor.occurrence, 0);
     }
+
+    #[tokio::test]
+    async fn terminal_evidence_round_trip_is_scoped_and_release_is_idempotent() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-napi-terminal-evidence-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("test evidence directory");
+        let central = UbmCentral::open_synthetic(
+            "terminal-evidence".to_owned(),
+            Some(SyntheticOptions {
+                pairing_generation: None,
+                platform: Some("bluez".to_owned()),
+                terminal_evidence_directory: Some(directory.display().to_string()),
+                terminal_evidence_max_bytes: Some("1024".to_owned()),
+            }),
+        )
+        .await
+        .expect("synthetic central");
+        let reservation = central
+            .reserve_terminal_evidence(TerminalEvidenceReserveOptions {
+                producer: "scan".to_owned(),
+                maximum_bytes: "128".to_owned(),
+                format_version: 1,
+                scope: TerminalEvidenceScopeInput {
+                    manager_id: "manager".to_owned(),
+                    operation_id: "operation".to_owned(),
+                    incarnation: "1".to_owned(),
+                },
+            })
+            .await
+            .expect("reserve");
+        let bytes = b"exact terminal evidence".to_vec();
+        central
+            .stage_terminal_evidence(
+                reservation.reservation_id.clone(),
+                "trusted-recipient".to_owned(),
+                Buffer::from(bytes.clone()),
+            )
+            .await
+            .expect("stage trusted recovery bytes");
+        let digest = terminal_digest_hex(sha2::Sha256::digest(&bytes).into());
+        let committed = central
+            .commit_terminal_evidence(TerminalEvidenceCommitOptions {
+                reservation_id: reservation.reservation_id.clone(),
+                canonical_bytes: Buffer::from(bytes.clone()),
+                digest,
+            })
+            .await
+            .expect("commit");
+        assert_eq!(committed.kind, "committed");
+        let read = central
+            .read_terminal_evidence(
+                committed.reference.clone().expect("reference"),
+                "128".to_owned(),
+            )
+            .await
+            .expect("read");
+        assert_eq!(read.kind, "committed");
+        assert_eq!(read.canonical_bytes.expect("bytes").to_vec(), bytes);
+        central
+            .release_terminal_evidence(reservation.reservation_id)
+            .await
+            .expect("release");
+        // Stream teardown abandons the reservation lease, not the committed
+        // record. A renderer restart must still be able to recover the exact
+        // bytes before its authenticated acknowledgement retires them.
+        let retained = central
+            .read_terminal_evidence(
+                committed.reference.clone().expect("reference"),
+                "128".to_owned(),
+            )
+            .await
+            .expect("read retained evidence");
+        assert_eq!(retained.kind, "committed");
+        assert_eq!(
+            retained.canonical_bytes.expect("retained bytes").to_vec(),
+            bytes
+        );
+        let recovery_lease = "napi-test-recovery-lease".to_owned();
+        let recovered = central
+            .recover_terminal_evidence(TerminalEvidenceRecoverOptions {
+                producer: "scan".to_owned(),
+                recipient: "trusted-recipient".to_owned(),
+                lease_id: recovery_lease.clone(),
+            })
+            .await
+            .expect("recover under private lease");
+        assert_eq!(recovered.len(), 1);
+        assert!(central
+            .acknowledge_recovered_terminal_evidence(TerminalEvidenceRecoveryAcknowledgeOptions {
+                reference: committed.reference.clone().expect("ref"),
+                reservation_id: reservation.reservation_id.clone(),
+                lease_id: recovery_lease.clone(),
+                producer: "scan".to_owned(),
+                recipient: "other-recipient".to_owned(),
+            })
+            .await
+            .is_err());
+        let still_retained = central
+            .read_terminal_evidence(
+                committed.reference.clone().expect("reference"),
+                "128".to_owned(),
+            )
+            .await
+            .expect("read after rejected acknowledgement");
+        assert_eq!(still_retained.kind, "committed");
+        central
+            .acknowledge_recovered_terminal_evidence(TerminalEvidenceRecoveryAcknowledgeOptions {
+                reference: committed.reference.clone().expect("ref"),
+                reservation_id: reservation.reservation_id.clone(),
+                lease_id: recovery_lease.clone(),
+                producer: "scan".to_owned(),
+                recipient: "trusted-recipient".to_owned(),
+            })
+            .await
+            .expect("acknowledge recovery");
+        let retired = central
+            .read_terminal_evidence(committed.reference.expect("reference"), "128".to_owned())
+            .await
+            .expect("read retirement result");
+        assert_eq!(retired.kind, "missing");
+        central.close().await.expect("close");
+        drop(central);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
 }
+
+#[cfg(test)]
+#[path = "platform_metadata_transport_522_tests.rs"]
+mod platform_metadata_transport_522_tests;

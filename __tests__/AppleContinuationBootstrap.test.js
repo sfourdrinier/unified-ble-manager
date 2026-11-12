@@ -54,8 +54,8 @@ describe('Apple native continuation launch wiring', () => {
       source.indexOf('private func existingHost()')
     )
     expect(host.indexOf('if let host { return host }')).toBeLessThan(host.indexOf('try installer(self)'))
-    expect(install.indexOf('adapter.bind(sink: host)')).toBeGreaterThan(
-      install.indexOf('radio.attachDelegateIfAvailable(adapter)')
+    expect(install.indexOf('radio.attachDelegateIfAvailable(adapter)')).toBeLessThan(
+      install.indexOf('mobileHostInstallBound(')
     )
   })
 

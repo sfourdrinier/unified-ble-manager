@@ -17,20 +17,22 @@ function limits(itemCapacity, byteCapacity, reservedControlCapacity) {
 }
 
 describe('public stream runtime projection', () => {
-  test('projects a host-global source-loss notice without attributing it to the stream', async () => {
-    const source = new CoreBoundedStream(limits(1, 8, 1), 'drop-oldest')
+  test('fails closed with the legacy terminal vocabulary on host-global source loss', async () => {
+    const source = new CoreBoundedStream(limits(1, 256, 1), 'drop-oldest')
     source.observeSourceLoss({
       kind: 'source-loss',
       scope: 'host-global',
       source: 'notification-ingress',
       lostRecords: resourceCount(3)
     })
+    source.finishWithReason('closed')
     const iterator = mapPublicBoundedAsyncStream(source, value => value)[Symbol.asyncIterator]()
     expect((await iterator.next()).value).toEqual({
-      kind: 'source-loss',
-      scope: 'host-global',
-      source: 'notification-ingress',
-      lostRecords: 3
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0,
+      replacedItems: 0
     })
     await iterator.return()
   })
@@ -726,4 +728,22 @@ describe('public stream runtime projection', () => {
       })
     ).toThrow()
   })
+})
+
+test('projects peer source loss as the legacy overflow terminal without fabricating counts', async () => {
+  const source = new CoreBoundedStream(limits(2, 256, 1), 'error')
+  const loss = { kind: 'source-loss', scope: 'peer', peerId: 'peer', generation: '18446744073709551615', skippedRecords: '9007199254740993' }
+  source.emit('before', 1)
+  source.observeSourceLoss(loss)
+  source.finishWithReason('closed')
+  const iterator = mapPublicBoundedAsyncStream(source, value => value)[Symbol.asyncIterator]()
+  expect((await iterator.next()).value).toEqual({ kind: 'value', value: 'before' })
+  expect((await iterator.next()).value).toEqual({
+    kind: 'terminal',
+    reason: 'overflow',
+    droppedItems: 0,
+    droppedBytes: 0,
+    replacedItems: 0
+  })
+  await iterator.return()
 })

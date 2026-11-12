@@ -264,7 +264,7 @@ function createWriteReadinessAdmission<Attachment extends string, Identity exten
         observe(item.value.value)
         continue
       }
-      if (item.value.kind === 'overflow' || item.value.kind === 'source-loss') {
+      if (item.value.kind === 'overflow') {
         fail(contractError('stream.overflow', 'connection', 'unified-core.write-when-ready.stream-overflow'))
         return
       }

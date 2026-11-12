@@ -341,6 +341,10 @@ export interface NativeProtocolHandshakeRequest {
   adapterId: string
   adapterGeneration: string
   ownerId: string
+  /** Require scan-event identity rather than accepting a legacy attachment. */
+  scanEventIdentitySupported?: boolean
+  /** Require the Android registry-admission JSI companion to scan identity. */
+  androidRegistryAdmissionSupported?: boolean
 }
 
 export interface NativeProtocolHandshakeResult {
@@ -359,6 +363,8 @@ export interface NativeProtocolHandshakeResult {
   securityAvailable?: boolean
   /** True only when the native attachment can cancel system pairing on this API level. */
   securityCancelPairingAvailable?: boolean
+  /** True only when both Android scan identity and registry admission are live. */
+  scanEventIdentityAvailable?: boolean
 }
 
 export interface NativeAttachmentIdentity {

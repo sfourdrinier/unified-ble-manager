@@ -46,6 +46,10 @@ class RustRadioHostAdapterConnectAttemptTest {
       calls.add("disconnect:$peerId")
       delayedDisconnect = onComplete
     }
+
+    override fun cancelConnect(peerId: String, attempt: GattConnectAttempt, onComplete: (Throwable?) -> Unit) {
+      disconnect(peerId, onComplete)
+    }
   }
 
   private class Stack(refuseCloseDeadline: Boolean = false) {
@@ -93,6 +97,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     assertEquals("the prior's loss must not settle the replacement: ${s.core.calls}", emptyList<String>(), s.settlements())
     assertEquals(1, connectGattCalls(s.fixture))
     assertEquals("the prior's loss stays reported, never silent", 1L, s.adapter.statusCounts()["superseded-connect-outcome"])
+    assertEquals(listOf("dropped:connection-outcome:1"), s.core.calls.filter { it.startsWith("dropped:") })
     assertTrue(s.logs.any { it.contains("superseded") })
     assertTrue("no link ingress for a link the core never had: ${s.core.calls}", s.core.calls.none { it.startsWith("link:") })
 
@@ -117,6 +122,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     assertEquals(1, connectGattCalls(s.fixture))
     assertEquals("the forced close must not settle the replacement: ${s.core.calls}", emptyList<String>(), s.settlements())
     assertEquals(1L, s.adapter.statusCounts()["superseded-connect-outcome"])
+    assertEquals(listOf("dropped:connection-outcome:1"), s.core.calls.filter { it.startsWith("dropped:") })
     verify(prior).close()
 
     s.connected(replacement)

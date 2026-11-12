@@ -293,7 +293,8 @@ async fn replay_vendor_advertisements_preserve_matcher_facts() {
         let name = case["name"].as_str().expect("case name");
         central
             .boundary()
-            .push_event(RadioEvent::Advertisement(snapshot_from_fixture(case)));
+            .push_event(RadioEvent::Advertisement(snapshot_from_fixture(case)))
+            .expect("synthetic event admission failed");
         wait_peer(&central, case["peerId"].as_str().expect("peerId")).await;
         let snapshot = take_one(&central, name).await;
         assert_snapshot_matches_fixture(name, case, &snapshot);
@@ -332,7 +333,8 @@ async fn scan_response_updates_arrive_in_order() {
     for event in events {
         central
             .boundary()
-            .push_event(RadioEvent::Advertisement(snapshot_from_fixture(event)));
+            .push_event(RadioEvent::Advertisement(snapshot_from_fixture(event)))
+            .expect("synthetic event admission failed");
     }
     for (index, event) in events.iter().enumerate() {
         let snapshot = take_one(&central, "scan-response-update").await;
@@ -375,7 +377,8 @@ async fn advertisement_queue_retains_a_burst_the_host_has_not_polled() {
                 service_data: Vec::new(),
                 tx_power_level: None,
                 extras: ubm_desktop::AdvertisementExtras::default(),
-            }));
+            }))
+            .expect("synthetic event admission failed");
         wait_peer(&central, &peer_id).await;
     }
     let mut observed = Vec::new();
@@ -414,7 +417,8 @@ async fn sightings_belong_to_the_scan_that_was_live() {
         .expect("open central");
     central
         .boundary()
-        .push_event(sighting("before", "Pre-scan"));
+        .push_event(sighting("before", "Pre-scan"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "before").await;
     let first = central
         .start_scan("owner", &[], OpControl::budget_ms(5000))
@@ -426,11 +430,13 @@ async fn sightings_belong_to_the_scan_that_was_live() {
     );
     central
         .boundary()
-        .push_event(sighting("during-first", "First"));
+        .push_event(sighting("during-first", "First"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "during-first").await;
     central
         .boundary()
-        .push_event(sighting("tail-first", "Tail"));
+        .push_event(sighting("tail-first", "Tail"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "tail-first").await;
     let taken = central
         .take_scan_observation()
@@ -448,7 +454,8 @@ async fn sightings_belong_to_the_scan_that_was_live() {
         .expect("stop");
     central
         .boundary()
-        .push_event(sighting("between", "Between"));
+        .push_event(sighting("between", "Between"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "between").await;
     let second = central
         .start_scan("owner", &[], OpControl::budget_ms(5000))
@@ -460,7 +467,8 @@ async fn sightings_belong_to_the_scan_that_was_live() {
     );
     central
         .boundary()
-        .push_event(sighting("during-second", "Second"));
+        .push_event(sighting("during-second", "Second"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "during-second").await;
     let taken = central
         .take_scan_observation()
@@ -484,7 +492,8 @@ async fn a_connected_then_disconnected_peer_is_re_observed_when_a_new_scan_start
     // The peer becomes known through a full connect/disconnect lifecycle.
     central
         .boundary()
-        .push_event(sighting("h10", "Polar H10 SIM0001"));
+        .push_event(sighting("h10", "Polar H10 SIM0001"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "h10").await;
     central
         .connect("h10", "lease-a", OpControl::budget_ms(5000))

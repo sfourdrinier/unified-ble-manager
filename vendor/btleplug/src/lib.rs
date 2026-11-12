@@ -89,10 +89,15 @@ use crate::api::ParseBDAddrError;
 use std::result;
 use std::time::Duration;
 
+#[cfg(any(target_os = "windows", test))]
+mod active_operations;
 pub mod api;
+pub mod ubm_peer_notification_ingress;
+pub mod ubm_reclaim_authority;
+pub mod ubm_reclaim_graph_gate;
+pub mod ubm_reclaim_graph_binding;
 #[cfg(target_os = "linux")]
 mod bluez;
-#[cfg(not(target_os = "linux"))]
 mod common;
 pub mod connection_parameters_source;
 pub mod connection_phy_source;
@@ -100,8 +105,6 @@ pub mod connection_phy_source;
 mod discovery_reservations;
 #[cfg(any(target_os = "windows", test))]
 mod request_lifetime;
-#[cfg(any(target_os = "windows", test))]
-mod active_operations;
 
 /// UBM patch (UBM_PATCHES.md #10): the notification stream every platform
 /// peripheral hands out, exported so the desktop core's tests drive the
@@ -109,7 +112,9 @@ mod active_operations;
 /// notifications arrive over bluez-async's unbounded D-Bus stream.
 #[cfg(not(target_os = "linux"))]
 pub mod ubm {
-    pub use crate::common::util::notifications_stream_from_broadcast_receiver;
+    pub use crate::common::util::{
+        notification_events_from_broadcast_receiver, notifications_stream_from_broadcast_receiver,
+    };
 
     /// UBM patch (UBM_PATCHES.md #13): slots of the adapter event broadcast
     /// and of each peripheral's notification broadcast (upstream: 16). The

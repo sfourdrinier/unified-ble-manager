@@ -229,16 +229,18 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
         opaqueId('client', 'client', 'test')
       )
       const iterator = scan.observations[Symbol.asyncIterator]()
-      const items = Promise.all(name === null ? [iterator.next()] : [iterator.next(), iterator.next()])
+      // Error overflow keeps the already admitted FIFO value, then reports its
+      // terminal. The legacy iterator never rewrites that accepted value.
+      const items = Promise.all([iterator.next(), iterator.next()])
       await scan.stop()
       const values = (await items).map(item => item.value)
-      expect(values[0]).toMatchObject({
-        kind: name === null ? 'terminal' : 'overflow',
-        droppedItems: dropped,
-        replacedItems: replaced
-      })
-      if (name !== null) expect(values[1]).toMatchObject({ kind: 'value', value: { localName: { value: name } } })
-      else expect(values[0].reason).toBe('overflow')
+      if (name !== null) {
+        expect(values[0]).toMatchObject({ kind: 'overflow', droppedItems: dropped, replacedItems: replaced })
+        expect(values[1]).toMatchObject({ kind: 'value', value: { localName: { value: name } } })
+      } else {
+        expect(values[0]).toMatchObject({ kind: 'value', value: { localName: { value: 'first' } } })
+        expect(values[1]).toMatchObject({ kind: 'terminal', reason: 'overflow', droppedItems: dropped, replacedItems: replaced })
+      }
     } finally {
       await backend.destroy()
     }
@@ -271,7 +273,7 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     }
   })
 
-  test('error-policy advertisement ingress loss reports the notice and releases the native scan', async () => {
+  test('error-policy advertisement ingress loss ends the legacy stream as overflow and releases the native scan', async () => {
     const { native, backend } = await openBackend()
     const scan = await backend.scanner.start(
       scanOptions({
@@ -282,7 +284,8 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'advertisement', count: 2 })
     await settle(80)
     const iterator = scan.observations[Symbol.asyncIterator]()
-    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 2 })
+    // Source-loss provenance is retained for the explicit loss-aware view;
+    // the stable three-arm iterator fails closed as overflow.
     expect((await iterator.next()).value).toMatchObject({
       kind: 'terminal',
       reason: 'overflow',
@@ -293,7 +296,24 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     await backend.destroy()
   })
 
-  test('native ingress loss during provisional admission reaches the same consumer accounting', async () => {
+  test('advertisement ingress loss retains its accepted prefix and excludes later advertisements', async () => {
+    const { native, backend } = await openBackend()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+    const session = [...native.sessions.values()][0]
+    native.emitAdvertisement(DEFAULT_PEER, { localName: 'accepted-before-loss' })
+    native.push(session, { t: 'ingress-drop', class: 'advertisement', count: 1 })
+    native.emitAdvertisement(DEFAULT_PEER, { localName: 'excluded-after-loss' })
+    await settle(80)
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'value',
+      value: { localName: { value: 'accepted-before-loss' } }
+    })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
+    await backend.destroy()
+  })
+
+  test('native ingress loss during provisional admission closes the legacy stream before later values', async () => {
     const { native, backend } = await openBackend()
     const invoke = native.invoke.bind(native)
     jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
@@ -308,16 +328,14 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     try {
       const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
       const iterator = scan.observations[Symbol.asyncIterator]()
-      const items = Promise.all([iterator.next(), iterator.next()])
+      const first = iterator.next()
       await scan.stop()
-      const values = (await items).map(item => item.value)
-      expect(values[0]).toEqual({
-        kind: 'source-loss',
-        scope: 'host-global',
-        source: 'advertisement-ingress',
-        lostRecords: 3
+      expect((await first).value).toMatchObject({
+        kind: 'terminal',
+        reason: 'overflow',
+        droppedItems: 0,
+        droppedBytes: 0
       })
-      expect(values[1]).toMatchObject({ kind: 'value', value: { localName: { value: 'kept' } } })
     } finally {
       await backend.destroy()
     }
@@ -456,7 +474,7 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     expect([...native.sessions.values()][0].scans.size).toBe(0)
   })
 
-  test('native notification loss remains host-global across active and provisional subscribers', async () => {
+  test('native notification loss closes active and provisional legacy subscribers as overflow', async () => {
     const { native, backend } = await openBackend()
     const { lease, path } = await connected(backend)
     const first = await backend.gatt.subscribe(path, { operation: operation(backend), options: subscribeOptions() })
@@ -472,16 +490,21 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     })
     const second = await backend.gatt.subscribe(path, { operation: operation(backend), options: subscribeOptions() })
       .completion
-    const notice = { kind: 'source-loss', scope: 'host-global', source: 'notification-ingress', lostRecords: 3 }
-    expect((await first.notifications[Symbol.asyncIterator]().next()).value).toEqual(notice)
-    expect((await second.notifications[Symbol.asyncIterator]().next()).value).toEqual(notice)
+    expect((await first.notifications[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow'
+    })
+    expect((await second.notifications[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow'
+    })
     await backend.gatt.unsubscribe(first, operation(backend)).completion
     await backend.gatt.unsubscribe(second, operation(backend)).completion
     await lease.release()
     await backend.destroy()
   })
 
-  test('provisional error-policy ingress loss releases the subscription after admission', async () => {
+  test('provisional error-policy ingress loss terminates and releases the subscription after admission', async () => {
     const { native, backend } = await openBackend()
     const { lease, path } = await connected(backend)
     const invoke = native.invoke.bind(native)
@@ -499,14 +522,13 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     const subscription = await backend.gatt.subscribe(path, { operation: operation(backend), options }).completion
     await settle(80)
     const iterator = subscription.notifications[Symbol.asyncIterator]()
-    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 2 })
     expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow', droppedItems: 0 })
     expect(native.opsInvoked('gatt.unsubscribe')).toHaveLength(1)
     await lease.release()
     await backend.destroy()
   })
 
-  test('error-policy ingress loss preserves notice and releases the native subscription', async () => {
+  test('error-policy ingress loss terminates and releases the native subscription', async () => {
     const { native, backend } = await openBackend()
     const { lease, path } = await connected(backend)
     const options = subscribeOptions({
@@ -516,7 +538,6 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'notification', count: 2 })
     await settle(80)
     const iterator = subscription.notifications[Symbol.asyncIterator]()
-    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 2 })
     expect((await iterator.next()).value).toMatchObject({
       kind: 'terminal',
       reason: 'overflow',

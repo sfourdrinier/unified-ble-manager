@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.2.1 | Documentation</title>
+    <title>unified-ble-manager 5.2.2 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.2.1</code></div>
+          <div class="mb1"><code>5.2.2</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.2.1</code>; verify the published version in the npm registry.</p>
+            <p>This source targets <code>5.2.2</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -137,7 +137,7 @@
               registry before installing: source preparation is not publication. Install the exact release and commit
               the resolved lockfile for a known native rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.2.1
+            <pre><code>pnpm add unified-ble-manager@5.2.2
 </code></pre>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
@@ -146,9 +146,9 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. Install
-              <code>5.2.1</code> and keep that exact version in your lockfile while validating the native build:
+              <code>5.2.2</code> and keep that exact version in your lockfile while validating the native build:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.2.1
+            <pre><code>pnpm add unified-ble-manager@5.2.2
 </code></pre>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -1017,7 +1017,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.2.1</code> source. Those options match the schema introduced at
+              Use the v2 plugin options in this <code>5.2.2</code> source. Those options match the schema introduced at
               <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -1025,7 +1025,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.2.1
+            <pre><code>pnpm add unified-ble-manager@5.2.2
 # Choose one SDK line for this app; do not install both.
 pnpm add expo@^57.0.0 expo-dev-client
 # Or: pnpm add expo@^58.0.0 expo-dev-client
@@ -1395,7 +1395,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.2.1</code>. Verify publication in the npm registry. Main executes the shared
+              This source targets <code>5.2.2</code>. Verify publication in the npm registry. Main executes the shared
               Rust core (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for
               macOS Apple Silicon (<code>arm64</code>) and Windows/Linux <code>arm64</code>/<code>x64</code>. The addon
               is Node-API, so one binary serves Node and modern Electron alike.
@@ -1431,8 +1431,12 @@ await manager.background.updateNotification({
               <li>release renderer resources, destroy the binding, destroy the manager.</li>
             </ol>
             <p>
-              BrowserWindow must use <code>contextIsolation: true</code> and <code>nodeIntegration: false</code>.
-              Security internals live in <a href="ELECTRON_SECURITY_MODEL.md"><code>ELECTRON_SECURITY_MODEL.md</code></a
+              BrowserWindow must use <code>contextIsolation: true</code>, <code>nodeIntegration: false</code>, and
+              <code>sandbox: true</code>; call <code>app.enableSandbox()</code> before Electron is ready. The preload is
+              trusted host code but must expose only named typed bridge methods, never generic IPC, an addon loader, a
+              native recording store, or a filesystem directory. A renderer/preload allowed to import the Node-API
+              binary has opted out of Electron renderer isolation; UBM cannot treat it as untrusted. Security internals
+              live in <a href="ELECTRON_SECURITY_MODEL.md"><code>ELECTRON_SECURITY_MODEL.md</code></a
               >.
             </p>
             <p>In the renderer, after preload hands you an authenticated transport:</p>
@@ -1448,6 +1452,32 @@ const scan = await manager.scan({
 await scan.stop()
 await manager.destroy()
 </code></pre>
+            <h3>Durable terminal evidence</h3>
+            <p>
+              Terminal evidence is off unless the renderer opts in with bounded canonical bytes and Electron main has
+              already selected a private native ledger. The renderer never supplies a directory, ledger reference, or
+              storage credential:
+            </p>
+            <pre><code>const manager = await createElectronRendererBleManager({
+  transport,
+  terminalEvidence: { maximumCanonicalBytes: 64 * 1024, maximumDurableBytes: 4 * 1024 * 1024 }
+})
+</code></pre>
+            <p>
+              After a renderer reload or main-process recovery, inspect only the opaque aliases that trusted main grants
+              to that authenticated lease:
+            </p>
+            <pre><code>for (const record of await manager.terminalEvidenceRecovery.list()) {
+  const value = await manager.terminalEvidenceRecovery.read(record.handle, record.byteLength)
+  await persistExactCanonicalBytes(value.canonicalBytes, value.digest)
+  await manager.terminalEvidenceRecovery.acknowledge(record.handle)
+}
+</code></pre>
+            <p>
+              Reading does not retire evidence. Acknowledge only after durable consumption; it releases the selected
+              record. Without renderer opt-in, no reservation is requested and the normal Electron behavior is
+              unchanged.
+            </p>
             <p>
               The low-level <code>ElectronRendererBleClient</code> is an implementation seam for the transport and
               tests, not an application API.
@@ -1571,9 +1601,22 @@ function recorderForMain(central: DesktopRustCoreCentral) {
               Only trusted main code may call <code>execute</code>, <code>status</code> and <code>claim</code>. This
               adds no renderer IPC privilege: expose any application-specific commands through your existing
               authenticated, scoped IPC policy. <code>execute</code> needs a known peer ID and explicit native
-              resubscription declaration. <code>claim</code> validates values before acknowledging native handoff,
-              reports loss and cleanup uncertainty, and ends the recording generation. Persist returned values according
-              to your application.
+              resubscription declaration. <code>claim</code> decodes and automatically acknowledges the complete
+              backlog. The separately versioned <code>claimRetainedV1</code> discloses a retained prefix: process its
+              ordered records before acknowledging, then claim again until the receipt confirms disposal. It requires
+              the V1 native operations and fails closed when unavailable. Coordinate one application consumer and retry
+              uncertain acknowledgements with the same handoff.
+            </p>
+            <p>
+              Durable recording diagnostics from <code>openNativeContinuationRecordings(...).diagnostics</code> follow
+              the same rule. They are intentionally absent from the UBM BLE IPC channel: an Electron application may
+              expose named, authenticated main-process commands only after it has selected the renderer/document
+              entitled to receive raw journal evidence. Keep the recording directory private, preserve the opaque
+              lower-case 80-hex occurrence identity and raw byte pages exactly, and bound pages to 64 KiB (128
+              occurrence IDs per page). Reading never acknowledges. Only after the application has durably retained the
+              complete exact UTF-8 payload may it call the lifecycle in order: acknowledge, retire, confirm retirement,
+              then release confirmation. Every native transition compares the exact payload; an occurrence is not a
+              peer, window, or UUID identity.
             </p>
             <p>
               For an authenticated application bridge that forwards raw native control envelopes, main may use
@@ -1685,19 +1728,23 @@ function recorderForMain(central: DesktopRustCoreCentral) {
               result.
             </p>
             <p>
-              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 6. Version 5
-              added security routes, address targeting, connection intent and platform scan-option forwarding. A
-              capability still describes the instantiated backend's implementation; transport support does not invent
-              native support. The caller's deadline crosses as a relative <code>budgetMs</code> that main admits against
-              its own monotonic clock at receipt (the renderer's <code>performance.now()</code> instant has a different
-              time origin), and main rejects an absolute renderer <code>deadline</code> as
-              <code>protocol.malformed</code>. Normalized errors may carry
-              <code>commit</code> (<code>not-dispatched</code>, <code>uncertain</code>, or <code>null</code>). Version 4
-              adds the attachment rebind described below. A renderer and main built from different package versions
-              where one side speaks protocol 4 or older fail at bootstrap with <code>protocol.incompatible</code>, in
-              either direction, before a lease is registered or any operation runs, so preload, renderer bundle and main
-              must ship from the same package version. The IPC channel name (<code>unified-ble-manager:v2</code>) is
-              unchanged so the refusal arrives as a typed error rather than a missing handler.
+              The renderer and main negotiate IPC versions 6 through 11 at bootstrap. Protocol 6 retains the normal BLE
+              routes for a 5.2.1 renderer/main pair; ordered routes require version 9 because that version added
+              individual failure observations and ordered platform metadata. Attachment diagnostics and durable
+              peer-failure recovery require version 10. Durable terminal-evidence recovery requires version 11. Those
+              higher-version surfaces are not published or callable when a lower version was selected. Version 5 added
+              security routes, address targeting, connection intent and platform scan-option forwarding. A capability
+              still describes the instantiated backend's implementation; transport support does not invent native
+              support. The caller's deadline crosses as a relative <code>budgetMs</code> that main admits against its
+              own monotonic clock at receipt (the renderer's <code>performance.now()</code> instant has a different time
+              origin), and main rejects an absolute renderer <code>deadline</code> as <code>protocol.malformed</code>.
+              Normalized errors may carry <code>commit</code> (<code>not-dispatched</code>, <code>uncertain</code>, or
+              <code>null</code>). Version 4 adds the attachment rebind described below. A renderer and main built from
+              different package versions where one side speaks protocol 5 or older fail at bootstrap with
+              <code>protocol.incompatible</code>, in either direction, before a lease is registered or any operation
+              runs, so preload, renderer bundle and main must ship from the same package version. The IPC channel name
+              (<code>unified-ble-manager:v2</code>) is unchanged so the refusal arrives as a typed error rather than a
+              missing handler.
             </p>
             <p>
               <strong>Adapter loss and the attachment rebind (introduced in protocol 4).</strong> An adapter loss moves

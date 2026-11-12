@@ -151,6 +151,60 @@ internal class NotificationOwnershipFifo(
     return accepted
   }
 
+  /** Converts staged, never-activated observations into explicit known loss before retirement. */
+  fun retireStagedAsLoss(owner: Claim, generation: Long): Boolean {
+    var accepted = true
+    val start = synchronized(lock) {
+      if (stopped != null || current !== owner || owner.generation != generation || owner.retired) return false
+      if (controls >= controlCapacity) {
+        failCapacityLocked()
+        accepted = false
+        return@synchronized false
+      }
+      if (owner.active) {
+        owner.retired = true
+        queue.addLast(Entry.Terminal(Event.Terminal(owner, null)))
+        controls++
+        return@synchronized beginDrainLocked()
+      }
+      var lostItems = 0L
+      var lostBytes = 0L
+      val entries = queue.iterator()
+      while (entries.hasNext()) {
+        val entry = entries.next()
+        if (entry.owner !== owner) continue
+        entries.remove()
+        when (entry) {
+          is Entry.Value -> {
+            lostItems = Math.addExact(lostItems, 1L)
+            lostBytes = Math.addExact(lostBytes, entry.event.bytes.size.toLong())
+            items--
+            bytes -= entry.event.bytes.size.toLong()
+          }
+          is Entry.Loss -> {
+            lostItems = Math.addExact(lostItems, entry.pending.items)
+            lostBytes = Math.addExact(lostBytes, entry.pending.bytes)
+          }
+          is Entry.Terminal -> error("staged claim already has a terminal")
+        }
+      }
+      owner.loss = null
+      if (lostItems > 0) {
+        val loss = PendingLoss(owner, lostItems, lostBytes)
+        owner.loss = loss
+        queue.addLast(Entry.Loss(loss))
+      }
+      owner.retired = true
+      owner.active = true
+      queue.addLast(Entry.Terminal(Event.Terminal(owner, null)))
+      controls++
+      beginDrainLocked()
+    }
+    notifyStop()
+    if (start) drain()
+    return accepted
+  }
+
   private fun failCapacityLocked(): Stop {
     val (count, size) = uncertainLocked(inFlight)
     return Stop.ControlCapacity(count, size).also { stopped = it }

@@ -1,4 +1,5 @@
 import { contractError } from '../../backend-contract/errors'
+import { assertDesktopOrderedReceiptVersion } from './ordered-recording-version'
 import { rehydratePublicPromise } from '../../public/error-bridge'
 import type { DesktopRustCoreCentral } from './desktop-rust-core-binding'
 import { assertContinuationRecordingConfigured } from '../../core/native-continuation-envelope'
@@ -20,6 +21,7 @@ export type {
   NativeContinuationDesktopStatus,
   NativeContinuationMobileStatus,
   NativeContinuationControl,
+  NativeContinuationControlV1,
   NativeContinuationControlAccess,
   NativeContinuationControlContext
 } from '../../core/native-continuation-control'
@@ -30,6 +32,12 @@ export interface NativeContinuationController extends NativeContinuationControl 
   recordings(directory: string): Promise<ContinuationRecordingController>
 }
 
+export interface NativeContinuationControllerV1 extends NativeContinuationController {
+  claimRetainedV1(
+    options?: import('../../core/native-continuation-claim').NativeContinuationClaimOptions
+  ): Promise<import('../reactnative/react-native-continuation-claim').ContinuationRetainedPrefixV1>
+}
+
 const SCOPE = 'desktop-native'
 const missing = () => contractError('capability.unsupported', 'restoration', `${SCOPE}.continuation.native-owner`)
 
@@ -38,6 +46,16 @@ export function createNativeContinuationControlAccess(
   central: DesktopRustCoreCentral
 ): NativeContinuationControlAccess {
   return {
+    ...(central.continuationPrepareRetainedClaimV1 &&
+    central.continuationAcknowledgeRetainedClaimV1 &&
+    central.continuationRetireRetainedClaimReceiptV1
+      ? {
+          prepareRetainedClaimV1: (items: number, bytes: number) =>
+            central.continuationPrepareRetainedClaimV1!(items, bytes),
+          acknowledgeRetainedClaimV1: (token: string) => central.continuationAcknowledgeRetainedClaimV1!(token),
+          retireRetainedClaimReceiptV1: (token: string) => central.continuationRetireRetainedClaimReceiptV1!(token)
+        }
+      : {}),
     execute: (peer, declaration) => {
       if (typeof central.continuationExecute !== 'function') return Promise.reject(missing())
       return central.continuationExecute(peer, declaration)
@@ -62,7 +80,13 @@ export function createNativeContinuationControlAccess(
 }
 
 /** Trusted existing-central adapter with private storage configuration. */
-export function createNativeContinuationController(central: DesktopRustCoreCentral): NativeContinuationController {
+export function createNativeContinuationController(
+  central: DesktopRustCoreCentral,
+  onOrderedFinished?: (
+    id: string,
+    result: import('../../core/continuation-recording').OrderedRecordingHostStopResult
+  ) => Promise<void>
+): NativeContinuationControllerV1 {
   const control = createNativeContinuationControl(createNativeContinuationControlAccess(central))
   return Object.freeze({
     ...control,
@@ -76,7 +100,31 @@ export function createNativeContinuationController(central: DesktopRustCoreCentr
             throw missing()
           const configured = await call('recording.configure', () => configure.call(central, directory))
           assertContinuationRecordingConfigured(configured)
-          return createNativeContinuationRecordingController(central.continuationRecordingStore(), 'ubm-desktop')
+          const controller = createNativeContinuationRecordingController(
+            central.continuationRecordingStore(),
+            'ubm-desktop',
+            async () => {
+              assertDesktopOrderedReceiptVersion(central, `${SCOPE}.continuation.recording.stop-ordered`)
+              return 2
+            }
+          )
+          return Object.freeze({
+            ...controller,
+            stopOrdered: (id: string) =>
+              rehydratePublicPromise(
+                (async () => {
+                  assertDesktopOrderedReceiptVersion(central, `${SCOPE}.continuation.recording.stop-ordered`)
+                  const result = await controller.stopOrdered(id)
+                  if (
+                    onOrderedFinished &&
+                    result.recording.state === 'finished' &&
+                    (result.hostCleanup.state === 'released' || result.hostCleanup.state === 'not-applicable')
+                  )
+                    await onOrderedFinished(id, result)
+                  return result
+                })()
+              )
+          })
         })()
       )
   })

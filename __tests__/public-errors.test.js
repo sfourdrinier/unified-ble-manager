@@ -285,3 +285,13 @@ describe('public cleanup failure commit', () => {
     )
   })
 })
+
+test('ordered failure evidence survives serialization, public cleanup and thrown error projection', () => {
+  const { BackendContractError, serializeNormalizedError } = require('../src/backend-contract/errors')
+  const { toPublicCleanupRecord } = require('../src/public/cleanup')
+  const failure = { code: 'platform.failure', domain: 'gatt', operation: 'source', detail: 'original', platformDomain: 'native', platformCode: 'E', platformMessage: null, platformMetadata: {}, platformCleanup: [{ domain: 'cleanup', code: 'C', message: null, metadata: {}, cleanup: [{ domain: 'nested', code: 'N', message: 'detail', metadata: {} }] }], platformCleanupFailures: [{ code: 'platform.failure', domain: 'gatt', operation: 'stop', detail: null, platformDomain: null, platformCode: null, platformMessage: null, platformMetadata: {} }] }
+  const normalized = { code: failure.code, domain: failure.domain, operation: failure.operation, platform: null, retryability: 'never', orderedFailure: failure }
+  expect(serializeNormalizedError(normalized).orderedFailure).toEqual(failure)
+  expect(toPublicCleanupRecord({ state: 'release-failed', failures: [{ resourceKind: 'ordered', error: normalized }] }).failures[0].error.orderedFailure).toEqual(failure)
+  expect(rehydratePublicError(new BackendContractError(normalized)).orderedFailure).toEqual(failure)
+})

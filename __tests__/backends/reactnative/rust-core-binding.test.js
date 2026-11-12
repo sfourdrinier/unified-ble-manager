@@ -15,6 +15,7 @@ jest.mock('react-native', () => ({
 
 const { DeterministicRustCoreNative } = require('../../../test-support/react-native/deterministic-rust-core-native')
 const { createReactNativeRustCoreBinding } = require('../../../src/backends/reactnative/react-native-rust-core-binding')
+const { createReactNativeContinuationRecordings } = require('../../../src/react-native-continuation-recording')
 const { RUST_CORE_CONTRACT_REVISION } = require('../../../src/backends/reactnative/react-native-rust-core')
 const { EXPECTED_NATIVE_BUILD_IDENTITY } = require('../../../src/generated/native-build-identity')
 
@@ -34,6 +35,28 @@ function counts(native) {
 
 beforeEach(() => {
   mockTurboModule = null
+})
+
+test('retained claim schema is codegen-visible and Apple does not advertise Android-only methods', () => {
+  const fs = require('node:fs')
+  const schema = fs.readFileSync(require.resolve('../../../src/NativeUnifiedBleRustCore.ts'), 'utf8')
+  for (const name of ['prepareRetainedContinuationClaimV1', 'acknowledgeRetainedContinuationClaimV1', 'retireRetainedContinuationClaimReceiptV1']) {
+    expect(schema).toMatch(new RegExp(`\\b${name}\\??\\(`))
+  }
+  const native = new DeterministicRustCoreNative({ platform: 'apple' })
+  native.prepareRetainedContinuationClaimV1 = jest.fn()
+  native.acknowledgeRetainedContinuationClaimV1 = jest.fn()
+  native.retireRetainedContinuationClaimReceiptV1 = jest.fn()
+  const binding = createReactNativeRustCoreBinding({ platform: 'apple', native })
+  expect(binding.prepareRetainedContinuationClaimV1).toBeUndefined()
+})
+
+test('cold Android recording control uses an independent JNI entrypoint', () => {
+  const fs = require('node:fs')
+  const java = fs.readFileSync('android/src/main/java/com/ubm/core/MobileCoreBridge.java', 'utf8')
+  const rust = fs.readFileSync('bindings/jni/src/mobile.rs', 'utf8')
+  expect(java).toContain('nativeContinuationRecordingControlOffline(')
+  expect(rust).toContain('Java_com_ubm_core_MobileCoreBridge_nativeContinuationRecordingControlOffline')
 })
 
 test.each(['android', 'apple'])(
@@ -100,6 +123,49 @@ test('binding does not advertise recording controls omitted by the native module
   expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
 })
 
+test('V2 continuation is hidden unless claim and source-failure recovery controls are complete together', () => {
+  const native = new DeterministicRustCoreNative({ platform: 'android' })
+  native.prepareRetainedContinuationClaimV2 = jest.fn()
+  native.acknowledgeRetainedContinuationClaimV2 = jest.fn()
+  const partial = createReactNativeRustCoreBinding({ platform: 'android', native })
+  for (const method of [
+    'prepareRetainedContinuationClaimV2',
+    'acknowledgeRetainedContinuationClaimV2',
+    'readPeerFailureRecovery',
+    'acknowledgePeerFailureRecovery'
+  ])
+    expect(partial[method]).toBeUndefined()
+
+  native.readPeerFailureRecovery = jest.fn(async () => '{"ok":true,"value":{}}')
+  native.acknowledgePeerFailureRecovery = jest.fn(async () => '{"ok":true,"value":{}}')
+  const complete = createReactNativeRustCoreBinding({ platform: 'android', native })
+  for (const method of [
+    'prepareRetainedContinuationClaimV2',
+    'acknowledgeRetainedContinuationClaimV2',
+    'readPeerFailureRecovery',
+    'acknowledgePeerFailureRecovery'
+  ])
+    expect(typeof complete[method]).toBe('function')
+})
+
+test('the public recording factory exposes terminal recovery only through the complete identity-checked native bridge', async () => {
+  const native = new DeterministicRustCoreNative({ platform: 'android' })
+  native.terminalEvidenceRecoveryOpenSelected = jest.fn(async () => '{"ok":true,"value":{"leaseId":"lease"}}')
+  native.terminalEvidenceRecoveryList = jest.fn(async () => '{"ok":true,"value":{"items":[],"more":false}}')
+  native.terminalEvidenceRecoveryRead = jest.fn(async () => '{"ok":true,"value":{"bytesBase64":"","more":false}}')
+  native.terminalEvidenceRecoveryAcknowledge = jest.fn(async () => '{"ok":true,"value":{}}')
+  const recordings = createReactNativeContinuationRecordings({
+    rustCore: createReactNativeRustCoreBinding({ platform: 'android', native })
+  })
+  await expect(recordings.terminalEvidenceRecovery.list({ maxItems: 1, maxBytes: 1 })).resolves.toEqual({
+    items: [],
+    more: false
+  })
+  expect(native.terminalEvidenceRecoveryOpenSelected).toHaveBeenCalledWith()
+  expect(native.terminalEvidenceRecoveryList).toHaveBeenCalledWith('lease', 1, 1)
+  expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
+})
+
 describe('module resolution', () => {
   test('a missing UnifiedBleRustCore module fails loudly as capability.unsupported', () => {
     let thrown = null
@@ -161,6 +227,8 @@ describe('PR210-18 runtime identity is checked before any session or radio op', 
     const error = await failure(binding.openSession('owner-a'))
     expect(error.platform.metadata.fields).toEqual(['wireRevision()'])
     native.wireRevisionAnswer = 'ubm-mobile-wire/2'
+    expect((await failure(binding.openSession('owner-a'))).platform.metadata.fields).toEqual(['wireRevision()'])
+    native.wireRevisionAnswer = 'ubm-mobile-wire/3'
     native.contractRevisionAnswer = 'C-UBM.0.0.0'
     expect((await failure(binding.openSession('owner-a'))).platform.metadata.fields).toEqual(['contractRevision()'])
     expect(counts(native).open).toBe(0)
@@ -192,7 +260,7 @@ describe('PR210-15 every bootstrap failure closes the lease it opened', () => {
       JSON.stringify({
         sessionId: id,
         contractRevision: EXPECTED_NATIVE_BUILD_IDENTITY.contractRevision,
-        wireRevision: 'ubm-mobile-wire/2',
+        wireRevision: 'ubm-mobile-wire/3',
         buildIdentity: { ...native.identity, rustc: 'rustc 0.0.0 (other build)' }
       })
     const binding = createReactNativeRustCoreBinding({ platform: 'android', native })
@@ -208,7 +276,7 @@ describe('PR210-15 every bootstrap failure closes the lease it opened', () => {
       JSON.stringify({
         sessionId: id,
         contractRevision: 'C-UBM.0.0.0',
-        wireRevision: 'ubm-mobile-wire/2',
+        wireRevision: 'ubm-mobile-wire/3',
         buildIdentity: native.identity
       })
     const binding = createReactNativeRustCoreBinding({ platform: 'android', native })
@@ -222,7 +290,7 @@ describe('PR210-15 every bootstrap failure closes the lease it opened', () => {
       JSON.stringify({
         sessionId: id,
         contractRevision: 'C-UBM.0.0.0',
-        wireRevision: 'ubm-mobile-wire/2',
+        wireRevision: 'ubm-mobile-wire/3',
         buildIdentity: native.identity
       })
     native.failNext('closeSession', 'lifecycle.invalid-state', 'cleanup', 'rust-core.close-session', 'release-failed')

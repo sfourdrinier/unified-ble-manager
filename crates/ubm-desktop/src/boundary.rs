@@ -24,10 +24,37 @@ pub enum FaultOp {
     Connect,
     Disconnect,
     Discover,
+    #[cfg(test)]
+    DiscoveryAccess,
     Read,
     Write,
     Subscribe,
     Unsubscribe,
+    /// Hold a synthetic source open after its lease has been retained.
+    OrderedOpen,
+    #[cfg(test)]
+    OrderedSourceFence,
+    #[cfg(test)]
+    OrderedSourceRetire,
+    /// Hold a retained peer-failure page after the desktop central has
+    /// authenticated its live route. Used only to prove route retirement
+    /// cannot pass that recovery transition.
+    PeerFailureRecoveryRead,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    ReclaimAcquire,
+    /// Hold a synthetic reclaim release before its source effect.
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    ReclaimRelease,
+    #[cfg(test)]
+    ReclaimForget,
+    /// Hold an ordered marker before native admission.
+    OrderedMarkerBeforeAdmission,
+    /// Hold an ordered marker after native admission.
+    OrderedMarkerStart,
+    /// Hold a synthetic marker cancellation after its native outcome.
+    OrderedMarkerCancel,
+    /// Synthetic ordered source barrier.
+    NotificationFence,
     /// OS-reported ATT MTU lookup (`mtu()` returns `None`, as withheld).
     Mtu,
     /// Adapter identity readout (`adapter_name()` fails).
@@ -148,6 +175,8 @@ pub enum AdapterLossCause {
     /// The Bluetooth daemon restarted or went away (BlueZ `org.bluez`
     /// name owner changed).
     DaemonRestarted,
+    /// Local lifecycle observation overflow; not a physical adapter report.
+    SourceObservationOverflow,
 }
 
 impl AdapterLossCause {
@@ -161,6 +190,7 @@ impl AdapterLossCause {
             Self::Unauthorized => "unauthorized",
             Self::Removed => "removed",
             Self::DaemonRestarted => "daemon-restarted",
+            Self::SourceObservationOverflow => "source-observation-overflow",
         }
     }
 
@@ -920,6 +950,120 @@ pub struct GattSnapshotIdentity {
     pub revision: u64,
 }
 
+/// Exact source-owner identity for one retained recorder reclaim permit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderedReclaimGraphKey {
+    pub authority_id: u64,
+    pub peer_id: String,
+    pub connection_generation: String,
+    pub identity: GattSnapshotIdentity,
+    pub permit_id: u64,
+}
+
+/// Exact host request bound to the immutable graph before source receipt issuance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderedReclaimPermitRequest {
+    pub authority_id: u64,
+    pub request_id: u64,
+    pub peer_id: String,
+    pub connection_generation: String,
+    pub identity: GattSnapshotIdentity,
+}
+
+/// Result of atomically validating and reserving the native graph.
+#[derive(Debug, Clone)]
+pub enum OrderedReclaimGraphAcquire {
+    Acquired,
+    Stale,
+    Busy,
+    /// Retained authoritative no-effect outcome; exact retries cannot acquire.
+    NotAcquired(DesktopError),
+}
+
+/// Atomic publication authorization under the retained native graph permit.
+#[derive(Debug, Clone)]
+pub enum OrderedReclaimGraphCommit {
+    Committed,
+    Invalidated(DesktopError),
+}
+
+/// One central-consumption acknowledgement for an ordered peer source fence.
+#[derive(Debug, Clone)]
+pub struct PeerSourceFenceAck(Arc<StdMutex<Option<tokio::sync::oneshot::Sender<()>>>>);
+
+/// Exact native lease reservation for a physical-loss fence.
+#[cfg(target_os = "linux")]
+pub trait PhysicalLossGuard: Send + Sync + std::fmt::Debug {
+    /// Idempotently release the pin after the exact barrier is enqueued.
+    fn release(&self);
+}
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+pub struct PhysicalLossPermit {
+    pub peer_id: String,
+    pub generation: u64,
+    pub reason: u8,
+    pub token: u64,
+    pub(crate) guard: Option<Arc<dyn PhysicalLossGuard>>,
+}
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub enum PhysicalLossReservation {
+    Accepted(PhysicalLossPermit),
+    Stale,
+    Indeterminate(DesktopError),
+}
+
+/// Evidence for one physical loss and its ordered source fence.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub enum PhysicalLossFence {
+    /// Exact generation was validated; the fence result may report uncertain tail.
+    Accepted(Result<(), DesktopError>),
+    /// Stale or an early observation retained by the native owner.
+    Stale,
+    /// The source could not establish whether the generation was accepted.
+    Indeterminate(DesktopError),
+}
+impl PartialEq for PeerSourceFenceAck {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl PeerSourceFenceAck {
+    pub fn new() -> (Self, tokio::sync::oneshot::Receiver<()>) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        (Self(Arc::new(StdMutex::new(Some(sender)))), receiver)
+    }
+    pub fn acknowledge(&self) {
+        if let Some(sender) = self.0.lock().expect("peer source fence").take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
+/// Completion owned by a peer-source failure recovery store. The pump keeps
+/// its transfer head until central has retained the exact descriptor for the
+/// full immutable source-time recipient cut.
+#[derive(Debug, Clone)]
+pub struct PeerSourceFailureAck(Arc<StdMutex<Option<tokio::sync::oneshot::Sender<()>>>>);
+impl PartialEq for PeerSourceFailureAck {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl PeerSourceFailureAck {
+    pub fn new() -> (Self, tokio::sync::oneshot::Receiver<()>) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        (Self(Arc::new(StdMutex::new(Some(sender)))), receiver)
+    }
+    pub fn acknowledge(&self) {
+        if let Some(sender) = self.0.lock().expect("peer source failure").take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
 /// Radio-side events delivered to the central event loop.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RadioEvent {
@@ -1014,11 +1158,63 @@ pub enum RadioEvent {
         identity: GattSnapshotIdentity,
         error: DesktopError,
     },
+    /// The exact accepted graph's native source overflowed or became
+    /// uncertain; this does not identify a physical link or service change.
+    GattSourceUncertain {
+        peer_id: String,
+        identity: GattSnapshotIdentity,
+        error: DesktopError,
+    },
+    /// A native callback could not be associated with any accepted graph.
+    /// It is an observable diagnostic, not a graph or connection transition:
+    /// callers must not infer ownership from its peer identifier.
+    GattSourceUncertainUnassociated {
+        peer_id: String,
+        error: DesktopError,
+    },
+    /// A native discovery replaced this exact previously accepted graph.
+    /// This does not assert a link failure or an unsolicited service change.
+    GattGraphRetired {
+        peer_id: String,
+        identity: GattSnapshotIdentity,
+    },
     /// A previously accepted database ended. Delayed delivery must not
     /// invalidate a newer accepted database of the same peer.
     ServicesChangedScoped {
         peer_id: String,
         identity: GattSnapshotIdentity,
+    },
+    /// All source records before this fence have been handed to central.
+    PeerNotificationSourceFence {
+        ack: PeerSourceFenceAck,
+    },
+    /// Ordered start of a peer notification source generation.
+    PeerNotificationSourceStarted {
+        peer_id: String,
+        generation: u64,
+    },
+    /// A peer-wide source gap; it cannot be attributed to a characteristic.
+    PeerNotificationsLost {
+        peer_id: String,
+        generation: u64,
+        members: Vec<(InstanceKey, u64)>,
+        lost: Option<u64>,
+    },
+    /// Terminal failure of a peer source; no characteristic-specific loss is implied.
+    PeerNotificationSourceFailed {
+        peer_id: String,
+        generation: u64,
+        members: Vec<(InstanceKey, u64)>,
+        error: DesktopError,
+        rejected_loss: Option<u64>,
+        tail_uncertain: bool,
+    },
+    /// A nonterminal source failure retained as bounded recovery evidence.
+    PeerNotificationFailureRecoveryOffered {
+        descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        members: Vec<(InstanceKey, u64)>,
+        teardown: crate::errors::DesktopErrorEvidence,
+        ack: PeerSourceFailureAck,
     },
     /// The OS notification broadcast outran one subscription's receiver
     /// (vendored btleplug patch 10): `lost` notifications of the peer were
@@ -1067,6 +1263,19 @@ pub enum RadioEvent {
         epoch: u64,
         value: Vec<u8>,
     },
+    /// Native callback value with explicit provenance and no invented receipt timestamp.
+    NotificationWithProvenance {
+        peer_id: String,
+        service_uuid: String,
+        service_occurrence: u64,
+        characteristic_uuid: String,
+        characteristic_occurrence: u64,
+        epoch: u64,
+        value: Vec<u8>,
+        provenance: ubm_core::central::NotificationProvenance,
+        source_generation: u64,
+        source_ordinal: u64,
+    },
     NotificationWithReceipt {
         peer_id: String,
         service_uuid: String,
@@ -1114,6 +1323,459 @@ pub enum ConnectionPriority {
 /// answer `capability.unsupported`, so existing implementations keep
 /// compiling and never claim a capability they do not have.
 pub trait RadioBoundary: Send + Sync + 'static {
+    /// Register distinct logical memberships and install the collection atomically.
+    /// Whether ordered Open requires a native graph identity committed at discovery.
+    fn ordered_source_requires_snapshot_identity(&self) -> bool {
+        false
+    }
+
+    fn prepare_ordered_source(
+        &self,
+        _request: OrderedSourceRequest,
+    ) -> impl Future<Output = Result<OrderedSourceLease, OrderedSourceFailure>> + Send {
+        async {
+            Err(OrderedSourceFailure {
+                error: unsupported("gatt.ordered.source", "ordered source is unavailable"),
+                cleanup: None,
+            })
+        }
+    }
+    /// Recover an installed source whose prepare waiter ended before delivery.
+    fn recover_ordered_source(
+        &self,
+        _peer_id: &str,
+        _collection_id: u64,
+    ) -> impl Future<Output = Result<OrderedSourceRecovery, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recover",
+                "ordered source is unavailable",
+            ))
+        }
+    }
+    /// Start retained-batch delivery after central installed its consumer.
+    fn ordered_source_installed(
+        &self,
+        _lease: &OrderedSourceLease,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.attach",
+                "central retained-batch delivery is unavailable",
+            ))
+        }
+    }
+    /// Retain one exact logical source claim for a prepared physical activation.
+    fn retain_ordered_source_claim(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _membership: ubm_core::ordered_notifications::Membership,
+        _activation: &PreparedNotificationActivation,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.claim",
+                "ordered source claim is unavailable",
+            ))
+        }
+    }
+    /// Confirm this logical claim's cleanup after exact physical or shared release.
+    fn confirm_ordered_source_cleanup(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _membership: ubm_core::ordered_notifications::Membership,
+        _activation: &PreparedNotificationActivation,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.claim-release",
+                "ordered source claim is unavailable",
+            ))
+        }
+    }
+    /// Retire one exact logical member only after its source FIFO fence is consumed.
+    fn retire_ordered_member(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _membership: ubm_core::ordered_notifications::Membership,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.member-retire",
+                "ordered member retirement is unavailable",
+            ))
+        }
+    }
+    /// Register a new logical epoch after the old member fence; source
+    /// delivery must remain paused until central rebinds the returned identity.
+    fn reregister_ordered_member(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _old: ubm_core::ordered_notifications::Membership,
+    ) -> impl Future<Output = Result<ubm_core::ordered_notifications::Membership, DesktopError>> + Send
+    {
+        async {
+            Err(unsupported(
+                "gatt.ordered.member-register",
+                "ordered member registration is unavailable",
+            ))
+        }
+    }
+    /// Retire an interrupted member renewal without losing its exact native
+    /// registration ownership. Pending retains all cleanup debt.
+    fn abandon_ordered_renewal(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _old: ubm_core::ordered_notifications::Membership,
+        _new: Option<ubm_core::ordered_notifications::Membership>,
+    ) -> impl Future<Output = Result<OrderedRenewalAbandon, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.renewal-abandon",
+                "ordered renewal retirement is unavailable",
+            ))
+        }
+    }
+    /// Atomically replace the retired exact member route in the source owner.
+    fn rebind_ordered_member(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _old: ubm_core::ordered_notifications::Membership,
+        _new: ubm_core::ordered_notifications::Membership,
+    ) -> Result<(), DesktopError> {
+        Err(unsupported(
+            "gatt.ordered.rebind",
+            "ordered member rebinding is unavailable",
+        ))
+    }
+    fn resume_ordered_member(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _membership: ubm_core::ordered_notifications::Membership,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.member-resume",
+                "ordered member resumption is unavailable",
+            ))
+        }
+    }
+    fn poll_ordered_source(
+        &self,
+        _lease: &OrderedSourceLease,
+    ) -> impl Future<Output = Result<ubm_core::ordered_notifications::Poll, DesktopError>> + Send
+    {
+        async {
+            Err(unsupported(
+                "gatt.ordered.poll",
+                "ordered source is unavailable",
+            ))
+        }
+    }
+    fn update_ordered_source(
+        &self,
+        _lease: &OrderedSourceLease,
+        _transition: OrderedSourceTransition,
+    ) -> Result<(), DesktopError> {
+        Err(unsupported(
+            "gatt.ordered.update",
+            "ordered source is unavailable",
+        ))
+    }
+    /// Attach a coalesced readiness signal to the exact source owner.
+    fn attach_ordered_wake(
+        &self,
+        _lease: &OrderedSourceLease,
+        _wake: std::sync::Arc<tokio::sync::Notify>,
+    ) -> Result<(), DesktopError> {
+        Err(unsupported(
+            "gatt.ordered.wake",
+            "ordered source wake is unavailable",
+        ))
+    }
+    fn ordered_source_status(
+        &self,
+        _lease: &OrderedSourceLease,
+    ) -> Result<OrderedSourceStatus, DesktopError> {
+        Err(unsupported(
+            "gatt.ordered.status",
+            "ordered source is unavailable",
+        ))
+    }
+    /// Increase the byte budget of this exact installed collection.
+    fn increase_ordered_byte_capacity(
+        &self,
+        _lease: &OrderedSourceLease,
+        _max_bytes: usize,
+    ) -> Result<usize, DesktopError> {
+        Err(unsupported(
+            "gatt.ordered.increase-capacity",
+            "ordered source capacity is unavailable",
+        ))
+    }
+    fn fence_ordered_source(
+        &self,
+        _lease: &OrderedSourceLease,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.fence",
+                "ordered source is unavailable",
+            ))
+        }
+    }
+    /// Retire this exact logical source at its native FIFO fence, retaining
+    /// its collection and cleanup ownership for draining and release.
+    fn retire_ordered_source(
+        &self,
+        _lease: &OrderedSourceLease,
+        _reason: ubm_core::ordered_notifications::EndReason,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.retire",
+                "ordered source retirement is unavailable",
+            ))
+        }
+    }
+    /// Begin or replay an exact native marker/write transaction. An error
+    /// without an authoritative status leaves ownership indeterminate.
+    /// True only when start, settlement and idempotent forget are all implemented.
+    fn ordered_marker_write_supported(&self) -> bool {
+        false
+    }
+    fn start_ordered_marker_write(
+        &self,
+        _lease: &OrderedSourceLease,
+        _request: &OrderedMarkerWriteRequest,
+    ) -> impl Future<Output = Result<OrderedMarkerWriteStatus, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.marker-write",
+                "marker/write unavailable",
+            ))
+        }
+    }
+    /// Atomically cancel a queued exact start or return its actual admitted status.
+    fn cancel_ordered_marker_write(
+        &self,
+        _lease: &OrderedSourceLease,
+        _request: &OrderedMarkerWriteRequest,
+    ) -> impl Future<Output = Result<OrderedMarkerWriteStatus, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.marker-write-cancel",
+                "marker/write cancellation unavailable",
+            ))
+        }
+    }
+    fn ordered_marker_write_status(
+        &self,
+        _lease: &OrderedSourceLease,
+        _request: &OrderedMarkerWriteRequest,
+    ) -> impl Future<Output = Result<OrderedMarkerWriteStatus, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.marker-write-status",
+                "marker/write unavailable",
+            ))
+        }
+    }
+    fn forget_ordered_marker_write(
+        &self,
+        _lease: &OrderedSourceLease,
+        _request: &OrderedMarkerWriteRequest,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.marker-write-forget",
+                "marker/write unavailable",
+            ))
+        }
+    }
+    /// Reserve/release a downstream marker control slot before native write.
+    fn reserve_ordered_marker(
+        &self,
+        _lease: &OrderedSourceLease,
+        _marker_id: u64,
+    ) -> Result<(), DesktopError> {
+        Err(unsupported(
+            "gatt.ordered.marker-credit",
+            "marker credit unavailable",
+        ))
+    }
+    fn ordered_marker_credit_pending(
+        &self,
+        _lease: &OrderedSourceLease,
+        _marker_id: u64,
+    ) -> Result<bool, DesktopError> {
+        Err(unsupported(
+            "gatt.ordered.marker-credit",
+            "marker credit unavailable",
+        ))
+    }
+    fn release_ordered_marker(
+        &self,
+        _lease: &OrderedSourceLease,
+        _marker_id: u64,
+    ) -> Result<(), DesktopError> {
+        Err(unsupported(
+            "gatt.ordered.marker-credit",
+            "marker credit unavailable",
+        ))
+    }
+    /// Prove the exact source cannot produce further records and all controls
+    /// through its seal have been admitted and acknowledged.
+    fn seal_ordered_source(
+        &self,
+        _lease: &OrderedSourceLease,
+    ) -> impl Future<Output = Result<OrderedSourceSeal, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.seal",
+                "ordered source seal is unavailable",
+            ))
+        }
+    }
+    /// Retry backend-owned cleanup until the source route is retired.
+    fn release_ordered_source(
+        &self,
+        _cleanup: &OrderedSourceCleanup,
+    ) -> impl Future<Output = Result<OrderedSourceRelease, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.source-release",
+                "ordered source is unavailable",
+            ))
+        }
+    }
+    /// Capture an exact source membership and native target without enabling notifications.
+    fn prepare_notification_activation(
+        &self,
+        _scope: &InstanceKey,
+        _epoch: u64,
+        _requested: Option<DeliveryMode>,
+        _preferred: Option<DeliveryMode>,
+    ) -> impl Future<Output = Result<PreparedNotificationActivation, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.prepare",
+                "prepared notification activation is unavailable",
+            ))
+        }
+    }
+    /// Dispatch the prepared enable while preserving the backend's late-result ownership.
+    fn dispatch_prepared_notification(
+        &self,
+        _prepared: &PreparedNotificationActivation,
+    ) -> impl Future<Output = Result<ObservedDelivery, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.enable",
+                "prepared notification activation is unavailable",
+            ))
+        }
+    }
+    /// Reserve the exact receipt before a dispatch future can be dropped unpolled.
+    fn reserve_ordered_notification(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _membership: ubm_core::ordered_notifications::Membership,
+        _prepared: &PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        Ok(())
+    }
+    /// Dispatch a group claim with its exact source binding.
+    fn dispatch_ordered_notification(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _membership: ubm_core::ordered_notifications::Membership,
+        prepared: &PreparedNotificationActivation,
+    ) -> impl Future<Output = Result<ObservedDelivery, DesktopError>> + Send {
+        self.dispatch_prepared_notification(prepared)
+    }
+    /// Query an ordered enable before cleanup; Pending retains ownership.
+    fn ordered_notification_settlement(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _membership: ubm_core::ordered_notifications::Membership,
+        _prepared: &PreparedNotificationActivation,
+    ) -> impl Future<Output = Result<OrderedNotificationSettlement, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.settlement",
+                "ordered enable settlement is unavailable",
+            ))
+        }
+    }
+    /// Release the final physical claim, retaining any failed cleanup debt.
+    fn release_prepared_notification(
+        &self,
+        _prepared: &PreparedNotificationActivation,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.release",
+                "prepared notification activation is unavailable",
+            ))
+        }
+    }
+    /// Release the final physical claim using the same exact group binding.
+    fn release_ordered_notification(
+        &self,
+        _lease: &OrderedSourceLease,
+        _member_id: u64,
+        _membership: ubm_core::ordered_notifications::Membership,
+        prepared: &PreparedNotificationActivation,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        self.release_prepared_notification(prepared)
+    }
+    /// Reserve the exact native physical lease before resolving a paused source.
+    #[cfg(target_os = "linux")]
+    fn reserve_physical_loss(
+        &self,
+        _peer: &str,
+        _generation: u64,
+        _reason: u8,
+    ) -> PhysicalLossReservation {
+        PhysicalLossReservation::Indeterminate(unsupported(
+            "connection.physical-loss.reserve",
+            "physical loss reservation unavailable",
+        ))
+    }
+    /// Revalidate the same reservation atomically while enqueueing the barrier.
+    #[cfg(target_os = "linux")]
+    fn fence_reserved_physical_loss(
+        &self,
+        _permit: &PhysicalLossPermit,
+    ) -> impl Future<Output = PhysicalLossFence> + Send {
+        async {
+            PhysicalLossFence::Indeterminate(unsupported(
+                "connection.physical-loss.fence",
+                "physical loss reservation unavailable",
+            ))
+        }
+    }
+    /// Atomically validate a physical loss and enqueue its source barrier.
+    #[cfg(target_os = "linux")]
+    fn fence_physical_loss(
+        &self,
+        _peer: &str,
+        _generation: u64,
+        _reason: u8,
+    ) -> impl Future<Output = PhysicalLossFence> + Send {
+        async { PhysicalLossFence::Stale }
+    }
     /// Private daemon observation admission, independent of cleanup success.
     /// Only the Linux authority radio can validate its owned physical token.
     #[cfg(target_os = "linux")]
@@ -1125,6 +1787,14 @@ pub trait RadioBoundary: Send + Sync + 'static {
     ) -> impl Future<Output = bool> + Send {
         async { false }
     }
+    /// Wait until all previously admitted peer notification records reached central.
+    fn flush_peer_notification_source(
+        &self,
+        _peer_id: &str,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Identity of the currently accepted graph, read without radio I/O.
     /// `None` preserves platforms without an authoritative snapshot token.
     fn gatt_snapshot_identity(
@@ -1132,6 +1802,184 @@ pub trait RadioBoundary: Send + Sync + 'static {
         _peer_id: &str,
     ) -> Result<Option<GattSnapshotIdentity>, DesktopError> {
         Ok(None)
+    }
+
+    /// Whether the complete native recorder-reclaim lifecycle is qualified.
+    fn ordered_recording_reclaim_supported(&self) -> bool {
+        false
+    }
+
+    /// Register one authenticated, process-unique central authority.
+    /// `NotDispatched` fences the entire exact request, including every prior
+    /// uncertain submission: none has taken effect or can take effect later.
+    /// A refusal of one attempt alone must not be reported as this outcome.
+    fn open_ordered_reclaim_authority(
+        &self,
+        _request: u64,
+    ) -> impl Future<Output = Result<u64, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph authority is unavailable",
+            ))
+        }
+    }
+
+    /// Retire an authoritative no-effect open-token receipt after fencing all
+    /// submissions for that token; exact retries are idempotent until success
+    /// is delivered to the caller. Success means
+    /// native retirement and its final acknowledgement both completed. A lost
+    /// reply retains enough exact identity to resume either phase on retry.
+    fn forget_ordered_reclaim_open(
+        &self,
+        _request: u64,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph open retirement is unavailable",
+            ))
+        }
+    }
+
+    /// Close only after all exact permits have been forgotten; duplicates replay.
+    fn close_ordered_reclaim_authority(
+        &self,
+        _incarnation: u64,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph authority is unavailable",
+            ))
+        }
+    }
+
+    /// Retire an acknowledged authority close receipt without reauthorizing it.
+    /// Success includes native retirement acknowledgement; exact retries must
+    /// reconcile a lost forget or acknowledgement response until success is
+    /// delivered. The caller retires the key immediately after success and
+    /// must not submit it again.
+    fn forget_ordered_reclaim_authority(
+        &self,
+        _incarnation: u64,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph authority is unavailable",
+            ))
+        }
+    }
+
+    /// Reserve a source-issued permit receipt before any graph admission.
+    /// Exact request retries replay the same source ID.
+    /// `NotDispatched` fences the entire exact request, including every prior
+    /// uncertain submission; a per-attempt refusal alone is insufficient.
+    fn reserve_ordered_reclaim_permit(
+        &self,
+        _request: &OrderedReclaimPermitRequest,
+    ) -> impl Future<Output = Result<u64, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph permit reservation is unavailable",
+            ))
+        }
+    }
+
+    /// Fence and retire an authoritative no-effect permit request. Success
+    /// includes native retirement acknowledgement, with exact retries across
+    /// lost responses to either phase until success is delivered.
+    fn forget_ordered_reclaim_permit_request(
+        &self,
+        _request: &OrderedReclaimPermitRequest,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph permit request retirement is unavailable",
+            ))
+        }
+    }
+
+    /// Whether reclaim requires a native discovery-commit binding.
+    fn ordered_reclaim_requires_snapshot_binding(&self) -> bool {
+        false
+    }
+
+    /// Bind this exact core connection generation to the accepted native
+    /// graph and physical source while discovery admission is held.
+    fn bind_ordered_reclaim_snapshot(
+        &self,
+        _peer_id: &str,
+        _connection_generation: &str,
+        _identity: &GattSnapshotIdentity,
+    ) -> Result<(), DesktopError> {
+        Err(unsupported(
+            "gatt.ordered.recording-reclaim",
+            "native discovery binding is unavailable",
+        ))
+    }
+
+    /// Retain an exact source-owner permit. Calls with the same key replay
+    /// their authoritative result; native invalidation is ordered with acquire.
+    /// `NotDispatched` likewise proves no attempt for this exact key has or
+    /// can acquire the permit, including attempts with an uncertain response.
+    fn acquire_ordered_reclaim_graph(
+        &self,
+        _key: &OrderedReclaimGraphKey,
+    ) -> impl Future<Output = Result<OrderedReclaimGraphAcquire, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph pin is unavailable",
+            ))
+        }
+    }
+
+    /// Freeze a valid permit through release, or report precommit invalidation.
+    /// Exact-key repeats replay the same result.
+    fn commit_ordered_reclaim_graph(
+        &self,
+        _key: &OrderedReclaimGraphKey,
+    ) -> impl Future<Output = Result<OrderedReclaimGraphCommit, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph commit is unavailable",
+            ))
+        }
+    }
+
+    /// Release the exact retained permit. An exact duplicate is idempotent.
+    fn release_ordered_reclaim_graph(
+        &self,
+        _key: &OrderedReclaimGraphKey,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph pin is unavailable",
+            ))
+        }
+    }
+
+    /// Forget the exact released permit and acknowledge native retirement.
+    /// Return success only after both phases; retain exact identity across
+    /// uncertain responses so retries cannot retire a foreign permit. Exact
+    /// retries are required until success is delivered; after success the
+    /// caller retires the key and must not submit it again.
+    fn forget_ordered_reclaim_graph(
+        &self,
+        _key: &OrderedReclaimGraphKey,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "gatt.ordered.recording-reclaim",
+                "native graph receipt retirement is unavailable",
+            ))
+        }
     }
 
     /// Discover a graph together with its accepted identity. Token-aware
@@ -1693,6 +2541,82 @@ pub trait RadioBoundary: Send + Sync + 'static {
     fn ingress_notification_drops(&self) -> u64 {
         0
     }
+    /// Read a bounded page from an exact retained peer-source failure.
+    /// A host without this capability reports unsupported rather than
+    /// fabricating an ordinary notification failure.
+    fn read_peer_notification_failure_recovery(
+        &self,
+        _descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        _offset: u64,
+    ) -> impl Future<
+        Output = Result<ubm_core::oversized_evidence::PeerSourceFailureChunk, DesktopError>,
+    > + Send
+    + '_ {
+        async {
+            Err(unsupported(
+                "gatt.notification.source-failure-recovery.read",
+                "peer source failure recovery is unavailable",
+            ))
+        }
+    }
+    /// Commit an exact fully-read recovery. A backend must validate source
+    /// identity and retain the source head if this returns an error.
+    fn ack_peer_notification_failure_recovery(
+        &self,
+        _descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send + '_ {
+        async {
+            Err(unsupported(
+                "gatt.notification.source-failure-recovery.ack",
+                "peer source failure recovery is unavailable",
+            ))
+        }
+    }
+    /// Prepare the private receipt which must be durable before a retained
+    /// failure's native FIFO head can advance. This never advances the source
+    /// and is replay-idempotent for the exact descriptor.
+    fn prepare_peer_notification_failure_recovery_ack(
+        &self,
+        _descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> impl Future<Output = Result<String, DesktopError>> + Send + '_ {
+        async {
+            Err(unsupported(
+                "gatt.notification.source-failure-recovery.prepare-ack",
+                "peer source failure recovery is unavailable",
+            ))
+        }
+    }
+    /// Advance a fully read retained failure's native FIFO head only for the
+    /// receipt already made durable by the caller. Repeating that exact
+    /// receipt is idempotent and keeps its exact recovery bytes readable for
+    /// a durable owner.
+    fn begin_peer_notification_failure_recovery_ack(
+        &self,
+        _descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        _source_ack_id: &str,
+    ) -> impl Future<Output = Result<String, DesktopError>> + Send + '_ {
+        async {
+            Err(unsupported(
+                "gatt.notification.source-failure-recovery.begin-ack",
+                "peer source failure recovery is unavailable",
+            ))
+        }
+    }
+    /// Retire a source only after its exact begin-ACK receipt has been
+    /// durably committed. A stale receipt must leave the retained evidence
+    /// available for retry.
+    fn retire_peer_notification_failure_recovery_ack(
+        &self,
+        _descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        _source_ack_id: &str,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send + '_ {
+        async {
+            Err(unsupported(
+                "gatt.notification.source-failure-recovery.retire-ack",
+                "peer source failure recovery is unavailable",
+            ))
+        }
+    }
     fn characteristic_access<'a>(
         &'a self,
         peer_id: &'a str,
@@ -1727,7 +2651,8 @@ const FAKE_CONTROL_CAP: usize = 64;
 /// after start failure never fires twice).
 pub struct FakeRadio {
     acquired: crate::acquired_gatt::synthetic::SyntheticAcquiredGatt,
-    state: StdMutex<FakeInner>,
+    pub(crate) ordered: StdMutex<crate::fake_ordered_source::FakeOrderedSource>,
+    state: Arc<StdMutex<FakeInner>>,
     notify: Arc<Notify>,
     calls_changed: tokio::sync::watch::Sender<()>,
 }
@@ -1735,6 +2660,179 @@ pub struct FakeRadio {
 /// One characteristic instance address: (peer, service uuid, service
 /// occurrence, characteristic uuid, characteristic occurrence).
 pub type InstanceKey = (String, String, u64, String, u64);
+
+/// Exact native activation prepared without writing the CCCD.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedNotificationActivation {
+    pub scope: InstanceKey,
+    pub activation_epoch: u64,
+    pub requested: Option<DeliveryMode>,
+    pub preferred: Option<DeliveryMode>,
+}
+
+/// One centrally owned claim to register at the source before any enable.
+#[derive(Debug, Clone)]
+pub struct OrderedSourceMember {
+    pub member_id: u64,
+    pub activation: PreparedNotificationActivation,
+    pub delivery: ubm_core::ordered_notifications::DeliveryMode,
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderedSourceRequest {
+    pub peer_id: String,
+    pub snapshot_identity: Option<GattSnapshotIdentity>,
+    pub connection_generation: String,
+    pub database_generation: String,
+    pub collection_id: u64,
+    pub members: Vec<OrderedSourceMember>,
+    pub max_items: usize,
+    pub max_bytes: usize,
+    pub max_controls: usize,
+}
+
+/// A backend-owned source route; close must be retried until acknowledged.
+#[derive(Debug, Clone)]
+pub struct OrderedSourceLease {
+    pub peer_id: String,
+    pub connection_generation: String,
+    pub collection_id: u64,
+    pub source_generation: ubm_core::ordered_notifications::SourceGeneration,
+    pub native_group: u64,
+    pub members: Vec<(u64, ubm_core::ordered_notifications::Membership)>,
+    pub ingress: OrderedSourceIngress,
+}
+
+/// Authoritative result of an ordered native enable operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderedNotificationSettlement {
+    Pending,
+    Enabled,
+    Released,
+}
+
+/// Exact, idempotent marker/write transaction request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderedMarkerWriteRequest {
+    pub marker_id: u64,
+    pub connection_generation: String,
+    pub snapshot_identity: GattSnapshotIdentity,
+    pub target: InstanceKey,
+    pub value: Vec<u8>,
+    pub with_response: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderedMarkerWritePhase {
+    /// Marker is admitted; native write initiation has not settled.
+    Initiating,
+    NotStarted(Option<DesktopError>),
+    Started(Option<DesktopError>),
+    Settled(Result<(), DesktopError>),
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderedMarkerWriteStatus {
+    Pending,
+    NotAdmitted(Option<DesktopError>),
+    Rejected(DesktopError),
+    Admitted {
+        ordinal: u64,
+        write: OrderedMarkerWritePhase,
+    },
+}
+
+/// Exact source binding that initiated one shared physical activation.
+#[derive(Debug, Clone)]
+pub struct OrderedPhysicalOrigin {
+    pub lease: OrderedSourceLease,
+    pub member_id: u64,
+    pub membership: ubm_core::ordered_notifications::Membership,
+    pub prepared: PreparedNotificationActivation,
+}
+
+/// Exact renewal retirement; uncertainty describes its native callback tail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderedRenewalAbandon {
+    Pending,
+    Retired { tail_uncertain: bool },
+}
+
+/// Source-finality receipt independent of physical cleanup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderedSourceSeal {
+    Pending,
+    Sealed,
+}
+
+/// Whether a source route is released or still owns a pinned receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderedSourceRelease {
+    Released,
+    Pending,
+}
+
+/// Which owner admits source records for this specific opened source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderedSourceIngress {
+    BackendOwned,
+    CentralRetainedBatch,
+}
+
+#[derive(Debug)]
+pub struct OrderedSourceFailure {
+    pub error: DesktopError,
+    /// Explicit retry key or lease when cleanup is still owned.
+    pub cleanup: Option<OrderedSourceCleanup>,
+}
+
+#[derive(Debug, Clone)]
+pub enum OrderedSourceCleanup {
+    Lease(OrderedSourceLease),
+    Indeterminate { peer_id: String, collection_id: u64 },
+}
+
+#[derive(Debug, Clone)]
+pub enum OrderedSourceRecovery {
+    /// No source effect was admitted.
+    NotStarted,
+    /// An exact source open is retained and has not settled.
+    Pending,
+    Ready(OrderedSourceLease),
+}
+
+#[derive(Debug, Clone)]
+pub enum OrderedSourceTransition {
+    BeginEnable {
+        member_id: u64,
+    },
+    EnableResult {
+        member_id: u64,
+        outcome: Option<bool>,
+    },
+    FailEnable {
+        member_id: u64,
+        outcome: Option<bool>,
+        failure: ubm_core::ordered_notifications::Failure,
+        tail_uncertain: bool,
+    },
+    BeginRelease {
+        member_id: u64,
+    },
+    ReleaseResult {
+        member_id: u64,
+        result: Result<(), String>,
+    },
+    Close {
+        reason: ubm_core::ordered_notifications::EndReason,
+        tail_uncertain: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderedSourceStatus {
+    pub phase: ubm_core::ordered_notifications::Phase,
+    pub members: Vec<ubm_core::ordered_notifications::MemberState>,
+    pub cleanup_complete: bool,
+}
 
 /// One descriptor address: characteristic instance plus descriptor
 /// uuid/occurrence.
@@ -1779,11 +2877,51 @@ impl RadioCloseFailure {
 }
 
 struct FakeInner {
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_permits: HashMap<(u64, u64), (OrderedReclaimGraphKey, bool)>,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_permit_receipts: HashMap<(u64, u64), (OrderedReclaimPermitRequest, u64)>,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_next_permit: HashMap<u64, u64>,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_lost_permit_reserve: bool,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_permit_capacity_refusal: bool,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_lost_acquire: bool,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_lost_commit: bool,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_binding_error: Option<DesktopError>,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_authorities: HashMap<u64, (u64, bool)>,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_retired_requests: HashSet<u64>,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_retired_authorities: HashSet<u64>,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_retired_permits: HashMap<u64, (u64, std::collections::BTreeSet<u64>)>,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_next_authority: u64,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_lost_open: bool,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_authority_notdispatched: bool,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_lost_close: bool,
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    reclaim_lost_release: bool,
     disconnect_observations: HashMap<String, crate::errors::PlatformDetail>,
     disconnect_cleanup_failures: HashMap<String, DesktopError>,
     disconnect_cleanup_retire_on_finish: std::collections::HashSet<String>,
     #[cfg(target_os = "linux")]
     physical_generations: HashMap<String, u64>,
+    #[cfg(target_os = "linux")]
+    physical_pins: HashMap<String, u64>,
+    #[cfg(target_os = "linux")]
+    physical_pending: HashMap<String, u64>,
+    #[cfg(target_os = "linux")]
+    physical_pin_serial: u64,
     directory_peers: Option<Vec<DirectoryPeer>>,
     bonded_directory_peers: Option<Vec<DirectoryPeer>>,
     known_directory_peers: Option<Vec<DirectoryPeer>>,
@@ -1792,6 +2930,7 @@ struct FakeInner {
     directory_unblocked_reads: usize,
     canonical_peer_ids: HashMap<String, String>,
     faults: HashMap<FaultOp, VecDeque<(String, Option<crate::errors::PlatformDetail>)>>,
+    late_disable_faults: VecDeque<String>,
     /// Scan filters the central passed to `start_scan`, in call order.
     scan_filters: Vec<ScanFilterSpec>,
     /// Peers `peers()` reports (the OS's known-peripheral listing).
@@ -1836,6 +2975,8 @@ struct FakeInner {
     /// char occ) with the CCCD currently enabled. [`FakeRadio::close`]
     /// releases all of them, modelling OS-side unsubscribe at teardown.
     live: HashSet<InstanceKey>,
+    live_activations: HashSet<(InstanceKey, u64)>,
+    disable_epochs: Vec<(InstanceKey, u64)>,
     /// Close-time release failures retained by the last [`FakeRadio::close`]
     /// (F14 receipts): one entry per scope whose unsubscribe fault fired.
     /// Drained by `take_close_failures`; failed scopes stay in `live`.
@@ -1896,6 +3037,21 @@ struct FakeInner {
     connection_parameters_capability: Result<Option<&'static str>, DesktopError>,
     connection_phy_capability: Result<Option<&'static str>, DesktopError>,
     priority_capability: Result<Option<&'static str>, DesktopError>,
+    /// One explicitly scripted retained peer-source failure. This exists only
+    /// for the central's recovery-boundary regressions; production radios
+    /// supply their own native owner and opaque receipt.
+    peer_failure_recovery: Option<FakePeerFailureRecovery>,
+}
+
+#[derive(Debug, Clone)]
+struct FakePeerFailureRecovery {
+    descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    bytes: Vec<u8>,
+    source_ack_id: String,
+    begun: bool,
+    retired: bool,
+    prepare_failures_remaining: usize,
+    retire_failures_remaining: usize,
 }
 
 impl Default for FakeRadio {
@@ -1905,6 +3061,48 @@ impl Default for FakeRadio {
 }
 
 impl FakeRadio {
+    /// Inject a bounded failure observation into one synthetic source owner.
+    pub fn stage_ordered_failure_observation(
+        &self,
+        peer: &str,
+        collection: u64,
+        failure: ubm_core::ordered_notifications::Failure,
+    ) -> Result<(), DesktopError> {
+        use ubm_core::ordered_notifications::Record;
+        let mut state = self.ordered.lock().expect("fake ordered source");
+        let lease = state
+            .leases
+            .get(&collection)
+            .filter(|lease| lease.peer_id == peer)
+            .cloned()
+            .ok_or_else(|| {
+                DesktopError::subscribe_failed("synthetic ordered source not owned by peer")
+            })?;
+        state
+            .registry
+            .with_collection(collection, |owner| {
+                owner.admit_failure_record(
+                    &lease.source_generation,
+                    collection,
+                    Record::FailureObservation {
+                        failure: Some(failure),
+                        source_rejection: None,
+                        source_failure_member: None,
+                        rejected_loss: None,
+                        tail_uncertain: false,
+                    },
+                )
+            })
+            .map_err(|error| DesktopError::subscribe_failed(format!("{error:?}")))
+    }
+    pub fn stage_ordered_source_loss(
+        &self,
+        peer: &str,
+        count: Option<u64>,
+    ) -> Result<(), DesktopError> {
+        let _fifo = self.state.lock().expect("fake radio state");
+        self.fake_source_loss(peer, count)
+    }
     pub fn set_priority_capability_limitation(
         &self,
         limitation: Result<Option<&'static str>, DesktopError>,
@@ -1921,6 +3119,74 @@ impl FakeRadio {
             .priority_requests
             .clone()
     }
+    #[cfg(test)]
+    pub(crate) fn refuse_reclaim_permit_capacity(&self) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .reclaim_permit_capacity_refusal = true;
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    pub(crate) fn fail_reclaim_binding(&self, error: DesktopError) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .reclaim_binding_error = Some(error);
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    pub(crate) fn lose_reclaim_commit_reply(&self) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .reclaim_lost_commit = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reclaim_test_keys(&self) -> (Vec<(u64, u64)>, Vec<((u64, u64), u64)>) {
+        let state = self.state.lock().expect("fake radio state");
+        let mut permits: Vec<_> = state.reclaim_permits.keys().copied().collect();
+        let mut receipts: Vec<_> = state
+            .reclaim_permit_receipts
+            .iter()
+            .map(|(request, (_, permit))| (*request, *permit))
+            .collect();
+        permits.sort_unstable();
+        receipts.sort_unstable();
+        (permits, receipts)
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    pub(crate) fn lose_reclaim_permit_reserve_reply(&self) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .reclaim_lost_permit_reserve = true;
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    pub(crate) fn refuse_reclaim_authority_before_dispatch(&self) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .reclaim_authority_notdispatched = true;
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    pub(crate) fn lose_reclaim_authority_replies(&self, open: bool, close: bool) {
+        let mut state = self.state.lock().expect("fake radio state");
+        state.reclaim_lost_open = open;
+        state.reclaim_lost_close = close;
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    pub(crate) fn lose_reclaim_replies(&self, acquire: bool, release: bool) {
+        let mut state = self.state.lock().expect("fake radio state");
+        state.reclaim_lost_acquire = acquire;
+        state.reclaim_lost_release = release;
+    }
+
     pub fn set_connection_parameters_capability_limitation(
         &self,
         result: Result<Option<&'static str>, DesktopError>,
@@ -1963,6 +3229,27 @@ impl FakeRadio {
             .insert(peer.to_owned(), detail);
     }
     /// Set the identity subsequent successful discoveries report.
+    #[cfg(test)]
+    pub fn force_marker_ordinal(&self, peer_id: &str, ordinal: u64) {
+        self.ordered
+            .lock()
+            .expect("fake ordered source")
+            .ordinals
+            .insert(peer_id.to_owned(), ordinal);
+    }
+
+    /// Resolve a scripted marker/write transaction for synthetic hosts.
+    pub fn settle_marker_write(&self, collection_id: u64, marker_id: u64) {
+        let mut state = self.ordered.lock().expect("fake ordered source");
+        if let Some((_, OrderedMarkerWriteStatus::Admitted { ordinal, write })) = state
+            .marker_transactions
+            .get_mut(&(collection_id, marker_id))
+        {
+            let _ = ordinal;
+            *write = OrderedMarkerWritePhase::Settled(Ok(()));
+        }
+    }
+
     pub fn set_gatt_snapshot_identity(&self, peer_id: &str, identity: GattSnapshotIdentity) {
         let mut state = self.state.lock().expect("fake radio state");
         state.gatt_identity_errors.remove(peer_id);
@@ -2002,7 +3289,42 @@ impl FakeRadio {
     pub fn new() -> Self {
         Self {
             acquired: crate::acquired_gatt::synthetic::SyntheticAcquiredGatt::default(),
-            state: StdMutex::new(FakeInner {
+            ordered: StdMutex::new(crate::fake_ordered_source::FakeOrderedSource::default()),
+            state: Arc::new(StdMutex::new(FakeInner {
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_permits: HashMap::new(),
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_permit_receipts: HashMap::new(),
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_next_permit: HashMap::new(),
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_lost_permit_reserve: false,
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_permit_capacity_refusal: false,
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_lost_acquire: false,
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_lost_commit: false,
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_binding_error: None,
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_authorities: HashMap::new(),
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_retired_requests: HashSet::new(),
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_retired_authorities: HashSet::new(),
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_retired_permits: HashMap::new(),
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_next_authority: 1,
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_lost_open: false,
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_authority_notdispatched: false,
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_lost_close: false,
+                #[cfg(any(test, feature = "reclaim-test-support"))]
+                reclaim_lost_release: false,
                 disconnect_observations: HashMap::new(),
                 disconnect_cleanup_failures: HashMap::new(),
                 disconnect_cleanup_retire_on_finish: std::collections::HashSet::new(),
@@ -2014,7 +3336,14 @@ impl FakeRadio {
                 canonical_peer_ids: HashMap::new(),
                 #[cfg(target_os = "linux")]
                 physical_generations: HashMap::new(),
+                #[cfg(target_os = "linux")]
+                physical_pins: HashMap::new(),
+                #[cfg(target_os = "linux")]
+                physical_pending: HashMap::new(),
+                #[cfg(target_os = "linux")]
+                physical_pin_serial: 0,
                 faults: HashMap::new(),
+                late_disable_faults: VecDeque::new(),
                 scan_filters: Vec::new(),
                 known_peers: Vec::new(),
                 admission: AdmissionPolicy::LifecycleOnly,
@@ -2039,6 +3368,8 @@ impl FakeRadio {
                 values: HashMap::new(),
                 read_provenance: ReadProvenance::ReadResponse,
                 live: HashSet::new(),
+                live_activations: HashSet::new(),
+                disable_epochs: Vec::new(),
                 close_failures: Vec::new(),
                 writes: Vec::new(),
                 write_values: Vec::new(),
@@ -2066,9 +3397,10 @@ impl FakeRadio {
                 connection_phy: HashMap::new(),
                 priority_requests: Vec::new(),
                 priority_capability: Ok(None),
+                peer_failure_recovery: None,
                 connection_parameters_capability: Ok(None),
                 connection_phy_capability: Ok(None),
-            }),
+            })),
             notify: Arc::new(Notify::new()),
             calls_changed: tokio::sync::watch::channel(()).0,
         }
@@ -2081,6 +3413,52 @@ impl FakeRadio {
         let mut state = self.state.lock().expect("fake radio state");
         state.admission = admission;
         state.teardown = teardown;
+    }
+
+    /// Configure one exact retained peer-source failure for deterministic
+    /// recovery tests. The supplied bytes must match the frozen descriptor.
+    pub fn set_peer_failure_recovery(
+        &self,
+        descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        bytes: Vec<u8>,
+    ) {
+        assert_eq!(bytes.len() as u64, descriptor.encoded_length);
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .peer_failure_recovery = Some(FakePeerFailureRecovery {
+            descriptor,
+            bytes,
+            source_ack_id: "fake-peer-failure-ack-1".to_owned(),
+            begun: false,
+            retired: false,
+            prepare_failures_remaining: 0,
+            retire_failures_remaining: 0,
+        });
+    }
+
+    /// Fail the next retained-source retirement before the fake native owner
+    /// advances. A retry with the same durable begin receipt can then prove
+    /// the caller did not lose or duplicate the source head.
+    pub fn fail_next_peer_failure_recovery_retire(&self) {
+        let mut state = self.state.lock().expect("fake radio state");
+        let recovery = state
+            .peer_failure_recovery
+            .as_mut()
+            .expect("configure peer failure recovery before injecting retirement failure");
+        recovery.retire_failures_remaining += 1;
+    }
+
+    /// Fail the next retained-source preparation before a native receipt is
+    /// minted. This proves callers retain the already-durable final recipient
+    /// ACK and can retry the exact source transition.
+    pub fn fail_next_peer_failure_recovery_prepare(&self) {
+        let mut state = self.state.lock().expect("fake radio state");
+        let recovery = state
+            .peer_failure_recovery
+            .as_mut()
+            .expect("configure peer failure recovery before injecting preparation failure");
+        recovery.prepare_failures_remaining += 1;
     }
 
     pub fn acquired_gatt(&self) -> &crate::acquired_gatt::synthetic::SyntheticAcquiredGatt {
@@ -2184,6 +3562,15 @@ impl FakeRadio {
             .push_back((detail.to_owned(), None));
     }
 
+    /// Script a disable failure delivered after its operation gate opens.
+    pub fn fail_next_disable_after_gate(&self, detail: &str) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .late_disable_faults
+            .push_back(detail.to_owned());
+    }
+
     /// [`FakeRadio::fail_next`] whose error also carries the platform's
     /// structured answer (finding 113), as a real OS failure does.
     pub fn fail_next_with_platform(
@@ -2208,11 +3595,20 @@ impl FakeRadio {
     /// drop control nor reorder it ahead of earlier data: drain follows push
     /// order (F07). Pushes after [`FakeRadio::close_events`] are dropped,
     /// like OS events after the source closes.
-    pub fn push_event(&self, event: RadioEvent) {
+    /// Returns an error if the synthetic ordered source cannot accept the
+    /// event; the producer may retry after downstream capacity is available.
+    #[must_use = "synthetic source admission can fail under pressure"]
+    pub fn push_event(&self, event: RadioEvent) -> Result<(), DesktopError> {
+        self.try_push_event(event)
+    }
+
+    /// Stage a synthetic event, reporting source pressure to the producer.
+    pub fn try_push_event(&self, event: RadioEvent) -> Result<(), DesktopError> {
         let mut state = self.state.lock().expect("fake radio state");
         if state.events_closed {
-            return;
+            return Ok(());
         }
+        self.fake_admit_event(&event)?;
         let seq = state.seq.saturating_add(1);
         state.seq = seq;
         match event {
@@ -2222,7 +3618,7 @@ impl FakeRadio {
                     || state.data_bytes.saturating_add(value_len) > FAKE_DATA_BYTES
                 {
                     state.dropped_data = state.dropped_data.saturating_add(1);
-                    return;
+                    return Ok(());
                 }
                 state.data_bytes = state.data_bytes.saturating_add(value_len);
                 state.data.push_back((seq, event));
@@ -2230,23 +3626,27 @@ impl FakeRadio {
             control => {
                 if state.control.len() >= FAKE_CONTROL_CAP {
                     state.dropped_control = state.dropped_control.saturating_add(1);
-                    return;
+                    return Ok(());
                 }
                 state.control.push_back((seq, control));
             }
         }
         drop(state);
         self.notify.notify_one();
+        Ok(())
     }
 
     /// Stage deterministic Linux authority identity; never physical evidence.
     #[cfg(target_os = "linux")]
     pub fn set_physical_generation(&self, peer: &str, generation: u64) {
-        self.state
-            .lock()
-            .expect("fake radio state")
-            .physical_generations
-            .insert(peer.to_owned(), generation);
+        let mut state = self.state.lock().expect("fake radio state");
+        if state.physical_pins.contains_key(peer) {
+            state.physical_pending.insert(peer.to_owned(), generation);
+        } else {
+            state
+                .physical_generations
+                .insert(peer.to_owned(), generation);
+        }
     }
 
     /// Close the event source: a pending [`RadioBoundary::next_event`]
@@ -2538,6 +3938,24 @@ impl FakeRadio {
 
     /// Epochs captured at forwarder install, in enable order: addressed
     /// instance plus the epoch the central passed to `set_notifications`.
+    /// Exact active registrations, including distinct activations at one path.
+    pub fn live_notification_activations(&self) -> HashSet<(InstanceKey, u64)> {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .live_activations
+            .clone()
+    }
+
+    /// Successfully released exact registrations.
+    pub fn disable_epochs(&self) -> Vec<(InstanceKey, u64)> {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .disable_epochs
+            .clone()
+    }
+
     pub fn enable_epochs(&self) -> Vec<(InstanceKey, u64)> {
         self.state
             .lock()
@@ -2691,7 +4109,1020 @@ fn descriptor_key(
     )
 }
 
+#[cfg(target_os = "linux")]
+struct FakePhysicalLossGuard {
+    state: Arc<StdMutex<FakeInner>>,
+    peer: String,
+    token: u64,
+    active: std::sync::atomic::AtomicBool,
+}
+#[cfg(target_os = "linux")]
+impl std::fmt::Debug for FakePhysicalLossGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakePhysicalLossGuard")
+            .field("peer", &self.peer)
+            .finish()
+    }
+}
+#[cfg(target_os = "linux")]
+impl PhysicalLossGuard for FakePhysicalLossGuard {
+    fn release(&self) {
+        if !self.active.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let mut s = self.state.lock().expect("fake radio state");
+        if s.physical_pins.get(&self.peer) == Some(&self.token) {
+            s.physical_pins.remove(&self.peer);
+            if let Some(next) = s.physical_pending.remove(&self.peer) {
+                s.physical_generations.insert(self.peer.clone(), next);
+            }
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+impl Drop for FakePhysicalLossGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 impl RadioBoundary for FakeRadio {
+    async fn prepare_notification_activation(
+        &self,
+        scope: &InstanceKey,
+        epoch: u64,
+        requested: Option<DeliveryMode>,
+        preferred: Option<DeliveryMode>,
+    ) -> Result<PreparedNotificationActivation, DesktopError> {
+        let handle = PreparedNotificationActivation {
+            scope: scope.clone(),
+            activation_epoch: epoch,
+            requested,
+            preferred,
+        };
+        let mut state = self.ordered.lock().expect("fake ordered source");
+        if let Some(old) = state.prepared.get(&(scope.clone(), epoch)) {
+            if old != &handle {
+                return Err(DesktopError::subscribe_failed("conflicting activation"));
+            }
+        }
+        state
+            .prepared
+            .insert((scope.clone(), epoch), handle.clone());
+        Ok(handle)
+    }
+    async fn dispatch_prepared_notification(
+        &self,
+        h: &PreparedNotificationActivation,
+    ) -> Result<ObservedDelivery, DesktopError> {
+        if self
+            .ordered
+            .lock()
+            .expect("fake ordered source")
+            .prepared
+            .get(&(h.scope.clone(), h.activation_epoch))
+            != Some(h)
+        {
+            return Err(DesktopError::subscribe_failed("stale activation"));
+        }
+        struct PendingFakeEnable<'a> {
+            radio: &'a FakeRadio,
+            key: (InstanceKey, u64),
+            completed: bool,
+        }
+        impl Drop for PendingFakeEnable<'_> {
+            fn drop(&mut self) {
+                if !self.completed {
+                    self.radio
+                        .ordered
+                        .lock()
+                        .expect("fake ordered source")
+                        .settlements
+                        .insert(self.key.clone(), OrderedNotificationSettlement::Released);
+                }
+            }
+        }
+        let key = (h.scope.clone(), h.activation_epoch);
+        self.ordered
+            .lock()
+            .expect("fake ordered source")
+            .settlements
+            .insert(key.clone(), OrderedNotificationSettlement::Pending);
+        let mut guard = PendingFakeEnable {
+            radio: self,
+            key: key.clone(),
+            completed: false,
+        };
+        let result = self
+            .set_notifications_with_preference(
+                &h.scope.0,
+                &h.scope.1,
+                h.scope.2,
+                &h.scope.3,
+                h.scope.4,
+                true,
+                h.activation_epoch,
+                h.requested,
+                h.preferred,
+            )
+            .await;
+        self.ordered
+            .lock()
+            .expect("fake ordered source")
+            .settlements
+            .insert(
+                key,
+                if result.is_ok() {
+                    OrderedNotificationSettlement::Enabled
+                } else {
+                    OrderedNotificationSettlement::Released
+                },
+            );
+        guard.completed = true;
+        result
+    }
+    fn reserve_ordered_notification(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        m: ubm_core::ordered_notifications::Membership,
+        h: &PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        self.fake_claim(l, id, m, h)?;
+        let mut s = self.ordered.lock().expect("fake ordered source");
+        let key = (h.scope.clone(), h.activation_epoch);
+        let origin = (l.collection_id, id, m);
+        if s.origins
+            .get(&key)
+            .is_some_and(|existing| *existing != origin)
+        {
+            return Err(DesktopError::subscribe_failed(
+                "physical activation already has an origin",
+            ));
+        }
+        s.origins.insert(key.clone(), origin);
+        s.settlements
+            .entry(key)
+            .or_insert(OrderedNotificationSettlement::Released);
+        drop(s);
+        self.record("ordered_reserve");
+        Ok(())
+    }
+    async fn dispatch_ordered_notification(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        m: ubm_core::ordered_notifications::Membership,
+        h: &PreparedNotificationActivation,
+    ) -> Result<ObservedDelivery, DesktopError> {
+        self.fake_claim(l, id, m, h)?;
+        self.dispatch_prepared_notification(h).await
+    }
+    async fn ordered_notification_settlement(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        m: ubm_core::ordered_notifications::Membership,
+        h: &PreparedNotificationActivation,
+    ) -> Result<OrderedNotificationSettlement, DesktopError> {
+        if self.fake_claim(l, id, m, h).is_err() {
+            let s = self.ordered.lock().expect("fake ordered source");
+            if s.origins.get(&(h.scope.clone(), h.activation_epoch))
+                != Some(&(l.collection_id, id, m))
+            {
+                return Err(DesktopError::subscribe_failed("stale physical origin"));
+            }
+        }
+        let s = self.ordered.lock().expect("fake ordered source");
+        Ok(s.settlements
+            .get(&(h.scope.clone(), h.activation_epoch))
+            .copied()
+            .unwrap_or(OrderedNotificationSettlement::Released))
+    }
+
+    async fn release_ordered_notification(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        m: ubm_core::ordered_notifications::Membership,
+        h: &PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        self.ordered_notification_settlement(l, id, m, h).await?;
+        self.release_prepared_notification(h).await
+    }
+    async fn release_prepared_notification(
+        &self,
+        h: &PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        match self
+            .ordered
+            .lock()
+            .expect("fake ordered source")
+            .prepared
+            .get(&(h.scope.clone(), h.activation_epoch))
+        {
+            None => return Ok(()),
+            Some(current) if current != h => {
+                return Err(DesktopError::subscribe_failed("stale activation"));
+            }
+            Some(_) => {}
+        }
+        self.set_notifications_with_preference(
+            &h.scope.0,
+            &h.scope.1,
+            h.scope.2,
+            &h.scope.3,
+            h.scope.4,
+            false,
+            h.activation_epoch,
+            h.requested,
+            h.preferred,
+        )
+        .await?;
+        let mut ordered = self.ordered.lock().expect("fake ordered source");
+        ordered
+            .prepared
+            .remove(&(h.scope.clone(), h.activation_epoch));
+        ordered.settlements.insert(
+            (h.scope.clone(), h.activation_epoch),
+            OrderedNotificationSettlement::Released,
+        );
+        Ok(())
+    }
+    async fn prepare_ordered_source(
+        &self,
+        request: OrderedSourceRequest,
+    ) -> Result<OrderedSourceLease, OrderedSourceFailure> {
+        let lease = self.fake_prepare_ordered(request)?;
+        self.record("ordered_open");
+        self.gate(FaultOp::OrderedOpen).await;
+        Ok(lease)
+    }
+    async fn recover_ordered_source(
+        &self,
+        peer: &str,
+        id: u64,
+    ) -> Result<OrderedSourceRecovery, DesktopError> {
+        let state = self.ordered.lock().expect("fake ordered source");
+        Ok(match state.leases.get(&id) {
+            Some(l) if l.peer_id == peer => OrderedSourceRecovery::Ready(l.clone()),
+            Some(_) => return Err(DesktopError::subscribe_failed("stale peer")),
+            None => OrderedSourceRecovery::NotStarted,
+        })
+    }
+    async fn retain_ordered_source_claim(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        m: ubm_core::ordered_notifications::Membership,
+        a: &PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        self.fake_claim(l, id, m, a)
+    }
+    async fn confirm_ordered_source_cleanup(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        m: ubm_core::ordered_notifications::Membership,
+        a: &PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        self.fake_claim(l, id, m, a)
+    }
+    fn update_ordered_source(
+        &self,
+        l: &OrderedSourceLease,
+        t: OrderedSourceTransition,
+    ) -> Result<(), DesktopError> {
+        self.fake_update(l, t)
+    }
+    fn attach_ordered_wake(
+        &self,
+        lease: &OrderedSourceLease,
+        wake: std::sync::Arc<tokio::sync::Notify>,
+    ) -> Result<(), DesktopError> {
+        let mut state = self.ordered.lock().expect("fake ordered source");
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(lease);
+        state
+            .registry
+            .set_wake(lease.collection_id, &source, wake)
+            .map_err(|e| DesktopError::subscribe_failed(&format!("ordered wake: {e:?}")))
+    }
+    fn ordered_source_status(
+        &self,
+        l: &OrderedSourceLease,
+    ) -> Result<OrderedSourceStatus, DesktopError> {
+        self.fake_status(l)
+    }
+    fn increase_ordered_byte_capacity(
+        &self,
+        lease: &OrderedSourceLease,
+        max_bytes: usize,
+    ) -> Result<usize, DesktopError> {
+        let mut state = self.ordered.lock().expect("fake ordered source");
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(lease);
+        if !state.registry.owns_source(lease.collection_id, &source) {
+            return Err(DesktopError::new(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.increase-capacity",
+            ));
+        }
+        let previous = state
+            .registry
+            .with_collection(lease.collection_id, |owner| {
+                owner.increase_byte_capacity(&source.generation, lease.collection_id, max_bytes)
+            })
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.increase-capacity",
+                )
+                .with_detail(format!("{error:?}"))
+            })?;
+        state.flush_pending_records(&source)?;
+        Ok(previous)
+    }
+    async fn retire_ordered_member(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        old: ubm_core::ordered_notifications::Membership,
+    ) -> Result<(), DesktopError> {
+        let mut s = self.ordered.lock().expect("fake ordered source");
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(l);
+        if !s.registry.owns_source(l.collection_id, &source)
+            || !s
+                .claims
+                .get(&l.collection_id)
+                .is_some_and(|v| v.iter().any(|(i, m, _)| *i == id && *m == old))
+        {
+            return Err(DesktopError::subscribe_failed("stale member"));
+        }
+        if let Some(r) = s.renewals.get(&(l.collection_id, id)) {
+            if r.old == old {
+                return Ok(());
+            }
+            if !r.resumed {
+                return Err(DesktopError::subscribe_failed("member renewal pending"));
+            }
+        }
+        s.registry.retire_membership(&source, old);
+        s.buffered.entry(l.collection_id).or_default();
+        s.renewals.insert(
+            (l.collection_id, id),
+            crate::fake_ordered_source::FakeRenewal {
+                old,
+                new: None,
+                rebound: false,
+                resumed: false,
+            },
+        );
+        Ok(())
+    }
+    async fn reregister_ordered_member(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        old: ubm_core::ordered_notifications::Membership,
+    ) -> Result<ubm_core::ordered_notifications::Membership, DesktopError> {
+        let mut s = self.ordered.lock().expect("fake ordered source");
+        let r = s
+            .renewals
+            .get(&(l.collection_id, id))
+            .filter(|r| r.old == old && !r.resumed)
+            .ok_or_else(|| DesktopError::subscribe_failed("stale renewal"))?;
+        if let Some(new) = r.new {
+            return Ok(new);
+        }
+        let new = ubm_core::ordered_notifications::Membership {
+            member: s
+                .next_id()
+                .ok_or_else(|| DesktopError::subscribe_failed("source identity exhausted"))?,
+            epoch: 1,
+        };
+        s.renewals
+            .get_mut(&(l.collection_id, id))
+            .expect("retained renewal")
+            .new = Some(new);
+        Ok(new)
+    }
+    async fn abandon_ordered_renewal(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        old: ubm_core::ordered_notifications::Membership,
+        new: Option<ubm_core::ordered_notifications::Membership>,
+    ) -> Result<OrderedRenewalAbandon, DesktopError> {
+        let state = self
+            .ordered
+            .lock()
+            .expect("fake ordered source")
+            .renewals
+            .get(&(l.collection_id, id))
+            .cloned();
+        let Some(state) = state else {
+            return Ok(OrderedRenewalAbandon::Retired {
+                tail_uncertain: false,
+            });
+        };
+        if state.old != old
+            || new.is_some_and(|expected| state.new.is_some_and(|actual| actual != expected))
+        {
+            return Err(DesktopError::subscribe_failed("stale member renewal"));
+        }
+        if state.resumed {
+            return Ok(OrderedRenewalAbandon::Retired {
+                tail_uncertain: true,
+            });
+        }
+        let Some(current) = new else {
+            return Ok(OrderedRenewalAbandon::Pending);
+        };
+        if state.new != Some(current) || !state.rebound {
+            return Ok(OrderedRenewalAbandon::Pending);
+        }
+        self.resume_ordered_member(l, id, current).await?;
+        Ok(OrderedRenewalAbandon::Retired {
+            tail_uncertain: true,
+        })
+    }
+    fn rebind_ordered_member(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        old: ubm_core::ordered_notifications::Membership,
+        new: ubm_core::ordered_notifications::Membership,
+    ) -> Result<(), DesktopError> {
+        let mut s = self.ordered.lock().expect("fake ordered source");
+        let r = s
+            .renewals
+            .get(&(l.collection_id, id))
+            .filter(|r| r.old == old && r.new == Some(new))
+            .ok_or_else(|| DesktopError::subscribe_failed("stale renewal"))?;
+        if r.rebound {
+            return Ok(());
+        }
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(l);
+        s.registry
+            .rebind_member(l.collection_id, &source, id, old, new)
+            .map_err(|e| DesktopError::subscribe_failed(format!("member rebind: {e:?}")))?;
+        let claim = s
+            .claims
+            .get_mut(&l.collection_id)
+            .and_then(|v| v.iter_mut().find(|(i, _, _)| *i == id))
+            .ok_or_else(|| DesktopError::subscribe_failed("missing claim"))?;
+        claim.1 = new;
+        let member = s
+            .leases
+            .get_mut(&l.collection_id)
+            .and_then(|lease| lease.members.iter_mut().find(|(i, _)| *i == id))
+            .ok_or_else(|| DesktopError::subscribe_failed("missing member"))?;
+        member.1 = new;
+        s.renewals
+            .get_mut(&(l.collection_id, id))
+            .expect("retained renewal")
+            .rebound = true;
+        Ok(())
+    }
+    async fn resume_ordered_member(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+        new: ubm_core::ordered_notifications::Membership,
+    ) -> Result<(), DesktopError> {
+        let mut s = self.ordered.lock().expect("fake ordered source");
+        let r = s
+            .renewals
+            .get_mut(&(l.collection_id, id))
+            .filter(|r| r.new == Some(new) && r.rebound)
+            .ok_or_else(|| DesktopError::subscribe_failed("stale renewal"))?;
+        if r.resumed {
+            return Ok(());
+        }
+        r.resumed = true;
+        if s.renewals
+            .iter()
+            .any(|((group, _), r)| *group == l.collection_id && !r.resumed)
+        {
+            return Ok(());
+        }
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(l);
+        if let Some(mut records) = s.buffered.remove(&l.collection_id) {
+            while let Some(record) = records.pop_front() {
+                match record {
+                    crate::fake_ordered_source::FakeRecord::Value(m, o, v, p) => {
+                        s.registry
+                            .admit_value(
+                                &source,
+                                m,
+                                o,
+                                &v,
+                                ubm_core::ordered_notifications::ObservedDelivery::Unknown,
+                                p,
+                            )
+                            .map_err(|e| DesktopError::subscribe_failed(format!("{e:?}")))?;
+                    }
+                    crate::fake_ordered_source::FakeRecord::Loss(members, count) => {
+                        s.registry
+                            .admit_source_loss(&source, &members, count)
+                            .map_err(|e| DesktopError::subscribe_failed(format!("{e:?}")))?;
+                    }
+                }
+            }
+        }
+        if let Some(rejection) = s.overflows.remove(&l.collection_id) {
+            let members = s
+                .leases
+                .get(&l.collection_id)
+                .expect("lease")
+                .members
+                .iter()
+                .map(|(_, m)| *m)
+                .collect::<Vec<_>>();
+            s.registry
+                .source_terminal(
+                    &source,
+                    &members,
+                    ubm_core::ordered_notifications::EndReason::SourceOverflow,
+                    rejection,
+                    None,
+                    true,
+                )
+                .map_err(|e| DesktopError::subscribe_failed(format!("{e:?}")))?;
+        }
+        Ok(())
+    }
+    async fn poll_ordered_source(
+        &self,
+        l: &OrderedSourceLease,
+    ) -> Result<ubm_core::ordered_notifications::Poll, DesktopError> {
+        let mut s = self.ordered.lock().expect("fake ordered source");
+        if !s.registry.owns_source(
+            l.collection_id,
+            &crate::fake_ordered_source::FakeOrderedSource::source(l),
+        ) {
+            return Err(DesktopError::subscribe_failed("stale lease"));
+        }
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(l);
+        s.flush_pending_records(&source)?;
+        let result = s
+            .registry
+            .poll(l.collection_id)
+            .map_err(|e| DesktopError::subscribe_failed(format!("{e:?}")))?;
+        s.flush_pending_records(&source)?;
+        Ok(result)
+    }
+    fn ordered_marker_write_supported(&self) -> bool {
+        true
+    }
+    async fn start_ordered_marker_write(
+        &self,
+        lease: &OrderedSourceLease,
+        request: &OrderedMarkerWriteRequest,
+    ) -> Result<OrderedMarkerWriteStatus, DesktopError> {
+        {
+            let mut state = self.ordered.lock().expect("fake ordered source");
+            let key = (lease.collection_id, request.marker_id);
+            if let Some((existing, status)) = state.marker_transactions.get(&key) {
+                return if existing == request {
+                    Ok(status.clone())
+                } else {
+                    Err(DesktopError::subscribe_failed("marker identity mismatch"))
+                };
+            }
+            state
+                .marker_transactions
+                .insert(key, (request.clone(), OrderedMarkerWriteStatus::Pending));
+        }
+        self.record("ordered_marker_pending");
+        self.gate(FaultOp::OrderedMarkerBeforeAdmission).await;
+        let status = {
+            let mut state = self.ordered.lock().expect("fake ordered source");
+            let key = (lease.collection_id, request.marker_id);
+            match state.marker_transactions.get(&key) {
+                Some((existing, OrderedMarkerWriteStatus::Pending)) if existing == request => {}
+                Some((existing, status)) if existing == request => return Ok(status.clone()),
+                _ => {
+                    return Err(DesktopError::subscribe_failed(
+                        "marker start already retired",
+                    ));
+                }
+            }
+            let ordinal = *state.ordinals.entry(lease.peer_id.clone()).or_insert(0);
+            let source = crate::fake_ordered_source::FakeOrderedSource::source(lease);
+            let phase = state
+                .registry
+                .with_collection_silent(lease.collection_id, |owner| Ok(owner.phase()))
+                .map_err(|error| DesktopError::subscribe_failed(format!("{error:?}")))?;
+            let status = if matches!(
+                phase,
+                ubm_core::ordered_notifications::Phase::Closing
+                    | ubm_core::ordered_notifications::Phase::Terminal
+            ) {
+                OrderedMarkerWriteStatus::NotAdmitted(Some(DesktopError::subscribe_failed(
+                    "source already terminated",
+                )))
+            } else if let Some(next) = ordinal.checked_add(1) {
+                state.ordinals.insert(lease.peer_id.clone(), next);
+                state
+                    .registry
+                    .admit_marker(&source, request.marker_id, ordinal)
+                    .map_err(|error| DesktopError::subscribe_failed(format!("{error:?}")))?;
+                OrderedMarkerWriteStatus::Admitted {
+                    ordinal,
+                    write: OrderedMarkerWritePhase::Started(None),
+                }
+            } else {
+                let members = lease
+                    .members
+                    .iter()
+                    .map(|(_, member)| *member)
+                    .collect::<Vec<_>>();
+                state
+                    .registry
+                    .source_terminal(
+                        &source,
+                        &members,
+                        ubm_core::ordered_notifications::EndReason::SourceOrdinalExhausted,
+                        Some(ubm_core::ordered_notifications::SourceRejection::Marker {
+                            marker_id: request.marker_id,
+                        }),
+                        None,
+                        true,
+                    )
+                    .map_err(|error| DesktopError::subscribe_failed(format!("{error:?}")))?;
+                OrderedMarkerWriteStatus::Rejected(DesktopError::subscribe_failed(
+                    "source ordinal exhausted",
+                ))
+            };
+            state
+                .marker_transactions
+                .insert(key, (request.clone(), status.clone()));
+            status
+        };
+        if matches!(status, OrderedMarkerWriteStatus::Admitted { .. }) {
+            self.record("ordered_marker_start");
+            self.gate(FaultOp::OrderedMarkerStart).await;
+        }
+        Ok(status)
+    }
+    async fn cancel_ordered_marker_write(
+        &self,
+        lease: &OrderedSourceLease,
+        request: &OrderedMarkerWriteRequest,
+    ) -> Result<OrderedMarkerWriteStatus, DesktopError> {
+        let outcome = {
+            let mut state = self.ordered.lock().expect("fake ordered source");
+            let (existing, status) = state
+                .marker_transactions
+                .entry((lease.collection_id, request.marker_id))
+                .or_insert_with(|| (request.clone(), OrderedMarkerWriteStatus::NotAdmitted(None)));
+            if existing != request {
+                return Err(DesktopError::subscribe_failed("marker identity mismatch"));
+            }
+            if matches!(status, OrderedMarkerWriteStatus::Pending) {
+                *status = OrderedMarkerWriteStatus::NotAdmitted(None);
+            }
+            status.clone()
+        };
+        self.record("ordered_marker_cancel");
+        self.gate(FaultOp::OrderedMarkerCancel).await;
+        Ok(outcome)
+    }
+    async fn ordered_marker_write_status(
+        &self,
+        lease: &OrderedSourceLease,
+        request: &OrderedMarkerWriteRequest,
+    ) -> Result<OrderedMarkerWriteStatus, DesktopError> {
+        let state = self.ordered.lock().expect("fake ordered source");
+        match state
+            .marker_transactions
+            .get(&(lease.collection_id, request.marker_id))
+        {
+            Some((existing, status)) if existing == request => Ok(status.clone()),
+            _ => Err(DesktopError::subscribe_failed("marker identity mismatch")),
+        }
+    }
+    async fn forget_ordered_marker_write(
+        &self,
+        lease: &OrderedSourceLease,
+        request: &OrderedMarkerWriteRequest,
+    ) -> Result<(), DesktopError> {
+        let mut state = self.ordered.lock().expect("fake ordered source");
+        match state
+            .marker_transactions
+            .get(&(lease.collection_id, request.marker_id))
+        {
+            Some((
+                existing,
+                OrderedMarkerWriteStatus::Admitted {
+                    write:
+                        OrderedMarkerWritePhase::Settled(_) | OrderedMarkerWritePhase::NotStarted(_),
+                    ..
+                },
+            )) if existing == request => {}
+            Some((
+                existing,
+                OrderedMarkerWriteStatus::Rejected(_) | OrderedMarkerWriteStatus::NotAdmitted(_),
+            )) if existing == request => {}
+            _ => {
+                return Err(DesktopError::subscribe_failed(
+                    "marker transaction remains pending",
+                ));
+            }
+        }
+        state
+            .marker_transactions
+            .remove(&(lease.collection_id, request.marker_id));
+        Ok(())
+    }
+    fn reserve_ordered_marker(&self, l: &OrderedSourceLease, id: u64) -> Result<(), DesktopError> {
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(l);
+        self.ordered
+            .lock()
+            .expect("fake ordered source")
+            .registry
+            .reserve_marker(l.collection_id, &source, id)
+            .map_err(|error| DesktopError::subscribe_failed(format!("{error:?}")))
+    }
+    fn ordered_marker_credit_pending(
+        &self,
+        l: &OrderedSourceLease,
+        id: u64,
+    ) -> Result<bool, DesktopError> {
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(l);
+        self.ordered
+            .lock()
+            .expect("fake ordered source")
+            .registry
+            .marker_reserved(l.collection_id, &source, id)
+            .map_err(|error| DesktopError::subscribe_failed(format!("{error:?}")))
+    }
+    fn release_ordered_marker(&self, l: &OrderedSourceLease, id: u64) -> Result<(), DesktopError> {
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(l);
+        self.ordered
+            .lock()
+            .expect("fake ordered source")
+            .registry
+            .release_marker(l.collection_id, &source, id)
+            .map_err(|error| DesktopError::subscribe_failed(format!("{error:?}")))
+    }
+    async fn fence_ordered_source(&self, l: &OrderedSourceLease) -> Result<(), DesktopError> {
+        #[cfg(test)]
+        if let Some(fault) = self.take_fault(FaultOp::OrderedSourceFence) {
+            return Err(DesktopError::subscribe_failed(fault.detail));
+        }
+        let s = self.ordered.lock().expect("fake ordered source");
+        if s.registry.owns_source(
+            l.collection_id,
+            &crate::fake_ordered_source::FakeOrderedSource::source(l),
+        ) {
+            Ok(())
+        } else {
+            Err(DesktopError::subscribe_failed("stale lease"))
+        }
+    }
+    async fn retire_ordered_source(
+        &self,
+        l: &OrderedSourceLease,
+        reason: ubm_core::ordered_notifications::EndReason,
+    ) -> Result<(), DesktopError> {
+        #[cfg(test)]
+        if let Some(fault) = self.take_fault(FaultOp::OrderedSourceRetire) {
+            return Err(DesktopError::subscribe_failed(fault.detail));
+        }
+        let mut s = self.ordered.lock().expect("fake ordered source");
+        let source = crate::fake_ordered_source::FakeOrderedSource::source(l);
+        s.flush_pending_records(&source)?;
+        if s.buffered.contains_key(&l.collection_id) {
+            return Err(DesktopError::subscribe_failed(
+                "member renewal must settle before source retirement",
+            ));
+        }
+        if !s.registry.owns_source(l.collection_id, &source) {
+            return Err(DesktopError::subscribe_failed("stale lease"));
+        }
+        let members: Vec<_> = l.members.iter().map(|(_, m)| *m).collect();
+        // Rejection or overflow may already have ended this exact owner. Its
+        // terminal is authoritative; retirement only seals its remaining route.
+        let phase = s
+            .registry
+            .with_collection_silent(l.collection_id, |owner| Ok(owner.phase()))
+            .map_err(|e| DesktopError::subscribe_failed(format!("{e:?}")))?;
+        if !matches!(
+            phase,
+            ubm_core::ordered_notifications::Phase::Closing
+                | ubm_core::ordered_notifications::Phase::Terminal
+        ) {
+            s.registry
+                .source_terminal(&source, &members, reason, None, None, true)
+                .map_err(|e| DesktopError::subscribe_failed(format!("{e:?}")))?;
+        }
+        for (_, m) in &l.members {
+            s.registry.retire_membership(&source, *m);
+        }
+        s.sealed.insert(l.collection_id);
+        Ok(())
+    }
+    async fn seal_ordered_source(
+        &self,
+        l: &OrderedSourceLease,
+    ) -> Result<OrderedSourceSeal, DesktopError> {
+        let s = self.ordered.lock().expect("fake ordered source");
+        if !s.registry.owns_source(
+            l.collection_id,
+            &crate::fake_ordered_source::FakeOrderedSource::source(l),
+        ) {
+            return Err(DesktopError::subscribe_failed("stale lease"));
+        }
+        Ok(if s.sealed.contains(&l.collection_id) {
+            OrderedSourceSeal::Sealed
+        } else {
+            OrderedSourceSeal::Pending
+        })
+    }
+    async fn release_ordered_source(
+        &self,
+        cleanup: &OrderedSourceCleanup,
+    ) -> Result<OrderedSourceRelease, DesktopError> {
+        let (peer, id) = match cleanup {
+            OrderedSourceCleanup::Lease(l) => (l.peer_id.as_str(), l.collection_id),
+            OrderedSourceCleanup::Indeterminate {
+                peer_id,
+                collection_id,
+            } => (peer_id.as_str(), *collection_id),
+        };
+        let mut s = self.ordered.lock().expect("fake ordered source");
+        if let Some(l) = s.leases.get(&id) {
+            if l.peer_id != peer {
+                return Err(DesktopError::subscribe_failed("stale peer"));
+            }
+        } else {
+            return Ok(OrderedSourceRelease::Released);
+        }
+        if s.origins.iter().any(|(key, (collection, _, _))| {
+            *collection == id
+                && s.settlements.get(key) != Some(&OrderedNotificationSettlement::Released)
+        }) {
+            return Ok(OrderedSourceRelease::Pending);
+        }
+        match s.registry.remove(id) {
+            Ok(()) => {}
+            Err(crate::ordered_notification_groups::RegistryError::CleanupPending) => {
+                return Ok(OrderedSourceRelease::Pending);
+            }
+            Err(e) => return Err(DesktopError::subscribe_failed(format!("{e:?}"))),
+        }
+        s.origins.retain(|_, (collection, _, _)| *collection != id);
+        s.leases.remove(&id);
+        s.claims.remove(&id);
+        s.sealed.remove(&id);
+        Ok(OrderedSourceRelease::Released)
+    }
+    #[cfg(target_os = "linux")]
+    fn reserve_physical_loss(
+        &self,
+        peer: &str,
+        generation: u64,
+        reason: u8,
+    ) -> PhysicalLossReservation {
+        if let Some(fault) = self.take_fault(FaultOp::NotificationFence) {
+            return PhysicalLossReservation::Indeterminate(
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.fence",
+                )
+                .with_detail(fault.detail),
+            );
+        }
+        let mut s = self.state.lock().expect("fake radio state");
+        if generation == 0 || s.physical_generations.get(peer) != Some(&generation) {
+            return PhysicalLossReservation::Stale;
+        }
+        if s.physical_pins.contains_key(peer) {
+            return PhysicalLossReservation::Indeterminate(DesktopError::subscribe_failed(
+                "physical loss already pinned",
+            ));
+        }
+        let Some(token) = s.physical_pin_serial.checked_add(1) else {
+            return PhysicalLossReservation::Indeterminate(DesktopError::subscribe_failed(
+                "physical pin exhausted",
+            ));
+        };
+        s.physical_pin_serial = token;
+        s.physical_pins.insert(peer.to_owned(), token);
+        let guard = FakePhysicalLossGuard {
+            state: Arc::clone(&self.state),
+            peer: peer.to_owned(),
+            token,
+            active: std::sync::atomic::AtomicBool::new(true),
+        };
+        PhysicalLossReservation::Accepted(PhysicalLossPermit {
+            peer_id: peer.to_owned(),
+            generation,
+            reason,
+            token,
+            guard: Some(Arc::new(guard)),
+        })
+    }
+    #[cfg(target_os = "linux")]
+    async fn fence_reserved_physical_loss(&self, p: &PhysicalLossPermit) -> PhysicalLossFence {
+        let Some(guard) = p.guard.as_ref() else {
+            return PhysicalLossFence::Stale;
+        };
+        let (ack, receiver) = PeerSourceFenceAck::new();
+        let result = {
+            let mut s = self.state.lock().expect("fake radio state");
+            if s.physical_generations.get(&p.peer_id) != Some(&p.generation)
+                || s.physical_pins.get(&p.peer_id) != Some(&p.token)
+            {
+                None
+            } else if s.events_closed || s.control.len() >= FAKE_CONTROL_CAP {
+                Some(false)
+            } else {
+                s.seq = s.seq.saturating_add(1);
+                let seq = s.seq;
+                s.control
+                    .push_back((seq, RadioEvent::PeerNotificationSourceFence { ack }));
+                Some(true)
+            }
+        };
+        guard.release();
+        match result {
+            None => PhysicalLossFence::Stale,
+            Some(false) => PhysicalLossFence::Accepted(Err(DesktopError::subscribe_failed(
+                "physical loss fence unavailable",
+            ))),
+            Some(true) => {
+                self.notify.notify_one();
+                PhysicalLossFence::Accepted(receiver.await.map_err(|_| {
+                    DesktopError::subscribe_failed("physical loss fence not acknowledged")
+                }))
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    async fn fence_physical_loss(
+        &self,
+        peer: &str,
+        generation: u64,
+        _reason: u8,
+    ) -> PhysicalLossFence {
+        if let Some(fault) = self.take_fault(FaultOp::NotificationFence) {
+            return PhysicalLossFence::Indeterminate(
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.fence",
+                )
+                .with_detail(fault.detail),
+            );
+        }
+        let (ack, receiver) = PeerSourceFenceAck::new();
+        {
+            let mut state = self.state.lock().expect("fake radio state");
+            if generation == 0 || state.physical_generations.get(peer) != Some(&generation) {
+                return PhysicalLossFence::Stale;
+            }
+            if state.events_closed || state.control.len() >= FAKE_CONTROL_CAP {
+                return PhysicalLossFence::Accepted(Err(DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.fence",
+                )));
+            }
+            state.seq = state.seq.saturating_add(1);
+            let seq = state.seq;
+            state
+                .control
+                .push_back((seq, RadioEvent::PeerNotificationSourceFence { ack }));
+        }
+        self.notify.notify_one();
+        PhysicalLossFence::Accepted(receiver.await.map_err(|_| {
+            DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Gatt,
+                "gatt.notification.fence",
+            )
+        }))
+    }
+
+    async fn flush_peer_notification_source(&self, _peer_id: &str) -> Result<(), DesktopError> {
+        self.record("notification_fence");
+        self.gate(FaultOp::NotificationFence).await;
+        let (ack, receiver) = PeerSourceFenceAck::new();
+        self.push_event(RadioEvent::PeerNotificationSourceFence { ack })?;
+        receiver.await.map_err(|_| {
+            DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Gatt,
+                "gatt.notification.fence",
+            )
+        })
+    }
+
     async fn acquire_gatt(
         &self,
         scope: &InstanceKey,
@@ -2756,6 +5187,345 @@ impl RadioBoundary for FakeRadio {
             false
         }
     }
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    fn ordered_reclaim_requires_snapshot_binding(&self) -> bool {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .reclaim_binding_error
+            .is_some()
+    }
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    fn bind_ordered_reclaim_snapshot(
+        &self,
+        _peer: &str,
+        _connection: &str,
+        _identity: &GattSnapshotIdentity,
+    ) -> Result<(), DesktopError> {
+        match self
+            .state
+            .lock()
+            .expect("fake radio state")
+            .reclaim_binding_error
+            .clone()
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn ordered_recording_reclaim_supported(&self) -> bool {
+        cfg!(any(test, feature = "reclaim-test-support"))
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn open_ordered_reclaim_authority(&self, request: u64) -> Result<u64, DesktopError> {
+        let mut state = self.state.lock().expect("fake radio state");
+        if state.reclaim_retired_requests.contains(&request) {
+            return Err(DesktopError::subscribe_failed("retired authority request"));
+        }
+        let id = if let Some((id, closed)) = state.reclaim_authorities.get(&request) {
+            if *closed {
+                return Err(DesktopError::subscribe_failed("closed authority request"));
+            }
+            *id
+        } else {
+            if std::mem::take(&mut state.reclaim_authority_notdispatched) {
+                return Err(DesktopError::new(
+                    ubm_core::contracts::BleErrorCode::LifecycleInvalidState,
+                    ubm_core::contracts::BleErrorDomain::Cleanup,
+                    "gatt.ordered.recording-reclaim",
+                )
+                .with_outcome(
+                    Some(ubm_core::contracts::CommitState::NotDispatched),
+                    crate::Retryability::CallerDecides,
+                ));
+            }
+            if state.reclaim_authorities.len() >= 64 {
+                return Err(DesktopError::subscribe_failed(
+                    "synthetic authority capacity",
+                ));
+            }
+            let id = state.reclaim_next_authority;
+            state.reclaim_next_authority = id
+                .checked_add(1)
+                .ok_or_else(|| DesktopError::subscribe_failed("authority IDs exhausted"))?;
+            state.reclaim_authorities.insert(request, (id, false));
+            id
+        };
+        if std::mem::take(&mut state.reclaim_lost_open) {
+            return Err(DesktopError::subscribe_failed("lost authority open reply"));
+        }
+        Ok(id)
+    }
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn forget_ordered_reclaim_open(&self, request: u64) -> Result<(), DesktopError> {
+        let mut state = self.state.lock().expect("fake radio state");
+        if state.reclaim_authorities.contains_key(&request) {
+            return Err(DesktopError::subscribe_failed("authority still exists"));
+        }
+        if state.reclaim_retired_requests.len() >= 256
+            && !state.reclaim_retired_requests.contains(&request)
+        {
+            return Err(DesktopError::subscribe_failed(
+                "synthetic retired-request capacity",
+            ));
+        }
+        state.reclaim_retired_requests.insert(request);
+        Ok(())
+    }
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn close_ordered_reclaim_authority(&self, authority: u64) -> Result<(), DesktopError> {
+        let mut state = self.state.lock().expect("fake radio state");
+        let Some((_, closed)) = state
+            .reclaim_authorities
+            .values_mut()
+            .find(|(id, _)| *id == authority)
+        else {
+            return Err(DesktopError::subscribe_failed("unknown authority"));
+        };
+        *closed = true;
+        if std::mem::take(&mut state.reclaim_lost_close) {
+            return Err(DesktopError::subscribe_failed("lost authority close reply"));
+        }
+        Ok(())
+    }
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn forget_ordered_reclaim_authority(&self, authority: u64) -> Result<(), DesktopError> {
+        let mut state = self.state.lock().expect("fake radio state");
+        let Some(request) = state
+            .reclaim_authorities
+            .iter()
+            .find_map(|(request, (id, closed))| (*id == authority && *closed).then_some(*request))
+        else {
+            return if state.reclaim_retired_authorities.contains(&authority) {
+                Ok(())
+            } else {
+                Err(DesktopError::subscribe_failed("authority not closed"))
+            };
+        };
+        if state.reclaim_retired_authorities.len() >= 256
+            && !state.reclaim_retired_authorities.contains(&authority)
+        {
+            return Err(DesktopError::subscribe_failed(
+                "synthetic retired-authority capacity",
+            ));
+        }
+        if state.reclaim_retired_requests.len() >= 256
+            && !state.reclaim_retired_requests.contains(&request)
+        {
+            return Err(DesktopError::subscribe_failed(
+                "synthetic retired-request capacity",
+            ));
+        }
+        state.reclaim_authorities.remove(&request);
+        state.reclaim_retired_authorities.insert(authority);
+        state.reclaim_next_permit.remove(&authority);
+        state.reclaim_retired_permits.remove(&authority);
+        state.reclaim_retired_requests.insert(request);
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn reserve_ordered_reclaim_permit(
+        &self,
+        request: &OrderedReclaimPermitRequest,
+    ) -> Result<u64, DesktopError> {
+        let mut state = self.state.lock().expect("fake radio state");
+        let authority = request.authority_id;
+        let key = (authority, request.request_id);
+        let id = if let Some((held, id)) = state.reclaim_permit_receipts.get(&key) {
+            if held != request {
+                return Err(DesktopError::subscribe_failed("conflicting permit request"));
+            }
+            *id
+        } else {
+            if std::mem::take(&mut state.reclaim_permit_capacity_refusal) {
+                return Err(DesktopError::new(
+                    ubm_core::contracts::BleErrorCode::LifecycleInvalidState,
+                    ubm_core::contracts::BleErrorDomain::Cleanup,
+                    "gatt.ordered.recording-reclaim",
+                )
+                .with_outcome(
+                    Some(ubm_core::contracts::CommitState::NotDispatched),
+                    crate::Retryability::CallerDecides,
+                ));
+            }
+            // Simulate prior retired source receipts so host request IDs do not
+            // accidentally equal the independently issued native IDs.
+            let next = state.reclaim_next_permit.entry(authority).or_insert(101);
+            let id = *next;
+            *next = id
+                .checked_add(1)
+                .ok_or_else(|| DesktopError::subscribe_failed("permit IDs exhausted"))?;
+            state
+                .reclaim_permit_receipts
+                .insert(key, (request.clone(), id));
+            id
+        };
+        if std::mem::take(&mut state.reclaim_lost_permit_reserve) {
+            return Err(DesktopError::subscribe_failed(
+                "lost permit reservation reply",
+            ));
+        }
+        Ok(id)
+    }
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn forget_ordered_reclaim_permit_request(
+        &self,
+        _request: &OrderedReclaimPermitRequest,
+    ) -> Result<(), DesktopError> {
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn acquire_ordered_reclaim_graph(
+        &self,
+        key: &OrderedReclaimGraphKey,
+    ) -> Result<OrderedReclaimGraphAcquire, DesktopError> {
+        self.record("reclaim_acquire");
+        self.gate(FaultOp::ReclaimAcquire).await;
+        let mut state = self.state.lock().expect("fake radio state");
+        if let Some((held, _)) = state
+            .reclaim_permits
+            .get(&(key.authority_id, key.permit_id))
+        {
+            return if held == key {
+                Ok(OrderedReclaimGraphAcquire::Acquired)
+            } else {
+                Err(DesktopError::subscribe_failed("conflicting reclaim permit"))
+            };
+        }
+        if state.gatt_identities.get(&key.peer_id) != Some(&key.identity) {
+            return Ok(OrderedReclaimGraphAcquire::Stale);
+        }
+        state
+            .reclaim_permits
+            .insert((key.authority_id, key.permit_id), (key.clone(), false));
+        if std::mem::take(&mut state.reclaim_lost_acquire) {
+            return Err(DesktopError::subscribe_failed("lost acquire reply"));
+        }
+        Ok(OrderedReclaimGraphAcquire::Acquired)
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn commit_ordered_reclaim_graph(
+        &self,
+        key: &OrderedReclaimGraphKey,
+    ) -> Result<OrderedReclaimGraphCommit, DesktopError> {
+        let mut state = self.state.lock().expect("fake radio state");
+        if state
+            .reclaim_permits
+            .get(&(key.authority_id, key.permit_id))
+            .is_some_and(|(held, committed)| held == key && *committed)
+        {
+            return Ok(OrderedReclaimGraphCommit::Committed);
+        }
+        if state.gatt_identities.get(&key.peer_id) != Some(&key.identity) {
+            return Ok(OrderedReclaimGraphCommit::Invalidated(
+                DesktopError::subscribe_failed("native graph invalidated"),
+            ));
+        }
+        match state
+            .reclaim_permits
+            .get_mut(&(key.authority_id, key.permit_id))
+        {
+            Some((held, committed)) if held == key => {
+                *committed = true;
+                if std::mem::take(&mut state.reclaim_lost_commit) {
+                    return Err(DesktopError::subscribe_failed("lost commit reply"));
+                }
+                Ok(OrderedReclaimGraphCommit::Committed)
+            }
+            _ => Err(DesktopError::subscribe_failed("unknown reclaim permit")),
+        }
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn release_ordered_reclaim_graph(
+        &self,
+        key: &OrderedReclaimGraphKey,
+    ) -> Result<(), DesktopError> {
+        self.record("reclaim_release");
+        self.gate(FaultOp::ReclaimRelease).await;
+        #[cfg(test)]
+        if let Some(fault) = self.take_fault(FaultOp::ReclaimRelease) {
+            return Err(DesktopError::subscribe_failed(&fault.detail));
+        }
+        let mut state = self.state.lock().expect("fake radio state");
+        if state
+            .reclaim_permits
+            .get(&(key.authority_id, key.permit_id))
+            .is_some_and(|(held, _)| held != key)
+        {
+            return Err(DesktopError::subscribe_failed("conflicting reclaim permit"));
+        }
+        state
+            .reclaim_permits
+            .remove(&(key.authority_id, key.permit_id));
+        if std::mem::take(&mut state.reclaim_lost_release) {
+            return Err(DesktopError::subscribe_failed("lost release reply"));
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "reclaim-test-support"))]
+    async fn forget_ordered_reclaim_graph(
+        &self,
+        key: &OrderedReclaimGraphKey,
+    ) -> Result<(), DesktopError> {
+        #[cfg(test)]
+        {
+            self.record("reclaim_forget");
+            self.gate(FaultOp::ReclaimForget).await;
+            if let Some(fault) = self.take_fault(FaultOp::ReclaimForget) {
+                return Err(DesktopError::subscribe_failed(&fault.detail));
+            }
+        }
+        let mut state = self.state.lock().expect("fake radio state");
+        let request = state
+            .reclaim_permit_receipts
+            .iter()
+            .find_map(|(token, (request, id))| {
+                (request.authority_id == key.authority_id && *id == key.permit_id)
+                    .then_some((*token, request.clone()))
+            });
+        if let Some((token, request)) = request {
+            if request.peer_id != key.peer_id
+                || request.connection_generation != key.connection_generation
+                || request.identity != key.identity
+            {
+                return Err(DesktopError::subscribe_failed(
+                    "permit receipt identity mismatch",
+                ));
+            }
+            state.reclaim_permit_receipts.remove(&token);
+            let (frontier, pending) = state
+                .reclaim_retired_permits
+                .entry(key.authority_id)
+                .or_insert_with(|| (100, std::collections::BTreeSet::new()));
+            pending.insert(key.permit_id);
+            while let Some(next) = frontier.checked_add(1) {
+                if !pending.remove(&next) {
+                    break;
+                }
+                *frontier = next;
+            }
+            return Ok(());
+        }
+        if state
+            .reclaim_retired_permits
+            .get(&key.authority_id)
+            .is_some_and(|(frontier, pending)| {
+                key.permit_id <= *frontier || pending.contains(&key.permit_id)
+            })
+        {
+            Ok(())
+        } else {
+            Err(DesktopError::subscribe_failed("unknown permit receipt"))
+        }
+    }
+
     fn gatt_snapshot_identity(
         &self,
         peer_id: &str,
@@ -3147,6 +5917,17 @@ impl RadioBoundary for FakeRadio {
             return Err(scripted(DesktopError::subscribe_failed(detail), platform));
         }
         self.gate(fault).await;
+        if !enable {
+            let late_fault = self
+                .state
+                .lock()
+                .expect("fake radio state")
+                .late_disable_faults
+                .pop_front();
+            if let Some(detail) = late_fault {
+                return Err(DesktopError::subscribe_failed(detail));
+            }
+        }
         let key = (
             peer_id.to_owned(),
             service_uuid.to_owned(),
@@ -3159,10 +5940,27 @@ impl RadioBoundary for FakeRadio {
             .notifications
             .push((peer_id.to_owned(), characteristic_uuid.to_owned(), enable));
         if !enable {
-            state.live.remove(&key);
+            self.ordered
+                .lock()
+                .expect("fake ordered source")
+                .settlements
+                .insert(
+                    (key.clone(), epoch),
+                    OrderedNotificationSettlement::Released,
+                );
+            state.live_activations.remove(&(key.clone(), epoch));
+            state.disable_epochs.push((key.clone(), epoch));
+            if !state
+                .live_activations
+                .iter()
+                .any(|(scope, _)| scope == &key)
+            {
+                state.live.remove(&key);
+            }
             return Ok(ObservedDelivery::Unknown);
         }
         state.live.insert(key.clone());
+        state.live_activations.insert((key.clone(), epoch));
         state.enable_epochs.push((key, epoch));
         state.delivery_requests.push(requested);
         let observed = state.scripted_delivery.unwrap_or(match requested {
@@ -3288,6 +6086,7 @@ impl RadioBoundary for FakeRadio {
                 }
                 None => {
                     state.live.remove(&scope);
+                    state.live_activations.retain(|(key, _)| key != &scope);
                 }
             }
         }
@@ -3692,11 +6491,160 @@ impl RadioBoundary for FakeRadio {
         scripted.ok_or_else(|| unsupported("gatt.write-readiness", "no readiness scripted"))
     }
 
+    fn read_peer_notification_failure_recovery(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        offset: u64,
+    ) -> impl std::future::Future<
+        Output = Result<ubm_core::oversized_evidence::PeerSourceFailureChunk, DesktopError>,
+    > + Send
+    + '_ {
+        self.record("peer_failure_recovery_read");
+        let result = (|| {
+            let state = self.state.lock().expect("fake radio state");
+            let recovery = state
+                .peer_failure_recovery
+                .as_ref()
+                .filter(|recovery| recovery.descriptor == *descriptor && !recovery.retired)
+                .ok_or_else(|| {
+                    DesktopError::new(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Gatt,
+                        "gatt.notification.source-failure-recovery.read",
+                    )
+                })?;
+            let start = usize::try_from(offset).map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.read",
+                )
+            })?;
+            if start > recovery.bytes.len() {
+                return Err(DesktopError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.read",
+                ));
+            }
+            let end = start
+                .saturating_add(descriptor.chunk_bytes as usize)
+                .min(recovery.bytes.len());
+            Ok(ubm_core::oversized_evidence::PeerSourceFailureChunk {
+                offset,
+                next_offset: end as u64,
+                bytes: recovery.bytes[start..end].to_vec(),
+                done: end == recovery.bytes.len(),
+            })
+        })();
+        async move {
+            self.gate(FaultOp::PeerFailureRecoveryRead).await;
+            result
+        }
+    }
+
+    fn prepare_peer_notification_failure_recovery_ack(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> impl std::future::Future<Output = Result<String, DesktopError>> + Send + '_ {
+        self.record("peer_failure_recovery_prepare");
+        let mut state = self.state.lock().expect("fake radio state");
+        let result = state
+            .peer_failure_recovery
+            .as_mut()
+            .filter(|recovery| recovery.descriptor == *descriptor)
+            .ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.prepare-ack",
+                )
+            })
+            .and_then(|recovery| {
+                if recovery.prepare_failures_remaining > 0 {
+                    recovery.prepare_failures_remaining -= 1;
+                    return Err(DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Gatt,
+                        "gatt.notification.source-failure-recovery.prepare-ack",
+                    ));
+                }
+                Ok(recovery.source_ack_id.clone())
+            });
+        async move { result }
+    }
+
+    fn begin_peer_notification_failure_recovery_ack(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        source_ack_id: &str,
+    ) -> impl std::future::Future<Output = Result<String, DesktopError>> + Send + '_ {
+        self.record("peer_failure_recovery_begin");
+        let mut state = self.state.lock().expect("fake radio state");
+        let result = state
+            .peer_failure_recovery
+            .as_mut()
+            .filter(|recovery| {
+                recovery.descriptor == *descriptor && recovery.source_ack_id == source_ack_id
+            })
+            .ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.begin-ack",
+                )
+            })
+            .map(|recovery| {
+                recovery.begun = true;
+                recovery.source_ack_id.clone()
+            });
+        async move { result }
+    }
+
+    fn retire_peer_notification_failure_recovery_ack(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        source_ack_id: &str,
+    ) -> impl std::future::Future<Output = Result<(), DesktopError>> + Send + '_ {
+        self.record("peer_failure_recovery_retire");
+        let mut state = self.state.lock().expect("fake radio state");
+        let result = (|| {
+            let recovery = state
+                .peer_failure_recovery
+                .as_mut()
+                .filter(|recovery| {
+                    recovery.descriptor == *descriptor
+                        && recovery.source_ack_id == source_ack_id
+                        && recovery.begun
+                })
+                .ok_or_else(|| {
+                    DesktopError::new(
+                        BleErrorCode::GattStaleHandle,
+                        BleErrorDomain::Gatt,
+                        "gatt.notification.source-failure-recovery.retire-ack",
+                    )
+                })?;
+            if recovery.retire_failures_remaining > 0 {
+                recovery.retire_failures_remaining -= 1;
+                return Err(DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification.source-failure-recovery.retire-ack",
+                ));
+            }
+            recovery.retired = true;
+            Ok(())
+        })();
+        async move { result }
+    }
+
     async fn characteristic_access(
         &self,
         peer_id: &str,
     ) -> Result<HashMap<InstanceKey, CharacteristicAccess>, DesktopError> {
         self.record("characteristic_access");
+        #[cfg(test)]
+        self.gate(FaultOp::DiscoveryAccess).await;
         let scripted = self
             .state
             .lock()
@@ -3983,8 +6931,12 @@ mod tests {
     #[tokio::test]
     async fn events_replay_in_order_then_close() {
         let radio = FakeRadio::new();
-        radio.push_event(RadioEvent::Connected("peer-1".to_owned()));
-        radio.push_event(RadioEvent::Disconnected("peer-1".to_owned()));
+        radio
+            .push_event(RadioEvent::Connected("peer-1".to_owned()))
+            .expect("synthetic event admission failed");
+        radio
+            .push_event(RadioEvent::Disconnected("peer-1".to_owned()))
+            .expect("synthetic event admission failed");
         assert_eq!(
             radio.next_event().await,
             Some(RadioEvent::Connected("peer-1".to_owned()))

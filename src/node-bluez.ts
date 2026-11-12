@@ -20,10 +20,10 @@ import {
   createDesktopCoreBleManager,
   createDesktopCoreProcessHost,
   createDesktopCoreProvider,
+  type DesktopCoreBleManager,
   type DesktopCoreManagerOptions
 } from './node-desktop-manager'
 import type { DesktopRustCoreBinding } from './backends/desktop/desktop-rust-core-binding'
-import type { BleManager } from './public/ble-manager'
 
 export {
   BLUEZ_BACKEND_ID,
@@ -34,7 +34,16 @@ export {
 export * from './desktop-rust-core-exports'
 export type { BluezBusKind } from './backends/desktop/platform-identity'
 export type { NodeBleManagerAppOptions } from './node-host-manager'
-export type { DesktopCoreManagerOptions, DesktopCoreProviderOptions } from './node-desktop-manager'
+export type {
+  DesktopCoreManagerOptions,
+  DesktopCoreProviderOptions,
+  DesktopCoreBleManager,
+  DesktopFailureEvidenceStoreOptions,
+  DesktopTerminalEvidenceStoreOptions,
+  NodeTerminalEvidenceRecovery,
+  NodeTerminalEvidenceRecoveryRecord,
+  NodeTerminalEvidenceRecoveryValue
+} from './node-desktop-manager'
 export type {
   BluezPairingGeneration,
   BluezPairingGenerationController
@@ -78,7 +87,7 @@ export function createBluezProcessHost(options: BluezBleManagerAppOptions = {}) 
 }
 
 /** One-call Node BlueZ manager over the shared Rust core. Does not fall back to another backend. */
-export async function createBluezBleManager(options: BluezBleManagerAppOptions = {}): Promise<BleManager> {
+export async function createBluezBleManager(options: BluezBleManagerAppOptions = {}): Promise<DesktopCoreBleManager> {
   const { busKind = 'system', pairingGeneration, connectionPolicy, ...managerOptions } = options
   return createDesktopCoreBleManager('bluez', managerOptions, {
     bluezBus: admitBluezBusKind(busKind),

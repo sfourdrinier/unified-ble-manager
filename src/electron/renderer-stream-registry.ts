@@ -1,5 +1,7 @@
 // src/electron/renderer-stream-registry.ts
 
+import { isCanonicalIngressOrdinal } from '../core/ordered-notification-contract'
+
 import {
   BackendContractError,
   contractError,
@@ -16,7 +18,7 @@ import type { ScanSession, Subscription } from '../manager/ble-manager'
 import type { ElectronBleIpcEvent } from './protocol'
 import { assertAdvertisementObservation, snapshotAdvertisementObservation } from './advertisement-observation'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
-import { NOTIFICATION_DELIVERIES, type NotificationValue } from '../backend-contract/gatt'
+import { isNotificationProvenance, NOTIFICATION_DELIVERIES, type NotificationValue } from '../backend-contract/gatt'
 
 /**
  * `terminalized` means main has terminalized the exact stream or made the
@@ -445,7 +447,6 @@ function streamItemRecord<Value>(
   if (item.kind === 'value') {
     return Object.freeze({ kind: 'value', value: snapshotStreamValue(item.value, now, nextSequence) })
   }
-  if (item.kind === 'source-loss') return Object.freeze({ ...item, lostRecords: Number(item.lostRecords) })
   if (item.kind === 'overflow') {
     return Object.freeze({
       kind: 'overflow',
@@ -470,6 +471,10 @@ function snapshotStreamValue(value: unknown, now: () => number, nextSequence: ()
     return Object.freeze({
       value: ownBytes(value.value, byteLimit(value.value.byteLength)),
       delivery: value.delivery,
+      provenance: value.provenance ?? 'unknown',
+      ...(value.sourceGeneration === undefined
+        ? {}
+        : { sourceGeneration: value.sourceGeneration, sourceOrdinal: value.sourceOrdinal }),
       observedAtMonotonicMs: now(),
       sequence: nextSequence(),
       ...(value.receipt === undefined ? {} : { receipt: Object.freeze({ ...value.receipt }) })
@@ -488,7 +493,13 @@ function isNotificationValue(value: unknown): value is NotificationValue {
     'value' in value &&
     value.value instanceof Uint8Array &&
     'delivery' in value &&
-    NOTIFICATION_DELIVERIES.some(delivery => delivery === value.delivery)
+    NOTIFICATION_DELIVERIES.some(delivery => delivery === value.delivery) &&
+    ((!('sourceGeneration' in value) && !('sourceOrdinal' in value)) ||
+      ('sourceGeneration' in value &&
+        'sourceOrdinal' in value &&
+        isCanonicalIngressOrdinal(value.sourceGeneration) &&
+        isCanonicalIngressOrdinal(value.sourceOrdinal))) &&
+    (!('provenance' in value) || value.provenance === undefined || isNotificationProvenance(value.provenance))
   )
 }
 

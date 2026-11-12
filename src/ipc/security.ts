@@ -256,7 +256,7 @@ export function createIpcSecurityBackend(ipc: IpcBleManager): SecurityBackend {
                   failTerminal(item.reason, item.error)
                   throw terminalFailure
                 }
-                if (item.kind === 'overflow' || item.kind === 'source-loss') {
+                if (item.kind === 'overflow') {
                   failTerminal('overflow')
                   throw terminalFailure
                 }

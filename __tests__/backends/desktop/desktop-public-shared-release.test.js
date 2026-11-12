@@ -82,15 +82,29 @@ test.each(
       const serviceChange = ordering !== 'release-before-terminal'
       const refusedInvalidation = ordering === 'service-change-refused-before-release'
       let subscription = serviceChange ? await characteristicA.subscribe() : null
+      // Discover B before the link-level indication. A Services Changed event
+      // must invalidate every joined logical owner's old graph, not only A's.
+      let databaseB = await b.discover()
+      let characteristicB = databaseB.characteristic(h.HRM_SERVICE, h.HRM_MEASUREMENT)
+      const values = subscription?.values[Symbol.asyncIterator]()
+      const bChanges = serviceChange ? databaseB.changed[Symbol.asyncIterator]() : null
+      const bChanged = bChanges === null ? null : h.nextValue(bChanges, 5000)
       if (refusedInvalidation) await stage.failNextRadioOp('unsubscribe', 'one invalidated child cleanup refusal')
-      const databaseB = await b.discover()
+      // Synthetic radio's explicit production-equivalent Services Changed
+      // control, rather than discovery (which only reads the current graph).
+      if (serviceChange) await stage.stageServicesChanged('peer-1')
       if (subscription === null) subscription = await characteristicA.subscribe()
-      const values = subscription.values[Symbol.asyncIterator]()
-      const characteristicB = databaseB.characteristic(h.HRM_SERVICE, h.HRM_MEASUREMENT)
+      if (serviceChange && values === undefined) throw new Error('service-change subscription was not created')
       const calls = method => harness.calls.filter(([name]) => name === method)
       expect(calls('connect')).toHaveLength(1)
       if (serviceChange) {
         expect(await h.nextItem(values, 5000)).toMatchObject({ kind: 'terminal', reason: 'service-changed' })
+        expect(await bChanged).toMatchObject({ reason: 'service-changed' })
+        await bChanges.return?.()
+        await expect(characteristicB.read()).rejects.toMatchObject({ code: 'gatt.stale-handle' })
+        // Services Changed invalidates both logical graphs but is not itself a
+        // local disconnect request.
+        expect(calls('disconnect')).toHaveLength(0)
         expect(await awaitSignal(nativeCleanup, 'native cleanup after service change')).toEqual({
           outcome: refusedInvalidation ? 'refused' : 'released'
         })
@@ -104,7 +118,9 @@ test.each(
         } else {
           expect(childCleanup).toEqual({ state: 'released', failures: [] })
         }
-        await expect(a.disconnect()).resolves.toEqual({ state: 'released', failures: [] })
+        // The indication invalidated B's old graph too. Releasing A retires
+        // only A's lease; B recovers its graph on the still-live shared link.
+        await expect(a.release()).resolves.toEqual({ state: 'released', failures: [] })
         await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
         expect(calls('unsubscribe')).toHaveLength(refusedInvalidation ? 2 : 1)
         if (refusedInvalidation) {
@@ -114,22 +130,28 @@ test.each(
             consumer: calls('unsubscribe')[0][1][0].consumer
           })
         }
-        expect(calls('disconnect')).toHaveLength(0)
+        expect(calls('disconnect')).toHaveLength(1)
+        databaseB = await b.rediscoverGatt({ reason: 'service-changed' })
+        expect(calls('connect')).toHaveLength(1)
+        characteristicB = databaseB.characteristic(h.HRM_SERVICE, h.HRM_MEASUREMENT)
         await expect(characteristicB.read()).resolves.toEqual(new Uint8Array([0x42]))
         await expect(b.disconnect()).resolves.toEqual({ state: 'released', failures: [] })
-        expect(calls('disconnect')).toHaveLength(1)
+        expect(calls('disconnect')).toHaveLength(2)
         return
       }
       const unsubscribesBefore = calls('unsubscribe').length
       await stage.failNextRadioOp('unsubscribe', 'one scoped child cleanup refusal')
-      const first = await a.disconnect()
+      const first = await a.release()
       expect(first).toMatchObject({ state: 'release-failed' })
       expect(first.failures.length).toBeGreaterThan(0)
-      expect(calls('disconnect')).toHaveLength(0)
+      // `central.disconnect` is the core lease-release command, not proof of
+      // a physical link drop. B remains on the original link (one connect).
+      expect(calls('disconnect')).toHaveLength(1)
       await expect(characteristicB.read()).resolves.toEqual(new Uint8Array([0x42]))
+      expect(calls('connect')).toHaveLength(1)
       const unsubscribes = calls('unsubscribe').length
       expect(unsubscribes).toBe(unsubscribesBefore + 1)
-      await expect(a.disconnect()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(a.release()).resolves.toEqual({ state: 'released', failures: [] })
       expect(calls('unsubscribe')).toHaveLength(unsubscribes + 1)
       const failedChild = calls('unsubscribe')[unsubscribes - 1][1][0]
       expect(calls('unsubscribe')[unsubscribes][1][0]).toMatchObject({
@@ -137,16 +159,13 @@ test.each(
         selector: failedChild.selector,
         consumer: failedChild.consumer
       })
-      // Both logical owners share one native lease. Retrying A's child cleanup
-      // must leave that native lease alive for B until its final release.
-      expect(calls('disconnect')).toHaveLength(0)
       await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
       expect(calls('unsubscribe')).toHaveLength(unsubscribes + 1)
       await expect(characteristicB.read()).resolves.toEqual(new Uint8Array([0x42]))
       await expect(b.disconnect()).resolves.toEqual({ state: 'released', failures: [] })
-      expect(calls('disconnect')).toHaveLength(1)
+      expect(calls('disconnect')).toHaveLength(2)
       await expect(b.disconnect()).resolves.toEqual({ state: 'released', failures: [] })
-      expect(calls('disconnect')).toHaveLength(1)
+      expect(calls('disconnect')).toHaveLength(2)
     },
     async () => {
       const cleanup = await manager.destroy()

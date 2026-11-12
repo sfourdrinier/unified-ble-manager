@@ -6,15 +6,15 @@
   "metadata": {
     "component": {
       "type": "library",
-      "bom-ref": "pkg:npm/unified-ble-manager@5.2.1",
+      "bom-ref": "pkg:npm/unified-ble-manager@5.2.2",
       "name": "unified-ble-manager",
-      "version": "5.2.1",
+      "version": "5.2.2",
       "licenses": [
         {
           "expression": "LicenseRef-UBM-Source-Available-1.0"
         }
       ],
-      "purl": "pkg:npm/unified-ble-manager@5.2.1"
+      "purl": "pkg:npm/unified-ble-manager@5.2.2"
     },
     "properties": [
       {
@@ -27,7 +27,7 @@
       },
       {
         "name": "unified-ble-manager:cargo-lock-sha256",
-        "value": "237ea61d22b8547a4690b5aef48944fa9599bd3726baf7ec14b61b7648f1340f"
+        "value": "280ceff5b3c4f40b4d3af68334276cfe31252d06ae3b957c5648329182c0eecc"
       },
       {
         "name": "unified-ble-manager:rust-dependency-scope",
@@ -268,6 +268,24 @@
         }
       ],
       "purl": "pkg:cargo/bitflags@2.13.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/block-buffer@0.10.4",
+      "name": "block-buffer",
+      "version": "0.10.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/block-buffer@0.10.4",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -533,6 +551,24 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/cpufeatures@0.2.17",
+      "name": "cpufeatures",
+      "version": "0.2.17",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cpufeatures@0.2.17",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/crossbeam-utils@0.8.23",
       "name": "crossbeam-utils",
       "version": "0.8.23",
@@ -542,6 +578,24 @@
         }
       ],
       "purl": "pkg:cargo/crossbeam-utils@0.8.23",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/crypto-common@0.1.7",
+      "name": "crypto-common",
+      "version": "0.1.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/crypto-common@0.1.7",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -618,6 +672,24 @@
         {
           "name": "unified-ble-manager:license-source",
           "value": "cargo-manifest-license-normalized"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/digest@0.10.7",
+      "name": "digest",
+      "version": "0.10.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/digest@0.10.7",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
         }
       ]
     },
@@ -1055,6 +1127,24 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/generic-array@0.14.7",
+      "name": "generic-array",
+      "version": "0.14.7",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/generic-array@0.14.7",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/getrandom@0.4.3",
       "name": "getrandom",
       "version": "0.4.3",
@@ -1208,6 +1298,24 @@
         }
       ],
       "purl": "pkg:cargo/hex@0.4.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/hmac@0.12.1",
+      "name": "hmac",
+      "version": "0.12.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hmac@0.12.1",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -2405,6 +2513,24 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/sha2@0.10.9",
+      "name": "sha2",
+      "version": "0.10.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/sha2@0.10.9",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/shlex@2.0.1",
       "name": "shlex",
       "version": "2.0.1",
@@ -2594,6 +2720,24 @@
         }
       ],
       "purl": "pkg:cargo/static_assertions@1.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/subtle@2.6.1",
+      "name": "subtle",
+      "version": "2.6.1",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:cargo/subtle@2.6.1",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -2954,6 +3098,24 @@
         }
       ],
       "purl": "pkg:cargo/tracing@0.1.44",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/typenum@1.20.1",
+      "name": "typenum",
+      "version": "1.20.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/typenum@1.20.1",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -3400,6 +3562,24 @@
         }
       ],
       "purl": "pkg:cargo/vcpkg@0.2.15",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-normalized"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/version_check@0.9.5",
+      "name": "version_check",
+      "version": "0.9.5",
+      "licenses": [
+        {
+          "expression": "(MIT OR Apache-2.0)"
+        }
+      ],
+      "purl": "pkg:cargo/version_check@0.9.5",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -4002,7 +4182,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/unified-ble-manager@5.2.1",
+      "ref": "pkg:npm/unified-ble-manager@5.2.2",
       "dependsOn": [
         "pkg:npm/%40babel/runtime@7.29.7"
       ]
@@ -4096,6 +4276,12 @@
     {
       "ref": "pkg:cargo/bitflags@2.13.2",
       "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/block-buffer@0.10.4",
+      "dependsOn": [
+        "pkg:cargo/generic-array@0.14.7"
+      ]
     },
     {
       "ref": "pkg:cargo/block2@0.5.1",
@@ -4211,8 +4397,21 @@
       ]
     },
     {
+      "ref": "pkg:cargo/cpufeatures@0.2.17",
+      "dependsOn": [
+        "pkg:cargo/libc@0.2.189"
+      ]
+    },
+    {
       "ref": "pkg:cargo/crossbeam-utils@0.8.23",
       "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/crypto-common@0.1.7",
+      "dependsOn": [
+        "pkg:cargo/generic-array@0.14.7",
+        "pkg:cargo/typenum@1.20.1"
+      ]
     },
     {
       "ref": "pkg:cargo/ctor@0.2.9",
@@ -4248,6 +4447,14 @@
         "pkg:cargo/libc@0.2.189",
         "pkg:cargo/libdbus-sys@0.2.7",
         "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/digest@0.10.7",
+      "dependsOn": [
+        "pkg:cargo/block-buffer@0.10.4",
+        "pkg:cargo/crypto-common@0.1.7",
+        "pkg:cargo/subtle@2.6.1"
       ]
     },
     {
@@ -4400,6 +4607,13 @@
       ]
     },
     {
+      "ref": "pkg:cargo/generic-array@0.14.7",
+      "dependsOn": [
+        "pkg:cargo/typenum@1.20.1",
+        "pkg:cargo/version_check@0.9.5"
+      ]
+    },
+    {
       "ref": "pkg:cargo/getrandom@0.4.3",
       "dependsOn": [
         "pkg:cargo/cfg-if@1.0.4",
@@ -4448,6 +4662,12 @@
     {
       "ref": "pkg:cargo/hex@0.4.3",
       "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/hmac@0.12.1",
+      "dependsOn": [
+        "pkg:cargo/digest@0.10.7"
+      ]
     },
     {
       "ref": "pkg:cargo/indexmap@2.14.2",
@@ -4893,6 +5113,14 @@
       ]
     },
     {
+      "ref": "pkg:cargo/sha2@0.10.9",
+      "dependsOn": [
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/cpufeatures@0.2.17",
+        "pkg:cargo/digest@0.10.7"
+      ]
+    },
+    {
       "ref": "pkg:cargo/shlex@2.0.1",
       "dependsOn": []
     },
@@ -4948,6 +5176,10 @@
     },
     {
       "ref": "pkg:cargo/static_assertions@1.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/subtle@2.6.1",
       "dependsOn": []
     },
     {
@@ -5112,6 +5344,10 @@
       ]
     },
     {
+      "ref": "pkg:cargo/typenum@1.20.1",
+      "dependsOn": []
+    },
+    {
       "ref": "pkg:cargo/ubm-core@0.1.0",
       "dependsOn": []
     },
@@ -5124,6 +5360,8 @@
         "pkg:cargo/dbus@0.9.12",
         "pkg:cargo/futures-util@0.3.34",
         "pkg:cargo/futures@0.3.34",
+        "pkg:cargo/getrandom@0.4.3",
+        "pkg:cargo/hmac@0.12.1",
         "pkg:cargo/libc@0.2.189",
         "pkg:cargo/log@0.4.34",
         "pkg:cargo/objc2-core-bluetooth@0.2.2",
@@ -5131,6 +5369,7 @@
         "pkg:cargo/objc2@0.5.2",
         "pkg:cargo/rusqlite@0.40.2",
         "pkg:cargo/serde_json@1.0.151",
+        "pkg:cargo/sha2@0.10.9",
         "pkg:cargo/tokio@1.53.1",
         "pkg:cargo/ubm-core@0.1.0",
         "pkg:cargo/uuid@1.26.1",
@@ -5149,7 +5388,11 @@
     {
       "ref": "pkg:cargo/ubm-mobile@0.1.0",
       "dependsOn": [
+        "pkg:cargo/getrandom@0.4.3",
+        "pkg:cargo/hmac@0.12.1",
+        "pkg:cargo/serde@1.0.229",
         "pkg:cargo/serde_json@1.0.151",
+        "pkg:cargo/sha2@0.10.9",
         "pkg:cargo/tokio@1.53.1",
         "pkg:cargo/ubm-core@0.1.0",
         "pkg:cargo/ubm-desktop@0.1.0"
@@ -5159,6 +5402,7 @@
       "ref": "pkg:cargo/ubm5_jni_echo@0.1.0",
       "dependsOn": [
         "pkg:cargo/jni@0.22.4",
+        "pkg:cargo/serde_json@1.0.151",
         "pkg:cargo/ubm-core@0.1.0",
         "pkg:cargo/ubm-desktop@0.1.0",
         "pkg:cargo/ubm-fake-radio@0.1.0",
@@ -5168,10 +5412,12 @@
     {
       "ref": "pkg:cargo/ubm5_napi_echo@0.1.0",
       "dependsOn": [
+        "pkg:cargo/btleplug@0.12.0",
         "pkg:cargo/napi-build@2.4.2",
         "pkg:cargo/napi-derive@2.16.13",
         "pkg:cargo/napi@2.16.17",
         "pkg:cargo/serde_json@1.0.151",
+        "pkg:cargo/sha2@0.10.9",
         "pkg:cargo/tokio@1.53.1",
         "pkg:cargo/ubm-core@0.1.0",
         "pkg:cargo/ubm-desktop@0.1.0",
@@ -5181,6 +5427,8 @@
     {
       "ref": "pkg:cargo/ubm5_uniffi_echo@0.1.0",
       "dependsOn": [
+        "pkg:cargo/serde_json@1.0.151",
+        "pkg:cargo/sha2@0.10.9",
         "pkg:cargo/ubm-core@0.1.0",
         "pkg:cargo/ubm-desktop@0.1.0",
         "pkg:cargo/ubm-fake-radio@0.1.0",
@@ -5322,6 +5570,7 @@
     {
       "ref": "pkg:cargo/uuid@1.26.1",
       "dependsOn": [
+        "pkg:cargo/getrandom@0.4.3",
         "pkg:cargo/js-sys@0.3.105",
         "pkg:cargo/serde_core@1.0.229",
         "pkg:cargo/wasm-bindgen@0.2.128"
@@ -5329,6 +5578,10 @@
     },
     {
       "ref": "pkg:cargo/vcpkg@0.2.15",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/version_check@0.9.5",
       "dependsOn": []
     },
     {

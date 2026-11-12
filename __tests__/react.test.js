@@ -109,9 +109,15 @@ const {
   useDiscoveredPeers
 } = require('../src/react')
 const { inspectReactAdapterWatchOwnershipForTests } = require('../src/public/react-adapter-watch-inspect')
-const { publicConnectionEvents, connectionEventsEndedExpectedly } = require('../src/public/ble-manager')
+const {
+  createPublicBleManager,
+  publicConnectionEvents,
+  connectionEventsEndedExpectedly
+} = require('../src/public/ble-manager')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity } = require('../src/backend-contract/primitives')
+const { contractError: backendContractError } = require('../src/backend-contract/errors')
+const { BleError } = require('../src/public/errors')
 
 function deferred() {
   let resolve
@@ -172,6 +178,7 @@ function scanSession(
   })(),
   events
 ) {
+  observations.close = jest.fn().mockResolvedValue({ state: 'released', failures: [] })
   return {
     observations,
     ...(events === undefined ? {} : { events }),
@@ -1559,7 +1566,7 @@ describe('React host surface', () => {
     const session = scanSession(
       (async function* () {
         yield overflowNotice()
-        yield { kind: 'terminal' }
+        yield streamTerminal('closed')
       })()
     )
     const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
@@ -1570,6 +1577,82 @@ describe('React host surface', () => {
     await flush()
 
     expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.overflow' } })
+    cleanup()
+  })
+
+  test('real two-view scan releases its retained view when unmounted', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(4) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const createdManager = await createPublicBleManager(internal, () => 0)
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flushMany()
+    expect(createdManager.retainedScanViews.size).toBe(1)
+    cleanup()
+    await flushMany()
+    expect(createdManager.retainedScanViews.size).toBe(0)
+  })
+
+  test('reports a scan view close failure while still stopping the scan', async () => {
+    const observations = createControllableAsyncIterator()
+    const session = scanSession(observations.iterable)
+    const failure = new Error('scan view close failed')
+    session.observations.close.mockRejectedValueOnce(failure)
+    const onError = jest.fn()
+    hookHarness.errorContextValue = onError
+    hookHarness.contextValue = { manager: manager({ scan: jest.fn().mockResolvedValue(session) }), loading: false, error: null }
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flushMany()
+    cleanup()
+    await flushMany()
+    expect(session.stop).toHaveBeenCalledTimes(1)
+    expect(session.observations.close).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledWith(failure)
+  })
+
+  test('real two-view scan preserves its exact overflow terminal in the hook', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(4) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const createdManager = await createPublicBleManager(internal, () => 0)
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flushMany()
+    const failure = backendContractError('stream.overflow', 'scan', 'test.real-source', {
+      domain: 'android',
+      code: 'source-overflow',
+      safeMessage: 'source loss',
+      metadata: { dropped: 7 }
+    }).normalized
+    source.finishWithReason('overflow', failure)
+    await flushMany()
+    expect(hookHarness.stateValues[0]).toMatchObject({ state: 'failed', error: failure })
     cleanup()
   })
 
@@ -1656,6 +1739,187 @@ describe('React host surface', () => {
     await flush()
     expect(peerIds()).toEqual(['keep'])
     expect(hookHarness.stateValues[0].state).toBe('active')
+    cleanup()
+  })
+
+  test.each(['latest', 'drop-oldest', 'drop-newest'])(
+    'uses the legacy event stream rather than the loss-aware opt-in stream (%s)',
+    async policy => {
+      const observations = createControllableAsyncIterator()
+      const events = createControllableAsyncIterator()
+      const session = scanSession(observations.iterable, events.iterable)
+      session.lossAwareEventsV1 = { [Symbol.asyncIterator]: () => { throw new Error('loss-aware view selected') } }
+      session.events = events.iterable
+      const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+      hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+      useDiscoveredPeers()
+      const cleanup = hookHarness.effects[0]()
+      await flush()
+      events.push(observedEvent('before'))
+      await flush()
+      expect(hookHarness.stateValues[0]).toMatchObject({ state: 'active', error: null })
+      expect(peerIds()).toEqual(['before'])
+
+      events.push(observedEvent('after', { name: 'initial' }))
+      await flush()
+      observations.push(observationItem('after', { name: 'updated' }))
+      events.push(lostEvent('before'))
+      await flush()
+      expect(hookHarness.stateValues[0]).toMatchObject({
+        state: 'active',
+        peers: [{ id: 'after', name: 'updated' }],
+        error: null
+      })
+      expect(session.stop).not.toHaveBeenCalled()
+      cleanup()
+    }
+  )
+
+  test.each([
+    { kind: 'source-loss', scope: 'host-global', source: 'advertisement-ingress', lostRecords: 3 },
+    { kind: 'source-loss', scope: 'peer', peerId: 'sensor', generation: '9', skippedRecords: null }
+  ])('legacy discovery events do not widen for loss-aware-only notices: $scope', async notice => {
+    const observations = createControllableAsyncIterator()
+    const events = createControllableAsyncIterator()
+    const session = scanSession(observations.iterable, events.iterable)
+    hookHarness.contextValue = {
+      manager: manager({ scan: jest.fn().mockResolvedValue(session) }),
+      loading: false,
+      error: null
+    }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    events.push(notice)
+    await flush()
+    expect(hookHarness.stateValues[0]).toMatchObject({
+      state: 'active',
+      error: null
+    })
+    events.push(observedEvent('later'))
+    await flush()
+    expect(peerIds()).toEqual(['later'])
+    expect(hookHarness.stateValues[0].error).toBeNull()
+    expect(session.stop).not.toHaveBeenCalled()
+    cleanup()
+  })
+
+  test('a terminal event-stream error takes precedence over an earlier loss warning', async () => {
+    const observations = createControllableAsyncIterator()
+    const events = createControllableAsyncIterator()
+    const session = scanSession(observations.iterable, events.iterable)
+    const failure = new BleError('stream.overflow', 'scan', 'public-scan.events', {
+      platform: {
+        domain: 'scan',
+        code: 'scan-observation-overflow',
+        safeMessage: 'overflow',
+        metadata: { droppedItems: 7 }
+      },
+      retryability: 'never'
+    })
+    hookHarness.contextValue = {
+      manager: manager({ scan: jest.fn().mockResolvedValue(session) }),
+      loading: false,
+      error: null
+    }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    observations.push(overflowNotice())
+    await flush()
+    events.fail(failure)
+    await flushMany()
+    expect(hookHarness.stateValues[0]).toMatchObject({ state: 'failed', error: failure })
+    expect(hookHarness.stateValues[0].error).toBe(failure)
+    expect(session.stop).toHaveBeenCalledTimes(1)
+    cleanup()
+  })
+
+  test('a scan terminal retains its exact cause after an earlier loss warning', async () => {
+    const observations = createControllableAsyncIterator()
+    const error = {
+      code: 'stream.quota',
+      domain: 'stream',
+      operation: 'public-scan.source-read',
+      retryability: 'never',
+      commit: 'not-dispatched',
+      orderedFailure: {
+        code: 'stream.quota',
+        domain: 'stream',
+        operation: 'public-scan.source-read',
+        detail: null,
+        platformDomain: null,
+        platformCode: null,
+        platformMessage: null,
+        platformMetadata: {},
+        platformCleanupFailures: [
+          {
+            code: 'platform.failure',
+            domain: 'scan',
+            operation: 'stop',
+            detail: null,
+            platformDomain: null,
+            platformCode: null,
+            platformMessage: null,
+            platformMetadata: {}
+          }
+        ]
+      },
+      platform: {
+        domain: 'scan',
+        code: 'quota',
+        safeMessage: 'source too large',
+        metadata: { size: 1234 },
+        metadataEntries: [
+          { key: 'detail', value: { kind: 'text', value: 'first' } },
+          { key: 'detail', value: { kind: 'text', value: 'second' } }
+        ]
+      }
+    }
+    const session = scanSession(observations.iterable)
+    hookHarness.contextValue = {
+      manager: manager({ scan: jest.fn().mockResolvedValue(session) }),
+      loading: false,
+      error: null
+    }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    observations.push(overflowNotice())
+    await flush()
+    observations.push({ ...streamTerminal('overflow'), error })
+    await flushMany()
+    expect(hookHarness.stateValues[0]).toMatchObject({ state: 'failed', error })
+    cleanup()
+  })
+
+  test('a late observation cannot restore active state after an event-stream failure', async () => {
+    const observations = createControllableAsyncIterator()
+    const events = createControllableAsyncIterator()
+    const returnGate = deferred()
+    observations.iterator.return.mockImplementation(() => returnGate.promise)
+    const session = scanSession(observations.iterable, events.iterable)
+    const failure = new BleError('stream.overflow', 'scan', 'public-scan.events')
+    hookHarness.contextValue = {
+      manager: manager({ scan: jest.fn().mockResolvedValue(session) }),
+      loading: false,
+      error: null
+    }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    events.fail(failure)
+    await flush()
+    observations.push(observationItem('late'))
+    await flush()
+    expect(hookHarness.stateValues[0]).toMatchObject({ state: 'failed', error: failure })
+    returnGate.resolve({ done: true, value: undefined })
+    await flush()
     cleanup()
   })
 

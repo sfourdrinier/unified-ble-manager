@@ -519,9 +519,9 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     const { database, characteristic } = await connectedDatabase(backend)
     const startGate = deferred()
     const nativeStartNotify = boundary.startNotify.bind(boundary)
-    boundary.startNotify = async (address, onValue) => {
+    boundary.startNotify = async (address, onValue, claim) => {
       await startGate.promise
-      await nativeStartNotify(address, onValue)
+      await nativeStartNotify(address, onValue, claim)
     }
 
     const dispatch = backend.gatt.subscribe(characteristic, {
@@ -555,12 +555,12 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
       await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
       const nativeStopNotify = boundary.stopNotify.bind(boundary)
       let stopNotifyCalls = 0
-      boundary.stopNotify = async address => {
+      boundary.stopNotify = async (address, claim) => {
         stopNotifyCalls += 1
         if (stopNotifyCalls === 1) {
           throw new Error('stop-notify-failed')
         }
-        return nativeStopNotify(address)
+        return nativeStopNotify(address, claim)
       }
 
       databaseChanged.emit()

@@ -497,16 +497,74 @@ describe('Expo host services on the Rust session', () => {
       }
     })
 
-    async function continuationManager() {
+    async function continuationManager(retained = false, v2 = false) {
       const harness = rustCoreHarness({ platform: 'android' })
       harness.native.declareBackgroundContinuation = async () => {}
       harness.native.prepareContinuationClaim = async () =>
-        JSON.stringify({ ...JSON.parse(CLAIM), claimToken: 'expo-claim', recording: { id: 'h10-expo' } })
+        JSON.stringify({
+          ...JSON.parse(CLAIM),
+          disposed: false,
+          claimToken: 'expo-claim',
+          recording: { id: 'h10-expo' }
+        })
       harness.native.acknowledgeContinuationClaim = async token => {
         expect(token).toBe('expo-claim')
         return JSON.stringify({ disposed: true, afterCutoffLoss: { items: 0, bytes: 0 }, disposeFailure: null })
       }
       harness.native.continuationStatus = async () => STATUS
+      if (retained) {
+        harness.native.prepareRetainedContinuationClaimV1 = harness.native.prepareContinuationClaim
+        harness.native.acknowledgeRetainedContinuationClaimV1 = harness.native.acknowledgeContinuationClaim
+        harness.native.retireRetainedContinuationClaimReceiptV1 = async token => {
+          expect(token).toBe('expo-claim')
+          return JSON.stringify({})
+        }
+      }
+      if (v2) {
+        const recovery = {
+          t: 'peer-source-failure-recovery',
+          v: 2,
+          consumer: 'ubm-continuation-0',
+          peerId: 'peer-a',
+          selector: {
+            serviceUuid: '180d',
+            serviceOccurrence: 1,
+            characteristicUuid: '2a37',
+            characteristicOccurrence: 1,
+            descriptorUuid: null,
+            descriptorOccurrence: null
+          },
+          recipientLease: '0123456789abcdef0123456789abcdef',
+          descriptor: {
+            protocol: 1,
+            representation: 'ubm-peer-source-failure/1',
+            host: '01'.repeat(16),
+            peer: '02'.repeat(16),
+            sourceGenerationIdentity: '03'.repeat(16),
+            nativeGroup: '04'.repeat(16),
+            transfer: '05'.repeat(16),
+            recovery: '06'.repeat(16),
+            encodedLength: '2',
+            chunkBytes: 65536
+          }
+        }
+        harness.native.prepareRetainedContinuationClaimV2 = async () =>
+          JSON.stringify({
+            ...JSON.parse(CLAIM),
+            claimToken: 'expo-v2',
+            disposed: false,
+            batches: [JSON.stringify({ more: false, controlLost: 0, records: [recovery] })]
+          })
+        harness.native.acknowledgeRetainedContinuationClaimV2 = async token => {
+          expect(token).toBe('expo-v2')
+          return JSON.stringify({ disposed: true, afterCutoffLoss: { items: 0, bytes: 0 }, disposeFailure: null })
+        }
+        harness.native.readPeerFailureRecovery = jest.fn(async (_record, offset) => {
+          expect(offset).toBe('0')
+          return JSON.stringify({ offset: '0', nextOffset: '2', bytesB64: 'AQI=', done: true })
+        })
+        harness.native.acknowledgePeerFailureRecovery = jest.fn(async () => JSON.stringify({}))
+      }
       harness.native.continuationRecordingPrepare = async id => {
         expect(id).toBe('h10-expo')
         return JSON.stringify({ ok: true, value: { token: null, records: [], bytes: 0, more: false } })
@@ -556,6 +614,7 @@ describe('Expo host services on the Rust session', () => {
         { consumer: 'ubm-continuation-0', reason: 'overflow', droppedItems: 5, droppedBytes: 100 }
       ])
       expect(backlog.disposed).toBe(true)
+      expect(backlog.acknowledge).toBeUndefined()
       await manager.destroy()
       expect(await manager.continuation.recordings.prepare('h10-expo', { maxItems: 10, maxBytes: 4096 })).toEqual({
         token: null,
@@ -563,6 +622,45 @@ describe('Expo host services on the Rust session', () => {
         bytes: 0,
         more: false
       })
+    })
+
+    test('exposes retained V1 separately and refuses old bindings before preparing', async () => {
+      const old = await continuationManager()
+      try {
+        await expect(old.manager.continuation.claimRetainedV1()).rejects.toMatchObject({
+          code: 'capability.unsupported'
+        })
+        expect(old.manager.continuation.claimRetainedV2).toBeUndefined()
+      } finally {
+        await old.manager.destroy()
+      }
+      const retained = await continuationManager(true)
+      try {
+        const prefix = await retained.manager.continuation.claimRetainedV1()
+        expect(prefix.records.map(record => record.ordinal)).toEqual([1, 2])
+        expect(prefix.disposed).toBe(false)
+        expect((await prefix.acknowledge()).disposed).toBe(true)
+        await prefix.retireReceipt()
+      } finally {
+        await retained.manager.destroy()
+      }
+    })
+
+    test('Expo exposes V2 only for the complete claim and recovery bundle, and preserves the recovery before source acknowledgement', async () => {
+      const { native, manager } = await continuationManager(false, true)
+      try {
+        expect(typeof manager.continuation.claimRetainedV2).toBe('function')
+        const prefix = await manager.continuation.claimRetainedV2()
+        await expect(prefix.acknowledge()).rejects.toMatchObject({ code: 'lifecycle.invalid-state' })
+        const page = await prefix.recoveries[0].read(0)
+        expect([...page.bytes]).toEqual([1, 2])
+        await prefix.recoveries[0].acknowledge()
+        await prefix.acknowledge()
+        expect(native.readPeerFailureRecovery).toHaveBeenCalledTimes(1)
+        expect(native.acknowledgePeerFailureRecovery).toHaveBeenCalledTimes(1)
+      } finally {
+        await manager.destroy()
+      }
     })
 
     test('a native module without the claim answers unsupported, never an invented backlog', async () => {

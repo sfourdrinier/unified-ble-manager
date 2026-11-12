@@ -14,7 +14,9 @@ use tauri::{
     WindowEvent,
 };
 
-pub use btleplug_dispatcher::{BtleplugDispatcher, BtleplugDispatcherOptions};
+pub use btleplug_dispatcher::{
+    BtleplugDispatcher, BtleplugDispatcherOptions, FailureEvidenceStoreOptions,
+};
 pub use ubm_desktop::boundary::BluezConnectionPolicy;
 /// Canonical result encoding for trusted application-scoped continuation bridges.
 pub use ubm_desktop::continuation::envelope as native_continuation_envelope;

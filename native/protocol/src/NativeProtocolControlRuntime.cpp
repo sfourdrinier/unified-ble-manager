@@ -170,8 +170,8 @@ OwnedBinaryReference binaryReferenceFromRecord(const ProtocolRecord& record) {
 
 } // namespace
 
-NativeProtocolControlRuntime::NativeProtocolControlRuntime()
-    : binaryTransport_(std::make_unique<OwnedJsiBinaryTransport>()) {}
+NativeProtocolControlRuntime::NativeProtocolControlRuntime(NativeEpochAllocation allocation)
+    : epochAllocation_(allocation), binaryTransport_(std::make_unique<OwnedJsiBinaryTransport>()) {}
 
 NativeProtocolControlRuntime::~NativeProtocolControlRuntime() {
   if (binaryTransport_) {
@@ -211,7 +211,7 @@ NegotiatedVersions NativeProtocolControlRuntime::handshake(
   if (!binaryTransport_) {
     binaryTransport_ = std::make_unique<OwnedJsiBinaryTransport>();
   }
-  operations_ = std::make_unique<NativeOperationRegistry>(attachment_);
+  operations_ = std::make_unique<NativeOperationRegistry>(attachment_, 1024U, epochAllocation_);
   {
     std::scoped_lock lock(commandMutex_);
     pendingCommands_.clear();
@@ -278,7 +278,8 @@ void NativeProtocolControlRuntime::appendRestorationRecord(
   restoration_->append(std::move(record));
 }
 
-void NativeProtocolControlRuntime::registerCommand(const ProtocolRecord& command, bool cancellable) {
+void NativeProtocolControlRuntime::registerCommand(const ProtocolRecord& command, bool cancellable, bool* admitted) {
+  if (admitted != nullptr) *admitted = false;
   if (!operations_) {
     throw ProtocolException(ProtocolFailure::alreadyTerminal, "Native protocol attachment is closed");
   }
@@ -288,7 +289,8 @@ void NativeProtocolControlRuntime::registerCommand(const ProtocolRecord& command
   }
   const auto operation = operationFromCorrelation(requiredRecord(command, 2U));
   const auto commandKind = requiredString(command, 3U);
-  operations_->registerOperation(operation, cancellable);
+  operations_->registerOperation(operation, cancellable, commandKind == "scanStart");
+  if (admitted != nullptr) *admitted = true;
   try {
     if (const auto* inputBinary = field(command, 6U); inputBinary != nullptr) {
       const auto* inputReference = std::get_if<ProtocolRecordReference>(&inputBinary->value);
@@ -408,7 +410,9 @@ bool NativeProtocolControlRuntime::settleResult(const ProtocolRecord& result) {
     }
     if (pendingCommand) {
       const auto& commandKind = requiredString(*pendingCommand, 3U);
-      if ((commandKind == "scanStop" || commandKind == "destroy") && terminalIsSuccess) {
+      if ((commandKind == "destroy" ||
+           (commandKind == "scanStop" && epochAllocation_ != NativeEpochAllocation::androidScanLanes)) &&
+          terminalIsSuccess) {
         // A scan-stop or destroy command owns physical teardown for the distinct
         // active scan-start command. Do not compare their command identities:
         // they intentionally have different correlations.
@@ -416,7 +420,9 @@ bool NativeProtocolControlRuntime::settleResult(const ProtocolRecord& result) {
       }
       // A failed or cancelled scan start may still own the Android scan callback.
       // Its owner is released only by a successful physical scan-stop or destroy
-      // terminal above. Dispatch rejection is different: no native radio work was
+        // terminal above. Android's dispatcher explicitly retires the exact
+        // scan after physical cleanup, because stop terminals may arrive late.
+        // Dispatch rejection is different: no native radio work was
       // admitted, so rejectCommandDispatch releases that owner immediately.
     }
     pendingCommands_.erase(key);
@@ -463,6 +469,15 @@ std::optional<ProtocolRecord> NativeProtocolControlRuntime::pendingSubscriptionC
 std::optional<ProtocolRecord> NativeProtocolControlRuntime::activeScanCommand() const {
   std::scoped_lock lock(commandMutex_);
   return activeScanCommand_;
+}
+
+bool NativeProtocolControlRuntime::retireActiveScan(std::uint64_t dispatchEpoch, const std::string& nonce) {
+  std::scoped_lock lock(commandMutex_);
+  if (!activeScanCommand_) return false;
+  const auto active = operationFromCorrelation(requiredRecord(*activeScanCommand_, 2U));
+  if (active.dispatchEpoch != dispatchEpoch || active.nonce != nonce) return false;
+  activeScanCommand_.reset();
+  return true;
 }
 
 NativeAttachmentIdentity NativeProtocolControlRuntime::attachmentIdentity() const {

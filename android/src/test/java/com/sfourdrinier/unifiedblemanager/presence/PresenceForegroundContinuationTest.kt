@@ -7,6 +7,20 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class PresenceForegroundContinuationTest {
+  @Test fun `unrelated presence release leaves a manager pending start alone`() {
+    var stops = 0
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun start(reason: String) { throw ForegroundServiceControlException("interrupted", "accepted", null, true) }
+      override fun stop() { stops++; throw IllegalStateException("stop refused") }
+      override fun update(title: String, body: String?) {}
+    }
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "manager" }
+    val manager = Any()
+    assertTrue(runCatching { registry.acquireOwned(manager, "manager") }.isFailure)
+    assertNull(PresenceForegroundContinuation(registry).release("unrelated"))
+    assertTrue(registry.snapshotOwner(manager).pendingStartCleanup)
+    assertEquals(1, stops)
+  }
   @Test fun `foreground service permission wrapper keeps the same public classification as ordinary leases`() {
     val failure = continuationPlatformFailure(ContinuationStrategy.FOREGROUND_SERVICE, ForegroundServiceControlException("foregroundServicePermissionDenied", "Bluetooth permission refused", SecurityException("binder denied")))
     assertEquals("permission.denied", failure.code)

@@ -61,6 +61,7 @@ async function createNodeBleManagerFromProviderInternal(
         createOptions.diagnostics?.maximumValueBytes === undefined
           ? DEFAULT_BLE_MANAGER_OPTIONS.maximumValueBytes
           : byteLimit(createOptions.diagnostics.maximumValueBytes),
+      ...(normalized.terminalEvidence === undefined ? {} : { terminalEvidence: normalized.terminalEvidence }),
       traceMaximumRecords:
         createOptions.diagnostics?.traceMaximumRecords ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumRecords,
       traceMaximumBytes: createOptions.diagnostics?.traceMaximumBytes ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumBytes

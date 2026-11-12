@@ -14,135 +14,168 @@ struct OwnedCoreBluetoothDescriptorAddress: Hashable {
 }
 
 final class OwnedCoreBluetoothDescriptorOperations {
-  var pendingReads = [OwnedCoreBluetoothDescriptorAddress: (operationIdentifier: String, completion: (NSData?, NSError?) -> Void)]()
-  var pendingWrites = [OwnedCoreBluetoothDescriptorAddress: (operationIdentifier: String, completion: (NSError?) -> Void)]()
+  let pendingReads = OwnedCoreBluetoothCallbackLedger<OwnedCoreBluetoothDescriptorAddress, (NSData?, NSError?)>()
+  let pendingWrites = OwnedCoreBluetoothCallbackLedger<OwnedCoreBluetoothDescriptorAddress, NSError?>()
 
-  func cancel(_ operationIdentifier: String) {
-    pendingReads = pendingReads.filter { $0.value.operationIdentifier != operationIdentifier }
-    pendingWrites = pendingWrites.filter { $0.value.operationIdentifier != operationIdentifier }
+  @discardableResult func cancel(_ operationIdentifier: String) -> Bool {
+    let read = pendingReads.cancel(operationIdentifier)
+    let write = pendingWrites.cancel(operationIdentifier)
+    return read || write
   }
 
   func fail(_ peerIdentifier: String, error: NSError) {
-    let reads = pendingReads.filter { $0.key.peerIdentifier == peerIdentifier }
-    let writes = pendingWrites.filter { $0.key.peerIdentifier == peerIdentifier }
-    pendingReads = pendingReads.filter { $0.key.peerIdentifier != peerIdentifier }
-    pendingWrites = pendingWrites.filter { $0.key.peerIdentifier != peerIdentifier }
-    for pending in reads.values {
-      pending.completion(nil, error)
-    }
-    for pending in writes.values {
-      pending.completion(error)
-    }
+    pendingReads.retire(peer: peerIdentifier, failure: (nil, error))
+    pendingWrites.retire(peer: peerIdentifier, failure: error)
   }
 
   func failAll(_ error: NSError) {
-    let reads = pendingReads
-    let writes = pendingWrites
-    pendingReads.removeAll()
-    pendingWrites.removeAll()
-    for pending in reads.values {
-      pending.completion(nil, error)
-    }
-    for pending in writes.values {
-      pending.completion(error)
-    }
+    pendingReads.retireAll(failure: (nil, error))
+    pendingWrites.retireAll(failure: error)
   }
 }
 
 extension OwnedCoreBluetoothProtocolRadio {
-  @objc public func readDescriptor(
-    peerIdentifier: String,
-    serviceUUID: String,
-    serviceOccurrence: Int,
-    characteristicUUID: String,
-    characteristicOccurrence: Int,
-    descriptorUUID: String,
-    descriptorOccurrence: Int,
-    operationIdentifier: String,
-    completion: @escaping (NSData?, NSError?) -> Void
-  ) {
+  @objc public func readDescriptor(peerIdentifier: String, serviceUUID: String, serviceOccurrence: Int,
+    characteristicUUID: String, characteristicOccurrence: Int, descriptorUUID: String, descriptorOccurrence: Int,
+    operationIdentifier: String, completion: @escaping (NSData?, NSError?) -> Void) {
+    readDescriptorOwned(owner: nil, peerIdentifier: peerIdentifier, serviceUUID: serviceUUID, serviceOccurrence: serviceOccurrence,
+      characteristicUUID: characteristicUUID, characteristicOccurrence: characteristicOccurrence, descriptorUUID: descriptorUUID,
+      descriptorOccurrence: descriptorOccurrence, operationIdentifier: operationIdentifier, completion: completion)
+  }
+
+  func readDescriptor(borrower: OwnedCoreBluetoothProtocolRadioDelegate, peerIdentifier: String, serviceUUID: String, serviceOccurrence: Int,
+    characteristicUUID: String, characteristicOccurrence: Int, descriptorUUID: String, descriptorOccurrence: Int,
+    operationIdentifier: String, completion: @escaping (NSData?, NSError?) -> Void) {
+    readDescriptorOwned(owner: borrower, peerIdentifier: peerIdentifier, serviceUUID: serviceUUID, serviceOccurrence: serviceOccurrence,
+      characteristicUUID: characteristicUUID, characteristicOccurrence: characteristicOccurrence, descriptorUUID: descriptorUUID,
+      descriptorOccurrence: descriptorOccurrence, operationIdentifier: operationIdentifier, completion: completion)
+  }
+
+  private func readDescriptorOwned(owner: AnyObject?, peerIdentifier: String, serviceUUID: String, serviceOccurrence: Int,
+    characteristicUUID: String, characteristicOccurrence: Int, descriptorUUID: String, descriptorOccurrence: Int,
+    operationIdentifier: String, completion: @escaping (NSData?, NSError?) -> Void) {
     queue.async {
-      guard self.requireUsable({ error in completion(nil, error) }) else { return }
-      let address = self.descriptorAddress(
-        peerIdentifier: peerIdentifier,
-        serviceUUID: serviceUUID,
-        serviceOccurrence: serviceOccurrence,
-        characteristicUUID: characteristicUUID,
-        characteristicOccurrence: characteristicOccurrence,
-        descriptorUUID: descriptorUUID,
-        descriptorOccurrence: descriptorOccurrence
-      )
+      guard self.requireUsable({ completion(nil, $0) }) else { return }
+      if let owner, !self.hasActiveGattClaim(owner: owner, peer: peerIdentifier) {
+        completion(nil, self.error(code: 1007, message: "This borrower does not own an active connection claim")); return
+      }
+      let address = self.descriptorAddress(peerIdentifier: peerIdentifier, serviceUUID: serviceUUID, serviceOccurrence: serviceOccurrence,
+        characteristicUUID: characteristicUUID, characteristicOccurrence: characteristicOccurrence, descriptorUUID: descriptorUUID, descriptorOccurrence: descriptorOccurrence)
       guard let resolved = self.resolveDescriptor(address) else {
-        completion(nil, self.error(code: 1025, message: "The generation-bound descriptor path is stale"))
-        return
+        completion(nil, self.error(code: 1025, message: "The generation-bound descriptor path is stale")); return
       }
-      guard self.descriptorOperations.pendingReads[address] == nil else {
-        completion(nil, self.error(code: 1026, message: "A read is already pending for this descriptor"))
-        return
+      let physical: String
+      if let owner {
+        guard let id = self.registerScopedGatt(owner: owner, peer: peerIdentifier, operation: operationIdentifier) else {
+          completion(nil, self.error(code: 1014, message: "Operation identifier is already owned")); return
+        }
+        physical = id
+      } else { physical = operationIdentifier }
+      guard self.descriptorOperations.pendingReads.admit(address, peer: peerIdentifier,
+        peripheral: resolved.peripheral, object: resolved.descriptor, operation: physical, completion: { result in
+          if let owner {
+            let current = self.scopedGattClaimIsCurrent(owner: owner, peer: peerIdentifier, operation: operationIdentifier, physical: physical)
+            self.forgetScopedGatt(owner: owner, operation: operationIdentifier, physical: physical)
+            if !current && result.1 == nil {
+              completion(nil, self.error(code: 1020, message: "Connection claim changed before descriptor read callback")); return
+            }
+          }
+          completion(result.0, result.1)
+        }) else {
+        if let owner { self.forgetScopedGatt(owner: owner, operation: operationIdentifier, physical: physical) }
+        completion(nil, self.error(code: 1026, message: self.descriptorOperations.pendingReads.hasCapacity
+          ? "A read callback is still outstanding for this descriptor" : "Descriptor read callback capacity exhausted")); return
       }
-      self.descriptorOperations.pendingReads[address] = (operationIdentifier, completion)
       resolved.peripheral.readValue(for: resolved.descriptor)
     }
   }
 
-  @objc public func writeDescriptor(
-    peerIdentifier: String,
-    serviceUUID: String,
-    serviceOccurrence: Int,
-    characteristicUUID: String,
-    characteristicOccurrence: Int,
-    descriptorUUID: String,
-    descriptorOccurrence: Int,
-    value: NSData,
-    operationIdentifier: String,
-    completion: @escaping (NSError?) -> Void
-  ) {
+  @objc public func writeDescriptor(peerIdentifier: String, serviceUUID: String, serviceOccurrence: Int,
+    characteristicUUID: String, characteristicOccurrence: Int, descriptorUUID: String, descriptorOccurrence: Int,
+    value: NSData, operationIdentifier: String, completion: @escaping (NSError?) -> Void) {
+    writeDescriptorOwned(owner: nil, peerIdentifier: peerIdentifier, serviceUUID: serviceUUID, serviceOccurrence: serviceOccurrence,
+      characteristicUUID: characteristicUUID, characteristicOccurrence: characteristicOccurrence, descriptorUUID: descriptorUUID,
+      descriptorOccurrence: descriptorOccurrence, value: value, operationIdentifier: operationIdentifier, completion: completion)
+  }
+
+  func writeDescriptor(borrower: OwnedCoreBluetoothProtocolRadioDelegate, peerIdentifier: String, serviceUUID: String, serviceOccurrence: Int,
+    characteristicUUID: String, characteristicOccurrence: Int, descriptorUUID: String, descriptorOccurrence: Int,
+    value: NSData, operationIdentifier: String, completion: @escaping (NSError?) -> Void) {
+    writeDescriptorOwned(owner: borrower, peerIdentifier: peerIdentifier, serviceUUID: serviceUUID, serviceOccurrence: serviceOccurrence,
+      characteristicUUID: characteristicUUID, characteristicOccurrence: characteristicOccurrence, descriptorUUID: descriptorUUID,
+      descriptorOccurrence: descriptorOccurrence, value: value, operationIdentifier: operationIdentifier, completion: completion)
+  }
+
+  private func writeDescriptorOwned(owner: AnyObject?, peerIdentifier: String, serviceUUID: String, serviceOccurrence: Int,
+    characteristicUUID: String, characteristicOccurrence: Int, descriptorUUID: String, descriptorOccurrence: Int,
+    value: NSData, operationIdentifier: String, completion: @escaping (NSError?) -> Void) {
     queue.async {
       guard self.requireUsable(completion) else { return }
+      if let owner, !self.hasActiveGattClaim(owner: owner, peer: peerIdentifier) {
+        completion(self.error(code: 1007, message: "This borrower does not own an active connection claim")); return
+      }
       guard value.length <= Self.maximumBinaryPayloadBytes else {
-        completion(self.error(code: 1027, message: "The native binary payload exceeds the protocol limit"))
-        return
+        completion(self.error(code: 1027, message: "The native binary payload exceeds the protocol limit")); return
       }
-      let address = self.descriptorAddress(
-        peerIdentifier: peerIdentifier,
-        serviceUUID: serviceUUID,
-        serviceOccurrence: serviceOccurrence,
-        characteristicUUID: characteristicUUID,
-        characteristicOccurrence: characteristicOccurrence,
-        descriptorUUID: descriptorUUID,
-        descriptorOccurrence: descriptorOccurrence
-      )
+      let address = self.descriptorAddress(peerIdentifier: peerIdentifier, serviceUUID: serviceUUID, serviceOccurrence: serviceOccurrence,
+        characteristicUUID: characteristicUUID, characteristicOccurrence: characteristicOccurrence, descriptorUUID: descriptorUUID, descriptorOccurrence: descriptorOccurrence)
       guard let resolved = self.resolveDescriptor(address) else {
-        completion(self.error(code: 1028, message: "The generation-bound descriptor path is stale"))
-        return
+        completion(self.error(code: 1028, message: "The generation-bound descriptor path is stale")); return
       }
-      guard self.descriptorOperations.pendingWrites[address] == nil else {
-        completion(self.error(code: 1029, message: "A write is already pending for this descriptor"))
-        return
+      let physical: String
+      if let owner {
+        guard let id = self.registerScopedGatt(owner: owner, peer: peerIdentifier, operation: operationIdentifier) else {
+          completion(self.error(code: 1014, message: "Operation identifier is already owned")); return
+        }
+        physical = id
+      } else { physical = operationIdentifier }
+      guard self.descriptorOperations.pendingWrites.admit(address, peer: peerIdentifier,
+        peripheral: resolved.peripheral, object: resolved.descriptor, operation: physical, completion: { failure in
+          if let owner {
+            let current = self.scopedGattClaimIsCurrent(owner: owner, peer: peerIdentifier, operation: operationIdentifier, physical: physical)
+            self.forgetScopedGatt(owner: owner, operation: operationIdentifier, physical: physical)
+            if !current && failure == nil {
+              completion(self.error(code: 1020, message: "Connection claim changed before descriptor write callback")); return
+            }
+          }
+          completion(failure)
+        }) else {
+        if let owner { self.forgetScopedGatt(owner: owner, operation: operationIdentifier, physical: physical) }
+        completion(self.error(code: 1029, message: self.descriptorOperations.pendingWrites.hasCapacity
+          ? "A write callback is still outstanding for this descriptor" : "Descriptor write callback capacity exhausted")); return
       }
-      self.descriptorOperations.pendingWrites[address] = (operationIdentifier, completion)
       resolved.peripheral.writeValue(value as Data, for: resolved.descriptor)
     }
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor descriptor: CBDescriptor, error: Error?) {
-    guard let address = descriptorAddress(for: descriptor, peerIdentifier: peripheral.identifier.uuidString),
-          let pending = descriptorOperations.pendingReads.removeValue(forKey: address) else { return }
-    if let error {
-      pending.completion(nil, error as NSError)
+    let peer = peripheral.identifier.uuidString
+    let value = (descriptor.value as? NSData).map { Data(bytes: $0.bytes, count: $0.length) }
+    let failure = error as NSError?
+    if let gate = orderedGraphPermitGates[peer], gate.isHolding {
+      gate.enqueue(bytes: value?.count ?? 0) { self.completeDescriptorRead(peripheral, descriptor: descriptor, value: value, error: failure) }
       return
     }
-    guard let value = descriptor.value as? NSData else {
-      pending.completion(nil, self.error(code: 1030, message: "CoreBluetooth returned a non-binary descriptor value"))
-      return
+    completeDescriptorRead(peripheral, descriptor: descriptor, value: value, error: failure)
+  }
+
+  private func completeDescriptorRead(_ peripheral: CBPeripheral, descriptor: CBDescriptor, value: Data?, error: NSError?) {
+    let answer: (NSData?, NSError?) = error != nil ? (nil, error) :
+      value.map { ($0 as NSData, nil) } ?? (nil, self.error(code: 1030, message: "CoreBluetooth returned a non-binary descriptor value"))
+    if let operation = descriptorOperations.pendingReads.complete(peripheral: peripheral, object: descriptor, value: answer) {
+      refreshCallbackCancellationCleanup(operation)
     }
-    pending.completion(value, nil)
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didWriteValueFor descriptor: CBDescriptor, error: Error?) {
-    guard let address = descriptorAddress(for: descriptor, peerIdentifier: peripheral.identifier.uuidString),
-          let pending = descriptorOperations.pendingWrites.removeValue(forKey: address) else { return }
-    pending.completion(error as NSError?)
+    let peer = peripheral.identifier.uuidString
+    if let gate = orderedGraphPermitGates[peer], gate.isHolding {
+      let failure = error as NSError?
+      gate.enqueue { self.peripheral(peripheral, didWriteValueFor: descriptor, error: failure) }
+      return
+    }
+    if let operation = descriptorOperations.pendingWrites.complete(peripheral: peripheral, object: descriptor,
+      value: error as NSError?) { refreshCallbackCancellationCleanup(operation) }
   }
 
   private func descriptorAddress(

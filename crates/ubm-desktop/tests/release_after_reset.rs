@@ -48,7 +48,8 @@ async fn live_link(central: &DesktopCentral<FakeRadio>, peer_id: &str, lease: &s
             service_data: Vec::new(),
             tx_power_level: None,
             extras: ubm_desktop::AdvertisementExtras::default(),
-        }));
+        }))
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.peer_key_for(peer_id).await.is_some() {
             break;
@@ -101,7 +102,8 @@ async fn reset(central: &DesktopCentral<FakeRadio>) {
     let mut resets = central.adapter_reset_events();
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(5), resets.recv())
         .await
         .expect("a reset is published")
@@ -146,7 +148,8 @@ async fn a_link_lost_before_the_reset_also_releases_as_already_released() {
     live_link(&central, "peer-1", "lease-a").await;
     central
         .boundary()
-        .push_event(RadioEvent::Disconnected("peer-1".to_owned()));
+        .push_event(RadioEvent::Disconnected("peer-1".to_owned()))
+        .expect("synthetic event admission failed");
     tokio::time::sleep(Duration::from_millis(50)).await;
     reset(&central).await;
     assert_eq!(

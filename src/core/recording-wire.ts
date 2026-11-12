@@ -5,7 +5,10 @@ import {
   BLE_ERROR_DOMAINS,
   BLE_RETRYABILITIES,
   BackendContractError,
+  assertPlatformFailureEnvelopeBound,
   contractError,
+  snapshotPlatformMetadataEntries,
+  type PlatformMetadataEntry,
   type BleErrorCode,
   type BleErrorDomain,
   type BleRetryability,
@@ -13,6 +16,7 @@ import {
 } from '../backend-contract/errors'
 import { type AdapterAuthorization, type AdapterAvailability, type AdapterPower } from '../backend-contract/identity'
 import { type StreamTerminalNotice } from '../backend-contract/streams'
+import { isCanonicalIngressOrdinal } from './ordered-notification-contract'
 import { isNotificationReceipt, type NotificationReceipt } from '../backend-contract/gatt'
 import {
   MAX_RECORDING_PREPARE_TEXT_BYTES,
@@ -69,8 +73,8 @@ export const SCAN_END_REASONS = Object.freeze([
   'operation-aborted',
   'operation-timed-out'
 ] as const satisfies readonly StreamTerminalNotice['reason'][])
-export const STREAM_END_REASONS = Object.freeze(['overflow', 'invalidated', 'closed'] as const)
-export const LINK_REASONS = Object.freeze(['local', 'peer', 'adapter'] as const)
+export const STREAM_END_REASONS = Object.freeze(['overflow', 'invalidated', 'closed', 'source-failed'] as const)
+export const LINK_REASONS = Object.freeze(['local', 'peer', 'adapter', 'backend-restart'] as const)
 export const INGRESS_CLASSES = Object.freeze(['advertisement', 'notification', 'control'] as const)
 
 export interface WirePlatformDetail {
@@ -78,6 +82,7 @@ export interface WirePlatformDetail {
   readonly code: string
   readonly message: string | null
   readonly metadata: Readonly<Record<string, number | string | boolean>>
+  readonly metadataEntries?: readonly PlatformMetadataEntry[]
 }
 
 export interface WireRemoteFailure {
@@ -158,6 +163,7 @@ export type WireDrainRecord =
       readonly ordinal: number
       readonly operationId: string
       readonly reason: (typeof SCAN_END_REASONS)[number]
+      readonly evidence?: import('../backend-contract/terminal-evidence').TerminalEvidenceCommit
     }
   | {
       readonly t: 'value'
@@ -165,7 +171,18 @@ export type WireDrainRecord =
       readonly consumer: string
       readonly value: Uint8Array
       readonly delivery: WireDelivery
+      readonly sourceGeneration?: string
+      readonly sourceOrdinal?: string
+      readonly provenance?: import('../backend-contract/gatt').NotificationProvenance
       readonly receipt?: NotificationReceipt
+    }
+  | {
+      readonly t: 'peer-source-loss'
+      readonly ordinal: number
+      readonly consumer: string
+      readonly peerId: string
+      readonly generation: string
+      readonly skippedRecords: string | null
     }
   | {
       readonly t: 'recording-changed'
@@ -175,6 +192,7 @@ export type WireDrainRecord =
     }
   | {
       readonly t: 'stream-end'
+      readonly error?: WireRemoteFailure
       readonly ordinal: number
       readonly consumer: string
       readonly reason: (typeof STREAM_END_REASONS)[number]
@@ -189,6 +207,7 @@ export type WireDrainRecord =
       readonly connectionGeneration: string
       readonly databaseGeneration: string | null
       readonly reason: (typeof LINK_REASONS)[number]
+      readonly platform?: WirePlatformDetail
     }
   | {
       readonly t: 'db-changed'
@@ -486,22 +505,36 @@ export function nonEmptyArrayOrNull<Item>(
 }
 
 export function platformDetailOrThrow(value: unknown, path: string): WirePlatformDetail {
-  const fields = exactObject(value, ['domain', 'code', 'message', 'metadata'], path)
+  assertPlatformFailureEnvelopeBound(value, path)
+  const hasEntries = typeof value === 'object' && value !== null && Object.hasOwn(value, 'metadataEntries')
+  const fields = exactObject(
+    value,
+    ['domain', 'code', 'message', 'metadata', ...(hasEntries ? ['metadataEntries'] : [])],
+    path
+  )
   const metadataValue = fields.get('metadata')
   if (typeof metadataValue !== 'object' || metadataValue === null || Array.isArray(metadataValue)) {
     throw malformed(`${path}.metadata`)
   }
-  const metadata: Record<string, number | string | boolean> = {}
+  const metadata: Record<string, number | string | boolean> = Object.create(null)
   for (const [key, entry] of Object.entries(metadataValue)) {
-    if (typeof entry === 'number') metadata[key] = integerOrThrow(entry, SIGNED_SAFE, `${path}.metadata.${key}`)
-    else if (typeof entry === 'string' || typeof entry === 'boolean') metadata[key] = entry
-    else throw malformed(`${path}.metadata.${key}`)
+    const safeKey = key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
+    if (!safeKey && !hasEntries) throw malformed(`${path}.metadata.${key}`)
+    if (typeof entry === 'number') {
+      const number = integerOrThrow(entry, SIGNED_SAFE, `${path}.metadata.${key}`)
+      if (safeKey) metadata[key] = number
+    } else if (typeof entry === 'string' || typeof entry === 'boolean') {
+      if (safeKey) metadata[key] = entry
+    } else throw malformed(`${path}.metadata.${key}`)
   }
   return Object.freeze({
     domain: stringOrThrow(fields.get('domain'), `${path}.domain`),
     code: stringOrThrow(fields.get('code'), `${path}.code`),
     message: optionalTextOrThrow(fields.get('message'), `${path}.message`),
-    metadata: Object.freeze(metadata)
+    metadata: Object.freeze(metadata),
+    ...(hasEntries
+      ? { metadataEntries: snapshotPlatformMetadataEntries(fields.get('metadataEntries'), `${path}.metadataEntries`) }
+      : {})
   })
 }
 
@@ -527,7 +560,11 @@ export function parseRecordingControlEnvelope(
   operation: RecordingControlOperation
 ): WireResult<WireInvokeEnvelope> {
   return capture(() => {
-    enumOrThrow(operation, ['status', 'prepare', 'acknowledge', 'stop', 'clear'], 'continuation.recording.operation')
+    enumOrThrow(
+      operation,
+      ['status', 'prepare', 'acknowledge', 'stop', 'stop-ordered', 'context-ordered', 'clear'],
+      'continuation.recording.operation'
+    )
     return invokeEnvelopeOrThrow(
       text,
       `continuation.recording.${operation}.envelope`,
@@ -570,7 +607,15 @@ export function remotePlatformDetail(
       domain: failure.platform.domain,
       code: failure.platform.code,
       safeMessage: failure.platform.message ?? failure.detail ?? `Native ${failure.operation} operation failed`,
-      metadata: failure.platform.metadata
+      metadata: failure.platform.metadata,
+      ...(failure.platform.metadataEntries === undefined
+        ? {}
+        : {
+            metadataEntries: snapshotPlatformMetadataEntries(
+              failure.platform.metadataEntries,
+              'mobile.platform.metadataEntries'
+            )
+          })
     })
   }
   return failure.detail === null
@@ -644,6 +689,7 @@ export const DRAIN_RECORD_TYPES = Object.freeze([
   'value',
   'stream-end',
   'recording-changed',
+  'peer-source-loss',
   'adapter',
   'link',
   'db-changed',
@@ -710,6 +756,41 @@ export function advertisementOrThrow(fields: ReadonlyMap<string, unknown>, ordin
   return Object.freeze(record)
 }
 
+export function terminalEvidenceOrThrow(
+  value: unknown,
+  path: string
+): import('../backend-contract/terminal-evidence').TerminalEvidenceCommit {
+  const fields = exactObject(
+    value,
+    ['producer', 'kind', 'ref', 'byteLength', 'digest', 'formatVersion', 'durability', 'scope'],
+    path
+  )
+  const scope = exactObject(fields.get('scope'), ['managerId', 'operationId', 'incarnation'], `${path}.scope`)
+  if (
+    fields.get('producer') !== 'scan' ||
+    fields.get('kind') !== 'committed' ||
+    fields.get('formatVersion') !== 1 ||
+    fields.get('durability') !== 'committed'
+  )
+    throw malformed(path)
+  const digest = stringOrThrow(fields.get('digest'), `${path}.digest`)
+  if (!/^[0-9a-f]{64}$/u.test(digest)) throw malformed(`${path}.digest`)
+  return Object.freeze({
+    producer: 'scan',
+    kind: 'committed',
+    ref: stringOrThrow(fields.get('ref'), `${path}.ref`),
+    byteLength: integerOrThrow(fields.get('byteLength'), NON_NEGATIVE, `${path}.byteLength`),
+    digest,
+    formatVersion: 1,
+    durability: 'committed',
+    scope: Object.freeze({
+      managerId: stringOrThrow(scope.get('managerId'), `${path}.scope.managerId`),
+      operationId: stringOrThrow(scope.get('operationId'), `${path}.scope.operationId`),
+      incarnation: stringOrThrow(scope.get('incarnation'), `${path}.scope.incarnation`)
+    })
+  })
+}
+
 export function drainRecordOrThrow(value: unknown, path: string): WireDrainRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw malformed(path)
   const type = enumOrThrow(new Map<string, unknown>(Object.entries(value)).get('t'), DRAIN_RECORD_TYPES, `${path}.t`)
@@ -741,12 +822,19 @@ export function drainRecordOrThrow(value: unknown, path: string): WireDrainRecor
       return advertisementOrThrow(fields, ordinal, recordPath)
     }
     case 'scan-end': {
-      const { fields, ordinal } = read(['operationId', 'reason'])
+      const { fields, ordinal } = read([
+        'operationId',
+        'reason',
+        ...(Object.hasOwn(value, 'evidence') ? ['evidence'] : [])
+      ])
       return Object.freeze({
         t: type,
         ordinal,
         operationId: stringOrThrow(fields.get('operationId'), `${recordPath}.operationId`),
-        reason: enumOrThrow(fields.get('reason'), SCAN_END_REASONS, `${recordPath}.reason`)
+        reason: enumOrThrow(fields.get('reason'), SCAN_END_REASONS, `${recordPath}.reason`),
+        ...(fields.get('evidence') === undefined
+          ? {}
+          : { evidence: terminalEvidenceOrThrow(fields.get('evidence'), `${recordPath}.evidence`) })
       })
     }
     case 'value': {
@@ -758,20 +846,58 @@ export function drainRecordOrThrow(value: unknown, path: string): WireDrainRecor
           'consumer',
           'valueB64',
           'delivery',
-          ...(new Map<string, unknown>(Object.entries(value)).has('receipt') ? ['receipt'] : [])
+          ...(new Map<string, unknown>(Object.entries(value)).has('receipt') ? ['receipt'] : []),
+          ...(new Map<string, unknown>(Object.entries(value)).has('provenance') ? ['provenance'] : []),
+          ...(new Map<string, unknown>(Object.entries(value)).has('sourceGeneration') ? ['sourceGeneration'] : []),
+          ...(new Map<string, unknown>(Object.entries(value)).has('sourceOrdinal') ? ['sourceOrdinal'] : [])
         ],
         recordPath
       )
       const ordinal = integerOrThrow(fields.get('ordinal'), NON_NEGATIVE, `${recordPath}.ordinal`)
+      const sourceGeneration = fields.get('sourceGeneration')
+      const sourceOrdinal = fields.get('sourceOrdinal')
+      if (
+        (sourceGeneration === undefined) !== (sourceOrdinal === undefined) ||
+        (sourceGeneration !== undefined &&
+          (!isCanonicalIngressOrdinal(sourceGeneration) || !isCanonicalIngressOrdinal(sourceOrdinal)))
+      )
+        throw malformed(recordPath)
+      return Object.freeze({
+        t: type,
+        ordinal,
+        ...(typeof sourceGeneration === 'string' && typeof sourceOrdinal === 'string'
+          ? { sourceGeneration, sourceOrdinal }
+          : {}),
+        consumer: stringOrThrow(fields.get('consumer'), `${recordPath}.consumer`),
+        value: decodeBase64OrThrow(fields.get('valueB64'), `${recordPath}.valueB64`),
+        delivery: enumOrThrow(fields.get('delivery'), DELIVERY_KINDS, `${recordPath}.delivery`),
+        ...(fields.has('provenance')
+          ? {
+              provenance: enumOrThrow(
+                fields.get('provenance'),
+                ['notification', 'read-or-notification', 'unknown'] as const,
+                `${recordPath}.provenance`
+              )
+            }
+          : {}),
+        ...(fields.get('receipt') === undefined
+          ? {}
+          : { receipt: notificationReceiptOrThrow(fields.get('receipt'), `${recordPath}.receipt`) })
+      })
+    }
+    case 'peer-source-loss': {
+      const { fields, ordinal } = read(['consumer', 'peerId', 'generation', 'skippedRecords'])
+      const generation = stringOrThrow(fields.get('generation'), `${recordPath}.generation`)
+      const skipped = fields.get('skippedRecords')
+      if (!isU64Decimal(generation) || (skipped !== null && (typeof skipped !== 'string' || !isU64Decimal(skipped))))
+        throw malformed(recordPath)
       return Object.freeze({
         t: type,
         ordinal,
         consumer: stringOrThrow(fields.get('consumer'), `${recordPath}.consumer`),
-        value: decodeBase64OrThrow(fields.get('valueB64'), `${recordPath}.valueB64`),
-        delivery: enumOrThrow(fields.get('delivery'), DELIVERY_KINDS, `${recordPath}.delivery`),
-        ...(fields.get('receipt') === undefined
-          ? {}
-          : { receipt: notificationReceiptOrThrow(fields.get('receipt'), `${recordPath}.receipt`) })
+        peerId: stringOrThrow(fields.get('peerId'), `${recordPath}.peerId`),
+        generation,
+        skippedRecords: skipped
       })
     }
     case 'recording-changed': {
@@ -784,14 +910,24 @@ export function drainRecordOrThrow(value: unknown, path: string): WireDrainRecor
       })
     }
     case 'stream-end': {
-      const { fields, ordinal } = read(['consumer', 'reason', 'droppedItems', 'droppedBytes'])
+      const hasError = Object.hasOwn(value, 'error')
+      const { fields, ordinal } = read([
+        'consumer',
+        'reason',
+        'droppedItems',
+        'droppedBytes',
+        ...(hasError ? ['error'] : [])
+      ])
+      const reason = enumOrThrow(fields.get('reason'), STREAM_END_REASONS, `${recordPath}.reason`)
+      if (hasError && reason !== 'source-failed') throw malformed(`${recordPath}.error`)
       return Object.freeze({
         t: type,
         ordinal,
         consumer: stringOrThrow(fields.get('consumer'), `${recordPath}.consumer`),
-        reason: enumOrThrow(fields.get('reason'), STREAM_END_REASONS, `${recordPath}.reason`),
+        reason,
         droppedItems: integerOrThrow(fields.get('droppedItems'), NON_NEGATIVE, `${recordPath}.droppedItems`),
-        droppedBytes: integerOrThrow(fields.get('droppedBytes'), NON_NEGATIVE, `${recordPath}.droppedBytes`)
+        droppedBytes: integerOrThrow(fields.get('droppedBytes'), NON_NEGATIVE, `${recordPath}.droppedBytes`),
+        ...(hasError ? { error: remoteFailureOrThrow(fields.get('error'), `${recordPath}.error`) } : {})
       })
     }
     case 'adapter': {
@@ -799,7 +935,12 @@ export function drainRecordOrThrow(value: unknown, path: string): WireDrainRecor
       return Object.freeze({ t: type, ordinal, state: adapterStateOrThrow(fields.get('state'), `${recordPath}.state`) })
     }
     case 'link': {
-      const { fields, ordinal } = read(['peerId', 'connectionGeneration', 'databaseGeneration', 'reason'])
+      const hasPlatform = Object.hasOwn(value, 'platform')
+      const { fields, ordinal } = read(
+        hasPlatform
+          ? ['peerId', 'connectionGeneration', 'databaseGeneration', 'reason', 'platform']
+          : ['peerId', 'connectionGeneration', 'databaseGeneration', 'reason']
+      )
       return Object.freeze({
         t: type,
         ordinal,
@@ -810,7 +951,10 @@ export function drainRecordOrThrow(value: unknown, path: string): WireDrainRecor
           `${recordPath}.databaseGeneration`,
           stringOrThrow
         ),
-        reason: enumOrThrow(fields.get('reason'), LINK_REASONS, `${recordPath}.reason`)
+        reason: enumOrThrow(fields.get('reason'), LINK_REASONS, `${recordPath}.reason`),
+        ...(fields.has('platform')
+          ? { platform: platformDetailOrThrow(fields.get('platform'), `${recordPath}.platform`) }
+          : {})
       })
     }
     case 'db-changed': {
@@ -890,4 +1034,8 @@ export function drainBatchOrThrow(value: unknown, lastOrdinal: number | null, pa
 
 export function parseDrainText(text: unknown, lastOrdinal: number | null): WireResult<WireDrainBatch> {
   return capture(() => drainBatchOrThrow(parseWireTextOrThrow(text, 'drain'), lastOrdinal, 'drain'))
+}
+
+function isU64Decimal(value: string): boolean {
+  return /^(0|[1-9][0-9]*)$/.test(value) && BigInt(value) <= 18446744073709551615n
 }

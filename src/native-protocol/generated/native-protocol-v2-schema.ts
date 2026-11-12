@@ -1,7 +1,7 @@
 // src/native-protocol/generated/native-protocol-v2-schema.ts
 
 export const NATIVE_PROTOCOL_VERSION = 2
-export const NATIVE_PROTOCOL_ABI_VERSION = 7
+export const NATIVE_PROTOCOL_ABI_VERSION = 8
 export const NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION = 2
 export const MAXIMUM_CONTROL_RECORD_BYTES = 262144
 export const MAXIMUM_BINARY_PAYLOAD_BYTES = 524288
@@ -119,13 +119,21 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'backendRestarted',
     'restorationAvailable',
     'diagnostic',
-    'securityStateChanged'
+    'securityStateChanged',
+    'notificationLoss',
+    'notificationTerminated'
   ],
   terminalOutcomes: ['succeeded', 'failed'],
   cancellationStates: ['cancellationRequested', 'alreadyTerminal', 'notCancellable'],
   binaryOwnership: ['nativeOwnedCopy', 'javascriptOwnedCopy', 'transferred'],
   writeModes: ['withResponse', 'withoutResponse'],
   notificationDeliveryModes: ['notification', 'indication'],
+  notificationDeliveryConstraints: [
+    'preferNotification',
+    'preferIndication',
+    'requireNotification',
+    'requireIndication'
+  ],
   connectionPriorities: ['lowPower', 'balanced', 'highThroughput'],
   connectionIntents: ['direct', 'whenAvailable'],
   connectionPhys: ['le1m', 'le2m', 'leCoded'],
@@ -206,7 +214,9 @@ export const eventKinds = Object.freeze([
   'backendRestarted',
   'restorationAvailable',
   'diagnostic',
-  'securityStateChanged'
+  'securityStateChanged',
+  'notificationLoss',
+  'notificationTerminated'
 ])
 export type EventKinds = (typeof eventKinds)[number]
 
@@ -224,6 +234,14 @@ export type WriteModes = (typeof writeModes)[number]
 
 export const notificationDeliveryModes = Object.freeze(['notification', 'indication'])
 export type NotificationDeliveryModes = (typeof notificationDeliveryModes)[number]
+
+export const notificationDeliveryConstraints = Object.freeze([
+  'preferNotification',
+  'preferIndication',
+  'requireNotification',
+  'requireIndication'
+])
+export type NotificationDeliveryConstraints = (typeof notificationDeliveryConstraints)[number]
 
 export const connectionPriorities = Object.freeze(['lowPower', 'balanced', 'highThroughput'])
 export type ConnectionPriorities = (typeof connectionPriorities)[number]
@@ -356,6 +374,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('command', 19, 'pairTransport', 'enum:pairTransports', false),
   nativeProtocolField('command', 20, 'connectionIntent', 'enum:connectionIntents', false),
   nativeProtocolField('command', 21, 'notificationDeliveryMode', 'enum:notificationDeliveryModes', false),
+  nativeProtocolField('command', 22, 'notificationDeliveryConstraint', 'enum:notificationDeliveryConstraints', false),
   nativeProtocolField('terminal', 1, 'correlation', 'record:operationCorrelation', true),
   nativeProtocolField('terminal', 2, 'outcome', 'enum:terminalOutcomes', true),
   nativeProtocolField('terminal', 3, 'cause', 'string', false),
@@ -416,6 +435,8 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('event', 15, 'adapterState', 'record:adapterStateSnapshot', false),
   nativeProtocolField('event', 16, 'peerId', 'string', false),
   nativeProtocolField('event', 17, 'bondState', 'enum:securityBondStates', false),
+  nativeProtocolField('event', 18, 'lostItems', 'uint64', false),
+  nativeProtocolField('event', 19, 'lostBytes', 'uint64', false),
   nativeProtocolField('error', 1, 'code', 'string', true),
   nativeProtocolField('error', 2, 'domain', 'string', true),
   nativeProtocolField('error', 3, 'operation', 'string', true),

@@ -16,7 +16,7 @@ namespace unified_ble::native_protocol::v2 {
 
 class NativeProtocolControlRuntime final {
  public:
-  NativeProtocolControlRuntime();
+  explicit NativeProtocolControlRuntime(NativeEpochAllocation allocation = NativeEpochAllocation::contiguous);
   ~NativeProtocolControlRuntime();
 
   NativeProtocolControlRuntime(const NativeProtocolControlRuntime&) = delete;
@@ -37,7 +37,9 @@ class NativeProtocolControlRuntime final {
   void appendRestorationRecord(
       const NativeRestorationJournalAuthority& authority,
       ProtocolRecord record);
-  void registerCommand(const ProtocolRecord& command, bool cancellable);
+  // The out parameter is set immediately after the registry consumes the epoch,
+  // including when a later registration step throws.
+  void registerCommand(const ProtocolRecord& command, bool cancellable, bool* admitted = nullptr);
   bool rejectCommandDispatch(const ProtocolRecord& command);
   bool settleResult(const ProtocolRecord& result);
   void validateEvent(const ProtocolRecord& event) const;
@@ -47,6 +49,8 @@ class NativeProtocolControlRuntime final {
   std::optional<ProtocolRecord> subscriptionCommandFor(const std::string& subscriptionId) const;
   std::optional<ProtocolRecord> pendingSubscriptionCommandFor(const std::string& subscriptionId) const;
   std::optional<ProtocolRecord> activeScanCommand() const;
+  // Called only after the dispatcher has completed cleanup for this exact scan.
+  bool retireActiveScan(std::uint64_t dispatchEpoch, const std::string& nonce);
   NativeAttachmentIdentity attachmentIdentity() const;
   std::vector<std::uint8_t> consumeCommandBinary(const ProtocolRecord& command);
   OwnedBinaryReference retainNativeBytes(
@@ -67,6 +71,7 @@ class NativeProtocolControlRuntime final {
   bool open() const;
 
  private:
+  const NativeEpochAllocation epochAllocation_;
   std::unique_ptr<NativeOperationRegistry> operations_;
   std::unique_ptr<NativeRestorationJournal> restoration_;
   std::optional<NativeRestorationJournalAuthority> restorationAuthority_;

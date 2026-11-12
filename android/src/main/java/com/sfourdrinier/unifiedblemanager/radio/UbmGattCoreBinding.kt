@@ -40,16 +40,14 @@ import java.util.concurrent.atomic.AtomicReference
  * (`PeerIdentity::session_key`), so link/discovery lines use locally derived
  * keys with no drain round-trip. `peer.resolve` is still posted first so the
  * core registers (and admits/quota-checks) the peer before link lines
- * reference it. The scan op id is minted by the core: it is tracked from
- * `central.scan-start` drain observations (same first-`"op"` convention as
- * the JNI round-trip harness); a stop posted before the start observation
- * drains is a documented no-op shadow, never a fabricated stop.
+ * reference it. The scan op id is minted by the core and tracked from
+ * `central.scan-start` drain observations. The dispatcher retains that exact
+ * identity until the platform's successful stop settles the core operation.
  *
- * Authority barriers (R02): the bridge drains on a worker thread while stops
- * run on the dispatcher thread. [postScanStop]/[postAdapterReset] latch a
- * post-stop barrier under the same lock that admits drain observations, so a
- * late `central.scan-start` for the dead scan is dropped and can never
- * resurrect the op into a stale second stop; [postScanStart] re-arms it.
+ * Authority barriers (R02): each scan-start is tagged with its generation at
+ * enqueue and the tag travels with the drained verdict. Reset advances the
+ * generation so even a verdict published after a replacement cannot install
+ * the old operation. Stops also bar admission to the retired operation.
  * [release]/[shutdown] latch a disabled barrier: afterwards every post is a
  * null shadow and every drain observation is dropped, so no callback can
  * observe the bridge after stop.
@@ -92,14 +90,25 @@ class UbmGattCoreBinding(
   private val connectAdmissionDiagnostic = AtomicReference<String?>(null)
 
   /**
-   * R02 barriers. [scanGuard] linearizes the post-stop barrier against drain
-   * admission: stops latch [scanStopped] and take [scanOp] atomically, so a
-   * racing `central.scan-start` is either consumed by the stop or dropped by
-   * the latch — never resurrected after it. [disabled] is set once by
+   * [scanGuard] linearizes scan generation, admission and stop. A verdict is
+   * accepted only for its original live generation. [disabled] is set once by
    * [release]/[shutdown] and needs no lock.
    */
   private val scanGuard = Any()
   private var scanStopped = false
+  private var scanGeneration = 0L
+  private var scanAdmissionOwner: String? = null
+  private var scanAdmission: ScanAdmission = ScanAdmission.Missing
+  private val stoppingScanOps = mutableSetOf<String>()
+  // The historical protocol owns at most one scan. Keep the queued
+  // platform settlement until its drain observation arrives, including when
+  // executor scheduling failed or a drain itself failed.
+  private val scanSettlements = mutableMapOf<String, Pair<String, Boolean?>>()
+  private var scanSettlementSerial = 0L
+  private val scanPlatformStarts = mutableMapOf<String, Pair<String, Boolean?>>()
+  private var scanPlatformStartSerial = 0L
+  private var resetSerial = 0L
+  private var pendingReset: Pair<String, Boolean?>? = null
   private val disabled = AtomicBoolean(false)
 
   /** Why the session failed to open, null when open. Never silent. */
@@ -112,9 +121,50 @@ class UbmGattCoreBinding(
     enqueue = { wire -> jni.enqueue(handle, wire) },
     drain = { jni.drain(handle) },
     hasBlePermissions = { hasBlePermissions() },
-    onObservations = { observations -> onDrained(observations) },
     worker = worker
-  )
+  ).also { bridge ->
+    bridge.onCorrelatedObservations = { observations -> onDrained(observations) }
+    bridge.onScanAdmission = { generation, observation ->
+      synchronized(scanGuard) {
+        if (generation == scanGeneration && !scanStopped) {
+          val op = if (observation.ok) scanOpFrom(observation.raw) else null
+          scanAdmission = when {
+            op != null -> ScanAdmission.Admitted(op).also { scanOp.set(op) }
+            !observation.ok -> ScanAdmission.Rejected(observation)
+            else -> ScanAdmission.Missing
+          }
+        }
+      }
+    }
+    bridge.onTaggedObservation = { tag, observation ->
+      synchronized(scanGuard) {
+        val start = scanPlatformStarts.entries.singleOrNull { it.value.first == tag }
+        if (start != null) {
+          start.setValue(tag to observation.ok)
+        } else if (scanSettlements.entries.singleOrNull { it.value.first == tag } != null) {
+          val settlement = scanSettlements.entries.single { it.value.first == tag }
+          settlement.setValue(tag to observation.ok)
+        } else if (pendingReset?.first == tag) {
+          pendingReset = tag to observation.ok
+          if (observation.ok) {
+            scanGeneration++
+            scanStopped = true
+            scanOp.set(null)
+            scanAdmission = ScanAdmission.Missing
+            scanAdmissionOwner = null
+            stoppingScanOps.clear()
+            scanSettlements.clear()
+            scanPlatformStarts.clear()
+            synchronized(connectAdmissionGuard) {
+              connectReservations.clear()
+              connectAdmissions.clear()
+              connectFailures.clear()
+            }
+          }
+        }
+      }
+    }
+  }
 
   init {
     try {
@@ -149,9 +199,9 @@ class UbmGattCoreBinding(
 
   // -- drain observation handling ------------------------------------------
 
-  private fun onDrained(observations: List<GattObservation>) {
+  private fun onDrained(observations: List<Pair<GattObservation, String?>>) {
     if (disabled.get()) return
-    for (observation in observations) {
+    for ((observation, tag) in observations) {
       observation.connectAdmission?.let { admission ->
         val key = admissionKey(admission.peer, admission.lease)
         val accepted = synchronized(connectAdmissionGuard) {
@@ -175,14 +225,13 @@ class UbmGattCoreBinding(
           }
         }
       }
-      if (observation.ok && observation.raw.contains("\"kind\":\"central.scan-start\"")) {
-        scanOpFrom(observation.raw)?.let { op ->
-          synchronized(scanGuard) {
-            if (!scanStopped) scanOp.set(op)
-          }
-        }
-      }
       if (!observation.ok) {
+        if (tag?.startsWith("scan-settlement:") == true) {
+          // This verdict is consumed by scanSettlementVerdict(op). Sending it
+          // to the uncorrelated rejection journal could fail a later scan.
+          android.util.Log.e("UbmGattCoreBinding", "Core rejected $tag: ${observation.code}|${observation.operation}")
+          continue
+        }
         try {
           onCoreRejection(observation)
         } catch (_: Throwable) {
@@ -236,29 +285,94 @@ class UbmGattCoreBinding(
   /** Locally derived core peer key (`domain:value`; no drain round-trip). */
   fun peerKeyFor(deviceId: String): String = "${peerDomainFor(deviceId)}:$deviceId"
 
-  fun postScanStart(serviceUuids: List<String>, allowDuplicates: Boolean): UbmGattCentralBridge.PostResult? {
+  sealed interface ScanAdmission {
+    object Missing : ScanAdmission
+    data class Admitted(val operation: String) : ScanAdmission
+    data class Rejected(val observation: GattObservation) : ScanAdmission
+  }
+
+  fun postScanStart(serviceUuids: List<String>, allowDuplicates: Boolean): UbmGattCentralBridge.PostResult? =
+    postScanStart(serviceUuids, allowDuplicates, null)
+
+  fun postScanStart(serviceUuids: List<String>, allowDuplicates: Boolean, owner: String?): UbmGattCentralBridge.PostResult? =
     synchronized(scanGuard) {
+      scanGeneration++
+      scanAdmissionOwner = owner
       scanStopped = false
-    }
-    return post(
-      GattCentralWire.scanStart(
+      scanAdmission = ScanAdmission.Missing
+      if (disabled.get() || !isOpen) return@synchronized null
+      val result = bridge.postEvent(GattCentralWire.scanStart(
         PROTOCOL_SCAN_OWNER,
         NO_PROTOCOL_DEADLINE_MS,
         nowMs(),
         serviceUuids,
         if (allowDuplicates) "all" else "first",
         "none"
-      )
-    )
+      ), scanGeneration)
+      result
+    }
+
+  fun currentScanAdmission(): ScanAdmission = synchronized(scanGuard) { scanAdmission }
+  fun currentScanAdmission(owner: String): ScanAdmission = synchronized(scanGuard) {
+    if (scanAdmissionOwner == owner) scanAdmission else ScanAdmission.Missing
   }
 
-  fun postScanStop(): UbmGattCentralBridge.PostResult? {
+  /** The core-minted identity observed during the synchronous admission drain. */
+  fun currentScanOperation(): String? = synchronized(scanGuard) { scanOp.get() }
+
+  fun postScanPlatformStarted(op: String): UbmGattCentralBridge.PostResult? = synchronized(scanGuard) {
+    if (scanOp.get() != op || scanStopped || scanPlatformStarts.containsKey(op) || disabled.get() || !isOpen) return@synchronized null
+    val tag = "scan-started:${++scanPlatformStartSerial}"
+    scanPlatformStarts[op] = tag to null
+    val result = bridge.postTaggedEvent(GattCentralWire.scanPlatformStarted(op), tag)
+    if (result !is UbmGattCentralBridge.PostResult.Queued && result !is UbmGattCentralBridge.PostResult.ScheduleFailed) {
+      scanPlatformStarts.remove(op)
+    }
+    result
+  }
+
+  fun scanPlatformStartedVerdict(op: String): Boolean? = synchronized(scanGuard) { scanPlatformStarts[op]?.second }
+
+  fun postScanStop(): UbmGattCentralBridge.PostResult? = postScanStop(currentScanOperation())
+
+  fun postScanStop(op: String?): UbmGattCentralBridge.PostResult? {
     if (disabled.get()) return null
-    val op = synchronized(scanGuard) {
+    if (op == null) return null
+    return synchronized(scanGuard) {
+      if (op in stoppingScanOps || scanOp.get() != op) return@synchronized null
       scanStopped = true
-      scanOp.getAndSet(null)
-    } ?: return null
-    return post(GattCentralWire.scanStop(op, nowMs()))
+      val result = post(GattCentralWire.scanStop(op, nowMs()))
+      if (result is UbmGattCentralBridge.PostResult.Queued || result is UbmGattCentralBridge.PostResult.ScheduleFailed) {
+        scanOp.compareAndSet(op, null)
+        stoppingScanOps.add(op)
+      }
+      result
+    }
+  }
+
+  /** Settle only the operation whose platform stop actually succeeded. */
+  fun postScanStopped(op: String?): UbmGattCentralBridge.PostResult? {
+    if (op == null || disabled.get()) return null
+    return synchronized(scanGuard) {
+      if (op !in stoppingScanOps) return@synchronized null
+      val existing = scanSettlements[op]
+      if (existing != null && existing.second != false) return@synchronized null
+      val tag = "scan-settlement:${++scanSettlementSerial}"
+      scanSettlements[op] = tag to null
+      val result = bridge.postTaggedEvent(GattCentralWire.scanPlatformEvent(op, "platform-stopped", nowMs()), tag)
+      if (result !is UbmGattCentralBridge.PostResult.Queued && result !is UbmGattCentralBridge.PostResult.ScheduleFailed) {
+        scanSettlements.remove(op)
+      }
+      result
+    }
+  }
+
+  fun scanSettlementQueued(op: String): Boolean = synchronized(scanGuard) { scanSettlements[op]?.second != false && scanSettlements.containsKey(op) }
+  fun scanSettlementVerdict(op: String): Boolean? = synchronized(scanGuard) { scanSettlements[op]?.second }
+  fun forgetStoppedScan(op: String) = synchronized(scanGuard) {
+    scanSettlements.remove(op)
+    scanPlatformStarts.remove(op)
+    stoppingScanOps.remove(op)
   }
 
   fun postPeerResolve(deviceId: String): UbmGattCentralBridge.PostResult? {
@@ -346,19 +460,28 @@ class UbmGattCoreBinding(
     return post(GattCentralWire.servicesChanged(peerKeyFor(deviceId)))
   }
 
-  fun postAdapterReset(): UbmGattCentralBridge.PostResult? {
-    if (disabled.get()) return null
-    synchronized(scanGuard) {
-      scanStopped = true
-      scanOp.set(null)
+  fun postAdapterReset(): UbmGattCentralBridge.PostResult? = synchronized(scanGuard) {
+    if (disabled.get() || !isOpen || pendingReset != null) return null
+    val tag = "adapter-reset:${++resetSerial}"
+    pendingReset = tag to null
+    val result = bridge.postTaggedEvent(GattCentralWire.adapterReset(nowMs()), tag)
+    if (result !is UbmGattCentralBridge.PostResult.Queued && result !is UbmGattCentralBridge.PostResult.ScheduleFailed) {
+      pendingReset = null
+    } else {
+      // A physical adapter loss fences old connect admissions even while the
+      // scan identity remains owned until the reset verdict is published.
+      synchronized(connectAdmissionGuard) {
+        connectReservations.clear()
+        connectAdmissions.clear()
+        connectFailures.clear()
+      }
     }
-    synchronized(connectAdmissionGuard) {
-      connectReservations.clear()
-      connectAdmissions.clear()
-      connectFailures.clear()
-    }
-    return post(GattCentralWire.adapterReset(nowMs()))
+    result
   }
+
+  fun adapterResetPending(): Boolean = synchronized(scanGuard) { pendingReset != null }
+  fun adapterResetVerdict(): Boolean? = synchronized(scanGuard) { pendingReset?.second }
+  fun forgetAdapterReset() = synchronized(scanGuard) { pendingReset = null }
 
   // -- lifecycle ---------------------------------------------------------------
 

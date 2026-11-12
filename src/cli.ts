@@ -377,6 +377,7 @@ async function runConsumerDoctorCommand(runtime: UnifiedBleCliRuntime): Promise<
     tauri: {
       npmRange: TAURI_PLUGIN_COMPATIBILITY.npmRange,
       crateRange: TAURI_PLUGIN_COMPATIBILITY.crateRange,
+      ipcProtocolMinimum: TAURI_PLUGIN_COMPATIBILITY.ipcProtocolMinimum,
       ipcProtocol: TAURI_PLUGIN_COMPATIBILITY.ipcProtocol
     },
     remediation: Object.freeze([
@@ -403,6 +404,7 @@ function runInspectConfigCommand(host: CliHost): UnifiedBleCliResult {
   const compatibility = {
     npmRange: TAURI_PLUGIN_COMPATIBILITY.npmRange,
     crateRange: TAURI_PLUGIN_COMPATIBILITY.crateRange,
+    ipcProtocolMinimum: TAURI_PLUGIN_COMPATIBILITY.ipcProtocolMinimum,
     ipcProtocol: TAURI_PLUGIN_COMPATIBILITY.ipcProtocol
   }
   if (host === 'tauri') {
@@ -433,6 +435,7 @@ function runInspectCapabilitiesCommand(host: CliHost): UnifiedBleCliResult {
     proofBoundary: 'compile-config-loadability'
   }
   if (host === 'tauri') {
+    data.ipcProtocolMinimum = TAURI_PLUGIN_COMPATIBILITY.ipcProtocolMinimum
     data.ipcProtocol = TAURI_PLUGIN_COMPATIBILITY.ipcProtocol
   }
   return consumerSuccess('inspect', data)

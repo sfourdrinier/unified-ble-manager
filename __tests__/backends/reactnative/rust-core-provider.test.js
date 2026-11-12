@@ -3,7 +3,7 @@
 // The React Native Rust route end to end, through the ordinary factory
 // (`createReactNativeBleManagerWithEnvironment`), the REAL production binding
 // and serializer, and a deterministic `UnifiedBleRustCore` module that speaks
-// `ubm-mobile-wire/2` exactly as the Rust owner does. Each describe names the
+// `ubm-mobile-wire/3` exactly as the Rust owner does. Each describe names the
 // review finding it proves.
 
 const {
@@ -56,6 +56,18 @@ function indicateOnlyPeripheral() {
 }
 
 describe('Polar-style journey through the ordinary factory', () => {
+  test('gatt exposes the native durable terminal reservation owner before subscription activation', async () => {
+    const { native, manager, backend } = await openManager()
+    const scope = { managerId: 'manager-a', operationId: 'subscription-1', incarnation: '1' }
+    const reservation = await backend.gatt.reserveTerminalEvidence({
+      producer: 'subscription', maximumBytes: 1024, formatVersion: 1, scope
+    })
+    expect(reservation.maximumBytes).toBe(1024)
+    expect(native.opsInvoked('terminal-evidence.reserve')[0]).toMatchObject({ producer: 'subscription', scope })
+    await reservation.release()
+    await manager.destroy()
+  })
+
   test('scan, connect, discover, read, write, subscribe, notify, unsubscribe, disconnect, destroy', async () => {
     const { native, manager, backend } = await openManager()
     const scan = await manager.scan(scanOptions())

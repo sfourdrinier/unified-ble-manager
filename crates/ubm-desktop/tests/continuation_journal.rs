@@ -57,6 +57,482 @@ fn open(path: &std::path::Path) -> ContinuationJournal {
 }
 
 #[test]
+fn readable_production_loss_exposes_an_exact_occurrence_through_host() {
+    use std::sync::Arc;
+    use ubm_desktop::continuation::{ContinuationHost, ContinuationSession, NativeContinuation};
+    use ubm_desktop::continuation_journal::{JournalError, RecordedLoss};
+    struct NoHost;
+    impl ContinuationHost for NoHost {
+        fn open_session(&self) -> ubm_desktop::continuation::Result<Arc<dyn ContinuationSession>> {
+            panic!("recording management does not open a radio session")
+        }
+    }
+    let directory = path().parent().unwrap().to_path_buf();
+    let journal = open(&directory.join("recording-1.sqlite"));
+    let host = NativeContinuation::new(Arc::new(NoHost));
+    host.configure_recording_directory(&directory).unwrap();
+    let failure = JournalError {
+        kind: "storage.io",
+        detail: "source loss",
+        operation: "test",
+        sqlite_code: None,
+        sqlite_extended_code: None,
+    };
+    journal.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 2,
+            bytes: Some(7),
+        },
+    );
+    let occurrences = host
+        .recording_diagnostic_occurrences_page("recording-1", None, 8)
+        .unwrap();
+    assert_eq!(occurrences.len(), 1);
+    let page = host
+        .recording_diagnostic_occurrence_page("recording-1", occurrences[0], 0, 4096)
+        .unwrap();
+    assert!(page.durable);
+    let payload: serde_json::Value = serde_json::from_slice(&page.bytes).unwrap();
+    assert_eq!(payload["loss"], json!({"items":2,"bytes":7}));
+}
+
+#[test]
+fn refused_production_loss_is_exportable_from_host_before_retry() {
+    use std::sync::Arc;
+    use ubm_desktop::continuation::{ContinuationHost, ContinuationSession, NativeContinuation};
+    use ubm_desktop::continuation_journal::{JournalError, RecordedLoss};
+    struct NoHost;
+    impl ContinuationHost for NoHost {
+        fn open_session(&self) -> ubm_desktop::continuation::Result<Arc<dyn ContinuationSession>> {
+            panic!("recording management does not open a radio session")
+        }
+    }
+    let directory = path().parent().unwrap().to_path_buf();
+    let file = directory.join("recording-1.sqlite");
+    let journal = open(&file);
+    let db = rusqlite::Connection::open(&file).unwrap();
+    db.execute(
+        "UPDATE journal SET collection_failure=CAST(?1 AS TEXT),phase='stopped'",
+        [b"bad\xffsummary".as_slice()],
+    )
+    .unwrap();
+    db.execute_batch("CREATE TRIGGER reject_occurrence BEFORE INSERT ON diagnostic_ledger BEGIN SELECT RAISE(ABORT, 'refused'); END;").unwrap();
+    let host = NativeContinuation::new(Arc::new(NoHost));
+    host.configure_recording_directory(&directory).unwrap();
+    let failure = JournalError {
+        kind: "storage.io",
+        detail: "source loss",
+        operation: "test",
+        sqlite_code: None,
+        sqlite_extended_code: None,
+    };
+    journal.mark_recorded_collection_loss(
+        &failure,
+        RecordedLoss {
+            items: 2,
+            bytes: Some(7),
+        },
+    );
+    assert_eq!(
+        journal.status().unwrap()["collectionFailure"]["persisted"],
+        false
+    );
+    let ids = host
+        .recording_diagnostic_occurrences_page("recording-1", None, 8)
+        .unwrap();
+    assert_eq!(ids.len(), 1);
+    let page = host
+        .recording_diagnostic_occurrence_page("recording-1", ids[0], 0, 4096)
+        .unwrap();
+    assert!(!page.durable);
+    let payload: serde_json::Value = serde_json::from_slice(&page.bytes).unwrap();
+    assert_eq!(payload["loss"], json!({"items":2,"bytes":7}));
+    db.execute_batch("DROP TRIGGER reject_occurrence").unwrap();
+    host.recording_retry_diagnostic_occurrence("recording-1", ids[0])
+        .unwrap();
+    let committed = host
+        .recording_diagnostic_occurrence_page("recording-1", ids[0], 0, 4096)
+        .unwrap();
+    assert!(committed.durable);
+    assert_eq!(committed.bytes, page.bytes);
+    assert_eq!(
+        host.recording_status("recording-1").unwrap()["collectionFailure"]["pendingRecordedLoss"],
+        json!({"items":2,"bytes":7,"persisted":true})
+    );
+}
+
+// The writer and reader are separate processes: clearing an in-process cache
+// is not a substitute for a host restart. The reader uses the production
+// continuation management route without opening a radio session.
+#[test]
+fn unreadable_summary_loss_survives_process_restart_at_host_status() {
+    use std::sync::Arc;
+    use ubm_desktop::continuation::{ContinuationHost, ContinuationSession, NativeContinuation};
+    use ubm_desktop::continuation_journal::{JournalError, RecordedLoss};
+    struct NoHost;
+    impl ContinuationHost for NoHost {
+        fn open_session(&self) -> ubm_desktop::continuation::Result<Arc<dyn ContinuationSession>> {
+            panic!("recording management does not open a radio session")
+        }
+    }
+    const CHILD: &str = "UBM_UNREADABLE_LOSS_CHILD";
+    const DIRECTORY: &str = "UBM_UNREADABLE_LOSS_DIRECTORY";
+    if let Some(mode) = std::env::var_os(CHILD) {
+        let directory = PathBuf::from(std::env::var_os(DIRECTORY).unwrap());
+        if mode == "write" {
+            let journal = open(&directory.join("recording-1.sqlite"));
+            journal.mark_recorded_collection_loss(
+                &JournalError {
+                    kind: "storage.io",
+                    detail: "later",
+                    operation: "test",
+                    sqlite_code: None,
+                    sqlite_extended_code: None,
+                },
+                RecordedLoss {
+                    items: 2,
+                    bytes: Some(7),
+                },
+            );
+        } else {
+            let engine = NativeContinuation::new(Arc::new(NoHost));
+            engine.configure_recording_directory(&directory).unwrap();
+            let status = engine.recording_status("recording-1").unwrap();
+            assert_eq!(status["lostRecords"], 4);
+            assert_eq!(
+                status["collectionFailure"]["pendingRecordedLoss"],
+                json!({"items":2,"bytes":7,"persisted":true})
+            );
+            assert!(
+                status["collectionFailure"]
+                    .get("knownRecordedLoss")
+                    .is_none()
+            );
+            let ids = engine
+                .recording_diagnostic_occurrences_page("recording-1", None, 8)
+                .unwrap();
+            assert_eq!(ids.len(), 1);
+            let page = engine
+                .recording_diagnostic_occurrence_page("recording-1", ids[0], 0, 4096)
+                .unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&page.bytes).unwrap();
+            assert_eq!(payload["loss"], json!({"items":2,"bytes":7}));
+            assert!(page.durable);
+        }
+        return;
+    }
+    let directory = path().parent().unwrap().to_path_buf();
+    let file = directory.join("recording-1.sqlite");
+    drop(open(&file));
+    let db = rusqlite::Connection::open(&file).unwrap();
+    let original = b"bad\xffsummary";
+    db.execute(
+        "UPDATE journal SET collection_failure=CAST(?1 AS TEXT),phase='stopped',lost=4",
+        [original.as_slice()],
+    )
+    .unwrap();
+    drop(db);
+    for mode in ["write", "read"] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unreadable_summary_loss_survives_process_restart_at_host_status",
+                "--nocapture",
+            ])
+            .env(CHILD, mode)
+            .env(DIRECTORY, &directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout).to_string()
+                + &String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let db = rusqlite::Connection::open(&file).unwrap();
+    let retained: Vec<u8> = db
+        .query_row(
+            "SELECT CAST(collection_failure AS BLOB) FROM journal",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, original);
+}
+
+#[test]
+fn producer_loss_identity_replays_across_reopen_without_double_counting() {
+    use ubm_desktop::continuation_journal::{JournalError, RecordedLoss};
+    const CHILD: &str = "UBM_LOSS_RECEIPT_CHILD";
+    const FILE: &str = "UBM_LOSS_RECEIPT_FILE";
+    if let Some(mode) = std::env::var_os(CHILD) {
+        let file = PathBuf::from(std::env::var_os(FILE).unwrap());
+        let journal = open(&file);
+        let failure = JournalError {
+            kind: "storage.io",
+            detail: "source loss",
+            operation: "test",
+            sqlite_code: None,
+            sqlite_extended_code: None,
+        };
+        let id = [0x42; 40];
+        let receipt = journal
+            .record_loss_occurrence(
+                id,
+                &failure,
+                RecordedLoss {
+                    items: 2,
+                    bytes: Some(7),
+                },
+            )
+            .unwrap();
+        assert_eq!(receipt.occurrence, id);
+        if mode == "retry" {
+            assert_eq!(
+                journal
+                    .record_loss_occurrence(
+                        id,
+                        &failure,
+                        RecordedLoss {
+                            items: 3,
+                            bytes: Some(7)
+                        }
+                    )
+                    .unwrap_err()
+                    .kind,
+                "storage.identity"
+            );
+            let status = journal.status().unwrap();
+            assert_eq!(status["lostRecords"], 4);
+            assert_eq!(
+                status["collectionFailure"]["pendingRecordedLoss"],
+                json!({"items":2,"bytes":7,"persisted":true})
+            );
+        }
+        return;
+    }
+    let file = path();
+    drop(open(&file));
+    let db = rusqlite::Connection::open(&file).unwrap();
+    let original = b"bad\xffsummary";
+    db.execute(
+        "UPDATE journal SET collection_failure=CAST(?1 AS TEXT),phase='stopped',lost=4",
+        [original.as_slice()],
+    )
+    .unwrap();
+    drop(db);
+    for mode in ["write", "retry"] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "producer_loss_identity_replays_across_reopen_without_double_counting",
+                "--nocapture",
+            ])
+            .env(CHILD, mode)
+            .env(FILE, &file)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout).to_string()
+                + &String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let db = rusqlite::Connection::open(&file).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT CAST(collection_failure AS BLOB) FROM journal",
+            [],
+            |row| row.get::<_, Vec<u8>>(0)
+        )
+        .unwrap(),
+        original
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM diagnostic_ledger", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn host_exports_unreadable_summary_as_bounded_exact_bytes_after_reopen() {
+    use std::sync::Arc;
+    use ubm_desktop::continuation::{ContinuationHost, ContinuationSession, NativeContinuation};
+    struct NoHost;
+    impl ContinuationHost for NoHost {
+        fn open_session(&self) -> ubm_desktop::continuation::Result<Arc<dyn ContinuationSession>> {
+            panic!("recording management does not open a radio session")
+        }
+    }
+    let directory = path().parent().unwrap().to_path_buf();
+    let file = directory.join("recording-1.sqlite");
+    drop(open(&file));
+    let original = b"bad\xffsummary";
+    let db = rusqlite::Connection::open(&file).unwrap();
+    db.execute(
+        "UPDATE journal SET collection_failure=CAST(?1 AS TEXT) WHERE id=1",
+        [original.as_slice()],
+    )
+    .unwrap();
+    drop(db);
+    let host = NativeContinuation::new(Arc::new(NoHost));
+    host.configure_recording_directory(&directory).unwrap();
+    let first = host
+        .recording_diagnostic_summary_page("recording-1", 0, 4)
+        .unwrap();
+    let second = host
+        .recording_diagnostic_summary_page("recording-1", 4, 64)
+        .unwrap();
+    assert_eq!(first["bytes"], json!(&original[..4]));
+    assert_eq!(second["bytes"], json!(&original[4..]));
+    assert_eq!(first["totalBytes"], original.len());
+    assert_eq!(second["totalBytes"], original.len());
+    assert!(
+        host.recording_diagnostic_summary_page("recording-1", 0, 0)
+            .is_err()
+    );
+    assert!(
+        host.recording_diagnostic_summary_page("recording-1", original.len() as u64 + 1, 1)
+            .is_err()
+    );
+}
+
+// Exercise the existing host-facing clear route in a fresh process, including
+// files already migrated by the earlier v6 implementation.
+#[test]
+fn legacy_failure_public_clear_across_restart() {
+    use std::sync::Arc;
+    use ubm_desktop::continuation::{ContinuationHost, ContinuationSession, NativeContinuation};
+    struct NoHost;
+    impl ContinuationHost for NoHost {
+        fn open_session(&self) -> ubm_desktop::continuation::Result<Arc<dyn ContinuationSession>> {
+            panic!("recording management does not open a radio session")
+        }
+    }
+    const CHILD: &str = "UBM_JOURNAL_LEGACY_CLEAR_CHILD";
+    if let Some(directory) = std::env::var_os(CHILD) {
+        let engine = NativeContinuation::new(Arc::new(NoHost));
+        engine
+            .configure_recording_directory(std::path::Path::new(&directory))
+            .unwrap();
+        let status = engine.recording_status("recording-1").unwrap();
+        assert_eq!(status["collectionFailure"]["detail"], "legacy detail");
+        assert_eq!(status["records"], 1);
+        assert_eq!(
+            engine.recording_prepare("recording-1", 1, 4096).unwrap()["records"][0]["record"]["kept"],
+            true
+        );
+        let cleared = engine.recording_clear("recording-1").unwrap();
+        assert_eq!(cleared["cleared"], true);
+        assert_eq!(cleared["records"], 1);
+        assert_eq!(
+            engine.recording_status("recording-1").unwrap()["collectionFailure"]["detail"],
+            "legacy detail"
+        );
+        return;
+    }
+    for already_migrated in [false, true] {
+        let directory = path().parent().unwrap().to_path_buf();
+        let file = directory.join("recording-1.sqlite");
+        let journal = open(&file);
+        journal.append(&json!({}), &json!({"kept":true})).unwrap();
+        journal.mark_collection_failure(&ubm_desktop::continuation_journal::JournalError {
+            kind: "storage.io",
+            detail: "legacy detail",
+            operation: "test",
+            sqlite_code: None,
+            sqlite_extended_code: None,
+        });
+        drop(journal);
+        let db = rusqlite::Connection::open(&file).unwrap();
+        let original: String = db
+            .query_row("SELECT collection_failure FROM journal", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        if already_migrated {
+            db.execute_batch("DROP TABLE diagnostic_owners; PRAGMA user_version=6;")
+                .unwrap();
+            let payload = json!({"category":"legacy", "report":original}).to_string();
+            db.execute(
+                "INSERT INTO diagnostic_ledger(occurrence,payload) VALUES(zeroblob(40),?1)",
+                [payload],
+            )
+            .unwrap();
+        } else {
+            db.execute_batch("DROP TABLE diagnostic_owners; DROP TABLE diagnostic_ledger; PRAGMA user_version=5;").unwrap();
+        }
+        drop(db);
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "legacy_failure_public_clear_across_restart",
+                "--nocapture",
+            ])
+            .env(CHILD, &directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout).to_string()
+                + &String::from_utf8_lossy(&output.stderr)
+        );
+        let db = rusqlite::Connection::open(&file).unwrap();
+        assert_eq!(
+            db.query_row("SELECT collection_failure FROM journal", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            original
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM diagnostic_ledger", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn migration_repair_keeps_nonmatching_zero_identity() {
+    let file = path();
+    let journal = open(&file);
+    journal.mark_collection_failure(&ubm_desktop::continuation_journal::JournalError {
+        kind: "storage.io",
+        detail: "original",
+        operation: "test",
+        sqlite_code: None,
+        sqlite_extended_code: None,
+    });
+    drop(journal);
+    let db = rusqlite::Connection::open(&file).unwrap();
+    let payload = json!({"category":"legacy", "report":"different"}).to_string();
+    db.execute(
+        "INSERT INTO diagnostic_ledger(occurrence,payload) VALUES(zeroblob(40),?1)",
+        [&payload],
+    )
+    .unwrap();
+    drop(db);
+    let reopened = open(&file);
+    assert_eq!(reopened.clear().unwrap_err().kind, "storage.busy");
+    let db = rusqlite::Connection::open(&file).unwrap();
+    assert_eq!(
+        db.query_row("SELECT payload FROM diagnostic_ledger", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        payload
+    );
+}
+
+#[test]
 fn registry_retains_owner_and_reopens_persisted_identity_without_path_input() {
     let path = path();
     let directory = path.parent().unwrap();
@@ -1107,4 +1583,53 @@ fn symlink_destination_is_refused_without_changing_target() {
     std::os::unix::fs::symlink(&target, &link).unwrap();
     assert!(ContinuationJournal::open(&link, "recording-1", &json!({}), quota()).is_err());
     assert_eq!(std::fs::read(&target).unwrap(), b"private unrelated bytes");
+}
+
+#[test]
+fn ordinary_refusals_allow_authority_eviction() {
+    let path = path();
+    let registry = JournalRegistry::default();
+    registry
+        .configure_directory(path.parent().unwrap())
+        .unwrap();
+    let mut owners = Vec::new();
+    for index in 0..40 {
+        let journal = registry
+            .open(
+                &format!("refusal-{index}"),
+                &json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 1,
+                },
+            )
+            .unwrap();
+        if index % 2 == 0 {
+            assert_eq!(
+                journal.append_batch(&[]).unwrap_err().kind,
+                "argument.invalid"
+            );
+        } else {
+            journal.append(&json!({}), &json!({"value":1})).unwrap();
+            assert_eq!(
+                journal
+                    .append(&json!({}), &json!({"value":2}))
+                    .unwrap_err()
+                    .kind,
+                "storage.full"
+            );
+        }
+        assert!(journal.status().unwrap()["runtimeFailure"].is_null());
+        owners.push(std::sync::Arc::downgrade(&journal));
+    }
+    registry
+        .open("after-refusals", &json!({}), quota())
+        .unwrap();
+    assert!(
+        owners
+            .iter()
+            .filter(|owner| owner.strong_count() > 0)
+            .count()
+            <= 16
+    );
 }

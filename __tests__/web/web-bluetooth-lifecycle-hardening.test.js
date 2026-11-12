@@ -253,8 +253,10 @@ async function orderedRecords(owner, count) {
   const result = []
   for (let index = 0; index < count; index += 1) {
     const item = (await iterator.next()).value
-    if (item.kind === 'value') result.push({ kind: item.kind, memberId: item.memberId, ordinal: item.ordinal, value: item.value })
-    else if (item.kind === 'loss') result.push({ kind: item.kind, lostValues: item.lostValues, lostBytes: item.lostBytes })
+    if (item.kind === 'value')
+      result.push({ kind: item.kind, memberId: item.memberId, ordinal: item.ordinal, value: item.value })
+    else if (item.kind === 'loss')
+      result.push({ kind: item.kind, lostValues: item.lostValues, lostBytes: item.lostBytes })
     else result.push(item)
   }
   return result
@@ -298,10 +300,9 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const first = backend.connections.connect(selected.peerId, 'first', noDeadline())
     testFixture.connectDeferred.reject(new Error('connect failed'))
     await expect(first).rejects.toMatchObject({ normalized: { code: 'connection.failed' } })
-    expectConsoleErrorMatching(
-      '[WebBluetoothBackend.connect] Browser connect rejected:',
-      expect.objectContaining({ message: 'connect failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothBackend.connect] Browser connect rejected:', {
+      errors: [{ name: 'Error' }]
+    })
     testFixture.setConnectMode('immediate')
 
     const retry = await backend.connections.connect(selected.peerId, 'retry', noDeadline())
@@ -322,10 +323,9 @@ describe('Web Bluetooth lifecycle hardening', () => {
     await expect(first).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     testFixture.connectDeferred.reject(new Error('late connect rejection'))
     await flushMicrotasks()
-    expectConsoleErrorMatching(
-      '[WebBluetoothBackend.connect] Browser connect rejected:',
-      expect.objectContaining({ message: 'late connect rejection' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothBackend.connect] Browser connect rejected:', {
+      errors: [{ name: 'Error' }]
+    })
     testFixture.setConnectMode('immediate')
 
     const retry = await backend.connections.connect(selected.peerId, 'retry', noDeadline())
@@ -401,10 +401,9 @@ describe('Web Bluetooth lifecycle hardening', () => {
     await expect(connect).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     testFixture.connectDeferred.resolve()
     await flushMicrotasks()
-    expectConsoleErrorMatching(
-      '[WebBluetoothBackend.compensatePendingConnection] Browser disconnect failed:',
-      expect.objectContaining({ message: 'disconnect failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothBackend.compensatePendingConnection] Browser disconnect failed:', {
+      errors: [{ name: 'Error' }]
+    })
 
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'release-failed' })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
@@ -468,7 +467,10 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const firstDatabase = await backend.gatt.discover(firstLease.connection, noDeadline())
     const secondDatabase = await backend.gatt.discover(secondLease.connection, noDeadline())
     await firstDatabase.subscribe((await firstDatabase.snapshot()).characteristics[0].path, subscriptionOptions())
-    const second = await secondDatabase.subscribe((await secondDatabase.snapshot()).characteristics[0].path, subscriptionOptions())
+    const second = await secondDatabase.subscribe(
+      (await secondDatabase.snapshot()).characteristics[0].path,
+      subscriptionOptions()
+    )
     expect(start).toHaveBeenCalledTimes(1)
     expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 1, subscriptionConsumers: 2 })
     await firstLease.release()
@@ -483,7 +485,9 @@ describe('Web Bluetooth lifecycle hardening', () => {
   test('a new owner waits for an in-flight final stop before starting', async () => {
     const testFixture = fixture()
     const stopDeferred = deferred()
-    const stop = jest.spyOn(testFixture.characteristic, 'stopNotifications').mockImplementationOnce(() => stopDeferred.promise)
+    const stop = jest
+      .spyOn(testFixture.characteristic, 'stopNotifications')
+      .mockImplementationOnce(() => stopDeferred.promise)
     const start = jest.spyOn(testFixture.characteristic, 'startNotifications')
     const backend = await backendFixture(testFixture)
     const { database, snapshot } = await connectedDatabase(backend)
@@ -532,13 +536,32 @@ describe('Web Bluetooth lifecycle hardening', () => {
     expect(backend.resourceCounters().subscriptionConsumers).toBe(1)
     testFixture.startDeferred.resolve()
     await flushMicrotasks()
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
 
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(testFixture.notificationListeners.size).toBe(0)
+  })
+
+  test('late notification rejection logs bounded evidence after abort', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    testFixture.setStartMode('pending')
+    const controller = new AbortController()
+    const subscribe = database.subscribe(snapshot.characteristics[0].path, subscriptionOptions(controller.signal))
+    await Promise.resolve()
+    controller.abort()
+    await expect(subscribe).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    const p = Proxy.revocable({}, {})
+    p.revoke()
+    testFixture.startDeferred.reject(p.proxy)
+    await flushMicrotasks()
+    expectConsoleError('[WebBluetoothGattRuntime.enableSubscription] Late notification start rejected:', {
+      errors: [{ name: 'UnknownError' }]
+    })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test.each(['deadline', 'destroy'])(
@@ -581,18 +604,16 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const subscription = await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
     boundary.failNextNotificationStop(new Error('stop failed'))
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'release-failed' })
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
     await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
     expect(boundary.resourceSnapshot()).toMatchObject({ notificationStops: 2, notificationListeners: 0 })
     boundary.failNextDisconnect(new Error('disconnect failed'))
     await expect(lease.release()).resolves.toMatchObject({ state: 'release-failed' })
-    expectConsoleErrorMatching(
-      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
-      expect.objectContaining({ message: 'disconnect failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', {
+      errors: [{ name: 'Error' }]
+    })
     expect(lease.connection.state).toBe('disconnected')
     expect(boundary.resourceSnapshot()).toMatchObject({ connected: true, disconnectListeners: 1 })
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
@@ -609,9 +630,11 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const start = jest.spyOn(testFixture.characteristic, 'startNotifications')
     const stop = jest.spyOn(testFixture.characteristic, 'stopNotifications')
     const ordinary = await database.subscribe(path, subscriptionOptions())
-    const setup = await backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions())
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions()
+    )
     expect(setup.state).toBe('ready')
     expect(start).toHaveBeenCalledTimes(1)
     await ordinary.remove()
@@ -630,26 +653,37 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const backend = await backendFixture(testFixture)
     const { database, snapshot } = await connectedDatabase(backend)
     const path = snapshot.characteristics[0].path
-    const setup = await backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions())
-    expect(setup.owner.members).toEqual([{ memberId: 'a', path, deliveryMode: 'prefer-notification', effectiveDelivery: 'notification' }])
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions()
+    )
+    expect(setup.owner.members).toEqual([
+      { memberId: 'a', path, deliveryMode: 'prefer-notification', effectiveDelivery: 'unknown' }
+    ])
     const iterator = setup.owner.stream[Symbol.asyncIterator]()
     const pending = iterator.next()
     const value = new Uint8Array([42])
     for (const listener of testFixture.notificationListeners) listener(value)
     value[0] = 99
-    expect(await pending).toMatchObject({ done: false, value: {
-      kind: 'value', memberId: 'a', ordinal: '1', value: new Uint8Array([42]),
-      connectionGeneration: String(database.path.connectionGeneration),
-      databaseGeneration: String(database.path.databaseGeneration), delivery: 'notification', provenance: 'read-or-notification'
-    } })
+    expect(await pending).toMatchObject({
+      done: false,
+      value: {
+        kind: 'value',
+        memberId: 'a',
+        ordinal: '1',
+        value: new Uint8Array([42]),
+        connectionGeneration: String(database.path.connectionGeneration),
+        databaseGeneration: String(database.path.databaseGeneration),
+        delivery: 'unknown',
+        provenance: 'read-or-notification'
+      }
+    })
     testFixture.setStopFailures(1)
     expect(await setup.owner.stream.close()).toMatchObject({ members: [{ cleanup: { state: 'release-failed' } }] })
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
     expect(await iterator.next()).toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
     expect(await setup.owner.stream.close()).toMatchObject({ members: [{ cleanup: { state: 'released' } }] })
   })
@@ -658,22 +692,23 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const testFixture = fixture()
     const backend = await backendFixture(testFixture)
     const { database, snapshot } = await connectedDatabase(backend)
-    const setup = await backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions(null, null, 1))
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions(null, null, 1)
+    )
     testFixture.setStopFailures(1)
     for (const listener of testFixture.notificationListeners) {
       listener(new Uint8Array([1]))
       listener(new Uint8Array([2]))
     }
     await flushMicrotasks()
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
     expect(await orderedRecords(setup.owner, 3)).toEqual([
       { kind: 'value', memberId: 'a', ordinal: '1', value: new Uint8Array([1]) },
-      { kind: 'loss', lostValues: 1, lostBytes: 1 },
+      { kind: 'loss', lostValues: '1', lostBytes: '1' },
       { kind: 'terminal', reason: 'overflow', uncertainTail: true }
     ])
     expect(testFixture.notificationListeners.size).toBe(0)
@@ -689,9 +724,11 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const testFixture = fixture()
     const backend = await backendFixture(testFixture)
     const { database, lease, snapshot } = await connectedDatabase(backend)
-    const setup = await backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions())
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions()
+    )
     await backend.disconnectRecord(lease.record, end)
     expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: expected, uncertainTail: true }])
   })
@@ -700,9 +737,11 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const testFixture = fixture()
     const backend = await backendFixture(testFixture)
     const { database, snapshot } = await connectedDatabase(backend)
-    const setup = await backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions())
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions()
+    )
     await setup.owner.close()
     expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: 'closed', uncertainTail: true }])
   })
@@ -714,10 +753,14 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const secondBoundary = [...database.characteristicBoundaries.values()][1]
     const secondStart = deferred()
     jest.spyOn(secondBoundary, 'startNotifications').mockImplementationOnce(() => secondStart.promise)
-    const opening = backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' },
-      { memberId: 'b', path: snapshot.characteristics[1].path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions(null, null, 4))
+    const opening = backend.gattRuntime.acquireOrdered(
+      database,
+      [
+        { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' },
+        { memberId: 'b', path: snapshot.characteristics[1].path, deliveryMode: 'prefer-notification' }
+      ],
+      subscriptionOptions(null, null, 4)
+    )
     await flushMicrotasks()
     const [a, b] = [...testFixture.notificationListeners]
     a(new Uint8Array([1]))
@@ -741,15 +784,21 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const secondBoundary = [...database.characteristicBoundaries.values()][1]
     const secondStart = deferred()
     jest.spyOn(secondBoundary, 'startNotifications').mockImplementationOnce(() => secondStart.promise)
-    const opening = backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' },
-      { memberId: 'b', path: snapshot.characteristics[1].path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions())
+    const opening = backend.gattRuntime.acquireOrdered(
+      database,
+      [
+        { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' },
+        { memberId: 'b', path: snapshot.characteristics[1].path, deliveryMode: 'prefer-notification' }
+      ],
+      subscriptionOptions()
+    )
     await flushMicrotasks()
     const disconnect = backend.disconnectRecord(lease.record, 'connection-lost')
     const setup = await opening
     expect(setup).toMatchObject({ state: 'failed', error: { code: 'connection.lost' } })
-    expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: 'connection-lost', uncertainTail: true }])
+    expect(await orderedRecords(setup.owner, 1)).toEqual([
+      { kind: 'terminal', reason: 'connection-lost', uncertainTail: true }
+    ])
     await disconnect
     secondStart.resolve()
     await flushMicrotasks()
@@ -763,10 +812,14 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const secondBoundary = [...database.characteristicBoundaries.values()][1]
     const secondStart = deferred()
     jest.spyOn(secondBoundary, 'startNotifications').mockImplementationOnce(() => secondStart.promise)
-    const opening = backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' },
-      { memberId: 'b', path: snapshot.characteristics[1].path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions())
+    const opening = backend.gattRuntime.acquireOrdered(
+      database,
+      [
+        { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' },
+        { memberId: 'b', path: snapshot.characteristics[1].path, deliveryMode: 'prefer-notification' }
+      ],
+      subscriptionOptions()
+    )
     await flushMicrotasks()
     await expect(backend.gatt.discover(lease.connection, noDeadline())).rejects.toMatchObject({
       normalized: { code: 'gatt.subscribe-failed' }
@@ -774,7 +827,9 @@ describe('Web Bluetooth lifecycle hardening', () => {
     secondStart.resolve()
     const setup = await opening
     expect(setup).toMatchObject({ state: 'failed', error: { code: 'gatt.stale-handle' } })
-    expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: 'service-changed', uncertainTail: true }])
+    expect(await orderedRecords(setup.owner, 1)).toEqual([
+      { kind: 'terminal', reason: 'service-changed', uncertainTail: true }
+    ])
     await setup.owner.close()
   })
 
@@ -782,9 +837,11 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const testFixture = fixture()
     const backend = await backendFixture(testFixture)
     const { database, lease, snapshot } = await connectedDatabase(backend)
-    const setup = await backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions())
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions()
+    )
     const capturedListener = [...testFixture.notificationListeners][0]
     const pendingStop = deferred()
     jest.spyOn(testFixture.characteristic, 'stopNotifications').mockImplementationOnce(() => pendingStop.promise)
@@ -793,11 +850,12 @@ describe('Web Bluetooth lifecycle hardening', () => {
     capturedListener(new Uint8Array([8]))
     pendingStop.reject(new Error('stop failed'))
     await expect(rediscovery).rejects.toMatchObject({ normalized: { code: 'gatt.subscribe-failed' } })
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
-    expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: 'service-changed', uncertainTail: true }])
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
+    expect(await orderedRecords(setup.owner, 1)).toEqual([
+      { kind: 'terminal', reason: 'service-changed', uncertainTail: true }
+    ])
     expect(await setup.owner.close()).toMatchObject([{ cleanup: { state: 'released' } }])
   })
 
@@ -806,13 +864,19 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const backend = await backendFixture(testFixture)
     const { database, snapshot } = await connectedDatabase(backend)
     testFixture.setStartMode('overflow')
-    const setup = await backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions(null, null, 1))
-    expect(setup).toMatchObject({ state: 'failed', error: { code: 'stream.overflow' }, acquisitions: [{ state: 'acquired' }] })
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions(null, null, 1)
+    )
+    expect(setup).toMatchObject({
+      state: 'failed',
+      error: { code: 'stream.overflow' },
+      acquisitions: [{ state: 'acquired' }]
+    })
     expect(await orderedRecords(setup.owner, 3)).toEqual([
       { kind: 'value', memberId: 'a', ordinal: '1', value: new Uint8Array([1]) },
-      { kind: 'loss', lostValues: 1, lostBytes: 1 },
+      { kind: 'loss', lostValues: '1', lostBytes: '1' },
       { kind: 'terminal', reason: 'overflow', uncertainTail: true }
     ])
     expect(testFixture.notificationListeners.size).toBe(0)
@@ -825,19 +889,24 @@ describe('Web Bluetooth lifecycle hardening', () => {
     testFixture.setStartMode('pending')
     testFixture.setStopFailures(1)
     const controller = new AbortController()
-    const opening = backend.gattRuntime.acquireOrdered(database, [
-      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
-    ], subscriptionOptions(controller.signal))
+    const opening = backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions(controller.signal)
+    )
     await flushMicrotasks()
     controller.abort()
     const setup = await opening
-    expect(setup).toMatchObject({ state: 'failed', error: { code: 'operation.aborted' }, acquisitions: [{ state: 'indeterminate' }] })
+    expect(setup).toMatchObject({
+      state: 'failed',
+      error: { code: 'operation.aborted' },
+      acquisitions: [{ state: 'indeterminate' }]
+    })
     testFixture.startDeferred.resolve()
     await flushMicrotasks()
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
     expect(await setup.owner.close()).toMatchObject([{ cleanup: { state: 'released' } }])
     expect(backend.resourceCounters().subscriptionConsumers).toBe(0)
   })
@@ -855,20 +924,15 @@ describe('Web Bluetooth lifecycle hardening', () => {
     await expect(backend.gatt.discover(lease.connection, noDeadline())).rejects.toMatchObject({
       normalized: { code: 'gatt.subscribe-failed' }
     })
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
     await expect(database.snapshot()).resolves.toBeDefined()
-    expect(group.drain()).toEqual([
-      { kind: 'value', memberId: 'member', ordinal: '1', value: new Uint8Array([1]) }
-    ])
+    expect(group.drain()).toEqual([{ kind: 'value', memberId: 'member', ordinal: '1', value: new Uint8Array([1]) }])
     await subscription.remove()
     const resumed = await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
     for (const listener of testFixture.notificationListeners) listener(new Uint8Array([2]))
-    expect(group.drain()).toEqual([
-      { kind: 'value', memberId: 'member', ordinal: '2', value: new Uint8Array([2]) }
-    ])
+    expect(group.drain()).toEqual([{ kind: 'value', memberId: 'member', ordinal: '2', value: new Uint8Array([2]) }])
     await resumed.remove()
     const replacement = await backend.gatt.discover(lease.connection, noDeadline())
     expect(group.drain()).toEqual([{ kind: 'terminal', reason: 'service-changed', uncertainTail: true }])
@@ -882,7 +946,9 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const first = await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
     const second = await database.subscribe(snapshot.characteristics[1].path, subscriptionOptions())
     const secondBoundary = [...database.characteristicBoundaries.values()][1]
-    const group = backend.gattRuntime.notificationIngress(database).register(new Map([[secondBoundary, 'second']]), 2, 8)
+    const group = backend.gattRuntime
+      .notificationIngress(database)
+      .register(new Map([[secondBoundary, 'second']]), 2, 8)
     const pendingStop = deferred()
     jest.spyOn(testFixture.characteristic, 'stopNotifications').mockImplementationOnce(() => pendingStop.promise)
     const discovery = backend.gatt.discover(lease.connection, noDeadline())
@@ -891,13 +957,10 @@ describe('Web Bluetooth lifecycle hardening', () => {
     for (const listener of testFixture.notificationListeners) listener(new Uint8Array([7]))
     pendingStop.reject(new Error('stop failed'))
     await expect(discovery).rejects.toMatchObject({ normalized: { code: 'gatt.subscribe-failed' } })
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
-    expect(group.drain()).toEqual([
-      { kind: 'value', memberId: 'second', ordinal: '1', value: new Uint8Array([7]) }
-    ])
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
+    expect(group.drain()).toEqual([{ kind: 'value', memberId: 'second', ordinal: '1', value: new Uint8Array([7]) }])
     await first.remove()
     await second.remove()
   })
@@ -959,10 +1022,9 @@ describe('Web Bluetooth lifecycle hardening', () => {
     testFixture.setStopFailures(1)
     const result = await lease.release()
     expect(result.state).toBe('release-failed')
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
     expect(testFixture.gatt.connected).toBe(false)
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
   })
@@ -974,10 +1036,9 @@ describe('Web Bluetooth lifecycle hardening', () => {
     await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
     testFixture.setStopFailures(1)
     await lease.release()
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
     expect(testFixture.gatt.connected).toBe(false)
   })
 
@@ -992,14 +1053,12 @@ describe('Web Bluetooth lifecycle hardening', () => {
     expect(result.state).toBe('release-failed')
     const kinds = result.failures.map(failure => failure.resourceKind)
     expect(kinds).toEqual(expect.arrayContaining(['subscription', 'connection']))
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
-    expectConsoleErrorMatching(
-      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
-      expect.objectContaining({ message: 'disconnect failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
+    expectConsoleErrorMatching('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', {
+      errors: [{ name: 'Error' }]
+    })
   })
 
   test('gatt.disconnect failure after successful subscription cleanup is still reported', async () => {
@@ -1012,10 +1071,9 @@ describe('Web Bluetooth lifecycle hardening', () => {
     const result = await lease.release()
     expect(result.state).toBe('release-failed')
     expect(result.failures.some(failure => failure.resourceKind === 'connection')).toBe(true)
-    expectConsoleErrorMatching(
-      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
-      expect.objectContaining({ message: 'disconnect failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', {
+      errors: [{ name: 'Error' }]
+    })
   })
 
   test('every subscription cleanup is attempted before the result is assembled', async () => {
@@ -1029,14 +1087,12 @@ describe('Web Bluetooth lifecycle hardening', () => {
     expect(result.state).toBe('release-failed')
     expect(result.failures.filter(failure => failure.resourceKind === 'subscription').length).toBe(2)
     expect(testFixture.gatt.connected).toBe(false)
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
   })
 
   test('retry repeats only unresolved subscription or physical-disconnect phases', async () => {
@@ -1047,14 +1103,12 @@ describe('Web Bluetooth lifecycle hardening', () => {
     testFixture.setStopFailures(1)
     testFixture.setDisconnectFailures(1)
     await expect(lease.release()).resolves.toMatchObject({ state: 'release-failed' })
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
-    expectConsoleErrorMatching(
-      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
-      expect.objectContaining({ message: 'disconnect failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
+    expectConsoleErrorMatching('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', {
+      errors: [{ name: 'Error' }]
+    })
     const disconnectsBeforeRetry = testFixture.gatt.connected
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
     expect(disconnectsBeforeRetry).toBe(true)
@@ -1072,6 +1126,28 @@ describe('Web Bluetooth lifecycle hardening', () => {
     await expect(database.snapshot()).rejects.toMatchObject({ normalized: { code: 'gatt.stale-handle' } })
   })
 
+  test('ordinary connection lifecycle failure preserves a retryable physical teardown', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { lease } = await connectedDatabase(backend)
+    const failure = new Error('connection lifecycle failed')
+    jest.spyOn(backend, 'emitBackendEvent').mockImplementation(() => {
+      throw failure
+    })
+    testFixture.setDisconnectFailures(1)
+
+    await expect(backend.disconnectRecord(lease.record, 'connection-lost')).rejects.toBe(failure)
+    expect(testFixture.gatt.connected).toBe(true)
+    expectConsoleErrorMatching('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', {
+      errors: [{ name: 'Error' }]
+    })
+    await expect(backend.disconnectRecord(lease.record, 'connection-lost')).resolves.toEqual({
+      state: 'released',
+      failures: []
+    })
+    expect(testFixture.gatt.connected).toBe(false)
+  })
+
   test('concurrent release and remote disconnect share one terminal outcome', async () => {
     const testFixture = fixture()
     const backend = await backendFixture(testFixture)
@@ -1084,6 +1160,125 @@ describe('Web Bluetooth lifecycle hardening', () => {
     expect(lease.connection.state === 'disconnected' || lease.connection.state === 'lost').toBe(true)
   })
 
+  test('ordered marker and browser write share the source turn and preserve replay', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    const path = snapshot.characteristics[0].path
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions()
+    )
+    const iterator = setup.owner.stream[Symbol.asyncIterator]()
+    for (const listener of testFixture.notificationListeners) listener(new Uint8Array([1]))
+    const writer = jest.spyOn(testFixture.characteristic, 'writeValueWithResponse').mockImplementation(() => {
+      for (const listener of testFixture.notificationListeners) listener(new Uint8Array([2]))
+      return Promise.resolve()
+    })
+    expect(setup.owner.markerWrite('0', path, new Uint8Array([9]), 'with-response', null)).toMatchObject({
+      marker: { state: 'admitted', ordinal: '2' },
+      write: { state: 'started' }
+    })
+    expect(setup.owner.markerWrite('0', path, new Uint8Array([9]), 'with-response', null).marker.state).toBe('admitted')
+    expect(writer).toHaveBeenCalledTimes(1)
+    expect((await iterator.next()).value).toMatchObject({ kind: 'value', ordinal: '1' })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'marker', markerId: '0', ordinal: '2' })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'value', ordinal: '3' })
+    await Promise.resolve()
+    setup.owner.acknowledgeMarker('0')
+    expect(setup.owner.forgetMarker('0')).toBe(true)
+    await setup.owner.close()
+  })
+
+  test('overflow after marker retains marker and exact loss without replaying the write', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    const path = snapshot.characteristics[0].path
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions(null, null, 1)
+    )
+    for (const listener of testFixture.notificationListeners) listener(new Uint8Array([1]))
+    jest.spyOn(testFixture.characteristic, 'writeValueWithResponse').mockImplementation(() => {
+      for (const listener of testFixture.notificationListeners) listener(new Uint8Array([2, 3]))
+      return Promise.resolve()
+    })
+    expect(setup.owner.markerWrite('0', path, new Uint8Array([9]), 'with-response', null).marker.state).toBe('admitted')
+    const iterator = setup.owner.stream[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'value', ordinal: '1' })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'marker', ordinal: '2' })
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'loss',
+      scope: { kind: 'member', memberId: 'a' },
+      lostValues: '1',
+      lostBytes: '2'
+    })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
+    await setup.owner.close()
+  })
+
+  test.each(['before', 'after'])('reconciles an admission exception %s source acceptance', async when => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    const path = snapshot.characteristics[0].path
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions()
+    )
+    const stream = setup.owner.stream
+    const original = stream.admitReservedMarker.bind(stream)
+    const failure = new Error('injected admission failure')
+    jest.spyOn(stream, 'admitReservedMarker').mockImplementation(marker => {
+      if (when === 'after') original(marker)
+      throw failure
+    })
+    const writer = jest.spyOn(testFixture.characteristic, 'writeValueWithResponse')
+    const receipt = setup.owner.markerWrite('0', path, new Uint8Array([9]), 'with-response', null)
+    expect(receipt).toMatchObject({
+      marker: { state: when === 'after' ? 'admitted' : 'not-admitted' },
+      write: { state: 'not-started' }
+    })
+    expect(setup.owner.markerWrite('0', path, new Uint8Array([9]), 'with-response', null)).toEqual(receipt)
+    expect(writer).not.toHaveBeenCalled()
+    expect(stream.markerAdmissionStatus('web-ordered-1', '0').state).toBe(
+      when === 'after' ? 'admitted' : 'not-admitted'
+    )
+    if (when === 'after') {
+      expect(setup.owner.forgetMarker('0')).toBe(false)
+      expect((await stream[Symbol.asyncIterator]().next()).value).toMatchObject({ kind: 'marker', markerId: '0' })
+      setup.owner.acknowledgeMarker('0')
+    }
+    expect(setup.owner.forgetMarker('0')).toBe(true)
+    await setup.owner.close()
+  })
+
+  test('ordered marker credit refusal prevents the browser write', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    const path = snapshot.characteristics[0].path
+    const setup = await backend.gattRuntime.acquireOrdered(
+      database,
+      [{ memberId: 'a', path, deliveryMode: 'prefer-notification' }],
+      subscriptionOptions()
+    )
+    const writer = jest.spyOn(testFixture.characteristic, 'writeValueWithResponse')
+    setup.owner.stream.reserveMarker('web-ordered-1', '9')
+    expect(setup.owner.markerWrite('0', path, new Uint8Array([9]), 'with-response', null)).toMatchObject({
+      marker: { state: 'not-admitted' },
+      write: { state: 'not-started' }
+    })
+    expect(writer).not.toHaveBeenCalled()
+    setup.owner.stream.releaseMarkerNotAdmitted('web-ordered-1', '9')
+    expect(setup.owner.forgetMarker('0')).toBe(true)
+    await setup.owner.close()
+  })
+
   test('backend destroy retries unresolved phases and removes listeners and counters', async () => {
     const testFixture = fixture()
     const backend = await backendFixture(testFixture)
@@ -1092,14 +1287,12 @@ describe('Web Bluetooth lifecycle hardening', () => {
     testFixture.setStopFailures(1)
     testFixture.setDisconnectFailures(1)
     await expect(lease.release()).resolves.toMatchObject({ state: 'release-failed' })
-    expectConsoleErrorMatching(
-      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
-      expect.objectContaining({ message: 'stop failed' })
-    )
-    expectConsoleErrorMatching(
-      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
-      expect.objectContaining({ message: 'disconnect failed' })
-    )
+    expectConsoleErrorMatching('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', {
+      errors: [{ name: 'Error' }]
+    })
+    expectConsoleErrorMatching('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', {
+      errors: [{ name: 'Error' }]
+    })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(testFixture.disconnectListeners.size).toBe(0)
     expect(backend.resourceCounters().connectionLeases).toBe(0)

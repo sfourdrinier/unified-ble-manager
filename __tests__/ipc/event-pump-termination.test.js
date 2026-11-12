@@ -4,7 +4,7 @@ const { ElectronRendererBleClient } = require('../../src/electron/renderer')
 const { IpcPublicManagerAdapter } = require('../../src/ipc/public-manager')
 const { awaitSignal } = require('../helpers/async')
 
-function negotiated(axis, value = axis === 'ipc-protocol' ? 6 : 1) {
+function negotiated(axis, value = axis === 'ipc-protocol' ? 10 : 1) {
   const selected = { axis, value }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
@@ -171,6 +171,24 @@ async function killPump(harness) {
 }
 
 describe('IPC event pump termination', () => {
+  test('retained attachment diagnostic loss is recorded without terminalizing the event pump', async () => {
+    const harness = await createPumpHarness()
+    harness.emit('attachment', {
+      kind: 'value',
+      value: {
+        kind: 'diagnostic-warning',
+        schemaVersion: 1,
+        code: 'gatt.source-uncertain-retention-lagged',
+        missed: 1
+      }
+    })
+    await flushPump()
+    expect(harness.ipc.diagnostics().warnings()).toContainEqual(
+      expect.objectContaining({ code: 'gatt.source-uncertain-retention-lagged', cause: null, platform: null })
+    )
+    await harness.ipc.destroy()
+  })
+
   test.each(['reject', 'release-failed', 'aggregate-reject'])(
     'missing required scan plan reports %s stop and retains retry debt',
     async stopMode => {

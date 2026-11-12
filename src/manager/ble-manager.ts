@@ -1,5 +1,6 @@
 // src/manager/ble-manager.ts
 
+import { registerOrderedStreamOrigin } from '../core/ordered-stream-origin'
 import { BackendContractError, contractError } from '../backend-contract/errors'
 import { assertAttachedBackend, attachBackend } from '../backend-contract/backend'
 import type {
@@ -111,6 +112,11 @@ export interface BleManagerOptions {
   readonly timer?: UnifiedBleCoreOptions['timer']
   readonly maximumValueBytes: UnifiedBleCoreOptions['maximumValueBytes']
   readonly maximumAggregateRetainedBytes: number
+  /**
+   * Opt-in durable, source-native terminal evidence. Hosts that cannot reserve
+   * this before producer activation reject the requested operation explicitly.
+   */
+  readonly terminalEvidence?: UnifiedBleCoreOptions['terminalEvidence']
   readonly traceMaximumRecords: number
   readonly traceMaximumBytes: number
 }
@@ -293,6 +299,10 @@ export class BleManager<Attachment extends string, Identity extends BackendIdent
     return this.core.traceDocument()
   }
 
+  backendDiagnosticWarnings() {
+    return this.core.backendDiagnosticWarnings()
+  }
+
   monotonicNow(): number {
     return this.core.monotonicNow()
   }
@@ -368,6 +378,9 @@ export class BleManager<Attachment extends string, Identity extends BackendIdent
 
   private async destroyOwningManager(): Promise<CleanupRecord> {
     const ownCleanup = await this.releaseOwnedResources()
+    // A dispatched acquisition can settle after its caller is cancelled. Its
+    // exact lease, and every other failed owned cleanup, remains retryable
+    // before backend disposal can make that retry impossible.
     if (ownCleanup.state === 'release-failed') {
       return ownCleanup
     }
@@ -830,6 +843,138 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
     return new Subscription(
       await this.database.subscribe(this.resolveCharacteristicPath(path), toPublicSubscriptionOptions(options))
     )
+  }
+
+  reserveOrderedRecordingMarker(recordingId: string) {
+    const marker = this.database.reserveOrderedRecordingMarker(recordingId)
+    let bound: {
+      readonly portable: PortableCurrentCharacteristicPath
+      readonly native: CurrentCharacteristicPath<Attachment>
+    } | null = null
+    return {
+      start: (
+        target: PortableCurrentCharacteristicPath,
+        value: Readonly<Uint8Array>,
+        mode: 'with-response' | 'without-response',
+        operation: PortableOperationOptions
+      ) => {
+        if (bound !== null && bound.portable !== target)
+          throw contractError('argument.invalid', 'gatt', 'gatt.ordered-marker.target')
+        if (bound === null) bound = { portable: target, native: this.resolveCharacteristicPath(target) }
+        return marker.start(bound.native, value, mode, toPublicOperationOptions(operation))
+      },
+      status: () => marker.status(),
+      cancel: () => marker.cancel(),
+      forget: () => marker.forget()
+    }
+  }
+
+  reserveOrderedRecordingReclaim(handle: import('../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle) {
+    return this.database.reserveOrderedRecordingReclaim(handle)
+  }
+
+  reserveOrderedRecordingStart() {
+    const handle = this.database.reserveOrderedRecordingStart()
+    return {
+      start: (
+        members: readonly {
+          readonly memberId: string
+          readonly path: PortableCurrentCharacteristicPath
+          readonly deliveryMode: NonNullable<PortableSubscriptionOptions['deliveryMode']>
+        }[],
+        options: PortableRecordedSubscriptionOptions
+      ) =>
+        handle.start(
+          members.map(member => ({ ...member, path: this.resolveCharacteristicPath(member.path) })),
+          { ...toPublicSubscriptionOptions(options), recording: options.recording }
+        ),
+      status: () => handle.status(),
+      retire: () => handle.retire(),
+      ...(handle.recoveryHandle ? { recoveryHandle: handle.recoveryHandle.bind(handle) } : {}),
+      ...(handle.reserveMarkerWrite
+        ? {
+            reserveMarkerWrite: () => {
+              const marker = handle.reserveMarkerWrite?.()
+              if (!marker) throw contractError('capability.unsupported', 'gatt', 'gatt.ordered-marker')
+              let bound: {
+                readonly portable: PortableCurrentCharacteristicPath
+                readonly native: CurrentCharacteristicPath<Attachment>
+              } | null = null
+              return {
+                start: (
+                  target: PortableCurrentCharacteristicPath,
+                  value: Readonly<Uint8Array>,
+                  mode: 'with-response' | 'without-response',
+                  operation: PortableOperationOptions
+                ) => {
+                  if (bound !== null && bound.portable !== target)
+                    throw contractError('argument.invalid', 'gatt', 'gatt.ordered-marker.target')
+                  if (bound === null) bound = { portable: target, native: this.resolveCharacteristicPath(target) }
+                  return marker.start(bound.native, value, mode, toPublicOperationOptions(operation))
+                },
+                status: () => marker.status(),
+                cancel: () => marker.cancel(),
+                forget: () => marker.forget()
+              }
+            }
+          }
+        : {})
+    }
+  }
+
+  async subscribeOrdered(
+    members: readonly {
+      readonly memberId: string
+      readonly path: PortableCurrentCharacteristicPath
+      readonly deliveryMode: NonNullable<PortableSubscriptionOptions['deliveryMode']>
+    }[],
+    options: PortableSubscriptionOptions
+  ) {
+    const setup = await this.database.subscribeOrdered(
+      members.map(member => ({ ...member, path: this.resolveCharacteristicPath(member.path) })),
+      toPublicSubscriptionOptions(options)
+    )
+    const source = setup.stream
+    const reserve = source.reserveMarkerWrite
+    const stream: import('../core/ordered-notification-contract').OrderedNotificationStream<PortableCurrentCharacteristicPath> =
+      {
+        get limits() {
+          return source.limits
+        },
+        ...(source.increaseByteCapacity ? { increaseByteCapacity: source.increaseByteCapacity.bind(source) } : {}),
+        close: () => source.close(),
+        discard: () => source.discard(),
+        [Symbol.asyncIterator]: () => source[Symbol.asyncIterator](),
+        ...(reserve
+          ? {
+              reserveMarkerWrite: () => {
+                const handle = reserve.call(source)
+                let bound: {
+                  readonly portable: PortableCurrentCharacteristicPath
+                  readonly native: CurrentCharacteristicPath<Attachment>
+                } | null = null
+                return {
+                  start: (
+                    target: PortableCurrentCharacteristicPath,
+                    value: Readonly<Uint8Array>,
+                    mode: 'with-response' | 'without-response',
+                    operation: PortableOperationOptions
+                  ) => {
+                    if (bound !== null && bound.portable !== target)
+                      throw contractError('argument.invalid', 'gatt', 'gatt.ordered-marker.target')
+                    if (bound === null) bound = { portable: target, native: this.resolveCharacteristicPath(target) }
+                    return handle.start(bound.native, value, mode, toPublicOperationOptions(operation))
+                  },
+                  status: () => handle.status(),
+                  cancel: () => handle.cancel(),
+                  forget: () => handle.forget()
+                }
+              }
+            }
+          : {})
+      }
+    registerOrderedStreamOrigin(stream, source)
+    return { ...setup, stream }
   }
 
   async subscribeRecorded(path: PortableCurrentCharacteristicPath, options: PortableRecordedSubscriptionOptions) {

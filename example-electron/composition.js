@@ -7,6 +7,7 @@ const renderer = require('./composition-renderer')
 
 assert.equal(main.browserWindowWebPreferences.contextIsolation, true)
 assert.equal(main.browserWindowWebPreferences.nodeIntegration, false)
+assert.equal(main.browserWindowWebPreferences.sandbox, true)
 assert.equal(typeof main.browserWindowWebPreferences.preload, 'string')
 assert.deepEqual(preload.bridgeNames, [
   'invoke',

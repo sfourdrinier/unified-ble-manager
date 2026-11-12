@@ -3,6 +3,39 @@
 package com.sfourdrinier.unifiedblemanager.rustcore
 
 import com.sfourdrinier.unifiedblemanager.radio.GattConnectAttempt
+import com.sfourdrinier.unifiedblemanager.radio.AndroidNativeGraphIdentity
+import com.sfourdrinier.unifiedblemanager.radio.AndroidOrderedAdmission
+
+internal data class ScopedGattGraph(val identity: AndroidNativeGraphIdentity, val services: List<GattServiceNode>)
+/** Assigns identity before native start, including synchronous callbacks. */
+internal interface ScanIdentityRadioPort {
+  fun startScanWithIdentity(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int,
+                            legacy: Boolean, reportDelayMs: Long, phy: Int?, scanIdentity: String)
+}
+internal interface ScopedDiscoveryPort {
+  fun discoverScoped(peerId: String, onResult: (Result<ScopedGattGraph>) -> Unit): Long
+}
+internal interface OrderedPhysicalPort {
+  fun setOrderedNotification(instance: CharacteristicInstance, enable: Boolean, mode: String?, epoch: Long, admission: AndroidOrderedAdmission?,
+                             onResult: (Result<Unit>) -> Unit): Long
+}
+
+/** Retryable receiver release and callbacks still executing in the owned driver. */
+internal interface OwnerReceiverRetirementPort {
+  fun retireReceivers(): OwnerReceiverRetirement
+}
+internal data class OwnerReceiverRetirement(val callbacks: Int, val failures: List<Throwable>)
+
+/** Fence graph admission without discarding outstanding exact retirement receipts. */
+internal interface OwnerGraphFencePort {
+  fun fenceGraphOwner()
+  fun graphOwnerStatus(): com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio.GraphOwnerStatus
+}
+
+/** Snapshot of this port incarnation's ordered stores, not an owner-wide retirement receipt. */
+internal interface OwnerOrderedStoreSnapshotPort {
+  fun orderedStoreSnapshot(): com.sfourdrinier.unifiedblemanager.radio.AndroidOrderedGroupOwner.StoreSnapshot
+}
 
 /**
  * The Android OS driver as the Rust radio adapter sees it: plain values and
@@ -19,10 +52,9 @@ internal interface AndroidRadioPort {
   fun setEvents(events: RadioPortEvents)
   fun adapterState(): AdapterFacts
 
-  /** Starts the one physical scan; throws when the OS refuses. `mode`/`callbackType` are `ScanSettings` values. */
+  /** Starts this port's Android scan; throws when the OS refuses. `mode`/`callbackType` are `ScanSettings` values. */
   fun startScan(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int,
                 legacy: Boolean, reportDelayMs: Long, phy: Int?)
-
   /** Stops the scan; the returned failure keeps scan ownership for a retry. */
   fun stopScan(): Throwable?
 
@@ -45,6 +77,10 @@ internal interface AndroidRadioPort {
   /** Releases the link; [onComplete] receives the teardown failure, or null once the OS confirmed. */
   fun disconnect(peerId: String, onComplete: (Throwable?) -> Unit)
 
+  /** Withdraw only the named attempt. A proven pre-submission refusal completes with its failure;
+   * a throw alone does not prove that a callback cannot still arrive. */
+  fun cancelConnect(peerId: String, attempt: GattConnectAttempt, onComplete: (Throwable?) -> Unit)
+
   fun discover(peerId: String, onResult: (Result<List<GattServiceNode>>) -> Unit): Long
 
   /** The characteristic at [instance], or null when the path is not in the current database. */
@@ -56,7 +92,7 @@ internal interface AndroidRadioPort {
   fun writeDescriptor(descriptor: DescriptorInstance, value: ByteArray, onResult: (Result<Unit>) -> Unit): Long
 
   /** `mode` is the exact CCCD mode to write (`notification`/`indication`); null when disabling. */
-  fun setNotification(instance: CharacteristicInstance, enable: Boolean, mode: String?, onResult: (Result<Unit>) -> Unit): Long
+  fun setNotification(instance: CharacteristicInstance, enable: Boolean, mode: String?, epoch: Long?, onResult: (Result<Unit>) -> Unit): Long
 
   fun readMtu(peerId: String, onResult: (Result<Int?>) -> Unit): Long
   fun requestMtu(peerId: String, mtu: Int, onResult: (Result<Int>) -> Unit): Long
@@ -83,6 +119,7 @@ internal interface AndroidRadioPort {
 
 /** Unsolicited OS facts from the driver. */
 internal interface RadioPortEvents {
+  fun onOrderedLinkFence(peerId: String, attempt: GattConnectAttempt?) {}
   fun onAdvertisement(advertisement: AdvertisementFacts)
 
   /**
@@ -92,15 +129,21 @@ internal interface RadioPortEvents {
    */
   fun onConnection(peerId: String, connected: Boolean, gattStatus: Int, attempt: GattConnectAttempt?)
   fun onServicesChanged(peerId: String)
-  fun onNotification(instance: CharacteristicInstance, value: ByteArray)
+  fun onNotification(instance: CharacteristicInstance, epoch: Long, value: ByteArray)
+  fun onNotificationSourceFailed(instance: CharacteristicInstance, epoch: Long, failure: RadioFailure)
   fun onAdapterState(state: AdapterFacts)
   fun onScanFailed(errorCode: Int)
+  /** A native callback can only stop the particular scan that emitted it. */
+  fun onScanFailed(errorCode: Int, stop: () -> RadioScanStop) = onScanFailed(errorCode)
+  fun onScanFailed(errorCode: Int, scanIdentity: String, stop: () -> RadioScanStop) = onScanFailed(errorCode, stop)
   fun onSecurity(peerId: String, security: SecurityFacts)
   fun onSecurityFailure(peerId: String?, error: Throwable)
 
   /** A platform fact the driver could not translate (never silently dropped). */
-  fun onDropped(ingressClass: String, detail: String)
+  fun onDropped(ingressClass: String, detail: String, count: Long = 1)
 }
+
+internal data class RadioScanStop(val stale: Boolean, val failure: Throwable?)
 
 /** Failure kinds of the frozen radio interface (`docs/MOBILE_RUST_WIRE.md`). */
 enum class RadioFailureKind(val wire: String) {
@@ -204,5 +247,7 @@ data class AdvertisementFacts(
   /** The raw advertising record bytes (`ScanRecord.getBytes()`); null when not reported. */
   val rawRecord: ByteArray? = null,
   val cachedName: String? = null,
-  val captureTimestampMs: Long? = null
+  val captureTimestampMs: Long? = null,
+  /** Opaque physical scan identity; null only for legacy producers. */
+  val scanIdentity: String? = null
 )

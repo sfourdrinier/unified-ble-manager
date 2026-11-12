@@ -2,6 +2,7 @@
 
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 import { contractError } from '../backend-contract/errors'
+import type { PublicPlatformErrorDetail } from './cleanup'
 
 export interface BleDiagnosticTraceRecord {
   readonly ordinal: number
@@ -20,6 +21,13 @@ export interface BleDiagnosticTraceDocument {
   readonly format: 'unified-ble-trace-v1'
   readonly truncated: boolean
   readonly records: readonly BleDiagnosticTraceRecord[]
+}
+
+/** A bounded, public diagnostic observation with safe native detail intact. */
+export interface BleDiagnosticWarning {
+  readonly code: string
+  readonly cause: string | null
+  readonly platform: PublicPlatformErrorDetail | null
 }
 
 export interface BleResourceCounters {
@@ -47,6 +55,8 @@ export interface BleDiagnostics {
   snapshot(): BleDiagnosticsSnapshot
   resourceCounters(): BleResourceCounters
   startTrace(): { stop(): Promise<BleDiagnosticTraceDocument> }
+  /** Recent host diagnostics; unlike the portable trace, this retains safe platform detail. */
+  warnings(): readonly BleDiagnosticWarning[]
 }
 
 export function snapshotPublicTraceDocument(value: DiagnosticTraceDocument): BleDiagnosticTraceDocument {
@@ -103,5 +113,5 @@ export function diagnosticsUnavailable(): BleDiagnostics {
   const unavailable = (): never => {
     throw contractError('capability.unavailable', 'core', 'diagnostics.unavailable')
   }
-  return { snapshot: unavailable, resourceCounters: unavailable, startTrace: unavailable }
+  return { snapshot: unavailable, resourceCounters: unavailable, startTrace: unavailable, warnings: unavailable }
 }

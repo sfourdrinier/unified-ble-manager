@@ -126,9 +126,12 @@ export interface ConnectionRecord {
 }
 export interface PhysicalSubscription {
   readonly key: string
+  readonly generation: string
+  readonly claim: import('./corebluetooth-boundary').CoreBluetoothNotificationClaim
   readonly address: CoreBluetoothCharacteristicAddress
   readonly mode: CoreBluetoothNotificationDeliveryMode
   readonly consumers: Set<CoreBluetoothBackendSubscription>
+  readonly sourceLoss: Map<CoreBluetoothBackendSubscription, { items: number; bytes: number }>
   state: 'enabling' | 'ready' | 'removing' | 'cleanup-failed' | 'released'
   nativeStart: Promise<void> | null
   removalBeforeNativeStart: boolean
@@ -755,7 +758,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     if (group === null || !group.consumers.has(String(consumer.leaseId))) {
       this.releaseScanConsumerAdmission(consumer)
       if (!consumer.stream.isTerminal()) {
-        consumer.stream.closeWithReason('owner-released')
+        consumer.stream.finishWithReason('owner-released')
       }
       return releasedCleanup
     }
@@ -763,16 +766,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       group.consumers.delete(String(consumer.leaseId))
       this.releaseScanConsumerAdmission(consumer)
       if (!consumer.stream.isTerminal()) {
-        consumer.stream.closeWithReason('owner-released')
+        consumer.stream.finishWithReason('owner-released')
       }
       return releasedCleanup
     }
     group.state = 'stopping'
     for (const current of [...group.consumers.values()]) {
       this.releaseScanConsumerAdmission(current)
-      if (!current.stream.isTerminal()) {
-        current.stream.closeWithReason('owner-released')
-      }
     }
     try {
       const cleanup = await this.stopNativeScan(group, 'direct-gatt.scan.stop')
@@ -803,6 +803,9 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       () => {
         if (group.nativeStop === nativeStop) group.nativeStop = null
         group.state = 'released'
+        for (const consumer of group.consumers.values()) {
+          if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
+        }
         group.consumers.clear()
         if (this.scanGroup === group) {
           this.scanGroup = null

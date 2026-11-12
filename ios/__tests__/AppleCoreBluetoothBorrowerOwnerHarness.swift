@@ -13,6 +13,7 @@ import CoreBluetooth
 @main
 enum AppleCoreBluetoothBorrowerOwnerHarness {
   static func main() {
+    checkIndependentBorrowerReleases()
     checkAccessoryStartupAdmission()
     checkPermissionDecision()
     checkAuthorizationWaiters()
@@ -26,32 +27,61 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
 
     precondition(coordinator.attach(first))
     precondition(!coordinator.attach(first))
-    precondition(!coordinator.attach(second))
-    guard case .start = coordinator.beginRelease(first, completion: { firstResults.append($0) }) else {
+    guard case let .start(firstTicket) = coordinator.beginRelease(first, completion: { firstResults.append($0) }) else {
       preconditionFailure("The first borrower release did not start")
     }
     guard case .joined = coordinator.beginRelease(first, completion: { joinedResults.append($0) }) else {
       preconditionFailure("A concurrent release did not join")
     }
     precondition(coordinator.releaseInProgress)
-    precondition(!coordinator.attach(second))
 
     let timeout = NSError(domain: "test", code: 1)
-    for completion in coordinator.finish(timeout) { completion(timeout) }
+    for completion in coordinator.finish(first, ticket: firstTicket, error: timeout)! { completion(timeout) }
     precondition(firstResults.first! === timeout)
     precondition(joinedResults.first! === timeout)
     precondition(!coordinator.releaseInProgress)
-    precondition(!coordinator.attach(second))
 
-    guard case .start = coordinator.beginRelease(first, completion: { firstResults.append($0) }) else {
+    guard case let .start(retryTicket) = coordinator.beginRelease(first, completion: { firstResults.append($0) }) else {
       preconditionFailure("Failed cleanup did not remain retryable by the same borrower")
     }
-    for completion in coordinator.finish(nil) { completion(nil) }
+    for completion in coordinator.finish(first, ticket: retryTicket, error: nil)! { completion(nil) }
     precondition(firstResults.count == 2 && firstResults[1] == nil)
     precondition(coordinator.attach(second))
     guard case .noBorrower = coordinator.beginRelease(first, completion: { _ in }) else {
       preconditionFailure("A stale borrower was allowed to release the replacement")
     }
+  }
+
+  static func checkIndependentBorrowerReleases() {
+    let coordinator = OwnedCoreBluetoothBorrowerReleaseCoordinator()
+    let first = NSObject(), second = NSObject(), replacement = NSObject()
+    var firstAnswers = 0, joinedAnswers = 0, secondAnswers = 0
+    precondition(coordinator.attach(first) && coordinator.attach(second))
+    guard case let .start(firstTicket) = coordinator.beginRelease(first, completion: { _ in firstAnswers += 1 }),
+          case .joined = coordinator.beginRelease(first, completion: { _ in joinedAnswers += 1 }),
+          case let .start(secondTicket) = coordinator.beginRelease(second, completion: { _ in secondAnswers += 1 }) else {
+      preconditionFailure("borrower releases must be independent")
+    }
+    let failure = NSError(domain: "cleanup", code: 1)
+    for answer in coordinator.finish(first, ticket: firstTicket, error: failure)! { answer(failure) }
+    precondition(firstAnswers == 1 && joinedAnswers == 1 && secondAnswers == 0)
+    guard case let .start(retryTicket) = coordinator.beginRelease(first, completion: { _ in firstAnswers += 1 }) else {
+      preconditionFailure("failed cleanup must retain the original borrower")
+    }
+    precondition(coordinator.finish(first, ticket: firstTicket, error: nil) == nil,
+                 "a late completion must not settle the retry")
+    for answer in coordinator.finish(second, ticket: secondTicket, error: nil)! { answer(nil) }
+    precondition(secondAnswers == 1 && firstAnswers == 1)
+    precondition(coordinator.attach(replacement))
+    for answer in coordinator.finish(first, ticket: retryTicket, error: nil)! { answer(nil) }
+    precondition(firstAnswers == 2)
+    guard case .noBorrower = coordinator.beginRelease(first, completion: { _ in }) else {
+      preconditionFailure("a retired borrower cannot release another borrower")
+    }
+    guard case let .start(replacementTicket) = coordinator.beginRelease(replacement, completion: { _ in }) else {
+      preconditionFailure("replacement lost its ownership")
+    }
+    _ = coordinator.finish(replacement, ticket: replacementTicket, error: nil)
   }
 
   static func checkAccessoryStartupAdmission() {

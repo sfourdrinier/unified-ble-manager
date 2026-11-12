@@ -24,6 +24,19 @@ const declaration = peerId => ({
   ]
 })
 
+async function collectHandoff(continuation) {
+  const values = []
+  for (let attempts = 0; attempts < 128; attempts++) {
+    const backlog = await continuation.claimRetainedV1()
+    values.push(...backlog.values)
+    if (!backlog.acknowledge) return { values, disposed: false }
+    const receipt = await backlog.acknowledge()
+    await backlog.retireReceipt?.()
+    if (receipt.disposed) return { values, disposed: true }
+  }
+  throw new Error('Continuation handoff remains retained')
+}
+
 async function observed(manager, stage, peerId) {
   const scan = await manager.scan()
   const iterator = scan.observations[Symbol.asyncIterator]()
@@ -99,11 +112,15 @@ test.each(['bluez', 'corebluetooth', 'winrt'])(
         value: Buffer.from([0, 73])
       })
       await h.awaitContinuationQueuedData(host.continuation, 2)
-      const acknowledgements = harness.calls.filter(([name]) => name === 'continuationAcknowledgeClaim').length
-      const prepared = await host.continuationAccess.prepareClaim(256, 65536)
-      expect(await host.continuationAccess.prepareClaim(256, 65536)).toEqual(prepared)
-      expect(harness.calls.filter(([name]) => name === 'continuationAcknowledgeClaim')).toHaveLength(acknowledgements)
-      const backlog = await host.continuation.claim()
+      const prepareRetained = host.continuationAccess.prepareRetainedClaimV1
+      expect(prepareRetained).toEqual(expect.any(Function))
+      const acknowledgements = harness.calls.filter(([name]) => name === 'continuationAcknowledgeRetainedClaimV1').length
+      const prepared = await prepareRetained(256, 65536)
+      expect(await prepareRetained(256, 65536)).toEqual(prepared)
+      expect(harness.calls.filter(([name]) => name === 'continuationAcknowledgeRetainedClaimV1')).toHaveLength(
+        acknowledgements
+      )
+      const backlog = await collectHandoff(host.continuation)
       expect(backlog.disposed).toBe(true)
       expect(backlog.values.map(item => [...item.value])).toEqual(
         expect.arrayContaining([
@@ -137,7 +154,7 @@ test('native cleanup refusal remains retryable and post-close backlog stays reac
     expect(failed.failures.length).toBeGreaterThan(0)
     await expect(host.createManager()).rejects.toMatchObject({ code: 'lifecycle.destroyed' })
     expect(await host.destroy()).toEqual({ state: 'released', failures: [] })
-    const backlog = await host.continuation.claim()
+    const backlog = await collectHandoff(host.continuation)
     expect(backlog.values.map(item => [...item.value])).toContainEqual([0, 74])
     expect(backlog.disposed).toBe(true)
   })
@@ -158,11 +175,52 @@ test('successful host close preserves positive native backlog for explicit later
     })
     await h.awaitContinuationQueuedData(host.continuation, 1)
     expect(await host.destroy()).toEqual({ state: 'released', failures: [] })
-    const backlog = await host.continuation.claim()
+    const backlog = await collectHandoff(host.continuation)
     expect(backlog.values.map(item => [...item.value])).toContainEqual([0, 75])
     expect(backlog.disposed).toBe(true)
   })
 })
+
+test('real N-API V1 retirement cannot release a V2 receipt', async () => {
+  const { backend, stage, harness } = await h.openBackend('corebluetooth')
+  const host = await createDesktopProcessHostFromBackend(backend, { now: () => performance.now() })
+  await withHostCleanup(host, async () => {
+    const peerId = ids.corebluetooth
+    await stage.stageServices(peerId, h.hrmServices())
+    await host.continuation.execute(declaration(peerId))
+    await stage.stageNotification({
+      peerId,
+      serviceUuid: h.HRM_SERVICE,
+      characteristicUuid: h.HRM_MEASUREMENT,
+      value: Buffer.from([0, 76])
+    })
+    await h.awaitContinuationQueuedData(host.continuation, 1)
+    const native = harness.opened.at(-1)
+    const prepared = JSON.parse(await native.continuationPrepareRetainedClaimV2(256, 65536))
+    const token = prepared.value.claimToken
+    await native.continuationAcknowledgeRetainedClaimV2(token)
+    expect(JSON.parse(await native.continuationRetireRetainedClaimReceiptV1(token))).toMatchObject({ ok: false })
+  })
+})
+
+test('real N-API V1 retirement retry is idempotent', async () => {
+  const { backend, stage, harness } = await h.openBackend('corebluetooth')
+  const host = await createDesktopProcessHostFromBackend(backend, { now: () => performance.now() })
+  await withHostCleanup(host, async () => {
+    const peerId = ids.corebluetooth
+    await stage.stageServices(peerId, h.hrmServices())
+    await host.continuation.execute(declaration(peerId))
+    await stage.stageNotification({ peerId, serviceUuid: h.HRM_SERVICE, characteristicUuid: h.HRM_MEASUREMENT, value: Buffer.from([0, 77]) })
+    await h.awaitContinuationQueuedData(host.continuation, 1)
+    const native = harness.opened.at(-1)
+    const prepared = JSON.parse(await native.continuationPrepareRetainedClaimV1(256, 65536))
+    const token = prepared.value.claimToken
+    await native.continuationAcknowledgeRetainedClaimV1(token)
+    expect(JSON.parse(await native.continuationRetireRetainedClaimReceiptV1(token))).toMatchObject({ ok: true })
+    expect(JSON.parse(await native.continuationRetireRetainedClaimReceiptV1(token))).toMatchObject({ ok: true })
+  })
+})
+
 
 test('initialization cleanup failure exposes exact native retry owner', async () => {
   const { backend, stage } = await h.openBackend('corebluetooth')

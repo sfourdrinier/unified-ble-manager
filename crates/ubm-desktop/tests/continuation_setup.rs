@@ -59,6 +59,9 @@ impl ContinuationHost for Host {
     }
 }
 impl ContinuationSession for Session {
+    fn legacy_claim_compatible(&self) -> bool {
+        true
+    }
     fn attach_journal(
         &self,
         journal: Arc<ubm_desktop::continuation_journal::ContinuationJournal>,
@@ -189,12 +192,26 @@ impl ContinuationSession for Session {
             envelope(Ok(value))
         })
     }
-    fn drain(&self, items: u32, bytes: u32) -> ContinuationFuture<'_> {
-        Box::pin(async move {
-            self.outbox
-                .drain(items as usize, bytes as usize)
-                .to_string()
-        })
+    fn claim_drain(
+        &self,
+        items: u32,
+        bytes: u32,
+    ) -> Result<Option<ubm_desktop::continuation_outbox::DrainClaim>> {
+        self.outbox
+            .claim_drain(items as usize, bytes as usize)
+            .map_err(ubm_desktop::continuation::continuation_drain_error)
+    }
+    fn acknowledge_drain(&self, id: u64) -> Result<()> {
+        if self.outbox.acknowledge_drain(id) {
+            Ok(())
+        } else {
+            Err(json!({"code":"claim.mismatch"}))
+        }
+    }
+    fn has_retained_tail(&self) -> Result<bool> {
+        self.outbox
+            .has_retained_tail()
+            .map_err(ubm_desktop::continuation::continuation_drain_error)
     }
 }
 fn fixture() -> (NativeContinuation, Arc<Session>, String) {

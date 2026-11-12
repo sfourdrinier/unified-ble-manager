@@ -50,12 +50,24 @@ function runCargo(args) {
 }
 
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-ble-apple-native-protocol-'))
+const scanRecoveryFixtureHome = path.join(temporaryDirectory, 'scan-recovery-home')
+const scanRecoveryFixtureDirectory = path.join(scanRecoveryFixtureHome, 'Library', 'Application Support', 'ubm-continuation')
+const scanRecoveryLifecycleDirectory = path.join(temporaryDirectory, 'scan-recovery-lifecycle')
 const executable = path.join(temporaryDirectory, 'AppleCoreBluetoothScanParserHarness')
 const provenanceExecutable = path.join(temporaryDirectory, 'AppleCoreBluetoothReadNotifyProvenanceHarness')
 const ingressExecutable = path.join(temporaryDirectory, 'AppleNativeIngressOrdinalHarness')
 const borrowerOwnerExecutable = path.join(temporaryDirectory, 'AppleCoreBluetoothBorrowerOwnerHarness')
+const borrowerRoutesExecutable = path.join(temporaryDirectory, 'AppleCachedRadioMultiBorrowerHarness')
 const executionExecutable = path.join(temporaryDirectory, 'AppleNativeProtocolExecutionHarness')
 const rustRadioAdapterExecutable = path.join(temporaryDirectory, 'AppleRustRadioAdapterHarness')
+const scanLossAdapterExecutable = path.join(temporaryDirectory, 'AppleScanLossAdapterHarness')
+const orderedGroupBridgeExecutable = path.join(temporaryDirectory, 'AppleRustOrderedGroupBridgeHarness')
+const groupCaptureOwnerExecutable = path.join(temporaryDirectory, 'AppleOrderedGroupCaptureOwnerHarness')
+const groupBridgeCaptureExecutable = path.join(temporaryDirectory, 'AppleOrderedGroupBridgeCaptureHarness')
+const orderedIngressExecutable = path.join(temporaryDirectory, 'AppleOrderedNotificationIngressHarness')
+const graphQueueExecutable = path.join(temporaryDirectory, 'AppleGraphDeferredQueueHarness')
+const orderedRadioExecutable = path.join(temporaryDirectory, 'AppleOrderedRadioCallbackHarness')
+const orderedSourceFactoryExecutable = path.join(temporaryDirectory, 'AppleOrderedSourceFactoryHarness')
 const continuationExecutable = path.join(temporaryDirectory, 'AppleContinuationStatusHarness')
 const accessorySources = [
   'ios/AccessoryChoiceOwner.swift',
@@ -116,14 +128,44 @@ const ownedRadioSources = [
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioDescriptors.swift'),
-  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift')
+  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift'),
+  path.join(root, 'ios/Owned/OwnedGraphDeferredQueue.swift'),
+  path.join(root, 'ios/Owned/OwnedOrderedNotificationIngress.swift')
 ]
 const continuationSources = [
   path.join(uniffiSwiftDirectory, 'ubm_echo.swift'),
   ...ownedRadioSources,
+  path.join(root, 'ios/Owned/AppleOrderedGroupCaptureOwner.swift'),
+  path.join(root, 'ios/Owned/UnifiedBleRustOrderedGroupBridge.swift'),
   path.join(root, 'ios/UnifiedBleRustRadioAdapter.swift'),
+  path.join(root, 'ios/UnifiedBleRustOrderedRadioAdapter.swift'),
   path.join(root, 'ios/UnifiedBleRustCoreSessions.swift')
 ]
+
+// A pod consumer imports the compiled Swift module, not the generated FFI
+// source. Verify that the selected XCFramework-style Headers directory makes
+// its transitive Clang module discoverable without application-supplied
+// OTHER_SWIFT_FLAGS. UniFFI's generated map is custom-named, so the canonical
+// Apple builder stages a derived conventional module.modulemap beside it.
+function testSwiftConsumerFfiModuleDiscovery() {
+  const headers = path.join(temporaryDirectory, 'ConsumerFfiHeaders')
+  // Swift resolves `import BlePlx` from the module-name-derived filename.
+  const module = path.join(temporaryDirectory, 'BlePlx.swiftmodule')
+  const consumer = path.join(temporaryDirectory, 'ConsumerImportsBlePlx.swift')
+  fs.mkdirSync(headers, { recursive: true })
+  fs.copyFileSync(path.join(uniffiSwiftDirectory, 'ubm_echoFFI.h'), path.join(headers, 'ubm_echoFFI.h'))
+  fs.copyFileSync(path.join(uniffiSwiftDirectory, 'ubm_echoFFI.modulemap'), path.join(headers, 'module.modulemap'))
+  fs.writeFileSync(consumer, 'import BlePlx\n')
+  run('xcrun', [
+    '--sdk', 'macosx', 'swiftc', '-parse-as-library', '-emit-module', '-module-name', 'BlePlx',
+    '-Xcc', `-I${headers}`, path.join(uniffiSwiftDirectory, 'ubm_echo.swift'),
+    '-emit-module-path', module
+  ])
+  run('xcrun', [
+    '--sdk', 'macosx', 'swiftc', '-typecheck', '-I', temporaryDirectory,
+    '-Xcc', `-I${headers}`, consumer
+  ])
+}
 
 function compileIosContinuationBootstrap() {
   const sdk = childProcess
@@ -183,6 +225,7 @@ function compileIosContinuationBootstrap() {
 
 try {
   testAccessoryChooser()
+  testSwiftConsumerFfiModuleDiscovery()
   run(process.execPath, [path.join(root, 'scripts/native-protocol/test-native-protocol.js')])
   run('xcrun', [
     '--sdk',
@@ -214,6 +257,165 @@ try {
     borrowerOwnerExecutable
   ])
   run(borrowerOwnerExecutable, [])
+  run('xcrun', [
+    '--sdk', 'macosx', 'swiftc',
+    ...ownedRadioSources,
+    path.join(root, 'ios/__tests__/AppleCachedRadioMultiBorrowerHarness.swift'),
+    '-o', borrowerRoutesExecutable
+  ])
+  // Shared admission remains a red regression until physical ownership and
+  // release are borrower-scoped. Exercise the implemented routing separately.
+  for (const flag of [
+    '--notification-cancel-stale-claim',
+    '--ordered-native-claim-fence',
+    '--notification-failure-cleanup-collision',
+    '--notification-service-cleanup-collision',
+    '--notification-join-stale-claim',
+    '--notification-join-stale-route',
+    '--notification-first-stale-join-current',
+    '--notification-stale-disable',
+    '--notification-stale-before-disconnect-fence',
+    '--notification-teardown-replaced-claim',
+    '--notification-teardown-replaced-route',
+    '--notification-deferred-old-callback',
+    '--notification-deferred-departed-error',
+    '--notification-deferred-departed-legacy-error',
+    '--notification-deferred-successful-disable',
+    '--notification-full-gate-successful-disable',
+    '--notification-immediate-failure-capture',
+    '--notification-full-gate-error',
+    '--notification-full-gate-off',
+    '--notification-stale-claim-callback',
+    '--notification-pending-claim',
+    '--preparation-borrower-collision',
+    '--stale-cleanup-operation-reuse',
+    '--fallback-cleanup-receipt-collision',
+    '--fallback-notification-collision',
+    '--fallback-rssi-collision',
+    '--fallback-connection-collision',
+    '--scan-loss-isolation',
+    '--scan-release-owner',
+    '--scan-release-retry',
+    '--scan-reset-fanout',
+    '--connection-ownership-red',
+    '--connection-cancel-collision',
+    '--connection-pending-release',
+    '--connection-cross-peer-collision',
+    '--connection-failure-retry',
+    '--connection-stale-callback',
+    '--connection-terminal-fence',
+    '--connection-final-release',
+    '--claim-disconnect-routes',
+    '--claim-disconnect-physical-cleanup',
+    '--claim-partial-notification-cleanup',
+    '--claim-partial-route-replaced',
+    '--claim-notification-retention-refused',
+    '--borrower-pending-failure-fence',
+    '--claim-partial-other-borrower',
+    '--claim-readiness-fanout',
+    '--borrower-retry-nonconnection',
+    '--claim-unresolved-cleanup-fence',
+    '--claim-state-and-service-fanout',
+    '--claim-shared-discovery',
+    '--claim-discovery-retirement',
+    '--claim-discovery-cancel-collision',
+    '--claim-gatt-retirement',
+    '--claim-gatt-cancel-collision',
+    '--claim-gatt-generation',
+    '--claim-gatt-write-fence',
+    '--claim-gatt-cancel-write',
+    '--claim-gatt-admission',
+    '--claim-gatt-queued-cancel',
+    '--claim-gatt-write-readiness',
+    '--claim-descriptor-admission',
+    '--claim-descriptor-retirement',
+    '--claim-rssi-descriptor-cancel-collision',
+    '--claim-descriptor-rssi-cancel-collision',
+    '--claim-rssi-generation',
+    '--claim-rssi-retirement',
+    '--claim-discovery-receipt-collision',
+    '--claim-gatt-write-limit'
+  ]) run(borrowerRoutesExecutable, [flag])
+  run(borrowerRoutesExecutable, ['--routes'])
+  run(borrowerRoutesExecutable, ['--scan-duplicates'])
+  run(borrowerRoutesExecutable, ['--scan-leases'])
+  run(borrowerRoutesExecutable, ['--scan-fence'])
+  run(borrowerRoutesExecutable, ['--scan-saturation'])
+  run(borrowerRoutesExecutable, ['--scan-loss-lifecycle'])
+  run(borrowerRoutesExecutable, ['--scan-teardown-race'])
+  run(borrowerRoutesExecutable, ['--borrower-release-retry-isolation'])
+  run(borrowerRoutesExecutable, ['--borrower-release-stale-retry'])
+  run('xcrun', [
+    '--sdk',
+    'macosx',
+    'swiftc',
+    path.join(root, 'ios/Owned/OwnedGraphDeferredQueue.swift'),
+    path.join(root, 'ios/Owned/OwnedOrderedNotificationIngress.swift'),
+    path.join(root, 'ios/__tests__/AppleOrderedNotificationIngressHarness.swift'),
+    '-o',
+    orderedIngressExecutable
+  ])
+  run(orderedIngressExecutable, [])
+  run('xcrun', [
+    '--sdk', 'macosx', 'swiftc',
+    path.join(root, 'ios/Owned/OwnedGraphDeferredQueue.swift'),
+    path.join(root, 'ios/__tests__/AppleGraphDeferredQueueHarness.swift'),
+    '-o', graphQueueExecutable
+  ])
+  run(graphQueueExecutable, [])
+  run('xcrun', [
+    '--sdk',
+    'macosx',
+    'swiftc',
+    ...ownedRadioSources,
+    path.join(root, 'ios/__tests__/AppleOrderedRadioCallbackHarness.swift'),
+    '-o',
+    orderedRadioExecutable
+  ])
+  run(orderedRadioExecutable, [])
+  run('xcrun', [
+    '--sdk',
+    'macosx',
+    'swiftc',
+    ...ownedRadioSources,
+    path.join(root, 'ios/__tests__/AppleOrderedSourceFactoryHarness.swift'),
+    '-o',
+    orderedSourceFactoryExecutable
+  ])
+  run(orderedSourceFactoryExecutable, [])
+  run('xcrun', [
+    '--sdk',
+    'macosx',
+    'swiftc',
+    path.join(root, 'ios/Owned/OwnedGraphDeferredQueue.swift'),
+    path.join(root, 'ios/Owned/OwnedOrderedNotificationIngress.swift'),
+    path.join(root, 'ios/Owned/AppleOrderedGroupCaptureOwner.swift'),
+    path.join(root, 'ios/Owned/UnifiedBleRustOrderedGroupBridge.swift'),
+    path.join(root, 'ios/__tests__/AppleRustOrderedGroupBridgeHarness.swift'),
+    '-o',
+    orderedGroupBridgeExecutable
+  ])
+  run(orderedGroupBridgeExecutable, [])
+  run('xcrun', [
+    '--sdk', 'macosx', 'swiftc',
+    path.join(root, 'ios/Owned/OwnedGraphDeferredQueue.swift'),
+    path.join(root, 'ios/Owned/OwnedOrderedNotificationIngress.swift'),
+    path.join(root, 'ios/Owned/AppleOrderedGroupCaptureOwner.swift'),
+    path.join(root, 'ios/Owned/UnifiedBleRustOrderedGroupBridge.swift'),
+    path.join(root, 'ios/__tests__/AppleOrderedGroupCaptureOwnerHarness.swift'),
+    '-o', groupCaptureOwnerExecutable
+  ])
+  run(groupCaptureOwnerExecutable, [])
+  run('xcrun', [
+    '--sdk', 'macosx', 'swiftc',
+    path.join(root, 'ios/Owned/OwnedGraphDeferredQueue.swift'),
+    path.join(root, 'ios/Owned/OwnedOrderedNotificationIngress.swift'),
+    path.join(root, 'ios/Owned/AppleOrderedGroupCaptureOwner.swift'),
+    path.join(root, 'ios/Owned/UnifiedBleRustOrderedGroupBridge.swift'),
+    path.join(root, 'ios/__tests__/AppleOrderedGroupBridgeCaptureHarness.swift'),
+    '-o', groupBridgeCaptureExecutable
+  ])
+  run(groupBridgeCaptureExecutable, [])
   run('xcrun', [
     '--sdk',
     'macosx',
@@ -250,6 +452,50 @@ try {
     rustRadioAdapterExecutable
   ])
   run(rustRadioAdapterExecutable, [])
+  // This isolated process uses a deterministic UniFFI authority only to force
+  // lifecycle failure/race outcomes; it still crosses the production Sessions
+  // and adapter boundaries.  A separate root prevents the process-global
+  // recorder configuration from masking the recovery test.
+  fs.mkdirSync(scanRecoveryLifecycleDirectory, { recursive: true })
+  run(rustRadioAdapterExecutable, [], {
+    env: {
+      ...process.env,
+      UBM_APPLE_SCAN_RECOVERY_DIRECTORY: scanRecoveryLifecycleDirectory,
+      UBM_APPLE_SCAN_RECOVERY_LIFECYCLE_ONLY: '1'
+    }
+  })
+  // The durable setup scenario must own its process-private recording root;
+  // a second configuration in the main harness is correctly rejected.
+  run(rustRadioAdapterExecutable, [], {
+    env: { ...process.env, UBM_APPLE_DURABLE_SETUP_ONLY: '1' }
+  })
+  // Seed the durable recovery sidecars before the Swift process starts. The
+  // harness gets only its normal application-support directory and exercises
+  // the production native selection/UniFFI reopen path.
+  fs.mkdirSync(scanRecoveryFixtureDirectory, { recursive: true })
+  runCargo([
+    'run', '--locked', '-p', 'ubm5_uniffi_echo', '--features', 'test-fixtures',
+    '--bin', 'seed-apple-scan-recovery-fixture', '--', scanRecoveryFixtureDirectory
+  ])
+  run(rustRadioAdapterExecutable, [], {
+    env: {
+      ...process.env,
+      HOME: scanRecoveryFixtureHome,
+      UBM_APPLE_SCAN_RECOVERY_DIRECTORY: scanRecoveryFixtureDirectory,
+      UBM_APPLE_SCAN_RECOVERY_ONLY: '1'
+    }
+  })
+  run('xcrun', [
+    '--sdk', 'macosx', 'swiftc', '-parse-as-library',
+    '-Xcc', `-fmodule-map-file=${path.join(uniffiSwiftDirectory, 'ubm_echoFFI.modulemap')}`,
+    '-I', uniffiSwiftDirectory,
+    ...continuationSources,
+    path.join(root, 'ios/__tests__/AppleScanLossAdapterHarness.swift'),
+    '-L', path.join(cargoTargetDirectory(), 'debug'), '-lubm5_uniffi_echo',
+    '-framework', 'Security', '-framework', 'CoreBluetooth', '-framework', 'SystemConfiguration',
+    '-o', scanLossAdapterExecutable
+  ])
+  run(scanLossAdapterExecutable, [])
   compileIosContinuationBootstrap()
   run('xcrun', [
     '--sdk',

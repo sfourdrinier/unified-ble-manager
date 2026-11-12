@@ -432,6 +432,7 @@ class NavigatorCharacteristicBoundary implements WebBluetoothCharacteristicBound
 
   addNotificationListener(listener: WebBluetoothNotificationListener): void {
     const browserListener = (event: BrowserBluetoothNotificationEvent) => {
+      // Reads and remote updates use this same event; forward every value.
       const value = event.target.value
       if (value !== undefined && value !== null) {
         listener(copyView(value))

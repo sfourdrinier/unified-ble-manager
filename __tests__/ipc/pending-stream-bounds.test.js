@@ -3,7 +3,7 @@
 const { IpcBleManager, inspectIpcPendingStreamAccountingForTests } = require('../../src/ipc/manager')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 
-function negotiated(axis, value = axis === 'ipc-protocol' ? 6 : 1) {
+function negotiated(axis, value = axis === 'ipc-protocol' ? 10 : 1) {
   const selected = { axis, value }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
@@ -123,7 +123,7 @@ async function firstStreamItem(ipc, streamId) {
 }
 
 describe('IPC pre-registration stream buffering', () => {
-  test('retains host-global loss across pending value saturation and terminal', async () => {
+  test('reports pending value saturation then terminalizes host-global loss', async () => {
     const { ipc, emit } = await createIpcHarness()
     const notice = { kind: 'source-loss', scope: 'host-global', source: 'notification-ingress', lostRecords: 2 }
     emit('global-loss', notice, 'loss-1')
@@ -135,7 +135,23 @@ describe('IPC pre-registration stream buffering', () => {
     emit('global-loss', { kind: 'terminal', reason: 'closed' }, 'global-terminal')
     await flushPump()
     const iterator = ipc.registerStream('global-loss', isRecord)[Symbol.asyncIterator]()
-    expect((await iterator.next()).value).toEqual({ ...notice, lostRecords: 4 })
+    // The ordinary iterator keeps its stable control vocabulary: it reports
+    // pending-buffer overflow and later terminates overflow. A loss-aware
+    // projection, not this generic IPC stream, exposes host-global provenance.
+    expect((await iterator.next()).value).toEqual({
+      kind: 'overflow',
+      policy: 'drop-oldest',
+      droppedItems: 2,
+      droppedBytes: 72,
+      replacedItems: 0
+    })
+    // The reserved terminal control preserves values already accepted after
+    // the two pre-registration drops; host-global uncertainty determines the
+    // final overflow terminal after that accepted suffix.
+    for (let index = 2; index < 130; index += 1) {
+      expect((await iterator.next()).value).toEqual({ kind: 'value', value: { index } })
+    }
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
     await ipc.destroy()
   })
 
@@ -779,7 +795,7 @@ describe('IPC pre-registration stream buffering', () => {
     })
   })
 
-  test('error-policy tombstone retains host-global notice and exact lost counts', async () => {
+  test('tombstone preserves local overflow counters on its authoritative source-failed terminal', async () => {
     let now = 0
     const { ipc, emit } = await createIpcHarness({ now: () => now })
     emit(
@@ -796,15 +812,18 @@ describe('IPC pre-registration stream buffering', () => {
     now = 5_001
     const onTerminal = jest.fn()
     const iterator = ipc.registerStream('tomb-loss', isRecord, undefined, 'error', onTerminal)[Symbol.asyncIterator]()
-    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 3 })
-    expect((await iterator.next()).value).toMatchObject({ kind: 'overflow', droppedItems: 2, droppedBytes: 7 })
-    expect((await iterator.next()).value).toMatchObject({
+    const terminal = (await iterator.next()).value
+    expect(terminal).toMatchObject({
       kind: 'terminal',
-      reason: 'overflow',
+      // Expiry is the authoritative tombstone outcome. Host-global loss is
+      // loss-aware provenance, not an ordinary generic-stream item, and the
+      // earlier overflow remains in the terminal's cumulative counters.
+      reason: 'source-failed',
       droppedItems: 2,
       droppedBytes: 7
     })
-    expect(onTerminal).toHaveBeenCalledWith('overflow')
+    expect(terminal).not.toHaveProperty('error')
+    expect(onTerminal).toHaveBeenCalledWith('source-failed')
     await ipc.destroy()
   })
 

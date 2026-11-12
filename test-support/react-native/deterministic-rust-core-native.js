@@ -1,7 +1,7 @@
 // test-support/react-native/deterministic-rust-core-native.js
 //
 // A deterministic `UnifiedBleRustCore` native module (src/NativeUnifiedBleRustCore.ts)
-// that speaks wire `ubm-mobile-wire/2` (docs/MOBILE_RUST_WIRE.md) over JSON
+// that speaks wire `ubm-mobile-wire/3` (docs/MOBILE_RUST_WIRE.md) over JSON
 // text exactly as the Rust mobile owner does: the argument key sets are the
 // owner's (`crates/ubm-mobile/src/session.rs`), every answer is envelope or
 // drain JSON text, and rejections carry the structured failure JSON. Tests pass
@@ -13,6 +13,8 @@
 // are emitted on a microtask, like a native event.
 
 const { Buffer: NodeBuffer } = require('node:buffer')
+const { createHash } = require('node:crypto')
+const { ORDERED_SCHEMAS, validateOrderedArgs } = require('./deterministic-rust-core-native-ordered')
 /**
  * The sealed identity the double answers with. Read from the TypeScript
  * sources under jest; a harness outside jest (the packed-package proof)
@@ -32,7 +34,7 @@ const EFFECTFUL_OPS = new Set([
   'connection.request-phy'
 ])
 
-const WIRE_REVISION = 'ubm-mobile-wire/2'
+const WIRE_REVISION = 'ubm-mobile-wire/3'
 const SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb'
 const CHARACTERISTIC_UUID = '00002a37-0000-1000-8000-00805f9b34fb'
 const CCCD_UUID = '00002902-0000-1000-8000-00805f9b34fb'
@@ -42,8 +44,13 @@ const USER_DESCRIPTION_UUID = '00002901-0000-1000-8000-00805f9b34fb'
 const DEFAULT_PEER = 'A0:9E:1A:00:00:01'
 
 const ARG_SCHEMAS = Object.freeze({
+  ...ORDERED_SCHEMAS,
   'adapter.state': [[], []],
   'counters.describe': [[], []],
+  'terminal-evidence.reserve': [['producer', 'maximumBytes', 'formatVersion', 'scope'], []],
+  'terminal-evidence.commit': [['reservationId', 'canonicalBytesBase64', 'digest'], []],
+  'terminal-evidence.read': [['ref', 'maximumBytes'], []],
+  'terminal-evidence.release': [['reservationId'], []],
   'peers.known': [[], []],
   'peers.connected': [['operationId', 'services'], ['budgetMs']],
   'peers.restored': [[], []],
@@ -54,7 +61,7 @@ const ARG_SCHEMAS = Object.freeze({
   'peers.resolve': [['reference', 'operationId'], ['budgetMs']],
   'scan.start': [
     ['serviceUuids', 'duplicatePolicy', 'operationId'],
-    ['deviceAddresses', 'platform', 'budgetMs', 'lifetimeMs']
+    ['deviceAddresses', 'platform', 'budgetMs', 'lifetimeMs', 'terminalEvidenceScope']
   ],
   'scan.stop': [['operationId'], ['budgetMs']],
   'connection.connect': [
@@ -238,6 +245,11 @@ function batteryLevel(occurrence, value, descriptors) {
  * companion association).
  */
 class DeterministicRustCoreNative {
+  async configureTerminalEvidenceMaximumBytes(maximumBytes) {
+    this.calls.push(['configureTerminalEvidenceMaximumBytes', maximumBytes])
+    if (!/^[1-9][0-9]*$/.test(maximumBytes)) throw new Error('invalid terminal evidence maximum')
+  }
+
   constructor({
     platform = 'android',
     peripherals = [defaultPeripheral()],
@@ -323,6 +335,9 @@ class DeterministicRustCoreNative {
     this.completedWrites = []
     this.nextGeneration = 1
     this.nextBackground = 1
+    this.nextTerminalEvidenceReservation = 1
+    this.terminalEvidenceReservations = new Map()
+    this.terminalEvidenceCommitted = new Map()
     this.pendingPair = null
     this.restorationAnswer = null
     /** Records `session.dispose` answers before releasing (release-failed injection). */
@@ -426,10 +441,18 @@ class DeterministicRustCoreNative {
     const session = this.session(sessionId)
     let args
     try {
-      args = JSON.parse(argsJson)
-    } catch {
+      if (op.startsWith('gatt.ordered.') && NodeBuffer.byteLength(argsJson, 'utf8') > 1048576) {
+        throw new WireFault('bytes.too-large', 'core', `ubm-mobile.wire.args.${op}`)
+      }
+      args = op.startsWith('gatt.ordered.')
+        ? JSON.parse(argsJson, (_key, value, context) =>
+          typeof value === 'number' && /[.eE]/.test(context.source) ? Number.NaN : value)
+        : JSON.parse(argsJson)
+    } catch (error) {
+      if (error instanceof WireFault) return this.failure(op, error)
       return this.failure(op, invalid('args'))
     }
+    if (typeof args !== 'object' || args === null || Array.isArray(args)) return this.failure(op, invalid('args'))
     const operationId = typeof args.operationId === 'string' ? args.operationId : null
     const admission = args.admission
     let writeAdmission = null
@@ -465,6 +488,7 @@ class DeterministicRustCoreNative {
       }
       const [required, optional] = ARG_SCHEMAS[op]
       exact(args, required, optional)
+      if (op.startsWith('gatt.ordered.')) validateOrderedArgs(op, args, invalid, WireFault, canonicalUuid)
       const namesOperation = operationId !== null && op !== 'op.cancel' && op !== 'scan.stop'
       if (op === 'op.cancel' ? admission === undefined : namesOperation !== (admission !== undefined)) {
         throw new WireFault(
@@ -756,12 +780,12 @@ class DeterministicRustCoreNative {
   }
 
   /** The owner ends every consumer on `peerId` with `reason` while the link stays up. */
-  endConsumer(peerId, reason, droppedItems = 0, droppedBytes = 0) {
+  endConsumer(peerId, reason, droppedItems = 0, droppedBytes = 0, error = undefined) {
     for (const session of this.liveSessions()) {
       for (const [consumer, entry] of [...session.consumers]) {
         if (entry.peerId !== peerId) continue
         session.consumers.delete(consumer)
-        const terminal = { reason, droppedItems, droppedBytes }
+        const terminal = { reason, droppedItems, droppedBytes, ...(error === undefined ? {} : { error }) }
         session.endedConsumers.set(consumer, terminal)
         this.push(session, { t: 'stream-end', consumer, ...terminal })
       }
@@ -1139,6 +1163,45 @@ class DeterministicRustCoreNative {
       throw new WireFault('capability.unsupported', 'capability', op, 'CoreBluetooth has no such control')
     }
     switch (op) {
+      case 'terminal-evidence.reserve': {
+        if (args.producer !== 'scan' && args.producer !== 'subscription') throw invalid('args.producer')
+        if (!Number.isSafeInteger(args.maximumBytes) || args.maximumBytes < 1) throw invalid('args.maximumBytes')
+        const reservationId = `terminal-evidence-${this.nextTerminalEvidenceReservation++}`
+        this.terminalEvidenceReservations.set(reservationId, { ...args, committed: null, released: false })
+        return { maximumBytes: args.maximumBytes, reservationId }
+      }
+      case 'terminal-evidence.commit': {
+        const reservation = this.terminalEvidenceReservations.get(args.reservationId)
+        if (reservation === undefined || reservation.released) throw new WireFault('lifecycle.invalid-state', 'stream', op)
+        if (typeof args.canonicalBytesBase64 !== 'string') throw invalid('args.canonicalBytesBase64')
+        const canonicalBytes = new Uint8Array(NodeBuffer.from(args.canonicalBytesBase64, 'base64'))
+        if (canonicalBytes.byteLength > reservation.maximumBytes) throw new WireFault('bytes.too-large', 'stream', op)
+        if (typeof args.digest !== 'string' || !/^[0-9a-f]{64}$/u.test(args.digest)) throw invalid('args.digest')
+        const digest = createHash('sha256').update(canonicalBytes).digest('hex')
+        if (digest !== args.digest) throw invalid('args.digest')
+        if (reservation.committed !== null) {
+          if (reservation.committed.digest !== digest || !NodeBuffer.from(reservation.committed.canonicalBytes).equals(NodeBuffer.from(canonicalBytes))) throw invalid('args.reservationId')
+          return reservation.committed.receipt
+        }
+        const receipt = Object.freeze({ kind: 'committed', ref: `terminal-evidence-ref-${args.reservationId}`, byteLength: canonicalBytes.byteLength, digest, formatVersion: 1, durability: 'committed' })
+        reservation.committed = Object.freeze({ canonicalBytes, digest, receipt })
+        this.terminalEvidenceCommitted.set(receipt.ref, reservation.committed)
+        return receipt
+      }
+      case 'terminal-evidence.read': {
+        if (!Number.isSafeInteger(args.maximumBytes) || args.maximumBytes < 0) throw invalid('args.maximumBytes')
+        const committed = this.terminalEvidenceCommitted.get(args.ref)
+        if (committed === undefined) throw new WireFault('lifecycle.invalid-state', 'stream', op)
+        if (committed.canonicalBytes.byteLength > args.maximumBytes) throw new WireFault('bytes.too-large', 'stream', op)
+        return { canonicalBytesBase64: NodeBuffer.from(committed.canonicalBytes).toString('base64'), digest: committed.digest }
+      }
+      case 'terminal-evidence.release': {
+        const reservation = this.terminalEvidenceReservations.get(args.reservationId)
+        if (reservation === undefined || reservation.released) throw new WireFault('lifecycle.invalid-state', 'stream', op)
+        reservation.released = true
+        if (reservation.committed === null) this.terminalEvidenceReservations.delete(args.reservationId)
+        return { released: true, retainedForRecovery: reservation.committed !== null }
+      }
       case 'adapter.state':
         return this.adapter
       case 'counters.describe':
@@ -1287,6 +1350,15 @@ class DeterministicRustCoreNative {
         const mtu = this.negotiatedMtu.get(args.peerId) ?? 23
         return { maximumWriteLength: args.mode === 'with-response' ? 512 : mtu - 3 }
       }
+      case 'gatt.ordered.version':
+        return { wireVersion: 2 }
+      case 'gatt.ordered.failure-metadata.version':
+        return { versions: [1] }
+      case 'gatt.ordered.capacity.version':
+        return { wireVersion: 1, maximumMaxBytes: 4194304 }
+      case 'gatt.ordered.marker.version':
+      case 'gatt.ordered.recording-reclaim.version':
+        return { wireVersion: 0 }
       case 'connection.control-capabilities':
         return { subrate: this.subrateAvailable }
       case 'connection.request-subrate':
@@ -1496,6 +1568,24 @@ class DeterministicRustCoreNative {
         return { state: 'released', failures: [] }
       }
       default:
+        if (op.startsWith('gatt.ordered.marker.')) {
+          throw new WireFault('capability.unsupported', 'capability', 'gatt.ordered.marker', 'ordered marker writes are unavailable')
+        }
+        if (op.startsWith('gatt.ordered.recording-reclaim.')) {
+          throw new WireFault('capability.unsupported', 'gatt', 'gatt.ordered.recording-reclaim')
+        }
+        if (op === 'gatt.ordered.reserve') {
+          if (![...session.leases.values()].some(lease => lease.peerId === args.peerId && lease.connected)) {
+            throw new WireFault('ownership.denied', 'connection', op)
+          }
+          throw new WireFault('capability.unsupported', 'capability', op, 'ordered radio is unavailable in the deterministic double')
+        }
+        if (op.startsWith('gatt.ordered.')) {
+          const operation = op === 'gatt.ordered.reclaim' || op === 'gatt.ordered.open' || op === 'gatt.ordered.forget-group'
+            ? op : 'gatt.ordered.owner'
+          const domain = op === 'gatt.ordered.forget-group' ? 'cleanup' : 'gatt'
+          throw new WireFault('ownership.denied', domain, operation)
+        }
         throw invalid('op')
     }
   }

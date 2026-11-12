@@ -159,20 +159,63 @@ export function cloneObservation<Attachment extends string>(
 export function advertisementByteLength<Attachment extends string>(
   observation: AdvertisementObservation<Attachment>
 ): number {
-  let size = 64
-  size += byteFieldLength(observation.rawRecord)
-  size += byteFieldLength(observation.scanResponseRecord)
-  if (observation.serviceData.state === 'present') {
-    for (const entry of observation.serviceData.value) {
-      size += entry.value.byteLength
+  return retainedScanValueBytes(observation)
+}
+
+/** Backing allocations reachable from a retained scan value, including shared views. */
+export function retainedScanValueBuffers(value: unknown): readonly ArrayBufferLike[] {
+  const objects = new Set<object>()
+  const buffers = new Set<ArrayBufferLike>()
+  const visit = (part: unknown): void => {
+    if (typeof part !== 'object' || part === null || objects.has(part)) return
+    objects.add(part)
+    if (part instanceof Uint8Array) {
+      buffers.add(part.buffer)
+      return
     }
+    for (const entry of Object.values(part)) visit(entry)
   }
-  if (observation.manufacturerData.state === 'present') {
-    for (const entry of observation.manufacturerData.value) {
-      size += entry.value.byteLength
+  visit(value)
+  return [...buffers]
+}
+
+/** Charge one retained object graph, including references and full backing buffers. */
+export function retainedScanValueBytes(value: unknown): number {
+  const objects = new Set<object>()
+  const strings = new Set<string>()
+  const buffers = new Set<ArrayBufferLike>()
+  const measure = (part: unknown): number => {
+    if (typeof part === 'string') {
+      if (strings.has(part)) return 0
+      strings.add(part)
+      return part.length * 2
     }
+    if (typeof part !== 'object' || part === null || objects.has(part)) return 0
+    objects.add(part)
+    if (part instanceof Uint8Array) {
+      const buffer = part.buffer
+      if (buffers.has(buffer)) return 0
+      buffers.add(buffer)
+      return buffer.byteLength
+    }
+    if (Array.isArray(part)) return part.length * 8 + part.reduce<number>((sum, entry) => sum + measure(entry), 0)
+    return Object.entries(part).reduce<number>(
+      (sum, [key, entry]) =>
+        sum +
+        (key === 'state' || key === 'provenance' || key === 'origin' || key === 'scope' || key === 'type'
+          ? 0
+          : measure(entry)),
+      0
+    )
   }
-  return size
+  return 64 + measure(value)
+}
+
+/** The existing per-delivery budget measures packet payload, not retained metadata. */
+export function advertisementDeliveryByteLength<Attachment extends string>(
+  observation: AdvertisementObservation<Attachment>
+): number {
+  return 64 + advertisementPayloadByteLength(observation)
 }
 
 export function advertisementPayloadByteLength<Attachment extends string>(

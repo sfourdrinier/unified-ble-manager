@@ -12,6 +12,17 @@ import java.security.SecureRandom
 
 /** The JS declare/status/claim surface persists and reports the standing order. */
 class RustCoreContinuationSessionsTest {
+  @Test fun coldBoundPortUsesIndependentRecordingAuthority() {
+    val calls = mutableListOf<String>()
+    val port = JniBoundMobileCorePort(offlineRecordingControl = { operation, id, token, items, bytes ->
+      calls.add("$operation:$id:$token:$items:$bytes")
+      "{\"ok\":true}"
+    }, offlineRecordingVersion = { 7 })
+    assertEquals("{\"ok\":true}", port.continuationRecordingControl("prepare", "capture", "", 2, 4096))
+    assertEquals(listOf("prepare:capture::2:4096"), calls)
+    assertEquals(7, port.orderedRecordingVersion())
+    assertFalse(port.hostInstalled())
+  }
   @Test fun foregroundServiceWrapperPreservesItsStableIdentityOverSecurityCause() {
     val failure = classifyBackgroundFailure(com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException(
       "foregroundServicePermissionDenied", "Check Bluetooth permission and foreground-service entitlements", SecurityException("binder denied")

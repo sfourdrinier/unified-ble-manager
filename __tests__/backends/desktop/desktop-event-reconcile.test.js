@@ -72,7 +72,7 @@ async function openLaggingBackend(platform) {
               }
             ])
         }
-        if (property === 'pollNotification') {
+        if (property === 'pollNotification' || property === 'pollNotificationV2') {
           return async (...args) => {
             // Held: the poll has not come round yet, so the core keeps the
             // values queued until the hold is released.

@@ -13,8 +13,34 @@ function limits(itemCapacity, byteCapacity, reservedControlCapacity) {
 }
 
 describe('CoreBoundedStream', () => {
-  test('retains coalesced host-global uncertainty alongside exact overflow through finish', async () => {
-    const stream = new CoreBoundedStream(limits(1, 8, 1), 'drop-newest')
+  test('explicit disposal releases a closed exclusive stream without delivering its terminal', async () => {
+    const quota = new AggregateStreamQuota(4)
+    const stream = new CoreBoundedStream(limits(2, 8, 1), 'error', true)
+    quota.register(stream)
+    stream.onRetainedValuesDrained(() => quota.unregister(stream))
+    expect(() => stream.dispose()).toThrow()
+    await stream.close()
+    expect(quota.retainedBytes()).toBe(1)
+    stream.dispose()
+    stream.dispose()
+    expect(quota.retainedBytes()).toBe(0)
+    expect((await stream[Symbol.asyncIterator]().next()).done).toBe(true)
+  })
+  test('keeps source and subscriber overflow counters separate in each notice snapshot', async () => {
+    const stream = new CoreBoundedStream(limits(1, 20, 1), 'drop-newest')
+    stream.observeSourceOverflow({ kind: 'overflow', policy: 'drop-oldest', droppedItems: resourceCount(3), droppedBytes: resourceCount(9), replacedItems: resourceCount(1) })
+    stream.emit('kept', 2)
+    stream.emit('dropped', 4)
+    const notice = (await stream[Symbol.asyncIterator]().next()).value
+    stream.emit('another dropped value', 5)
+    expect(stream.overflowNoticeStages(notice)).toEqual({
+      upstream: { droppedItems: 3, droppedBytes: 9, replacedItems: 1 },
+      subscriber: { droppedItems: 1, droppedBytes: 4, replacedItems: 0 }
+    })
+    await stream.close()
+  })
+  test('maps host-global uncertainty to the legacy overflow terminal without fabricating counts', async () => {
+    const stream = new CoreBoundedStream(limits(1, 256, 1), 'drop-newest')
     stream.emit('kept', 2)
     stream.emit('lost', 3)
     const notice = {
@@ -27,14 +53,13 @@ describe('CoreBoundedStream', () => {
     stream.observeSourceLoss(notice)
     stream.finishWithReason('closed')
     const iterator = stream[Symbol.asyncIterator]()
-    expect((await iterator.next()).value).toEqual({ ...notice, lostRecords: 4 })
     expect((await iterator.next()).value).toMatchObject({ kind: 'overflow', droppedItems: 1, droppedBytes: 3 })
     expect((await iterator.next()).value).toMatchObject({ kind: 'value', value: 'kept' })
-    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', droppedItems: 1, droppedBytes: 3 })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow', droppedItems: 1, droppedBytes: 3 })
   })
 
-  test('explicit close after source loss releases queued payload while preserving loss and terminal', async () => {
-    const stream = new CoreBoundedStream(limits(2, 10, 1), 'error')
+  test('explicit close after source loss releases queued payload and retains the legacy overflow terminal', async () => {
+    const stream = new CoreBoundedStream(limits(2, 256, 1), 'error')
     stream.emit('queued', 4)
     stream.observeSourceLoss({
       kind: 'source-loss',
@@ -45,13 +70,12 @@ describe('CoreBoundedStream', () => {
     await stream.close()
     expect(stream.retainedPayloadBytes()).toBe(0)
     const iterator = stream[Symbol.asyncIterator]()
-    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 1 })
     expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
     expect((await iterator.next()).done).toBe(true)
   })
 
-  test('error policy exposes global uncertainty before its terminal without inventing counters', async () => {
-    const stream = new CoreBoundedStream(limits(1, 8, 1), 'error')
+  test('error policy fails closed on global uncertainty without inventing counters', async () => {
+    const stream = new CoreBoundedStream(limits(1, 256, 1), 'error')
     stream.observeSourceLoss({
       kind: 'source-loss',
       scope: 'host-global',
@@ -60,7 +84,6 @@ describe('CoreBoundedStream', () => {
     })
     stream.closeWithReason('owner-released')
     const iterator = stream[Symbol.asyncIterator]()
-    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 3 })
     expect((await iterator.next()).value).toMatchObject({
       kind: 'terminal',
       reason: 'overflow',
@@ -304,4 +327,29 @@ describe('CoreBoundedStream', () => {
     })
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined })
   })
+})
+
+test('peer source loss fails closed through the legacy overflow terminal', async () => {
+  const stream = new CoreBoundedStream(limits(4, 256, 1), 'drop-oldest')
+  const loss = { kind: 'source-loss', scope: 'peer', peerId: 'peer', generation: '18446744073709551615', skippedRecords: null }
+  stream.emit('before', 1)
+  stream.observeSourceLoss(loss)
+  stream.emit('after', 1)
+  const iterator = stream[Symbol.asyncIterator]()
+  expect((await iterator.next()).value).toEqual({ kind: 'value', value: 'before' })
+  expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow', droppedItems: 0, droppedBytes: 0 })
+  expect((await iterator.next()).done).toBe(true)
+})
+
+test('retained terminal error is charged until its terminal is consumed or explicitly closed', async () => {
+  const stream = new CoreBoundedStream(limits(2, 1024, 4), 'error')
+  const baseline = stream.retainedBytes()
+  stream.finishWithReason('source-failed', { code: 'platform.failure', domain: 'scan', operation: 'scan', retryability: 'never', platform: { domain: 'native', code: 'x', safeMessage: 'x'.repeat(500), metadata: {} } })
+  expect(stream.retainedBytes()).toBeGreaterThan(baseline + 500)
+  let released = false
+  stream.onRetainedValuesDrained(() => { released = true })
+  expect(released).toBe(false)
+  await stream[Symbol.asyncIterator]().next()
+  expect(released).toBe(true)
+  expect(stream.retainedBytes()).toBe(0)
 })

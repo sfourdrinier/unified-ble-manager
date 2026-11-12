@@ -1,10 +1,12 @@
 // src/web/web-bluetooth-errors.ts
 
 import { BackendContractError, contractError } from '../backend-contract/errors'
+import { webRecordingContractError, webStorageErrorName } from './web-recording-errors'
 import { assertScanFilter } from '../backend-contract/advertisement'
 import type { BleErrorCode, BleErrorDomain, CleanupRecord } from '../backend-contract/errors'
 import type { ChooserRequest } from '../backend-contract/host/web'
 import type { WebLinkEnd } from './web-bluetooth-handles'
+import type { WebIngressTerminalReason } from './web-notification-ingress'
 
 export interface WebErrorContext {
   readonly fallbackCode: BleErrorCode
@@ -12,19 +14,19 @@ export interface WebErrorContext {
   readonly operation: string
 }
 
-export function normalizeWebBluetoothError(error: Error, context: WebErrorContext): BackendContractError {
-  if (error instanceof BackendContractError) {
-    return error
-  }
-  const namedCode = normalizedNamedErrorCode(error.name, context)
+export function normalizeWebBluetoothError(error: unknown, context: WebErrorContext): BackendContractError {
+  // This function receives a browser rejection. Its prototype and text are
+  // supplied by the host; only the browser error-name vocabulary is exposed.
+  const name = webStorageErrorName(error)
+  const namedCode = normalizedNamedErrorCode(name, context)
   const domain = namedCode === 'connection.lost' ? 'connection' : context.domain
-  const normalized = contractError(namedCode, domain, context.operation, {
+  const normalized = webRecordingContractError(namedCode, domain, context.operation, {
     domain: 'web-bluetooth',
-    code: error.name.length === 0 ? 'Error' : error.name,
+    code: name,
     safeMessage: 'The Web Bluetooth operation failed.',
-    metadata: { browserErrorName: error.name.length === 0 ? 'Error' : error.name }
+    metadata: { browserErrorName: name }
   })
-  return isTransientEstablishmentFailure(error.name, context)
+  return isTransientEstablishmentFailure(name, context)
     ? new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
     : normalized
 }
@@ -118,5 +120,29 @@ export function validateWebChooserRequest(request: ChooserRequest): void {
     if (filter.serviceUuids.length === 0 && filter.manufacturerData.length === 0 && filter.localNamePrefix === null) {
       throw contractError('scan.filter-invalid', 'chooser', 'web-chooser.request')
     }
+  }
+}
+
+export function orderedSetupTerminalError(reason: WebIngressTerminalReason): BackendContractError {
+  switch (reason) {
+    case 'overflow':
+      return webRecordingContractError('stream.overflow', 'stream', 'web-gatt.ordered-setup')
+    case 'service-changed':
+      return webRecordingContractError('gatt.stale-handle', 'gatt', 'web-gatt.ordered-setup')
+    case 'connection-lost':
+      return webRecordingContractError('connection.lost', 'connection', 'web-gatt.ordered-setup')
+    case 'owner-released':
+      return webRecordingContractError('operation.disconnected', 'connection', 'web-gatt.ordered-setup')
+    case 'source-failed':
+      return webRecordingContractError('operation.reset', 'connection', 'web-gatt.ordered-setup')
+    case 'host-reset':
+      return webRecordingContractError('backend.reset', 'core', 'web-gatt.ordered-setup')
+    case 'operation-aborted':
+    case 'closed':
+      return webRecordingContractError('operation.aborted', 'gatt', 'web-gatt.ordered-setup')
+    case 'operation-timed-out':
+      return webRecordingContractError('operation.timed-out', 'gatt', 'web-gatt.ordered-setup')
+    case 'ordinal-exhausted':
+      return webRecordingContractError('stream.closed', 'stream', 'web-gatt.ordered-ordinal-exhausted')
   }
 }

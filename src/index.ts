@@ -34,6 +34,8 @@ export type {
   PublicScanObservation,
   PublicSourceTimestamp,
   DiscoveryEvent,
+  DiscoveryLossCountersV1,
+  LossAwareDiscoveryEventV1,
   AndroidScanMode,
   AndroidScanCallbackType,
   AndroidScanPhy,
@@ -54,7 +56,32 @@ export type {
   GattSubscription,
   GattDatabaseSnapshot,
   GattValueEvent,
+  GattOrderedMember,
+  GattOrderedRecordingStart,
+  GattOrderedRecordingStartResult,
+  GattOrderedRecordingStartReceipt,
+  GattOrderedRecordingReclaim,
+  GattOrderedRecordingReclaimReceipt,
+  GattOrderedRecordingReclaimStatus,
+  GattOrderedRecordingFailureValue,
+  GattOrderedRecordingPlatformDetail,
+  GattOrderedRecordingFailure,
+  GattOrderedRecordingStopFailure,
+  GattOrderedRecordingStorageFailure,
+  GattOrderedMarkerWrite,
+  GattOrderedMarkerWritePhase,
+  GattOrderedMarkerWriteStatus,
+  GattOrderedSetup,
+  GattOrderedStream,
+  GattOrderedItem,
+  GattOrderedCleanup,
+  GattOrderedSourceGeneration,
+  GattOrderedSourceMembership,
+  GattOrderedLossScope,
+  GattOrderedSourceRejection,
+  GattOrderedRejectedLoss,
   NotificationReceipt,
+  NotificationProvenance,
   GattValueStream,
   GattDatabaseChangedEvent,
   GattWriteReceipt,
@@ -116,6 +143,7 @@ export type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './pub
 export type {
   BleDiagnosticTraceDocument,
   BleDiagnosticTraceRecord,
+  BleDiagnosticWarning,
   BleDiagnostics,
   BleDiagnosticsSnapshot,
   BleResourceCounters
@@ -147,6 +175,7 @@ export type {
   PublicStreamLimits,
   PublicStreamOverflowNotice,
   PublicStreamSourceLossNotice,
+  PublicStreamPeerSourceLossNotice,
   PublicStreamOverflowPolicy,
   PublicStreamTerminalNotice,
   PublicStreamTerminalReason,
@@ -170,11 +199,35 @@ export type {
 export type {
   ContinuationRecordingController,
   ContinuationRecordingStatus,
+  OrderedRecordingOwnerStatus,
+  OrderedRecordingStopReceipt,
+  OrderedRecordingStopFailure,
   ContinuationRecordingBatch,
   ContinuationRecordingMetadata,
   ContinuationRecordingFailure,
+  ContinuationRecordingDiagnosticMarker,
   ContinuationRecordingPrepareOptions
 } from './core/continuation-recording'
+export type {
+  OrderedRecordingBatch,
+  OrderedRecordingContext,
+  OrderedRecordingRecord,
+  OrderedRecordingMetadata,
+  OrderedRecordingMembership,
+  OrderedRecordingScope,
+  OrderedRecordingLoss,
+  OrderedRecordingFailure,
+  OrderedRecordingFailureValue,
+  OrderedRecordingRejection,
+  OrderedRecordingReason
+} from './core/ordered-recording'
+export type {
+  OrderedRecordingRecoveryHandle,
+  OrderedRecordingReclaimReceipt,
+  OrderedRecordingReclaimHandle,
+  OrderedRecordingReclaimStatus,
+  OrderedRecordingReclaimRefusal
+} from './core/ordered-recording-reclaim'
 
 export {
   serializeContinuationRecordingRecords,

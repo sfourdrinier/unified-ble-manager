@@ -846,14 +846,16 @@ async fn r5_old_generation_scan_ticket_cannot_stop_a_replacement_scan() {
         .expect("old scan");
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+        .expect("synthetic event admission failed");
     tokio::time::timeout(std::time::Duration::from_secs(5), resets.recv())
         .await
         .expect("reset arrives")
         .expect("reset event");
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOn));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOn))
+        .expect("synthetic event admission failed");
     let replacement = central
         .start_scan("owner-a", &[], OpControl::budget_ms(5000))
         .await

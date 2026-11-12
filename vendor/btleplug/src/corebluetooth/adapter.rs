@@ -38,6 +38,7 @@ mod directory_tests {
         super::super::internal::enqueue_directory_event(
             &sender,
             CoreBluetoothEvent::RetrievedPeripheral {
+                source_owner: super::super::internal::PeerSourceOwner::new(),
                 uuid: uuid::Uuid::nil(),
                 local_name: None,
                 event_receiver: notifications,
@@ -73,9 +74,12 @@ mod directory_tests {
         let adapter = Adapter {
             manager: manager.clone(),
             sender: sender.clone(),
+            source_registry: Arc::default(),
         };
         let id = uuid::Uuid::parse_str("00e2ce71-3ba4-6569-e3de-3081ce0c95fb").unwrap();
         let mut events = adapter.events().await.unwrap();
+        let source_owner = super::super::internal::PeerSourceOwner::new();
+        let expected_owner = source_owner.clone();
         let work = adapter.directory_peers(Some(vec![id]), None);
         let answer = async {
             let CoreBluetoothMessage::DirectoryLookup {
@@ -92,6 +96,7 @@ mod directory_tests {
             let (mut queued, mut received) = mpsc::channel(8);
             queued
                 .send(CoreBluetoothEvent::RetrievedPeripheral {
+                    source_owner,
                     uuid: id,
                     local_name: Some("SIM".to_owned()),
                     event_receiver: notifications,
@@ -112,11 +117,38 @@ mod directory_tests {
         };
         let (result, ()) = tokio::join!(work, answer);
         assert_eq!(result.unwrap(), vec![(id, Some("SIM".to_owned()))]);
-        assert!(adapter.peripheral(&id.into()).await.is_ok());
+        let peripheral = adapter.peripheral(&id.into()).await.unwrap();
+        assert!(Arc::ptr_eq(peripheral.source_owner(), &expected_owner));
         // Subsequent normal connect uses this exact public handle. Lookup itself
         // has emitted no radio command or fabricated advertisement/link event.
         assert!(requests.next().now_or_never().is_none());
         assert!(events.next().now_or_never().is_none());
+    }
+
+    #[tokio::test]
+    async fn unassociated_native_callback_is_a_public_source_uncertainty_event() {
+        let manager = Arc::new(AdapterManager::<Peripheral>::default());
+        let mut events = manager.event_stream();
+        let peer = uuid::Uuid::from_u128(0xCB0B);
+        emit_unassociated_connection_observation(
+            &manager,
+            peer,
+            Some(crate::PlatformError::new(
+                "corebluetooth",
+                "unassociated-fixture",
+                "callback had no admitted native cycle",
+            )),
+        );
+        assert!(matches!(events.next().await,
+            Some(CentralEvent::DeviceSourceUncertain {
+                id,
+                graph: None,
+                platform: Some(platform),
+            }) if id == peer.into()
+                && platform.domain == "corebluetooth"
+                && platform.code == "unassociated-fixture"
+                && platform.message == "callback had no admitted native cycle"
+        ));
     }
 }
 use super::peripheral::{Peripheral, PeripheralId};
@@ -138,6 +170,7 @@ use tokio::task;
 pub struct Adapter {
     manager: Arc<AdapterManager<Peripheral>>,
     sender: Sender<CoreBluetoothMessage>,
+    source_registry: Arc<super::internal::PeerSourceRegistry>,
 }
 
 // UBM patch (UBM_PATCHES.md #7): resetting, unsupported and unauthorized
@@ -159,14 +192,16 @@ fn register_directory_peripheral(
     uuid: uuid::Uuid,
     local_name: Option<String>,
     event_receiver: mpsc::Receiver<super::internal::PeripheralEventInternal>,
+    source_owner: Arc<super::internal::PeerSourceOwner>,
 ) {
-    manager.replace_peripheral(Peripheral::new(
+    manager.replace_peripheral(Peripheral::new_with_source_owner(
         uuid,
         local_name,
         None,
         Arc::downgrade(manager),
         event_receiver,
         sender.clone(),
+        source_owner,
     ));
 }
 
@@ -184,15 +219,43 @@ fn handle_directory_event(
             None
         }
         CoreBluetoothEvent::RetrievedPeripheral {
+            source_owner,
             uuid,
             local_name,
             event_receiver,
         } => {
-            register_directory_peripheral(manager, sender, uuid, local_name, event_receiver);
+            register_directory_peripheral(
+                manager,
+                sender,
+                uuid,
+                local_name,
+                event_receiver,
+                source_owner,
+            );
             None
         }
         event => Some(event),
     }
+}
+
+fn emit_unassociated_connection_observation(
+    manager: &AdapterManager<Peripheral>,
+    uuid: uuid::Uuid,
+    error: Option<crate::PlatformError>,
+) {
+    // The callback had a real native identity but no admitted exact-object
+    // cycle. Surface that fact without letting it mutate or disconnect a
+    // replacement peripheral with the same UUID. The platform detail is
+    // retained by the typed actor-to-adapter event; CentralEvent deliberately
+    // reports the portable source-uncertainty vocabulary.
+    if let Some(error) = error.as_ref() {
+        warn!("unassociated CoreBluetooth connection observation for {uuid}: {error:?}");
+    }
+    manager.emit(CentralEvent::DeviceSourceUncertain {
+        id: uuid.into(),
+        graph: None,
+        platform: error.map(Into::into),
+    });
 }
 
 impl Adapter {
@@ -220,9 +283,26 @@ impl Adapter {
         }
     }
 
-    pub(crate) async fn new() -> Result<Self> {
+    pub fn reclaim_authority_handle(&self) -> crate::ubm_reclaim_authority::ReclaimAuthorityHandle {
+        crate::ubm_reclaim_authority::ReclaimAuthorityHandle::from_owner(self.source_registry.authorities.clone())
+    }
+
+    pub(crate) async fn new(authorities: Arc<std::sync::Mutex<crate::ubm_reclaim_authority::ReclaimAuthorities>>) -> Result<Self> {
+        Self::new_with_failure_evidence_store(authorities, None).await
+    }
+
+    pub(crate) async fn new_with_failure_evidence_store(
+        authorities: Arc<std::sync::Mutex<crate::ubm_reclaim_authority::ReclaimAuthorities>>,
+        failure_evidence_store: Option<Arc<dyn crate::ubm_peer_notification_ingress::FailureEvidenceStore>>,
+    ) -> Result<Self> {
+        let source_registry = Arc::new(
+            super::internal::PeerSourceRegistry::with_authorities_and_failure_evidence_store(
+                authorities,
+                failure_evidence_store,
+            ),
+        );
         let (sender, mut receiver) = mpsc::channel(256);
-        let adapter_sender = run_corebluetooth_thread(sender)?;
+        let adapter_sender = run_corebluetooth_thread(sender, source_registry.clone())?;
         // Since init currently blocked until the state update, we know the
         // receiver is dropped after that. We can pick it up here and make it
         // part of our event loop to update our peripherals.
@@ -252,6 +332,7 @@ impl Adapter {
                         unreachable!("directory events handled above")
                     }
                     CoreBluetoothEvent::DeviceDiscovered {
+                        source_owner,
                         uuid,
                         local_name,
                         advertisement_name,
@@ -260,13 +341,14 @@ impl Adapter {
                         // UBM patch (UBM_PATCHES.md #19): a peripheral
                         // retrieved again replaces the entry it supersedes
                         // (upstream asserted it was new).
-                        manager_clone.replace_peripheral(Peripheral::new(
+                        manager_clone.replace_peripheral(Peripheral::new_with_source_owner(
                             uuid,
                             local_name,
                             advertisement_name,
                             Arc::downgrade(&manager_clone),
                             event_receiver,
                             adapter_sender_clone.clone(),
+                            source_owner,
                         ));
                         manager_clone.emit(CentralEvent::DeviceDiscovered(uuid.into()));
                     }
@@ -283,6 +365,9 @@ impl Adapter {
                     }
                     CoreBluetoothEvent::DeviceDisconnected { uuid } => {
                         manager_clone.emit(CentralEvent::DeviceDisconnected(uuid.into()));
+                    }
+                    CoreBluetoothEvent::DeviceSourceUncertain { uuid, error } => {
+                        emit_unassociated_connection_observation(&manager_clone, uuid, error);
                     }
                     CoreBluetoothEvent::Advertised { uuid, report } => {
                         manager_clone.emit(CentralEvent::Advertisement {
@@ -301,6 +386,7 @@ impl Adapter {
         Ok(Adapter {
             manager,
             sender: adapter_sender,
+            source_registry,
         })
     }
 }
@@ -389,6 +475,7 @@ impl Central for Adapter {
                 let central_state = get_central_state(state);
                 return Ok(central_state.clone());
             }
+            CoreBluetoothReply::Failed(error) => Err(Error::Platform(error)),
             _ => panic!("Shouldn't get anything but a AdapterState!"),
         }
     }

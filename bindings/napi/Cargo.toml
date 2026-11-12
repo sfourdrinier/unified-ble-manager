@@ -11,16 +11,23 @@ repository = "https://github.com/sfourdrinier/unified-ble-manager"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+reclaim-test-support = ["ubm-desktop/reclaim-test-support"]
+
 [dependencies]
 napi = { version = "=2.16.17", features = ["napi4", "tokio_rt"] }
 napi-derive = "=2.16.13"
+serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 ubm-core = { path = "../../crates/ubm-core" }
 ubm-desktop = { path = "../../crates/ubm-desktop" }
 ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }
-
-[dev-dependencies]
-serde_json = "1"
+# The N-API dispatch boundary constructs the desktop radio's explicitly
+# typed failure-evidence store. Keep the direct dependency aligned with the
+# workspace-patched production btleplug crate; a local duplicate would make
+# the trait object incompatible with `ubm-desktop`.
+btleplug = { version = "0.12" }
 
 [build-dependencies]
 napi-build = "=2.4.2"

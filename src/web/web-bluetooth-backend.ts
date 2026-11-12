@@ -1,5 +1,12 @@
 // src/web/web-bluetooth-backend.ts
 
+import { webHostErrorEvidence, webRecordingContractError } from './web-recording-errors'
+
+import { WebOrderedMarkerStream } from './web-ordered-marker-stream'
+
+// Only this preflight creates these failures; browser rejections remain untrusted.
+const availabilityFailures = new WeakMap<object, BackendContractError>()
+
 import type {
   BackendAttachment,
   BackendConnection,
@@ -76,7 +83,12 @@ import {
 } from './web-bluetooth-errors'
 import { createWebBluetoothFeatureRegistry } from './web-feature-registry'
 import { diagnosticWebBluetoothScanPlan } from './web-bluetooth-scan-planner'
-import { WebBluetoothGattRuntime } from './web-bluetooth-gatt'
+import { WebBluetoothGattRuntime, webNotificationAdmissionFailure } from './web-bluetooth-gatt'
+import { createGraphBoundWebRecordingSourceOwner } from './web-recording-source-owner'
+import type { WebRecordingSourceOwner } from './web-recording-source-owner'
+import { createWebOrderedRecordingStart } from './web-ordered-recording-start'
+import type { WebRecordingStartDependencies } from './web-ordered-recording-start'
+import { createWebTerminalEvidenceSource } from './web-terminal-evidence'
 import { WebBackendConnection, WebConnectionLease, WebGattDatabase } from './web-bluetooth-handles'
 import type { WebConnectionRecord, WebLinkEnd, WebPendingConnection, WebSelectedDevice } from './web-bluetooth-handles'
 
@@ -120,6 +132,7 @@ interface AbortableOperation {
 }
 interface WebProviderOptions {
   readonly boundary: WebBluetoothBoundary
+  readonly recording?: WebRecordingStartDependencies
 }
 
 /** Explicit Web Bluetooth provider. Importing this module never reads DOM globals. */
@@ -146,12 +159,15 @@ export class WebBluetoothProvider implements BackendProvider<string, HostNeutral
     if (!available) {
       throw contractError('adapter.unavailable', 'adapter', 'web-provider.create')
     }
-    return new WebBluetoothBackend(this.options.boundary, available)
+    return new WebBluetoothBackend(this.options.boundary, available, this.options.recording)
   }
 }
 
-export function createWebBluetoothProvider(boundary: WebBluetoothBoundary): WebBluetoothProvider {
-  return new WebBluetoothProvider({ boundary })
+export function createWebBluetoothProvider(
+  boundary: WebBluetoothBoundary,
+  recording?: WebRecordingStartDependencies
+): WebBluetoothProvider {
+  return new WebBluetoothProvider({ boundary, recording })
 }
 
 export interface WebAuthorizedPeer {
@@ -218,7 +234,8 @@ export class WebBluetoothBackend
 
   constructor(
     private readonly boundary: WebBluetoothBoundary,
-    initialAvailability = false
+    initialAvailability = false,
+    private readonly recording?: WebRecordingStartDependencies
   ) {
     this.backendInstance = nextBackendInstance
     nextBackendInstance += 1
@@ -232,8 +249,27 @@ export class WebBluetoothBackend
       currentState: async () => this.currentAdapterState(),
       watchState: async () => this.watchAdapterState()
     }
+    const terminalEvidence =
+      recording === undefined ||
+      recording.terminalEvidenceMaximumDurableBytes === undefined ||
+      recording.terminalEvidenceDigest === undefined
+        ? undefined
+        : createWebTerminalEvidenceSource({
+            database: recording.database,
+            locks: recording.locks,
+            digest: recording.digest,
+            digestBytes: recording.terminalEvidenceDigest,
+            maximumRetainedBytes: recording.terminalEvidenceMaximumDurableBytes
+          })
     this.scanner = {
       plan: query => diagnosticWebBluetoothScanPlan(query),
+      ...(terminalEvidence === undefined
+        ? {}
+        : {
+            reserveTerminalEvidence: terminalEvidence.reserveTerminalEvidence,
+            readTerminalEvidence: terminalEvidence.readTerminalEvidence,
+            releaseTerminalEvidence: terminalEvidence.releaseTerminalEvidence
+          }),
       start: async () => {
         this.assertAttached('web-scanner.start')
         throw contractError('capability.unsupported', 'scan', 'web-scanner.start')
@@ -246,9 +282,10 @@ export class WebBluetoothBackend
     this.connections = {
       connect: async (peerId, _clientId, options) => this.connect(peerId, options)
     }
-    this.gattRuntime = new WebBluetoothGattRuntime(this)
+    this.gattRuntime = new WebBluetoothGattRuntime(this, terminalEvidence)
     this.gatt = this.gattRuntime.gatt
     this.removePageLifecycleListener = boundary.addPageLifecycleListener(reason => {
+      if (reason === 'page-hidden') return
       const cleanup = this.destroy()
       cleanup.then(result => {
         if (result.state === 'release-failed') {
@@ -446,6 +483,43 @@ export class WebBluetoothBackend
     }
   }
 
+  /** Explicitly retry retained durable subscription terminals after storage recovers. */
+  async retryPendingTerminalEvidence(): Promise<void> {
+    for (const record of this.connectionsById.values()) {
+      if (record.valid || (record.end !== 'connection-lost' && record.end !== 'adapter-loss')) continue
+      if (!(await this.gattRuntime.retryPendingTerminalEvidence(record, record.end))) continue
+      const connection = {
+        attachment: this.attachmentRecord,
+        attachmentId: this.attachmentRecord.attachmentId,
+        peerId: record.peerId,
+        connectionId: record.connection.connectionId,
+        ownerLeaseId: record.leaseId,
+        connectionGeneration: record.connection.connectionGeneration
+      }
+      if (record.end === 'connection-lost') {
+        this.emitBackendEvent({
+          attachment: this.attachmentRecord,
+          attachmentId: this.attachmentRecord.attachmentId,
+          ingressOrdinal: this.ingressOrdinal,
+          kind: 'connection-lost',
+          connection
+        })
+      } else {
+        this.emitBackendEvent({
+          attachment: this.attachmentRecord,
+          attachmentId: this.attachmentRecord.attachmentId,
+          ingressOrdinal: this.ingressOrdinal,
+          kind: 'connection-state-changed',
+          connection,
+          previous: 'connected',
+          current: 'lost',
+          reason: 'adapter'
+        })
+      }
+      this.ingressOrdinal += 1
+    }
+  }
+
   destroy(): Promise<CleanupRecord> {
     if (this.destroyResult === null) {
       this.destroyed = true
@@ -507,10 +581,18 @@ export class WebBluetoothBackend
   async disconnectRecord(record: WebConnectionRecord, reason: WebLinkEnd = 'owner-released'): Promise<CleanupRecord> {
     if (record.disconnectPromise !== null) return record.disconnectPromise
     const run = this.runDisconnectRecord(record, reason)
-    record.disconnectPromise = run.then(result => {
-      if (result.state !== 'released') record.disconnectPromise = null
-      return result
-    })
+    record.disconnectPromise = run.then(
+      result => {
+        if (result.state !== 'released') record.disconnectPromise = null
+        return result
+      },
+      error => {
+        // The failure is observable by this caller, but a later release must
+        // still be able to retry any unresolved physical cleanup.
+        record.disconnectPromise = null
+        throw error
+      }
+    )
     return record.disconnectPromise
   }
 
@@ -523,7 +605,7 @@ export class WebBluetoothBackend
       reason === 'owner-released' &&
       this.recordsForPeer(record.peerId).some(candidate => candidate !== record && candidate.valid)
     ) {
-      this.invalidateConnectionGenerations(record, reason)
+      await this.invalidateConnectionGenerations(record, reason)
       const phases: CleanupRecord[] = []
       if (!record.subscriptionReleased) {
         const subscriptionCleanup = await this.gattRuntime.stopConnectionSubscriptions(record)
@@ -538,7 +620,22 @@ export class WebBluetoothBackend
       return merged
     }
     if (record.valid) record.device.gatt.invalidateConnectionGeneration?.()
-    this.invalidateConnectionGenerations(record, reason)
+    // Ordinary subscriptions retain the established synchronous lifecycle
+    // transition. Only a source carrying a staged terminal needs to defer its
+    // public connection event until the durable terminal commits.
+    let ordinaryInvalidationFailure: Promise<unknown> | null = null
+    if (this.gattRuntime.hasTerminalEvidenceSubscription(record)) {
+      if (!(await this.invalidateConnectionGenerations(record, reason))) return RELEASED
+    } else {
+      // Start the synchronous lifecycle transition immediately, but retain a
+      // possible asynchronous failure until the established cleanup phases
+      // complete. This preserves ordinary teardown ordering without leaving a
+      // rejected promise unobserved.
+      ordinaryInvalidationFailure = this.invalidateConnectionGenerations(record, reason).then(
+        () => null,
+        error => error
+      )
+    }
     const phases: CleanupRecord[] = []
     if (!record.subscriptionReleased) {
       const subscriptionCleanup = await this.gattRuntime.stopConnectionSubscriptions(record)
@@ -553,7 +650,10 @@ export class WebBluetoothBackend
         record.physicalReleased = true
         phases.push(RELEASED)
       } catch (error) {
-        console.error('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', error)
+        console.error(
+          '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
+          webHostErrorEvidence([error])
+        )
         this.retainedConnections.add(record)
         this.connectionsById.delete(String(record.connection.connectionId))
         phases.push(webCleanupFailure('connection', 'web-connection.disconnect'))
@@ -564,11 +664,15 @@ export class WebBluetoothBackend
       this.gattRuntime.invalidateConnection(record, reason)
       this.unbindConnectionRecord(record, reason)
     }
+    if (ordinaryInvalidationFailure !== null) {
+      const error = await ordinaryInvalidationFailure
+      if (error !== null) throw error
+    }
     return merged
   }
 
   staleGattError(operation: string): BackendContractError {
-    return contractError('gatt.stale-handle', 'gatt', operation)
+    return webRecordingContractError('gatt.stale-handle', 'gatt', operation)
   }
 
   async readDirect(
@@ -609,6 +713,94 @@ export class WebBluetoothBackend
     return this.gattRuntime.writeDescriptorDirect(database, path, value, options)
   }
 
+  async subscribeOrderedDirect(
+    database: WebGattDatabase,
+    members: readonly import('./web-bluetooth-gatt').WebOrderedMember[],
+    options: SubscriptionOptions
+  ): Promise<import('../core/ordered-notification-contract').OrderedNotificationSetup> {
+    this.assertAttached('web-gatt.database-subscribe-ordered')
+    const result = await this.gattRuntime.acquireOrdered(database, members, options)
+    const owner = result.owner
+    if (result.state === 'ready')
+      return {
+        state: 'ready',
+        sourceGeneration: null,
+        members: owner.members.map(member => ({
+          memberId: member.memberId,
+          path: member.path,
+          requestedDelivery: member.deliveryMode,
+          effectiveDelivery: member.effectiveDelivery
+        })),
+        stream: new WebOrderedMarkerStream(owner.stream, owner, () => this.boundary.now())
+      }
+    return {
+      state: 'failed',
+      sourceGeneration: null,
+      error: result.error,
+      members: result.acquisitions.map(member => ({ memberId: member.memberId, acquisition: member.state })),
+      observations: [],
+      uncertainTail: true,
+      cleanup: { group: { state: 'released', failures: [] }, members: result.cleanup },
+      stream: owner.stream,
+      close: () => owner.stream.close()
+    }
+  }
+
+  /** Internal supervisor integration; reserves managed leases without enabling. */
+  assertRecordingAvailable(operation: string): void {
+    this.assertAttached(operation)
+    if (this.recording === undefined) throw contractError('capability.unsupported', 'gatt', operation)
+  }
+
+  reserveOrderedRecordingStart(database: WebGattDatabase) {
+    this.assertAttached('web-recording.reserve')
+    database.assertCurrent('web-recording.reserve')
+    if (this.recording === undefined) throw contractError('capability.unsupported', 'gatt', 'web-recording.reserve')
+    return createWebOrderedRecordingStart(this, database, this.recording, () => this.boundary.now())
+  }
+
+  createRecordingSourceOwner(
+    database: WebGattDatabase,
+    members: readonly import('./web-bluetooth-gatt').WebOrderedMember[],
+    options: SubscriptionOptions,
+    recordingVersion: 1 | 2
+  ): WebRecordingSourceOwner {
+    this.assertAttached('web-recording.source')
+    if (recordingVersion !== 1 && recordingVersion !== 2)
+      throw contractError('protocol.incompatible', 'boundary', 'web-recording.source.version')
+    let owner: WebRecordingSourceOwner | null = null
+    const reservations = members.map(member =>
+      this.gattRuntime.reserveRecordingMember(database.record.connection, database, member, options, {
+        isInstalled: () => owner?.mayEnable() ?? false
+      })
+    )
+    owner = createGraphBoundWebRecordingSourceOwner(
+      database,
+      this.gattRuntime.notificationIngress(database),
+      members.map((member, index) => {
+        const reservation = reservations[index]
+        if (reservation === undefined)
+          throw contractError('lifecycle.invariant-violation', 'gatt', 'web-recording.source')
+        return { id: member.memberId, path: member.path, deliveryMode: member.deliveryMode, lease: reservation.lease }
+      }),
+      options.delivery.itemCapacity,
+      options.delivery.byteCapacity,
+      () => {
+        try {
+          this.assertAttached('web-recording.source')
+          return (
+            this.requireConnection(database.record.connection, 'web-recording.source') === database.record &&
+            reservations.every(reservation => reservation.isCurrent())
+          )
+        } catch {
+          return false
+        }
+      },
+      recordingVersion
+    )
+    return owner
+  }
+
   async subscribeDirect(
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
@@ -632,7 +824,9 @@ export class WebBluetoothBackend
     const available = await this.boundary.bluetoothAvailable()
     this.applyAvailabilitySample(generation, available)
     if (this.attachmentRecord.adapter.state.availability !== 'available') {
-      throw contractError('adapter.unavailable', 'adapter', operation)
+      const failure = webRecordingContractError('adapter.unavailable', 'adapter', operation)
+      availabilityFailures.set(failure, failure)
+      throw failure
     }
   }
 
@@ -679,7 +873,10 @@ export class WebBluetoothBackend
           pending.device.gatt.disconnect()
         }
       } catch (error) {
-        console.error('[WebBluetoothBackend.invalidateUnavailableSession] Browser pending disconnect failed:', error)
+        console.error(
+          '[WebBluetoothBackend.invalidateUnavailableSession] Browser pending disconnect failed:',
+          webHostErrorEvidence([error])
+        )
         pending.state = 'cleanup-failed'
         pending.cleanupFailureReported = false
         continue
@@ -769,7 +966,7 @@ export class WebBluetoothBackend
           error => {
             console.error(
               '[WebBluetoothBackend.reconcileWatchedAvailability] Availability change reconcile failed:',
-              error
+              webHostErrorEvidence([error])
             )
           }
         )
@@ -835,7 +1032,10 @@ export class WebBluetoothBackend
       this.pollWatchedAvailability().then(
         () => undefined,
         error => {
-          console.error('[WebBluetoothBackend.pollWatchedAvailability] Availability poll failed:', error)
+          console.error(
+            '[WebBluetoothBackend.pollWatchedAvailability] Availability poll failed:',
+            webHostErrorEvidence([error])
+          )
         }
       )
     }, WEB_ADAPTER_AVAILABILITY_POLL_INTERVAL_MS)
@@ -858,7 +1058,10 @@ export class WebBluetoothBackend
     try {
       available = await this.boundary.bluetoothAvailable()
     } catch (error) {
-      console.error('[WebBluetoothBackend.reconcileWatchedAvailability] Browser availability probe failed:', error)
+      console.error(
+        '[WebBluetoothBackend.reconcileWatchedAvailability] Browser availability probe failed:',
+        webHostErrorEvidence([error])
+      )
       return
     }
     if (this.destroyed || this.adapterStreams.size === 0) {
@@ -966,7 +1169,7 @@ export class WebBluetoothBackend
     pending.nativeConnect.then(
       () => undefined,
       error => {
-        console.error('[WebBluetoothBackend.connect] Browser connect rejected:', error)
+        console.error('[WebBluetoothBackend.connect] Browser connect rejected:', webHostErrorEvidence([error]))
         this.deletePendingConnectionIfOwned(pending)
       }
     )
@@ -1088,7 +1291,10 @@ export class WebBluetoothBackend
     } catch (error) {
       pending.state = 'cleanup-failed'
       pending.cleanupFailureReported = false
-      console.error('[WebBluetoothBackend.compensatePendingConnection] Browser disconnect failed:', error)
+      console.error(
+        '[WebBluetoothBackend.compensatePendingConnection] Browser disconnect failed:',
+        webHostErrorEvidence([error])
+      )
     }
   }
 
@@ -1099,9 +1305,9 @@ export class WebBluetoothBackend
     }
   }
 
-  private invalidateConnectionGenerations(record: WebConnectionRecord, reason: WebLinkEnd): void {
+  private async invalidateConnectionGenerations(record: WebConnectionRecord, reason: WebLinkEnd): Promise<boolean> {
     if (!record.valid) {
-      return
+      return record.end === 'owner-released'
     }
     this.gattRuntime.fenceConnection(record, reason)
     record.valid = false
@@ -1112,7 +1318,19 @@ export class WebBluetoothBackend
       waiter(reason)
     }
     record.disconnectWaiters.clear()
-    if (reason === 'owner-released') return
+    if (this.gattRuntime.hasTerminalEvidenceSubscription(record)) {
+      // A terminal carrying source-native evidence is not publishable until
+      // its durable commit has settled. Core receives the connection-loss
+      // event below and would otherwise close public consumers ahead of that
+      // commit.
+      if (!(await this.gattRuntime.invalidateConnection(record, reason))) return false
+      // Let the source stream's consumer observe that committed terminal
+      // before the separate connection lifecycle event performs its broad
+      // cleanup.
+      await Promise.resolve()
+      await Promise.resolve()
+    }
+    if (reason === 'owner-released') return true
     const connection = {
       attachment: this.attachmentRecord,
       attachmentId: this.attachmentRecord.attachmentId,
@@ -1144,6 +1362,7 @@ export class WebBluetoothBackend
       })
     }
     this.ingressOrdinal += 1
+    return true
   }
 
   private unbindConnectionRecord(record: WebConnectionRecord, _reason: WebLinkEnd): void {
@@ -1197,6 +1416,10 @@ export class WebBluetoothBackend
     return database
   }
 
+  notificationNow(): number {
+    return this.boundary.now()
+  }
+
   async runAbortable<Result>(
     record: WebConnectionRecord | null,
     operation: AbortableOperation,
@@ -1227,15 +1450,15 @@ export class WebBluetoothBackend
         reject(error)
       }
       const abort = () => {
-        settleFailure(contractError('operation.aborted', domain, operationName))
+        settleFailure(webRecordingContractError('operation.aborted', domain, operationName))
       }
       // One word per event (5.0): the link was lost, the app released it,
       // or the adapter went away.
       const disconnected = (end: WebLinkEnd) => {
-        settleFailure(contractError(WEB_LINK_END_CODES[end], 'connection', operationName))
+        settleFailure(webRecordingContractError(WEB_LINK_END_CODES[end], 'connection', operationName))
       }
       const destroyed = () => {
-        settleFailure(contractError('operation.cancelled-by-destroy', domain, operationName))
+        settleFailure(webRecordingContractError('operation.cancelled-by-destroy', domain, operationName))
       }
       operation.signal?.addEventListener('abort', abort, { once: true })
       record?.disconnectWaiters.add(disconnected)
@@ -1248,7 +1471,7 @@ export class WebBluetoothBackend
         const deadlineError =
           operationName === WEB_CONNECT_OPERATION
             ? webConnectDeadlineError(delayMs)
-            : contractError('operation.timed-out', domain, operationName)
+            : webRecordingContractError('operation.timed-out', domain, operationName)
         timer = this.boundary.setTimer(() => settleFailure(deadlineError), delayMs)
       }
       Promise.resolve()
@@ -1260,7 +1483,10 @@ export class WebBluetoothBackend
                 Promise.resolve(onLateSuccess(value)).then(
                   () => undefined,
                   error => {
-                    console.error(`[WebBluetoothBackend.runAbortable] ${operationName} late cleanup failed:`, error)
+                    console.error(
+                      `[WebBluetoothBackend.runAbortable] ${operationName} late cleanup failed:`,
+                      webHostErrorEvidence([error])
+                    )
                   }
                 )
               }
@@ -1278,10 +1504,20 @@ export class WebBluetoothBackend
             if (settled) {
               return
             }
-            const normalized =
-              error instanceof Error
-                ? normalizeWebBluetoothError(error, { fallbackCode, domain, operation: operationName })
-                : contractError(fallbackCode, domain, operationName)
+            const availabilityFailure =
+              (typeof error === 'object' && error !== null) || typeof error === 'function'
+                ? availabilityFailures.get(error)
+                : undefined
+            if (availabilityFailure !== undefined) {
+              settleFailure(availabilityFailure)
+              return
+            }
+            const notificationFailure = webNotificationAdmissionFailure(error)
+            if (operationName === 'web-gatt.subscribe' && notificationFailure !== undefined) {
+              settleFailure(notificationFailure)
+              return
+            }
+            const normalized = normalizeWebBluetoothError(error, { fallbackCode, domain, operation: operationName })
             settleFailure(normalized)
           }
         )
@@ -1295,10 +1531,10 @@ export class WebBluetoothBackend
   ): void {
     this.assertUsable(operationName)
     if (operation.signal?.aborted === true) {
-      throw contractError('operation.aborted', domain, operationName)
+      throw webRecordingContractError('operation.aborted', domain, operationName)
     }
     if (operation.deadline !== null && this.boundary.now() >= operation.deadline) {
-      throw contractError('operation.timed-out', domain, operationName)
+      throw webRecordingContractError('operation.timed-out', domain, operationName)
     }
   }
 

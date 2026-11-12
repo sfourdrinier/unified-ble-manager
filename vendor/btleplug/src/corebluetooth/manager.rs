@@ -10,12 +10,27 @@ use crate::{Result, api};
 use async_trait::async_trait;
 
 /// Implementation of [api::Manager](crate::api::Manager).
-#[derive(Clone, Debug)]
-pub struct Manager {}
+#[derive(Clone)]
+pub struct Manager {
+    authorities: std::sync::Arc<std::sync::Mutex<crate::ubm_reclaim_authority::ReclaimAuthorities>>,
+    failure_evidence_store: Option<std::sync::Arc<dyn crate::ubm_peer_notification_ingress::FailureEvidenceStore>>,
+}
+
+impl std::fmt::Debug for Manager {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("Manager").finish_non_exhaustive()
+    }
+}
 
 impl Manager {
     pub async fn new() -> Result<Self> {
-        Ok(Self {})
+        Ok(Self { authorities: std::sync::Arc::default(), failure_evidence_store: None })
+    }
+
+    pub async fn new_with_failure_evidence_store(
+        failure_evidence_store: std::sync::Arc<dyn crate::ubm_peer_notification_ingress::FailureEvidenceStore>,
+    ) -> Result<Self> {
+        Ok(Self { authorities: std::sync::Arc::default(), failure_evidence_store: Some(failure_evidence_store) })
     }
 }
 
@@ -24,7 +39,10 @@ impl api::Manager for Manager {
     type Adapter = Adapter;
 
     async fn adapters(&self) -> Result<Vec<Adapter>> {
-        Ok(vec![Adapter::new().await?])
+        Ok(vec![Adapter::new_with_failure_evidence_store(
+            self.authorities.clone(),
+            self.failure_evidence_store.clone(),
+        ).await?])
         // TODO What do we do if there is no bluetooth adapter, like on an older
         // macbook pro? Will BluetoothAdapter::init() fail?
     }

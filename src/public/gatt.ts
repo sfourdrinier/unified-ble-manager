@@ -2,15 +2,18 @@
 
 import type { ContinuationRecordingConfiguration } from '../backend-contract/continuation-recording-bounds'
 
+import { registerOrderedStreamOrigin } from '../core/ordered-stream-origin'
+import { isCanonicalIngressOrdinal } from '../core/ordered-notification-contract'
 import { canonicalUuidInput } from '../backend-contract/primitives'
 import { awaitWithOperationAdmission } from '../core/unified-ble-core-helpers'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
-import { contractError } from '../backend-contract/errors'
+import { contractError, snapshotPlatformMetadataEntries } from '../backend-contract/errors'
 import type {
   GattAccessRequirements,
   GattCharacteristicPropertyAvailability,
   GattDescriptorProperties,
-  NotificationReceipt
+  NotificationReceipt,
+  NotificationProvenance
 } from '../backend-contract/gatt'
 import type {
   DiscoveredGattDatabaseHandle,
@@ -21,14 +24,15 @@ import type {
 } from '../manager/consumer-handles'
 import { normalizeOperationOptions, type OperationOptions } from './operation-options'
 import { resolveStreamPolicy, type StreamPolicy } from './stream-presets'
-import { collectCleanupPhases, rehydratePublicError, runWithCleanup } from './error-bridge'
+import { collectCleanupPhases, rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream, type PublicStreamItem } from './streams'
-import { toPublicCleanupRecord, type CleanupRecord } from './cleanup'
+import { toPublicCleanupRecord, toPublicNormalizedError, type CleanupRecord, type NormalizedBleError } from './cleanup'
 
 export type {
   GattAccessRequirements,
   GattCharacteristicPropertyAvailability,
-  NotificationReceipt
+  NotificationReceipt,
+  NotificationProvenance
 } from '../backend-contract/gatt'
 
 export type UuidInput = string | number
@@ -92,6 +96,9 @@ export interface GattRecordedSubscribeOptions extends OperationOptions {
 export type GattDelivery = 'notification' | 'indication' | 'unknown'
 
 export interface GattValueEvent {
+  readonly sourceGeneration?: string
+  readonly sourceOrdinal?: string
+  readonly provenance: NotificationProvenance
   readonly value: Uint8Array
   readonly delivery: GattDelivery
   readonly observedAtMonotonicMs: number
@@ -109,6 +116,334 @@ export interface GattDatabaseSnapshot {
   readonly descriptors: readonly GattDescriptor[]
 }
 
+export interface GattOrderedMember {
+  readonly memberId: string
+  readonly characteristic: GattCharacteristic
+  readonly delivery?: NonNullable<GattSubscribeOptions['delivery']>
+}
+export type GattOrderedMarkerWritePhase =
+  | { readonly state: 'initiating' }
+  | { readonly state: 'not-started' | 'started' | 'settled'; readonly error: NormalizedBleError | null }
+export type GattOrderedMarkerWriteStatus =
+  | { readonly state: 'pending' }
+  | { readonly state: 'not-admitted'; readonly error: NormalizedBleError | null }
+  | { readonly state: 'rejected'; readonly error: NormalizedBleError }
+  | { readonly state: 'admitted'; readonly ordinal: string; readonly write: GattOrderedMarkerWritePhase }
+export interface GattOrderedMarkerWrite {
+  start(
+    target: GattCharacteristic,
+    value: Readonly<Uint8Array>,
+    mode: 'with-response' | 'without-response',
+    options?: OperationOptions
+  ): Promise<GattOrderedMarkerWriteStatus>
+  status(): Promise<GattOrderedMarkerWriteStatus | { readonly state: 'idle' | 'retired' }>
+  cancel(): Promise<GattOrderedMarkerWriteStatus | { readonly state: 'idle' | 'retired' }>
+  forget(): Promise<void>
+}
+export interface GattOrderedSourceGeneration {
+  readonly kind: 'counter' | 'opaque'
+  readonly value: string
+}
+export interface GattOrderedSourceMembership {
+  readonly member: string
+  readonly epoch: string
+}
+export type GattOrderedLossScope =
+  | { readonly kind: 'member'; readonly memberId: string }
+  | { readonly kind: 'group' }
+  | { readonly kind: 'unknown' }
+export type GattOrderedSourceRejection =
+  | { readonly kind: 'value'; readonly bytes: string }
+  | { readonly kind: 'loss'; readonly skippedRecords: string }
+  | { readonly kind: 'fence'; readonly membership: GattOrderedSourceMembership }
+  | { readonly kind: 'barrier'; readonly id: string }
+  | { readonly kind: 'marker'; readonly markerId: string }
+  | { readonly kind: 'ordinal-exhausted'; readonly bytes: string }
+export interface GattOrderedRejectedLoss {
+  readonly scope: GattOrderedLossScope
+  readonly unit: 'values' | 'source-records'
+  readonly count: string | null
+  readonly bytes: string | null
+}
+export type GattOrderedItem =
+  | {
+      readonly kind: 'value'
+      readonly collectionId: string
+      readonly connectionGeneration: string
+      readonly databaseGeneration: string
+      readonly memberId: string
+      readonly ordinal: string
+      readonly sourceGeneration?: GattOrderedSourceGeneration | null
+      readonly sourceMembership?: GattOrderedSourceMembership | null
+      readonly value: Uint8Array
+      readonly delivery: import('../backend-contract/gatt').NotificationDelivery
+      readonly provenance: NotificationProvenance
+      readonly receipt?: NotificationReceipt
+    }
+  | {
+      readonly kind: 'loss'
+      readonly scope: GattOrderedLossScope
+      readonly reason: 'overflow' | 'source-loss' | 'control-loss'
+      readonly lostValues: string | null
+      readonly lostBytes: string | null
+      readonly lostSourceRecords: string | null
+    }
+  | {
+      readonly kind: 'marker'
+      readonly collectionId: string
+      readonly connectionGeneration: string
+      readonly databaseGeneration: string
+      readonly sourceGeneration?: GattOrderedSourceGeneration | null
+      readonly sourceMembership?: GattOrderedSourceMembership | null
+      readonly markerId: string
+      readonly ordinal: string
+    }
+  | {
+      readonly kind: 'failure-observation'
+      readonly failure: NormalizedBleError | null
+      readonly sourceRejection: GattOrderedSourceRejection | null
+      readonly sourceFailureMember: GattOrderedSourceMembership | null
+      readonly rejectedLoss: GattOrderedRejectedLoss | null
+      readonly tailUncertain: boolean
+    }
+  | { readonly kind: 'failure-observations-omitted'; readonly count: string | null }
+  | {
+      readonly kind: 'terminal'
+      readonly reason:
+        | 'closed'
+        | 'overflow'
+        | 'source-failed'
+        | 'owner-released'
+        | 'connection-lost'
+        | 'service-changed'
+        | 'host-reset'
+        | 'operation-aborted'
+        | 'operation-timed-out'
+        | 'ordinal-exhausted'
+      readonly uncertainTail: boolean
+      readonly error?: NormalizedBleError | null
+      readonly secondaryError?: NormalizedBleError | null
+      readonly additionalFailureCount?: string
+      readonly failureCountOverflowed?: boolean
+      readonly failureObservationsOmitted?: boolean
+      readonly fenceError?: NormalizedBleError | null
+      readonly rejectedValues?: string | null
+      readonly rejectedLoss?: GattOrderedRejectedLoss | null
+      readonly sourceRejection?: GattOrderedSourceRejection | null
+      readonly sourceFailureMember?: GattOrderedSourceMembership | null
+    }
+export interface GattOrderedStream extends AsyncIterable<GattOrderedItem, undefined, undefined> {
+  readonly limits: {
+    readonly itemCapacity: number
+    readonly byteCapacity: number
+    readonly reservedControlCapacity: number
+  }
+  increaseByteCapacity?(
+    maxBytes: number
+  ): Promise<import('../core/ordered-notification-contract').OrderedByteCapacityChange>
+  close(): Promise<GattOrderedCleanup>
+  discard(): Promise<GattOrderedCleanup>
+  reserveMarkerWrite?(): GattOrderedMarkerWrite
+}
+export type GattOrderedCleanup = Omit<
+  import('../core/ordered-notification-contract').OrderedNotificationCleanup,
+  'group' | 'members' | 'discarded'
+> & {
+  readonly group: CleanupRecord
+  readonly members: readonly { readonly memberId: string; readonly cleanup: CleanupRecord }[]
+  readonly discarded?: {
+    readonly values: string
+    readonly bytes: string
+    readonly controls: string
+    readonly uncertainTail: boolean
+    readonly terminal?: GattOrderedItem | null
+    readonly losses?: readonly Extract<GattOrderedItem, { readonly kind: 'loss' }>[]
+    readonly markers?: readonly Extract<GattOrderedItem, { readonly kind: 'marker' }>[]
+    readonly failureObservations?: readonly Extract<GattOrderedItem, { readonly kind: 'failure-observation' }>[]
+    readonly failureObservationsOmitted?: readonly Extract<
+      GattOrderedItem,
+      { readonly kind: 'failure-observations-omitted' }
+    >[]
+    readonly trustedValues?: readonly {
+      readonly memberId: string
+      readonly ordinal: string
+      readonly sourceMembership: GattOrderedSourceMembership
+      readonly bytes: string
+    }[]
+  }
+}
+export type GattOrderedSetup =
+  | {
+      readonly state: 'ready'
+      readonly sourceGeneration?: GattOrderedSourceGeneration | null
+      readonly members: readonly {
+        readonly memberId: string
+        readonly requestedDelivery:
+          | 'prefer-notification'
+          | 'prefer-indication'
+          | 'require-notification'
+          | 'require-indication'
+        readonly effectiveDelivery: import('../backend-contract/gatt').NotificationDelivery
+      }[]
+      readonly stream: GattOrderedStream
+    }
+  | {
+      readonly state: 'failed'
+      readonly sourceGeneration?: GattOrderedSourceGeneration | null
+      readonly error: NormalizedBleError
+      readonly members: readonly {
+        readonly memberId: string
+        readonly acquisition: 'not-started' | 'acquired' | 'indeterminate'
+      }[]
+      readonly observations: readonly Exclude<GattOrderedItem, { readonly kind: 'terminal' }>[]
+      readonly uncertainTail: boolean
+      readonly cleanup: GattOrderedCleanup
+      readonly stream: GattOrderedStream
+      readonly close: () => Promise<GattOrderedCleanup>
+    }
+type InternalOrderedRecordingStartResult = import('../core/ordered-recording-start').OrderedRecordingStartResult
+
+type InternalOrderedMarkerWriteStatus = import('../core/ordered-marker-wire').OrderedMarkerWriteStatus
+type InternalOrderedRecordingReclaimReceipt = import('../core/ordered-recording-reclaim').OrderedRecordingReclaimReceipt
+type InternalOrderedRecordingReclaimStatus =
+  import('../core/ordered-recording-reclaim').OrderedRecordingReclaimStatus<InternalOrderedRecordingReclaimReceipt>
+type InternalOrderedObservation = Exclude<
+  import('../core/ordered-notification-contract').OrderedNotificationItem,
+  { readonly kind: 'terminal' }
+>
+
+/** Ordered recording start result with host-neutral cleanup evidence. */
+export type GattOrderedRecordingFailureValue =
+  | { readonly kind: 'int' | 'text'; readonly value: string }
+  | { readonly kind: 'bool'; readonly value: boolean }
+export interface GattOrderedRecordingPlatformDetail {
+  readonly domain: string
+  readonly code: string
+  readonly message: string | null
+  readonly metadata: Readonly<Record<string, GattOrderedRecordingFailureValue>>
+  /** Ordered v2 metadata preserves duplicate and otherwise non-record-safe keys. */
+  readonly metadataEntries?: readonly import('../backend-contract/errors').PlatformMetadataEntry[]
+  readonly cleanup?: readonly GattOrderedRecordingPlatformDetail[]
+  readonly cleanupFailures?: readonly GattOrderedRecordingFailure[]
+}
+export interface GattOrderedRecordingFailure {
+  readonly code: string
+  readonly domain: string
+  readonly operation: string
+  readonly detail: string | null
+  readonly platformDomain: string | null
+  readonly platformCode: string | null
+  readonly platformMessage: string | null
+  readonly platformMetadata: Readonly<Record<string, GattOrderedRecordingFailureValue>>
+  /** Ordered v2 metadata preserves duplicate and otherwise non-record-safe keys. */
+  readonly platformMetadataEntries?: readonly import('../backend-contract/errors').PlatformMetadataEntry[]
+  readonly platformCleanup?: readonly GattOrderedRecordingPlatformDetail[]
+  readonly platformCleanupFailures?: readonly GattOrderedRecordingFailure[]
+}
+export type GattOrderedRecordingStopFailure =
+  | { readonly kind: 'source'; readonly source: GattOrderedRecordingFailure }
+  | { readonly kind: 'storage'; readonly storage: GattOrderedRecordingStorageFailure }
+  | {
+      readonly kind: 'storage-cleanup'
+      readonly storage: GattOrderedRecordingStorageFailure
+      readonly source: GattOrderedRecordingFailure
+    }
+  | {
+      readonly kind:
+        | 'invalid-delivery'
+        | 'invalid-identity'
+        | 'worker-failed'
+        | 'missing-terminal'
+        | 'entropy-unavailable'
+        | 'receipt-retired'
+        | 'recording-not-accepting'
+    }
+export interface GattOrderedRecordingStorageFailure {
+  readonly kind: string
+  readonly detail: string
+  readonly operation: string
+  readonly sqliteExtendedCode: number | null
+  readonly sqliteCode: string | null
+}
+export interface GattOrderedRecordingStartReceipt {
+  readonly version: 1 | 2
+  readonly recordingId: string
+  readonly collectionId: string
+  readonly state: 'active' | 'setup-failed' | 'failed'
+  readonly sourceGeneration: GattOrderedSourceGeneration | null
+  readonly members: readonly {
+    readonly memberId: string
+    readonly acquisition: 'not-started' | 'acquired' | 'indeterminate'
+    readonly delivery: import('../backend-contract/gatt').NotificationDelivery
+    readonly cleanupReleased: boolean
+    readonly cleanupError: GattOrderedRecordingFailure | null
+  }[]
+  readonly setupFailure: GattOrderedRecordingFailure | null
+  readonly fenceFailure: GattOrderedRecordingFailure | null
+  readonly error: GattOrderedRecordingStopFailure | null
+  readonly inspectionError: GattOrderedRecordingStopFailure | null
+  readonly driverError: GattOrderedRecordingStopFailure | null
+}
+export type GattOrderedRecordingStartResult =
+  | { readonly kind: 'started'; readonly receipt: GattOrderedRecordingStartReceipt }
+  | {
+      readonly kind: 'owner-failed'
+      readonly recordingId: string
+      readonly collectionId: string
+      readonly error: GattOrderedRecordingStopFailure
+    }
+  | {
+      readonly kind: 'prepare-failed'
+      readonly leaseCleanup?: CleanupRecord | { readonly state: 'pending' }
+      readonly receipt: {
+        readonly version: 1 | 2
+        readonly state: 'prepare-failed'
+        readonly recordingId: string
+        readonly sourceStarted: false
+        readonly journalEffect: 'none' | 'unknown'
+        readonly error: GattOrderedRecordingStopFailure
+      }
+    }
+
+export type GattOrderedRecordingReclaimReceipt = Omit<
+  import('../core/ordered-recording-reclaim').OrderedRecordingReclaimReceipt,
+  'error'
+> & { readonly error: NormalizedBleError | null }
+
+export type GattOrderedRecordingReclaimStatus =
+  | GattOrderedRecordingReclaimReceipt
+  | { readonly state: 'not-reserved'; readonly error: NormalizedBleError }
+  | { readonly state: 'idle' | 'cancelled' | 'retiring' | 'retired' }
+
+export interface GattOrderedRecordingReclaim {
+  start(): Promise<GattOrderedRecordingReclaimStatus>
+  status(): Promise<GattOrderedRecordingReclaimStatus>
+  commit(): Promise<GattOrderedRecordingReclaimReceipt>
+  cancel(): Promise<GattOrderedRecordingReclaimStatus>
+  release(): Promise<GattOrderedRecordingReclaimReceipt>
+  retire(): Promise<void>
+}
+
+export interface GattOrderedRecordingStart {
+  start(
+    members: readonly GattOrderedMember[],
+    options: OperationOptions & {
+      readonly recording: ContinuationRecordingConfiguration
+      readonly stream?: StreamPolicy
+    }
+  ): Promise<GattOrderedRecordingStartResult>
+  status(): Promise<
+    | { readonly state: 'pending' | 'unknown' | 'failed' | 'retired' }
+    | {
+        readonly state: 'result'
+        readonly result: GattOrderedRecordingStartResult
+      }
+  >
+  retire(): Promise<void>
+  recoveryHandle?(): import('../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle
+  reserveMarkerWrite?(): GattOrderedMarkerWrite
+}
+
 export interface GattDatabase {
   readonly generation: string
   readonly services: readonly GattService[]
@@ -117,6 +452,15 @@ export interface GattDatabase {
   servicesByUuid(uuid: UuidInput): readonly GattService[]
   characteristic(serviceUuid: UuidInput, characteristicUuid: UuidInput, selector?: GattPathSelector): GattCharacteristic
   snapshot(): GattDatabaseSnapshot
+  reserveOrderedRecordingStart(): GattOrderedRecordingStart
+  reserveOrderedRecordingMarker(recordingId: string): GattOrderedMarkerWrite
+  reserveOrderedRecordingReclaim(
+    handle: import('../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle
+  ): GattOrderedRecordingReclaim
+  subscribeOrdered(
+    members: readonly GattOrderedMember[],
+    options?: OperationOptions & { readonly stream?: StreamPolicy }
+  ): Promise<GattOrderedSetup>
 }
 
 export interface GattService {
@@ -331,6 +675,607 @@ export async function createPublicGattDatabase(
   return new PublicGattDatabase(source, snapshot, provisionalOwner)
 }
 
+const orderedCharacteristicPaths = new WeakMap<GattCharacteristic, PortableCurrentCharacteristicPath>()
+
+function publicOrderedMarkerStatus(status: InternalOrderedMarkerWriteStatus): GattOrderedMarkerWriteStatus {
+  switch (status.state) {
+    case 'pending':
+      return Object.freeze({ state: status.state })
+    case 'not-admitted':
+      return Object.freeze({
+        state: status.state,
+        error: status.error === null ? null : toPublicNormalizedError(status.error)
+      })
+    case 'rejected':
+      return Object.freeze({ state: status.state, error: toPublicNormalizedError(status.error) })
+    case 'admitted':
+      if (
+        status.write.state !== 'initiating' &&
+        status.write.state !== 'not-started' &&
+        status.write.state !== 'started' &&
+        status.write.state !== 'settled'
+      )
+        throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-marker-status')
+      return Object.freeze({
+        state: status.state,
+        ordinal: status.ordinal,
+        write:
+          status.write.state === 'initiating'
+            ? Object.freeze({ state: status.write.state })
+            : Object.freeze({
+                state: status.write.state,
+                error: status.write.error === null ? null : toPublicNormalizedError(status.write.error)
+              })
+      })
+    default:
+      throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-marker-status')
+  }
+}
+
+function isInternalOrderedMarkerWriteStatus(
+  status: InternalOrderedMarkerWriteStatus | { readonly state: 'idle' | 'retired' }
+): status is InternalOrderedMarkerWriteStatus {
+  return (
+    status.state === 'pending' ||
+    status.state === 'not-admitted' ||
+    status.state === 'rejected' ||
+    status.state === 'admitted'
+  )
+}
+
+function publicOrderedRecordingReclaimReceipt(
+  receipt: InternalOrderedRecordingReclaimReceipt
+): GattOrderedRecordingReclaimReceipt {
+  return Object.freeze({
+    state: receipt.state,
+    mappingCommitted: receipt.mappingCommitted,
+    error: receipt.error === null ? null : toPublicNormalizedError(receipt.error)
+  })
+}
+
+function publicOrderedRecordingReclaimStatus(
+  status: InternalOrderedRecordingReclaimStatus
+): GattOrderedRecordingReclaimStatus {
+  switch (status.state) {
+    case 'idle':
+    case 'cancelled':
+    case 'retiring':
+    case 'retired':
+      return Object.freeze({ state: status.state })
+    case 'not-reserved':
+      return Object.freeze({ state: status.state, error: toPublicNormalizedError(status.error) })
+    case 'reserved':
+    case 'pending':
+    case 'ready':
+    case 'committed':
+    case 'releasing':
+    case 'release-failed':
+    case 'released':
+    case 'failed':
+      return publicOrderedRecordingReclaimReceipt(status)
+    default:
+      throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-recording-reclaim')
+  }
+}
+
+function publicOrderedRecordingStartResult(
+  result: InternalOrderedRecordingStartResult
+): GattOrderedRecordingStartResult {
+  switch (result.kind) {
+    case 'started':
+      return Object.freeze({ kind: result.kind, receipt: publicOrderedRecordingStartReceipt(result.receipt) })
+    case 'owner-failed':
+      return Object.freeze({
+        kind: result.kind,
+        recordingId: result.recordingId,
+        collectionId: result.collectionId,
+        error: publicOrderedRecordingStopFailure(result.error)
+      })
+    case 'prepare-failed':
+      return Object.freeze({
+        kind: result.kind,
+        ...(result.leaseCleanup === undefined
+          ? {}
+          : {
+              leaseCleanup:
+                result.leaseCleanup.state === 'pending'
+                  ? pendingOrderedRecordingCleanup()
+                  : toPublicCleanupRecord(result.leaseCleanup)
+            }),
+        receipt: Object.freeze({
+          version: result.receipt.version,
+          state: result.receipt.state,
+          recordingId: result.receipt.recordingId,
+          sourceStarted: result.receipt.sourceStarted,
+          journalEffect: result.receipt.journalEffect,
+          error: publicOrderedRecordingStopFailure(result.receipt.error)
+        })
+      })
+    default:
+      throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-recording-start')
+  }
+}
+
+function pendingOrderedRecordingCleanup(): { readonly state: 'pending' } {
+  return Object.freeze({ state: 'pending' })
+}
+
+function publicOrderedRecordingFailureValue(
+  value: import('../core/ordered-recording').OrderedRecordingFailureValue
+): GattOrderedRecordingFailureValue {
+  switch (value.kind) {
+    case 'int':
+    case 'text':
+      return Object.freeze({ kind: value.kind, value: value.value })
+    case 'bool':
+      return Object.freeze({ kind: value.kind, value: value.value })
+    default:
+      throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-recording-start')
+  }
+}
+
+function publicOrderedRecordingMetadata(
+  metadata: Readonly<Record<string, import('../core/ordered-recording').OrderedRecordingFailureValue>>
+): Readonly<Record<string, GattOrderedRecordingFailureValue>> {
+  return Object.freeze(
+    Object.fromEntries(Object.entries(metadata).map(([key, value]) => [key, publicOrderedRecordingFailureValue(value)]))
+  )
+}
+
+function publicOrderedRecordingPlatformDetail(
+  detail: import('../core/ordered-recording').OrderedRecordingPlatformDetail
+): GattOrderedRecordingPlatformDetail {
+  return Object.freeze({
+    domain: detail.domain,
+    code: detail.code,
+    message: detail.message,
+    metadata: publicOrderedRecordingMetadata(detail.metadata),
+    ...(detail.metadataEntries === undefined
+      ? {}
+      : {
+          metadataEntries: snapshotPlatformMetadataEntries(
+            detail.metadataEntries,
+            'public-gatt.ordered-recording.metadata.entries'
+          )
+        }),
+    ...(detail.cleanup === undefined
+      ? {}
+      : { cleanup: Object.freeze(detail.cleanup.map(publicOrderedRecordingPlatformDetail)) }),
+    ...(detail.cleanupFailures === undefined
+      ? {}
+      : { cleanupFailures: Object.freeze(detail.cleanupFailures.map(publicOrderedRecordingFailure)) })
+  })
+}
+
+function publicOrderedRecordingFailure(
+  failure: import('../core/ordered-recording').OrderedRecordingFailure
+): GattOrderedRecordingFailure {
+  return Object.freeze({
+    code: failure.code,
+    domain: failure.domain,
+    operation: failure.operation,
+    detail: failure.detail,
+    platformDomain: failure.platformDomain,
+    platformCode: failure.platformCode,
+    platformMessage: failure.platformMessage,
+    platformMetadata: publicOrderedRecordingMetadata(failure.platformMetadata),
+    ...(failure.platformMetadataEntries === undefined
+      ? {}
+      : {
+          platformMetadataEntries: snapshotPlatformMetadataEntries(
+            failure.platformMetadataEntries,
+            'public-gatt.ordered-recording.metadata.entries'
+          )
+        }),
+    ...(failure.platformCleanup === undefined
+      ? {}
+      : { platformCleanup: Object.freeze(failure.platformCleanup.map(publicOrderedRecordingPlatformDetail)) }),
+    ...(failure.platformCleanupFailures === undefined
+      ? {}
+      : { platformCleanupFailures: Object.freeze(failure.platformCleanupFailures.map(publicOrderedRecordingFailure)) })
+  })
+}
+
+function publicOrderedRecordingStorageFailure(
+  failure: import('../core/continuation-recording').ContinuationRecordingFailure
+): GattOrderedRecordingStorageFailure {
+  return Object.freeze({
+    kind: failure.kind,
+    detail: failure.detail,
+    operation: failure.operation,
+    sqliteExtendedCode: failure.sqliteExtendedCode,
+    sqliteCode: failure.sqliteCode
+  })
+}
+
+function publicOrderedRecordingStopFailure(
+  failure: import('../core/continuation-recording').OrderedRecordingStopFailure
+): GattOrderedRecordingStopFailure {
+  switch (failure.kind) {
+    case 'source':
+      return Object.freeze({ kind: failure.kind, source: publicOrderedRecordingFailure(failure.source) })
+    case 'storage':
+      return Object.freeze({ kind: failure.kind, storage: publicOrderedRecordingStorageFailure(failure.storage) })
+    case 'storage-cleanup':
+      return Object.freeze({
+        kind: failure.kind,
+        storage: publicOrderedRecordingStorageFailure(failure.storage),
+        source: publicOrderedRecordingFailure(failure.source)
+      })
+    case 'invalid-delivery':
+    case 'invalid-identity':
+    case 'worker-failed':
+    case 'missing-terminal':
+    case 'entropy-unavailable':
+    case 'receipt-retired':
+    case 'recording-not-accepting':
+      return Object.freeze({ kind: failure.kind })
+    default:
+      throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-recording-start')
+  }
+}
+
+function publicOrderedRecordingStartReceipt(
+  receipt: import('../core/ordered-recording-start').OrderedRecordingStartReceipt
+): GattOrderedRecordingStartReceipt {
+  const sourceGeneration = publicOrderedSourceGeneration(receipt.sourceGeneration)
+  if (sourceGeneration === undefined)
+    throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-recording-start')
+  return Object.freeze({
+    version: receipt.version,
+    recordingId: receipt.recordingId,
+    collectionId: receipt.collectionId,
+    state: receipt.state,
+    sourceGeneration,
+    members: Object.freeze(
+      receipt.members.map(member =>
+        Object.freeze({
+          memberId: member.memberId,
+          acquisition: member.acquisition,
+          delivery: member.delivery,
+          cleanupReleased: member.cleanupReleased,
+          cleanupError: member.cleanupError === null ? null : publicOrderedRecordingFailure(member.cleanupError)
+        })
+      )
+    ),
+    setupFailure: receipt.setupFailure === null ? null : publicOrderedRecordingFailure(receipt.setupFailure),
+    fenceFailure: receipt.fenceFailure === null ? null : publicOrderedRecordingFailure(receipt.fenceFailure),
+    error: receipt.error === null ? null : publicOrderedRecordingStopFailure(receipt.error),
+    inspectionError:
+      receipt.inspectionError === null ? null : publicOrderedRecordingStopFailure(receipt.inspectionError),
+    driverError: receipt.driverError === null ? null : publicOrderedRecordingStopFailure(receipt.driverError)
+  })
+}
+
+function publicOrderedStreamLimits(
+  limits: import('../backend-contract/streams').StreamLimits
+): GattOrderedStream['limits'] {
+  return Object.freeze({
+    itemCapacity: limits.itemCapacity,
+    byteCapacity: limits.byteCapacity,
+    reservedControlCapacity: limits.reservedControlCapacity
+  })
+}
+
+function publicOrderedSourceGeneration(
+  generation: import('../core/ordered-notification-contract').OrderedSourceGeneration | null | undefined
+): GattOrderedSourceGeneration | null | undefined {
+  return generation === undefined
+    ? undefined
+    : generation === null
+      ? null
+      : Object.freeze({ kind: generation.kind, value: generation.value })
+}
+
+function publicOrderedSourceMembership(
+  membership: import('../core/ordered-notification-contract').OrderedNotificationSourceMembership | null | undefined
+): GattOrderedSourceMembership | null | undefined {
+  return membership === undefined
+    ? undefined
+    : membership === null
+      ? null
+      : Object.freeze({ member: membership.member, epoch: membership.epoch })
+}
+
+function publicOrderedLossScope(
+  scope: import('../core/ordered-notification-contract').OrderedNotificationLoss['scope']
+): GattOrderedLossScope {
+  switch (scope.kind) {
+    case 'member':
+      return Object.freeze({ kind: scope.kind, memberId: scope.memberId })
+    case 'group':
+    case 'unknown':
+      return Object.freeze({ kind: scope.kind })
+    default:
+      throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered')
+  }
+}
+
+function publicOrderedSourceRejection(
+  rejection: import('../core/ordered-notification-contract').OrderedNotificationSourceRejection | null | undefined
+): GattOrderedSourceRejection | null | undefined {
+  if (rejection === undefined || rejection === null) return rejection
+  switch (rejection.kind) {
+    case 'value':
+    case 'ordinal-exhausted':
+      return Object.freeze({ kind: rejection.kind, bytes: rejection.bytes })
+    case 'loss':
+      return Object.freeze({ kind: rejection.kind, skippedRecords: rejection.skippedRecords })
+    case 'fence': {
+      const membership = publicOrderedSourceMembership(rejection.membership)
+      if (membership === undefined || membership === null)
+        throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered')
+      return Object.freeze({ kind: rejection.kind, membership })
+    }
+    case 'barrier':
+      return Object.freeze({ kind: rejection.kind, id: rejection.id })
+    case 'marker':
+      return Object.freeze({ kind: rejection.kind, markerId: rejection.markerId })
+    default:
+      throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered')
+  }
+}
+
+function publicOrderedRejectedLoss(
+  loss: import('../core/ordered-notification-contract').OrderedNotificationRejectedLoss | null | undefined
+): GattOrderedRejectedLoss | null | undefined {
+  return loss === undefined
+    ? undefined
+    : loss === null
+      ? null
+      : Object.freeze({
+          scope: publicOrderedLossScope(loss.scope),
+          unit: loss.unit,
+          count: loss.count,
+          bytes: loss.bytes
+        })
+}
+
+function publicOrderedLoss(
+  item: Extract<import('../core/ordered-notification-contract').OrderedNotificationItem, { readonly kind: 'loss' }>
+): Extract<GattOrderedItem, { readonly kind: 'loss' }> {
+  return Object.freeze({
+    kind: item.kind,
+    scope: publicOrderedLossScope(item.scope),
+    reason: item.reason,
+    lostValues: item.lostValues,
+    lostBytes: item.lostBytes,
+    lostSourceRecords: item.lostSourceRecords
+  })
+}
+
+function publicOrderedMarker(
+  item: Extract<import('../core/ordered-notification-contract').OrderedNotificationItem, { readonly kind: 'marker' }>
+): Extract<GattOrderedItem, { readonly kind: 'marker' }> {
+  const sourceGeneration = publicOrderedSourceGeneration(item.sourceGeneration)
+  const sourceMembership = publicOrderedSourceMembership(item.sourceMembership)
+  return Object.freeze({
+    kind: item.kind,
+    collectionId: item.collectionId,
+    connectionGeneration: item.connectionGeneration,
+    databaseGeneration: item.databaseGeneration,
+    ...(sourceGeneration === undefined ? {} : { sourceGeneration }),
+    ...(sourceMembership === undefined ? {} : { sourceMembership }),
+    markerId: item.markerId,
+    ordinal: item.ordinal
+  })
+}
+
+function publicNotificationReceipt(receipt: NotificationReceipt | undefined): NotificationReceipt | undefined {
+  return receipt === undefined
+    ? undefined
+    : Object.freeze({
+        receivedAtUtcMs: receipt.receivedAtUtcMs,
+        receivedAtMonotonicMs: receipt.receivedAtMonotonicMs,
+        clockId: receipt.clockId,
+        origin: receipt.origin
+      })
+}
+
+function publicOrderedCleanup(
+  cleanup: import('../core/ordered-notification-contract').OrderedNotificationCleanup
+): GattOrderedCleanup {
+  return Object.freeze({
+    group: toPublicCleanupRecord(cleanup.group),
+    members: Object.freeze(
+      cleanup.members.map(member =>
+        Object.freeze({ memberId: member.memberId, cleanup: toPublicCleanupRecord(member.cleanup) })
+      )
+    ),
+    ...(cleanup.discarded === undefined
+      ? {}
+      : {
+          discarded: Object.freeze({
+            values: cleanup.discarded.values,
+            bytes: cleanup.discarded.bytes,
+            controls: cleanup.discarded.controls,
+            uncertainTail: cleanup.discarded.uncertainTail,
+            ...(cleanup.discarded.terminal === undefined
+              ? {}
+              : {
+                  terminal: cleanup.discarded.terminal === null ? null : publicOrderedItem(cleanup.discarded.terminal)
+                }),
+            ...(cleanup.discarded.losses === undefined
+              ? {}
+              : { losses: Object.freeze(cleanup.discarded.losses.map(publicOrderedLoss)) }),
+            ...(cleanup.discarded.markers === undefined
+              ? {}
+              : { markers: Object.freeze(cleanup.discarded.markers.map(publicOrderedMarker)) }),
+            ...(cleanup.discarded.failureObservations === undefined
+              ? {}
+              : {
+                  failureObservations: Object.freeze(
+                    cleanup.discarded.failureObservations.map(publicOrderedFailureObservation)
+                  )
+                }),
+            ...(cleanup.discarded.failureObservationsOmitted === undefined
+              ? {}
+              : {
+                  failureObservationsOmitted: Object.freeze(
+                    cleanup.discarded.failureObservationsOmitted.map(item =>
+                      Object.freeze({ kind: item.kind, count: item.count })
+                    )
+                  )
+                }),
+            ...(cleanup.discarded.trustedValues === undefined
+              ? {}
+              : {
+                  trustedValues: Object.freeze(
+                    cleanup.discarded.trustedValues.map(item => {
+                      const sourceMembership = publicOrderedSourceMembership(item.sourceMembership)
+                      if (sourceMembership === undefined || sourceMembership === null)
+                        throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered')
+                      return Object.freeze({
+                        memberId: item.memberId,
+                        ordinal: item.ordinal,
+                        sourceMembership,
+                        bytes: item.bytes
+                      })
+                    })
+                  )
+                })
+          })
+        })
+  })
+}
+
+function publicOrderedItem(
+  item: import('../core/ordered-notification-contract').OrderedNotificationItem
+): GattOrderedItem {
+  switch (item.kind) {
+    case 'value': {
+      const sourceGeneration = publicOrderedSourceGeneration(item.sourceGeneration)
+      const sourceMembership = publicOrderedSourceMembership(item.sourceMembership)
+      const receipt = publicNotificationReceipt(item.receipt)
+      return Object.freeze({
+        kind: item.kind,
+        collectionId: item.collectionId,
+        connectionGeneration: item.connectionGeneration,
+        databaseGeneration: item.databaseGeneration,
+        memberId: item.memberId,
+        ordinal: item.ordinal,
+        ...(sourceGeneration === undefined ? {} : { sourceGeneration }),
+        ...(sourceMembership === undefined ? {} : { sourceMembership }),
+        value: new Uint8Array(item.value),
+        delivery: item.delivery,
+        provenance: item.provenance,
+        ...(receipt === undefined ? {} : { receipt })
+      })
+    }
+    case 'loss':
+      return publicOrderedLoss(item)
+    case 'marker':
+      return publicOrderedMarker(item)
+    case 'failure-observation':
+      return publicOrderedFailureObservation(item)
+    case 'failure-observations-omitted':
+      return Object.freeze({ kind: item.kind, count: item.count })
+    case 'terminal': {
+      const rejectedLoss = publicOrderedRejectedLoss(item.rejectedLoss)
+      const sourceRejection = publicOrderedSourceRejection(item.sourceRejection)
+      const sourceFailureMember = publicOrderedSourceMembership(item.sourceFailureMember)
+      return Object.freeze({
+        kind: item.kind,
+        reason: item.reason,
+        uncertainTail: item.uncertainTail,
+        ...(item.error === undefined
+          ? {}
+          : { error: item.error === null ? null : toPublicNormalizedError(item.error) }),
+        ...(item.secondaryError === undefined
+          ? {}
+          : { secondaryError: item.secondaryError === null ? null : toPublicNormalizedError(item.secondaryError) }),
+        ...(item.additionalFailureCount === undefined ? {} : { additionalFailureCount: item.additionalFailureCount }),
+        ...(item.failureCountOverflowed === undefined ? {} : { failureCountOverflowed: item.failureCountOverflowed }),
+        ...(item.failureObservationsOmitted === undefined
+          ? {}
+          : { failureObservationsOmitted: item.failureObservationsOmitted }),
+        ...(item.fenceError === undefined
+          ? {}
+          : { fenceError: item.fenceError === null ? null : toPublicNormalizedError(item.fenceError) }),
+        ...(item.rejectedValues === undefined ? {} : { rejectedValues: item.rejectedValues }),
+        ...(rejectedLoss === undefined ? {} : { rejectedLoss }),
+        ...(sourceRejection === undefined ? {} : { sourceRejection }),
+        ...(sourceFailureMember === undefined ? {} : { sourceFailureMember })
+      })
+    }
+    default:
+      throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered')
+  }
+}
+
+function publicOrderedObservation(
+  item: InternalOrderedObservation
+): Exclude<GattOrderedItem, { readonly kind: 'terminal' }> {
+  const projected = publicOrderedItem(item)
+  if (projected.kind === 'terminal') throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered')
+  return projected
+}
+
+function publicOrderedFailureObservation(
+  item: Extract<
+    import('../core/ordered-notification-contract').OrderedNotificationItem,
+    { readonly kind: 'failure-observation' }
+  >
+): Extract<GattOrderedItem, { readonly kind: 'failure-observation' }> {
+  const sourceRejection = publicOrderedSourceRejection(item.sourceRejection)
+  const sourceFailureMember = publicOrderedSourceMembership(item.sourceFailureMember)
+  const rejectedLoss = publicOrderedRejectedLoss(item.rejectedLoss)
+  if (sourceRejection === undefined || sourceFailureMember === undefined || rejectedLoss === undefined)
+    throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered')
+  return Object.freeze({
+    kind: item.kind,
+    failure: item.failure === null ? null : toPublicNormalizedError(item.failure),
+    sourceRejection,
+    sourceFailureMember,
+    rejectedLoss,
+    tailUncertain: item.tailUncertain
+  })
+}
+
+function publicOrderedSetup(
+  setup: import('../core/ordered-notification-contract').OrderedNotificationSetup<PortableCurrentCharacteristicPath>,
+  stream: GattOrderedStream
+): GattOrderedSetup {
+  const sourceGeneration = publicOrderedSourceGeneration(setup.sourceGeneration)
+  if (setup.state === 'ready')
+    return Object.freeze({
+      state: setup.state,
+      ...(sourceGeneration === undefined ? {} : { sourceGeneration }),
+      members: Object.freeze(
+        setup.members.map(member =>
+          Object.freeze({
+            memberId: member.memberId,
+            requestedDelivery: member.requestedDelivery,
+            effectiveDelivery: member.effectiveDelivery
+          })
+        )
+      ),
+      stream
+    })
+  if (setup.state !== 'failed') throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered')
+  return Object.freeze({
+    state: setup.state,
+    ...(sourceGeneration === undefined ? {} : { sourceGeneration }),
+    error: toPublicNormalizedError(setup.error),
+    members: Object.freeze(
+      setup.members.map(member => Object.freeze({ memberId: member.memberId, acquisition: member.acquisition }))
+    ),
+    observations: Object.freeze(setup.observations.map(publicOrderedObservation)),
+    uncertainTail: setup.uncertainTail,
+    cleanup: publicOrderedCleanup(setup.cleanup),
+    stream,
+    close: async () => runPublicAsync(async () => publicOrderedCleanup(await setup.close()))
+  })
+}
+
+function publicOrderedIteratorResult(
+  result: IteratorResult<import('../core/ordered-notification-contract').OrderedNotificationItem, undefined>
+): IteratorResult<GattOrderedItem, undefined> {
+  return result.done
+    ? Object.freeze({ done: true, value: undefined })
+    : Object.freeze({ done: false, value: publicOrderedItem(result.value) })
+}
+
 class PublicGattDatabase implements GattDatabase {
   readonly generation: string
   readonly services: readonly GattService[]
@@ -393,6 +1338,330 @@ class PublicGattDatabase implements GattDatabase {
     return this.service(serviceUuid, { occurrence: selector.serviceOccurrence }).characteristic(characteristicUuid, {
       occurrence: selector.characteristicOccurrence
     })
+  }
+
+  private orderedMembers(members: readonly GattOrderedMember[]) {
+    if (!Array.isArray(members) || members.length === 0)
+      throw contractError('argument.invalid', 'gatt', 'public-gatt.ordered.members')
+    const ids = new Set<string>()
+    const characteristics = new Set<GattCharacteristic>()
+    const entries = Array.from(members, member => {
+      if (
+        member === null ||
+        typeof member !== 'object' ||
+        typeof member.memberId !== 'string' ||
+        member.memberId.length === 0 ||
+        ids.has(member.memberId) ||
+        characteristics.has(member.characteristic) ||
+        !this.snapshotValue.characteristics.includes(member.characteristic)
+      )
+        throw contractError('argument.invalid', 'gatt', 'public-gatt.ordered.member')
+      const path = orderedCharacteristicPaths.get(member.characteristic)
+      if (path === undefined) throw contractError('argument.invalid', 'gatt', 'public-gatt.ordered.characteristic')
+      const selected = resolveDelivery(member.characteristic.properties, member.delivery)
+      if (this.source.deliverySelection === 'unknown' && member.delivery?.startsWith('require-'))
+        throw contractError('capability.limited', 'gatt', 'public-gatt.ordered.delivery')
+      ids.add(member.memberId)
+      characteristics.add(member.characteristic)
+      return {
+        memberId: member.memberId,
+        path,
+        deliveryMode: member.delivery ?? (selected === 'indication' ? 'prefer-indication' : 'prefer-notification')
+      }
+    })
+    return entries
+  }
+
+  private publicMarkerHandle(
+    handle: import('../core/ordered-marker-wire').OrderedMarkerWriteHandle<PortableCurrentCharacteristicPath>
+  ): GattOrderedMarkerWrite {
+    let bound: GattCharacteristic | null = null
+    let request: {
+      readonly target: GattCharacteristic
+      readonly value: Uint8Array
+      readonly mode: 'with-response' | 'without-response'
+    } | null = null
+    let idleCancellation: import('../core/ordered-marker-wire').OrderedMarkerWriteStatus | null = null
+    let retired = false
+    return {
+      start: async (
+        target: GattCharacteristic,
+        value: Readonly<Uint8Array>,
+        mode: 'with-response' | 'without-response',
+        startOptions: OperationOptions = {}
+      ) => {
+        try {
+          if (retired) throw contractError('lifecycle.invalid-state', 'gatt', 'public-gatt.ordered-marker.retired')
+          if (idleCancellation !== null) return idleCancellation
+          if (!(value instanceof Uint8Array) || (mode !== 'with-response' && mode !== 'without-response'))
+            throw contractError('argument.invalid', 'gatt', 'public-gatt.ordered-marker')
+          if (bound !== null && bound !== target)
+            throw contractError('argument.invalid', 'gatt', 'public-gatt.ordered-marker.target')
+          if (
+            request !== null &&
+            (request.target !== target ||
+              request.mode !== mode ||
+              request.value.length !== value.length ||
+              request.value.some((byte, index) => byte !== value[index]))
+          )
+            throw contractError('lifecycle.invalid-state', 'gatt', 'public-gatt.ordered-marker.retry')
+          // An admitted marker owns its exact receipt. Retrying that receipt is
+          // an observation, not a new GATT operation, so a later source loss
+          // must not make that exact receipt stale.
+          if (request !== null) {
+            const status = await handle.status()
+            if (isInternalOrderedMarkerWriteStatus(status) && status.state === 'admitted')
+              return publicOrderedMarkerStatus(status)
+          }
+          this.source.assertCurrent?.()
+          if (!this.snapshotValue.characteristics.includes(target))
+            throw contractError('argument.invalid', 'gatt', 'public-gatt.ordered-marker.target')
+          const path = orderedCharacteristicPaths.get(target)
+          if (path === undefined) throw contractError('argument.invalid', 'gatt', 'public-gatt.ordered-marker.target')
+          const controls = normalizeOperationOptions(startOptions, () => this.source.monotonicNow())
+          const copied = new Uint8Array(value)
+          bound = target
+          request ??= { target, value: copied, mode }
+          return publicOrderedMarkerStatus(await handle.start(path, copied, mode, controls))
+        } catch (error) {
+          throw rehydratePublicError(error)
+        }
+      },
+      status: async () => {
+        try {
+          const status = await handle.status()
+          if (isInternalOrderedMarkerWriteStatus(status)) return publicOrderedMarkerStatus(status)
+          if (status.state === 'idle' || status.state === 'retired') return Object.freeze({ state: status.state })
+          throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-marker-status')
+        } catch (error) {
+          throw rehydratePublicError(error)
+        }
+      },
+      cancel: async () => {
+        try {
+          const raw = await handle.cancel()
+          const result = isInternalOrderedMarkerWriteStatus(raw)
+            ? publicOrderedMarkerStatus(raw)
+            : raw.state === 'idle' || raw.state === 'retired'
+              ? Object.freeze({ state: raw.state })
+              : (() => {
+                  throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-marker-status')
+                })()
+          if (bound === null && result.state === 'not-admitted') idleCancellation = result
+          return result
+        } catch (error) {
+          throw rehydratePublicError(error)
+        }
+      },
+      forget: async () => {
+        try {
+          await handle.forget()
+          retired = true
+          idleCancellation = null
+        } catch (error) {
+          throw rehydratePublicError(error)
+        }
+      }
+    }
+  }
+
+  reserveOrderedRecordingMarker(recordingId: string): GattOrderedMarkerWrite {
+    try {
+      this.source.assertCurrent?.()
+      const reserve = this.source.reserveOrderedRecordingMarker
+      if (!reserve) throw contractError('capability.unsupported', 'gatt', 'public-gatt.ordered-recording-marker')
+      return this.publicMarkerHandle(reserve.call(this.source, recordingId))
+    } catch (error) {
+      throw rehydratePublicError(error)
+    }
+  }
+
+  reserveOrderedRecordingReclaim(handle: import('../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle) {
+    try {
+      this.source.assertCurrent?.()
+      const reserve = this.source.reserveOrderedRecordingReclaim
+      if (!reserve) throw contractError('capability.unsupported', 'gatt', 'public-gatt.ordered-recording-reclaim')
+      const reclaim = reserve.call(this.source, handle)
+      return Object.freeze({
+        start: () => runPublicAsync(async () => publicOrderedRecordingReclaimStatus(await reclaim.start())),
+        status: () => runPublicAsync(async () => publicOrderedRecordingReclaimStatus(await reclaim.status())),
+        commit: () => runPublicAsync(async () => publicOrderedRecordingReclaimReceipt(await reclaim.commit())),
+        cancel: () => runPublicAsync(async () => publicOrderedRecordingReclaimStatus(await reclaim.cancel())),
+        release: () => runPublicAsync(async () => publicOrderedRecordingReclaimReceipt(await reclaim.release())),
+        retire: () => rehydratePublicPromise(reclaim.retire())
+      })
+    } catch (error) {
+      throw rehydratePublicError(error)
+    }
+  }
+
+  reserveOrderedRecordingStart(): GattOrderedRecordingStart {
+    const handle = (() => {
+      try {
+        this.source.assertCurrent?.()
+        if (this.source.reserveOrderedRecordingStart === undefined)
+          throw contractError('capability.unsupported', 'gatt', 'public-gatt.ordered-recording')
+        return this.source.reserveOrderedRecordingStart()
+      } catch (error) {
+        throw rehydratePublicError(error)
+      }
+    })()
+    const recoveryHandle = handle.recoveryHandle
+    return Object.freeze({
+      start: async (
+        members: readonly GattOrderedMember[],
+        options: OperationOptions & {
+          readonly recording: ContinuationRecordingConfiguration
+          readonly stream?: StreamPolicy
+        }
+      ) => {
+        try {
+          const now = () => this.source.monotonicNow()
+          const operation = normalizeOperationOptions(options, now)
+          assertSubscribeAdmission(operation, now)
+          this.source.assertCurrent?.()
+          return publicOrderedRecordingStartResult(
+            await handle.start(this.orderedMembers(members), {
+              ...operation,
+              recording: options.recording,
+              delivery: resolveStreamPolicy(options.stream ?? 'balanced')
+            })
+          )
+        } catch (error) {
+          throw rehydratePublicError(error)
+        }
+      },
+      status: async () => {
+        try {
+          const status = await handle.status()
+          if (status.state === 'result')
+            return Object.freeze({ state: status.state, result: publicOrderedRecordingStartResult(status.result) })
+          if (
+            status.state === 'pending' ||
+            status.state === 'unknown' ||
+            status.state === 'failed' ||
+            status.state === 'retired'
+          )
+            return Object.freeze({ state: status.state })
+          throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-recording-start')
+        } catch (error) {
+          throw rehydratePublicError(error)
+        }
+      },
+      retire: async () => {
+        try {
+          await handle.retire()
+        } catch (error) {
+          throw rehydratePublicError(error)
+        }
+      },
+      ...(recoveryHandle
+        ? {
+            recoveryHandle: () => {
+              try {
+                return recoveryHandle.call(handle)
+              } catch (error) {
+                throw rehydratePublicError(error)
+              }
+            }
+          }
+        : {}),
+      ...(handle.reserveMarkerWrite
+        ? {
+            reserveMarkerWrite: () =>
+              runPublic(() => {
+                const marker = handle.reserveMarkerWrite?.()
+                if (!marker)
+                  throw rehydratePublicError(
+                    contractError('capability.unsupported', 'gatt', 'public-gatt.ordered-marker')
+                  )
+                return this.publicMarkerHandle(marker)
+              })
+          }
+        : {})
+    })
+  }
+
+  async subscribeOrdered(
+    members: readonly GattOrderedMember[],
+    options: OperationOptions & { readonly stream?: StreamPolicy } = {}
+  ): Promise<GattOrderedSetup> {
+    try {
+      const now = () => this.source.monotonicNow()
+      const operation = normalizeOperationOptions(options, now)
+      assertSubscribeAdmission(operation, now)
+      this.source.assertCurrent?.()
+      const entries = this.orderedMembers(members)
+      if (this.source.subscribeOrdered === undefined)
+        throw contractError('capability.unsupported', 'gatt', 'public-gatt.ordered')
+      const setup = await this.source.subscribeOrdered(entries, {
+        ...operation,
+        delivery: resolveStreamPolicy(options.stream ?? 'balanced')
+      })
+      const source = setup.stream
+      const reserve = source.reserveMarkerWrite
+      const increase = source.increaseByteCapacity
+      const stream: GattOrderedStream = {
+        get limits() {
+          return publicOrderedStreamLimits(source.limits)
+        },
+        ...(increase
+          ? {
+              increaseByteCapacity: async (maxBytes: number) => {
+                try {
+                  const result = await increase.call(source, maxBytes)
+                  return Object.freeze({
+                    previousMaxBytes: result.previousMaxBytes,
+                    maxBytes: result.maxBytes,
+                    maximumMaxBytes: result.maximumMaxBytes
+                  })
+                } catch (error) {
+                  throw rehydratePublicError(error)
+                }
+              }
+            }
+          : {}),
+        close: () => runPublicAsync(async () => publicOrderedCleanup(await source.close())),
+        discard: () => runPublicAsync(async () => publicOrderedCleanup(await source.discard())),
+        [Symbol.asyncIterator]: () =>
+          runPublic(() => {
+            const iterator = source[Symbol.asyncIterator]()
+            const returnIterator = iterator.return?.bind(iterator)
+            const throwIterator = iterator.throw?.bind(iterator)
+            return {
+              next: (...args: [] | [undefined]) =>
+                runPublicAsync(async () => {
+                  const result = await iterator.next(...args)
+                  return publicOrderedIteratorResult(result)
+                }),
+              ...(returnIterator
+                ? {
+                    return: (value?: undefined) =>
+                      runPublicAsync(async () => publicOrderedIteratorResult(await returnIterator(value)))
+                  }
+                : {}),
+              ...(throwIterator
+                ? {
+                    throw: (error?: unknown) =>
+                      runPublicAsync(async () => publicOrderedIteratorResult(await throwIterator(error)))
+                  }
+                : {})
+            }
+          }),
+        ...(reserve
+          ? {
+              reserveMarkerWrite: () =>
+                runPublic(() => {
+                  return this.publicMarkerHandle(reserve.call(source))
+                })
+            }
+          : {})
+      }
+      registerOrderedStreamOrigin(stream, source)
+      return publicOrderedSetup(setup, stream)
+    } catch (error) {
+      throw rehydratePublicError(error)
+    }
   }
 
   snapshot(): GattDatabaseSnapshot {
@@ -469,6 +1738,7 @@ class PublicGattCharacteristic implements GattCharacteristic {
     private readonly provisionalOwner: ProvisionalGattSubscriptionOwner
   ) {
     this.service = service
+    orderedCharacteristicPaths.set(this, indexedRecord.record.path)
     this.uuid = normalizeUuid(indexedRecord.record.path.characteristicUuid)
     this.occurrence = indexedRecord.occurrence
     this.properties = normalizeCharacteristicProperties(indexedRecord.record)
@@ -1317,6 +2587,17 @@ function mapGattValueStream(
     if (delivery !== 'notification' && delivery !== 'indication' && delivery !== 'unknown') {
       throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.delivery'))
     }
+    if (
+      (value.sourceGeneration === undefined) !== (value.sourceOrdinal === undefined) ||
+      (value.sourceGeneration !== undefined &&
+        (!isCanonicalIngressOrdinal(value.sourceGeneration) || !isCanonicalIngressOrdinal(value.sourceOrdinal)))
+    ) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.source-order'))
+    }
+    const provenance = value.provenance ?? 'unknown'
+    if (provenance !== 'notification' && provenance !== 'read-or-notification' && provenance !== 'unknown') {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.provenance'))
+    }
     const observedAtMonotonicMs = value.observedAtMonotonicMs ?? now()
     if (!Number.isFinite(observedAtMonotonicMs) || observedAtMonotonicMs < 0) {
       throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.timestamp'))
@@ -1328,6 +2609,10 @@ function mapGattValueStream(
     return Object.freeze({
       value: new Uint8Array(value.value),
       delivery,
+      provenance,
+      ...(value.sourceGeneration === undefined
+        ? {}
+        : { sourceGeneration: value.sourceGeneration, sourceOrdinal: value.sourceOrdinal }),
       observedAtMonotonicMs,
       sequence: valueSequence,
       ...(value.receipt === undefined ? {} : { receipt: Object.freeze({ ...value.receipt }) })
@@ -1375,6 +2660,14 @@ function rehydrateCleanup(operation: Promise<CleanupRecord>): Promise<CleanupRec
   return operation.then(toPublicCleanupRecord).catch(error => {
     throw rehydratePublicError(error)
   })
+}
+
+async function runPublicAsync<Value>(operation: () => Promise<Value>): Promise<Value> {
+  try {
+    return await operation()
+  } catch (error) {
+    throw rehydratePublicError(error)
+  }
 }
 
 function runPublic<Value>(operation: () => Value): Value {

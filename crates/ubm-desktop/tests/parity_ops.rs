@@ -76,7 +76,10 @@ async fn open() -> DesktopCentral<FakeRadio> {
 }
 
 async fn known_peer(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
-    central.boundary().push_event(advertisement(peer_id));
+    central
+        .boundary()
+        .push_event(advertisement(peer_id))
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.peer_key_for(peer_id).await.is_some() {
             return;
@@ -883,7 +886,8 @@ async fn subscribed_then_services_changed(central: &DesktopCentral<FakeRadio>, p
     let mut events = central.lifecycle_events();
     central
         .boundary()
-        .push_event(RadioEvent::ServicesChanged(peer_id.to_owned()));
+        .push_event(RadioEvent::ServicesChanged(peer_id.to_owned()))
+        .expect("synthetic event admission failed");
     let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
         .await
         .expect("event in time")
@@ -994,7 +998,8 @@ async fn advertisement_extras_reach_the_host_verbatim() {
             service_data: Vec::new(),
             tx_power_level: None,
             extras: extras.clone(),
-        }));
+        }))
+        .expect("synthetic event admission failed");
     let mut taken = None;
     for _ in 0..2000 {
         taken = central.take_advertisement().await;
@@ -1074,10 +1079,13 @@ async fn write_readiness_is_probed_and_reported_per_connection() {
         .find(|record| record.peer_id == "peer-wr")
         .and_then(|record| record.connection_generation);
     let mut reports = central.write_readiness_events();
-    central.boundary().push_event(RadioEvent::WriteReadiness {
-        peer_id: "peer-wr".to_owned(),
-        ready: true,
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::WriteReadiness {
+            peer_id: "peer-wr".to_owned(),
+            ready: true,
+        })
+        .expect("synthetic event admission failed");
     let report = tokio::time::timeout(Duration::from_secs(2), reports.recv())
         .await
         .expect("in time")
@@ -1132,7 +1140,8 @@ async fn connection_parameters_are_read_and_reported_per_connection() {
             interval_us: 15_000,
             latency: 4,
             supervision_timeout_us: 400_000,
-        });
+        })
+        .expect("synthetic event admission failed");
     let report = tokio::time::timeout(Duration::from_secs(2), reports.recv())
         .await
         .expect("in time")
@@ -1155,10 +1164,13 @@ async fn an_os_ended_scan_is_released_and_reported() {
         .start_scan("scanner", &[], OpControl::budget_ms(1000))
         .await
         .expect("scan");
-    central.boundary().push_event(RadioEvent::ScanTerminated {
-        aborted: true,
-        detail: "the WinRT advertisement watcher stopped (RadioNotAvailable)".to_owned(),
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::ScanTerminated {
+            aborted: true,
+            detail: "the WinRT advertisement watcher stopped (RadioNotAvailable)".to_owned(),
+        })
+        .expect("synthetic event admission failed");
     let terminal = tokio::time::timeout(Duration::from_secs(2), terminals.recv())
         .await
         .expect("in time")
@@ -1168,10 +1180,13 @@ async fn an_os_ended_scan_is_released_and_reported() {
     assert!(terminal.detail.contains("RadioNotAvailable"));
     assert!(!central.has_active_scan().await, "the owner is released");
     // A report with no active scan ends nothing and publishes nothing.
-    central.boundary().push_event(RadioEvent::ScanTerminated {
-        aborted: false,
-        detail: "late stop confirmation".to_owned(),
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::ScanTerminated {
+            aborted: false,
+            detail: "late stop confirmation".to_owned(),
+        })
+        .expect("synthetic event admission failed");
     assert!(
         tokio::time::timeout(Duration::from_millis(100), terminals.recv())
             .await
@@ -1410,7 +1425,8 @@ async fn watch_probe_refuses_a_preexisting_failed_source_without_refusing_an_ord
         .push_event(RadioEvent::ConnectionParameterSourceFailed {
             peer_id: "peer-source".into(),
             error: original,
-        });
+        })
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), reports.recv())
         .await
         .unwrap()
@@ -1445,7 +1461,8 @@ async fn watch_probe_refuses_a_preexisting_failed_source_without_refusing_an_ord
             interval_us: 60_000,
             latency: 2,
             supervision_timeout_us: 4_000_000,
-        });
+        })
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), reports.recv())
         .await
         .unwrap()
@@ -1484,7 +1501,8 @@ async fn transient_parameter_callback_failure_recovers_through_a_fresh_watch_pro
                 ubm_core::contracts::BleErrorDomain::Platform,
                 "transient.callback",
             ),
-        });
+        })
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), reports.recv())
         .await
         .unwrap()
@@ -1535,7 +1553,8 @@ async fn newer_identical_parameter_fault_wins_over_pending_watch_recovery() {
         .push_event(RadioEvent::ConnectionParameterSourceFailed {
             peer_id: "peer-revision".into(),
             error: failure.clone(),
-        });
+        })
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), reports.recv())
         .await
         .unwrap()
@@ -1568,7 +1587,8 @@ async fn newer_identical_parameter_fault_wins_over_pending_watch_recovery() {
         .push_event(RadioEvent::ConnectionParameterSourceFailed {
             peer_id: "peer-revision".into(),
             error: failure.clone(),
-        });
+        })
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), reports.recv())
         .await
         .unwrap()

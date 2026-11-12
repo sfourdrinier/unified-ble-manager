@@ -26,11 +26,22 @@ pub type AdvertisementEventHandler =
 pub struct ScanStopped {
     pub error: i32,
     pub error_name: String,
+    pub generation: u64,
+}
+
+/// Result of attempting to retire a watcher after its `Stopped` callback was
+/// lost. A nonterminal watcher must remain owned by its existing lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanWatcherRecovery {
+    Replaced { generation: u64, aborted: bool },
+    StillStopping,
 }
 
 #[derive(Debug)]
 pub struct BLEWatcher {
     watcher: BluetoothLEAdvertisementWatcher,
+    stopped_token: i64,
+    generation: u64,
     // UBM patch (UBM_PATCHES.md #5): the `Received` registration of the
     // current scan, removed on stop and before the next start so handlers
     // never accumulate across scans (upstream re-registers on every start,
@@ -52,11 +63,22 @@ impl From<windows::core::Error> for Error {
     }
 }
 
+fn prepare_then_retire<T, E>(
+    prepare: impl FnOnce() -> std::result::Result<T, E>,
+    retire: impl FnOnce() -> std::result::Result<(), E>,
+) -> std::result::Result<T, E> {
+    let prepared = prepare()?;
+    retire()?;
+    Ok(prepared)
+}
+
 impl BLEWatcher {
-    pub fn new() -> Result<Self> {
+    fn watcher_with_stopped_handler(
+        stopped: &tokio::sync::broadcast::Sender<ScanStopped>,
+        generation: u64,
+    ) -> Result<(BluetoothLEAdvertisementWatcher, i64)> {
         let ad = BluetoothLEAdvertisementFilter::new()?;
         let watcher = BluetoothLEAdvertisementWatcher::Create(&ad)?;
-        let (stopped, _) = tokio::sync::broadcast::channel(16);
         let sender = stopped.clone();
         let handler: TypedEventHandler<
             BluetoothLEAdvertisementWatcher,
@@ -65,18 +87,26 @@ impl BLEWatcher {
             move |_sender, args: Ref<BluetoothLEAdvertisementWatcherStoppedEventArgs>| {
                 if let Ok(args) = args.ok() {
                     let error = args.Error()?;
-                    // No receiver is not a failure.
                     let _ = sender.send(ScanStopped {
                         error: error.0,
                         error_name: format!("{error:?}"),
+                        generation,
                     });
                 }
                 Ok(())
             },
         );
-        watcher.Stopped(&handler)?;
+        let token = watcher.Stopped(&handler)?;
+        Ok((watcher, token))
+    }
+
+    pub fn new() -> Result<Self> {
+        let (stopped, _) = tokio::sync::broadcast::channel(16);
+        let (watcher, stopped_token) = Self::watcher_with_stopped_handler(&stopped, 1)?;
         Ok(BLEWatcher {
             watcher,
+            stopped_token,
+            generation: 1,
             received: std::sync::Mutex::new(None),
             stopped,
         })
@@ -85,6 +115,51 @@ impl BLEWatcher {
     /// UBM patch (UBM_PATCHES.md #5): every time the watcher stops.
     pub fn stopped_events(&self) -> tokio::sync::broadcast::Receiver<ScanStopped> {
         self.stopped.subscribe()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Replace a terminal watcher whose Stopped callback could not be
+    /// delivered. The replacement handler is registered before retiring the
+    /// old one; tagging generations makes queued old callbacks
+    /// distinguishable from the replacement.
+    pub fn reset_after_terminal(
+        &mut self,
+        expected_generation: u64,
+    ) -> Result<ScanWatcherRecovery> {
+        if self.generation != expected_generation {
+            return Ok(ScanWatcherRecovery::StillStopping);
+        }
+        let status = self.watcher.Status()?;
+        if !matches!(
+            status,
+            BluetoothLEAdvertisementWatcherStatus::Stopped
+                | BluetoothLEAdvertisementWatcherStatus::Aborted
+        ) {
+            return Ok(ScanWatcherRecovery::StillStopping);
+        }
+        let aborted = status == BluetoothLEAdvertisementWatcherStatus::Aborted;
+        let generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| Error::Other("watcher generation overflow".into()))?;
+        let (watcher, stopped_token) = prepare_then_retire(
+            || Self::watcher_with_stopped_handler(&self.stopped, generation),
+            || {
+                self.remove_received()?;
+                self.watcher.RemoveStopped(self.stopped_token)?;
+                Ok(())
+            },
+        )?;
+        self.watcher = watcher;
+        self.stopped_token = stopped_token;
+        self.generation = generation;
+        Ok(ScanWatcherRecovery::Replaced {
+            generation,
+            aborted,
+        })
     }
 
     fn remove_received(&self) -> Result<()> {
@@ -185,6 +260,23 @@ impl BLEWatcher {
 mod ubm_scan_mode_tests {
     use super::*;
     use crate::winrtble::utils;
+
+    #[test]
+    fn replacement_prepare_failure_never_retires_the_old_callback_route() {
+        let retired = std::sync::atomic::AtomicBool::new(false);
+        let result: Result<(), &str> = prepare_then_retire(
+            || Err("replacement Stopped registration failed"),
+            || {
+                retired.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert_eq!(result, Err("replacement Stopped registration failed"));
+        assert!(
+            !retired.load(std::sync::atomic::Ordering::SeqCst),
+            "the current watcher remains subscribed when replacement creation fails"
+        );
+    }
 
     /// UBM patch #11: every scan requests scan responses, and extended
     /// advertisements stay off. The complete local name of a legacy

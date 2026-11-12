@@ -6,6 +6,14 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.2.2] - 2026-11-11
+
+- Preserve ordered notification ingress and durable terminal evidence across
+  supported host recovery paths, including explicit partial-recovery status
+  when another live controller still owns retained records. This release adds
+  bounded host-private evidence retention and lease fencing; deterministic and
+  native synthetic coverage does not establish physical-radio qualification.
+
 ## [5.2.1] - 2026-11-08
 
 - Report unknown desktop characteristic security requirements as `unknown`

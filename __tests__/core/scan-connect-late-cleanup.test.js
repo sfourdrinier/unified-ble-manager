@@ -72,6 +72,9 @@ function createCloser(resourceKind, operation, policy) {
       if (policy === 'fail-then-succeed') {
         return attempts === 1 ? releaseFailedRecord(resourceKind, operation) : releasedRecord()
       }
+      if (policy === 'fail-twice-then-succeed') {
+        return attempts <= 2 ? releaseFailedRecord(resourceKind, operation) : releasedRecord()
+      }
       return releasedRecord()
     }
   }
@@ -285,6 +288,30 @@ describe('pending scan/connect acquisition ownership', () => {
 
     await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'released' })
     expect(closer.attempts()).toBe(2)
+  })
+
+  test.each(acquisitions)('a second failed late $name cleanup keeps the owning backend available for a third retry', async acquisition => {
+    const closer = createCloser(acquisition.resourceKind, acquisition.operation, 'fail-twice-then-succeed')
+    const { manager, fixture } = await createOwningFixture()
+    const gate = acquisition.install(fixture.backend, closer)
+    const destroy = jest.spyOn(fixture.backend, 'destroy')
+    const pending = acquisition.start(manager, null)
+
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.cancelled-by-destroy' } })
+    gate.release()
+    await settle(fixture.controller, gate.leaseCreated)
+    await awaitSignal(closer.firstAttempt, `the late ${acquisition.name} cleanup to run`)
+    await flushMicrotasks()
+    expect(closer.attempts()).toBe(1)
+
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'release-failed' })
+    expect(closer.attempts()).toBe(2)
+    expect(destroy).not.toHaveBeenCalled()
+
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'released' })
+    expect(closer.attempts()).toBe(3)
+    expect(destroy).toHaveBeenCalledTimes(1)
   })
 
   test.each(acquisitions)(

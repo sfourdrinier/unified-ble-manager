@@ -318,6 +318,46 @@ async fn refused_expiry_cleanup_remains_process_owned_after_session_disposal() {
     assert_eq!(radio.count(RequestKind::StopScan), 2);
 }
 
+#[tokio::test]
+async fn scan_failure_retries_the_retained_physical_stop_until_it_succeeds() {
+    let (retry_tx, retry_rx) = oneshot::channel();
+    let mut retry = Some(retry_tx);
+    let mut attempts = 0;
+    let radio = Scripted::new(Box::new(move |request| {
+        if request.kind() == RequestKind::StopScan {
+            attempts += 1;
+            if attempts < 3 {
+                return Reply::Now(RadioCompletion::Failed(PlatformFailure::new(
+                    FailureKind::Platform,
+                    "scan failure cleanup refused",
+                )));
+            }
+            retry.take().unwrap().send(()).unwrap();
+        }
+        polar_responder(request)
+    }));
+    let (host, wake) = fixture(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("failure-retry").unwrap();
+    ok(&call(
+        &session,
+        "scan.start",
+        &json!({"serviceUuids": ["180d"], "duplicatePolicy": "all", "operationId": "failure"})
+            .to_string(),
+    )
+    .await);
+    host.ingest(RadioIngress::ScanFailed {
+        detail: "native failure".into(),
+    });
+    let records = terminal(&session, &wake).await;
+    assert_eq!(of_type(&records, "scan-end")[0]["reason"], "source-failed");
+    tokio::time::timeout(Duration::from_secs(2), retry_rx)
+        .await
+        .expect("the process owner must retry the retained stop")
+        .unwrap();
+    assert_eq!(radio.count(RequestKind::StopScan), 3);
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_finishing_after_lifetime_is_compensated_before_publication() {
     let radio = Scripted::new(Box::new(move |request| {
@@ -384,15 +424,55 @@ async fn expiry_during_widening_preserves_the_new_membership() {
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(
+        host.ingest(RadioIngress::AdvertisementScoped {
+            scan_request_id: held,
+            advertisement: Advertisement {
+                peer_id: POLAR.into(),
+                ..Advertisement::default()
+            },
+        }),
+        ubm_mobile::IngressStatus::Accepted
+    );
     // Expiry removes the old member while its physical replacement is held.
     // Its cleanup waits behind admission and must preserve the new owner.
     let ended = terminal(&finite, &wake).await;
+    let advertisement = ended
+        .iter()
+        .position(|record| record["t"] == "adv")
+        .unwrap();
+    let terminal = ended
+        .iter()
+        .position(|record| record["t"] == "scan-end")
+        .unwrap();
+    assert!(advertisement < terminal);
+    assert!(
+        of_type(
+            parse(&survivor.drain(256, 65536))["records"]
+                .as_array()
+                .unwrap(),
+            "adv"
+        )
+        .is_empty()
+    );
     assert_eq!(
         of_type(&ended, "scan-end")[0]["reason"],
         "operation-timed-out"
     );
     radio.answer(held, RadioCompletion::Unit);
     let started = ok(&pending.await.unwrap());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let notified = wake.0.notified();
+            let records = parse(&survivor.drain(256, 65536));
+            if !of_type(records["records"].as_array().unwrap(), "adv").is_empty() {
+                break;
+            }
+            notified.await;
+        }
+    })
+    .await
+    .expect("pending member receives its captured advertisement after admission");
     assert_eq!(
         ok(&call(&survivor, "session.reconcile", "{}").await)["scan"],
         started["operationId"]

@@ -78,6 +78,46 @@ describe('a lost control record becomes the transition it would have caused (104
     await manager.destroy()
   })
 
+  test.each([false, true])('source failure retains its typed error through %s control loss', async lose => {
+    const { native, manager, backend } = await openManager()
+    const { subscription } = await connectAndSubscribe(manager, backend)
+    const error = {
+      code: 'platform.failure',
+      domain: 'platform',
+      operation: 'gatt.subscribe',
+      detail: null,
+      platform: { domain: 'android', code: 'cccd-failed', message: 'Radio failure', metadata: { status: 133 } }
+    }
+    const fail = () => native.endConsumer(DEFAULT_PEER, 'source-failed', 0, 0, error)
+    if (lose) native.loseControl(fail)
+    else fail()
+    await settle(120)
+    expect((await take(subscription.values)).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: {
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'gatt.subscribe',
+        platform: { domain: 'android', code: 'cccd-failed', safeMessage: 'Radio failure', metadata: { status: 133 } }
+      }
+    })
+    await manager.destroy()
+  })
+
+  test('source failure retains a failed cleanup for retry and preserves the terminal', async () => {
+    const { native, manager, backend } = await openManager()
+    const { subscription } = await connectAndSubscribe(manager, backend)
+    native.failNext('gatt.unsubscribe', 'platform.failure', 'platform')
+    native.endConsumer(DEFAULT_PEER, 'source-failed')
+    await settle(120)
+    expect((await take(subscription.values)).value).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
+    expect(native.opsInvoked('gatt.unsubscribe')).toHaveLength(1)
+    await backend.gatt.unsubscribe(subscription, { ...NO_OPTIONS, correlation: 'retry-source-cleanup' }).completion
+    expect(native.opsInvoked('gatt.unsubscribe')).toHaveLength(2)
+    await manager.destroy()
+  })
+
   test('a lost security record surfaces as a bond/security event', async () => {
     const { native, manager, backend, events } = await openManager()
     await connectAndSubscribe(manager, backend)

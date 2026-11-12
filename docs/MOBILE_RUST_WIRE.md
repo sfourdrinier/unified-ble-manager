@@ -1,4 +1,4 @@
-# Mobile Rust owner and wire `ubm-mobile-wire/2`
+# Mobile Rust owner and wire `ubm-mobile-wire/3`
 
 This document describes how React Native (Android and iOS) reaches the Rust
 core. It is the frozen interface between four parts:
@@ -88,6 +88,161 @@ JS manager ─┼─ MobileSession (lease) ─ MobileHost ─ DesktopCentral<For
 JS manager ─┘                          └─ WakeSink (JS wakeup)
 ```
 
+## Selected scan-failure recovery (expert React Native API)
+
+`react-native` exports `createReactNativeScanFailureRecovery` for a native
+application bootstrap that has already selected one app-private scan-failure
+recording. This is an expert recovery API; it is not part of `BleManager`, does
+not scan, connect, pair, or accept a recording ID or filesystem path from
+JavaScript. `open()` creates a native lease and the remaining lifecycle uses
+opaque lease, owner, head, and cleanup-receipt handles only. Handles are scoped
+to the selected recording and exact native binding. Replacing selection,
+retiring a binding, invalidating the TurboModule, or using a handle from a
+different binding rejects rather than reading the replacement recording.
+
+The native-selected page route is deliberately a JSI `Uint8Array` boundary:
+
+```ts
+read(headHandle, offset) // => { offset, nextOffset, done, bytes: Uint8Array }
+```
+
+It is one native operation: metadata and `bytes` describe the same page. A
+page is bounded by the native recovery quota. There is no JSON numeric-array
+encoding for binary evidence. The raw durable-source route is owner scoped:
+`rawInfo`, `rawMember`, `rawToken`, `rawRetire`, `rawRelease`, and
+`rawFinalize`. `rawInfo` reports a debugging identity and member/token counts;
+`rawMember` reports recipient and delivery identifiers. These records are for
+debugging/replay and may contain the private band's identifier where the
+application's recording did.
+
+`rawToken(owner, index, offset, maxBytes)` accepts canonical unsigned decimal
+`offset` and `maxBytes`; `maxBytes` is required to be in `1..65536`. It returns
+one of the following exact tagged values:
+
+| kind                    | fields                                               |
+| ----------------------- | ---------------------------------------------------- |
+| `null`                  | none                                                 |
+| `bool`                  | `value: boolean`                                     |
+| `i64`, `u64`, `f64Bits` | `value: string` (exact decimal)                      |
+| `map`, `array`          | `count: string` (exact decimal)                      |
+| `text`, `bytes`         | `total: string` (exact decimal), `bytes: Uint8Array` |
+
+For `text` and `bytes`, the returned byte window begins at the requested
+offset; its next offset is `offset + bytes.byteLength`, and completion is
+derivable from `total`. This is the same canonical shape as Electron and
+Tauri. Terminal raw controls do not expose a mutable capability: `rawRetire`
+and `rawRelease` return `{ completed: true }`; `rawFinalize` returns an opaque
+`cleanupReceiptId`, which the ordinary cleanup lifecycle retires.
+
+The global JSI object is installed only while the native selected-recording
+binding is live. If it is not installed, the exported read helpers reject
+`capability.unsupported`; they never fall back to a mock, another recording, or
+a JSON transport. Android evidence currently consists of CMake compilation for
+all package ABIs, JVM/JNI lifecycle fixtures (including stale/forged handles,
+bounded raw bytes, and retirement rejection), and TypeScript boundary tests.
+That is native synthetic evidence, not physical-radio qualification. Apple
+availability is reported by its instantiated native module at runtime and must
+likewise be treated according to its retained evidence receipt.
+
+## Retained terminal-evidence recovery (React Native)
+
+`createReactNativeContinuationRecordings()` exposes
+`terminalEvidenceRecovery` for recovering terminal evidence retained by the
+process-owned mobile host after JavaScript or the application process restarts.
+It is a recovery controller, not a `BleManager` capability: it does not open a
+BLE session, request Bluetooth permission, scan, connect, or select a radio.
+
+The first `list()` asks native to reopen its **already authenticated persisted
+owner selection**. JavaScript supplies no manager id, recording id, filesystem
+path, peer id, or evidence reference. If the application did not configure a
+matching native persisted selection, it was retired, a different owner is
+retained, or the installed native module does not implement the complete route,
+the call fails with `capability.unsupported`; it never guesses a former manager
+or searches another owner's evidence.
+
+```ts
+import { createReactNativeContinuationRecordings } from 'unified-ble-manager/react-native'
+
+const recovery = createReactNativeContinuationRecordings().terminalEvidenceRecovery
+const page = await recovery.list({ maxItems: 64, maxBytes: 256 * 1024 })
+
+for (const item of page.items) {
+  // `handle` is native-lease opaque. `reference` is descriptive evidence
+  // identity when committed, never an input authority.
+  const chunks: Uint8Array[] = []
+  for (let offset = 0; ; ) {
+    const chunk = await recovery.read(item.handle, { offset, maxBytes: 64 * 1024 })
+    chunks.push(chunk.bytes)
+    if (chunk.done) break
+    offset = chunk.nextOffset
+  }
+  // Atomically persist the complete exact byte sequence and its item metadata
+  // under the application's own durable receipt/idempotency key here.
+  await recovery.acknowledge(item.handle)
+}
+```
+
+An acknowledgement that reached native but whose bridge reply was lost may be
+retried with the same opaque handle. JNI and UniFFI retain the latest **256**
+such successful acknowledgements for the current recovery lease only. Opening
+a new lease, tearing down its binding, or exceeding that bounded window makes
+an older handle an explicit `lifecycle.invalid-state` result; it never becomes
+authority for another retained row.
+
+`list({ maxItems, maxBytes })` and
+`read(handle, { offset, maxBytes })` both require positive safe-integer bounds:
+`maxItems` is at most 2,048 and each byte budget is at most 4 MiB. A read
+returns owned `Uint8Array` bytes, its supplied `offset`, computed `nextOffset`,
+and `done`; a non-final empty page is rejected as malformed rather than causing
+an unbounded retry loop. The list item exposes its opaque `handle`, producer,
+observed scope, state, and, for committed evidence, the exact reference, byte
+length, SHA-256 digest and format version. Those fields are observations for
+durable verification; only the opaque handle authorizes a read or ACK and it is
+valid only for the native recovery lease that produced it.
+
+`listWithStatus({ maxItems, maxBytes })` is the additive, contention-aware
+variant. It returns every cold record it could select plus `busyProducers`
+(`scan` and/or `subscription`) for lanes still owned by a live source or a
+different recovery lease. `more` remains the bounded-page continuation flag;
+it is independent of `busyProducers`. A caller that receives a busy producer
+retries that lane after its owner releases authority, without treating its
+absence from `items` as deletion or acknowledgement. The established `list()`
+route remains strict and reports contention instead of returning a partial
+page.
+
+Reading is non-destructive. `acknowledge(handle)` is the only retirement step
+and must happen only after the application has durably consumed the **complete
+exact** byte sequence and recorded whatever receipt makes that consumption
+idempotent. A failed, lost, or skipped ACK leaves the evidence retained for a
+later recovery attempt. Never ACK after merely rendering, decoding, buffering,
+or forwarding a partial page. Native validates the handle and selected owner on
+every operation; stale, foreign, malformed, or replayed handles fail rather
+than releasing another owner's evidence.
+
+An item may be `staged` when the original source process persisted the exact
+terminal bytes but did not finish its commit before it stopped. After a full
+read and durable application receipt, acknowledging that opaque staged handle
+authenticates the selected owner, promotes those same retained bytes to a
+committed record, and retires it. If promotion cannot run (for example because
+native still has a live producer authority), ACK fails and the staged bytes
+remain recoverable; it never discards them.
+
+The scan or subscription stream's own terminal drain invokes a distinct
+runtime-reservation release. It frees an unused reservation, but an answer of
+`{ released: true, retainedForRecovery: true }` means that staged or committed
+bytes remain durable across host restart. That release is never an ACK and
+cannot retire those bytes; recovery must still read the exact bytes and
+explicitly acknowledge the opaque recovery handle.
+
+This route requires a React Native build containing the matching
+`UnifiedBleRustCore` TurboModule and an app-native continuation/recording setup
+that created the authenticated persisted selection. It is unavailable in Expo
+Go, Web, desktop, and a binary predating the four recovery controls. A recovery
+hint is only a prompt to call `list()` again; it is not evidence that data was
+persisted, that an ACK completed, or that an OS wake occurred. Compile and
+synthetic bridge tests establish protocol behavior only; they are not
+physical-radio restart qualification.
+
 - **`MobileHost`** is installed once per process. It holds one platform radio
   and one real core central, `DesktopCentral<ForeignRadio>`, which runs on the
   shared executor (`ubm_desktop::executor::desktop_runtime`). The host outlives
@@ -174,11 +329,16 @@ JS manager ─┘                          └─ WakeSink (JS wakeup)
     which read the authority when it was initialised.
 - **Shutdown** is explicit and belongs to the process owner:
   `nativeShutdownHost()` / `MobileCoreHost.shutdown()`.
-  1. Every session is disposed.
-  2. The central shuts down, and the radio `Close` is bounded by
-     `LIVENESS_CLEANUP`.
-  3. Every waiting request is failed.
-  4. The cleanup record is returned.
+  Session and recording cleanup precede central shutdown. When cleanup or
+  native-owner proof is unresolved, shutdown returns `release-failed` and the
+  binding retains its host and callback route for recovery and retry. A
+  `released` record allows the binding to remove that exact host. For the
+  current slot protocol is insufficient on its own to prove native-owner
+  quiescence. The worktree contains an unadvertised experimental v4
+  owner-retirement design, but the sealed production wire is v3 and does not
+  claim v4 quiescence on Android or Apple. Until an exact owner-wide proof is
+  released and qualified, hosts report `release-failed` instead of claiming
+  successful retirement.
 
 The production surface has no path to `ubm-fake-radio`/`StagedDriver`. Three
 tests guard this:
@@ -211,6 +371,28 @@ scoped to the backend instance and clock kind. JavaScript receipt time remains
 subtract source time from JavaScript receipt time. Every member of a native
 batch retains its own capture timestamp. Apple has no capture-time ingress and
 retains the backend owner timestamp instead.
+
+Android scan-identity JNI v2 uses the positive scan-start request ID as a
+canonical decimal token. The adapter captures it in the platform callback
+closure before starting the radio; advertisements and failures pass that same
+token into the matching host or binding. Rust rejects tokens for retired or
+different scans. A callback can therefore arrive before start completion.
+A native library without the v2 probe uses the legacy unscoped callbacks,
+which cannot fence a delayed callback from a replacement physical scan.
+This identity protocol does not negotiate scan-end v2; source failures still
+use the v1 terminal in the React Native session facade and do not carry the
+platform cause on that wire. The Rust session and scan-specific JNI boundary
+now have an experimental per-session scan-end v2 selector. The React Native
+modules negotiate against a v1 qualification ceiling, and reject a v2-only
+offer. Enabling v2 awaits a reserved terminal in the shared outbox and
+completion and qualification of the remaining failure, reset and retirement paths.
+Android's scan-failure JNI v3 carries the callback's integer error code with
+the scan identity; the Java adapter using this method requires a matching
+native library containing that symbol. Android's production process host still
+uses the legacy process-wide JNI route; the binding-scoped selector and scan
+ingress routes are exercised synthetically but are not its production owner.
+Replacing that route requires migrating the entire callback and session surface
+to the same binding identity, including retained cleanup and continuation paths.
 
 Public `scan({observation:{includeRawAdvertisement:true}})` exposes the owned
 combined Android scan record as `rawAdvertisement`, with field provenance and
@@ -355,6 +537,20 @@ these:
 
 ## Op table
 
+Ordered capacity recovery is negotiated separately with
+`gatt.ordered.capacity.version` (revision 1). The session owner can call
+`gatt.ordered.increase-capacity` with its peer, collection, exact
+`sourceGeneration`, `maxBytes`, and `wireVersion: 1`. The new limit must be
+at least the current one and at most 4,194,304 bytes. The reply contains the
+previous and new limits and the supported maximum. The same limit is an
+idempotent retry. The existing queue, terminal, cleanup debt and native batch
+offset stay in place; a wake re-drives the retained batch. The limit accounts
+for variable evidence allocations and is not an RSS bound.
+
+This does not yet recover records exceeding the maximum queue budget or the
+1 MiB ordered wire representation, and such records can still block final
+drain and cleanup. No bounded extraction transport is available yet.
+
 `scan.start` additionally accepts optional `lifetimeMs`, a positive integer
 bounded like `budgetMs`. It is measured from native request receipt and bounds
 both admission and the resulting membership. `budgetMs` alone still bounds
@@ -367,6 +563,15 @@ returned membership identity, with bounded provisional storage. Shared JS
 consumers receive the same terminal. JavaScript promise delivery can still be
 delayed by host suspension, and `find` checks its original deadline before
 returning a queued selected peer.
+
+`session.quiesce` returns `pending` while this session has scan observations
+or a scan failure captured before the cutoff but still owned by ingress, or
+while the cutoff cannot be acquired immediately. The caller may retry; a held
+producer is not evidence of a seal. Once those records have been routed in
+order, the operation returns `sealed` with the existing after-cutoff loss
+counters. A scan terminal captured after that cutoff is not emitted into the
+sealed collection. Native scan-stop cleanup remains a separate outcome and a
+seal does not prove that cleanup completed.
 
 `selector` is
 `{serviceUuid, serviceOccurrence, characteristicUuid, characteristicOccurrence}`.
@@ -477,19 +682,34 @@ the control queue's cap (X-R5): a running total, not a per-call delta, so a
 drain that keeps arriving behind data still exposes the gap within a bounded
 number of drains, without waiting for the queues to empty.
 
-| `t`            | fields                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Δ                                                                                                                                                                                                                 |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `adv`          | `operationId,startOperationId,peerId,localName,rssi,txPower,serviceUuids,manufacturerData[{companyId,payloadB64}],serviceData[{uuid,payloadB64}],connectable,solicitedServiceUuids,overflowServiceUuids,appearance,rawRecordB64,observedAtMs,sourceTimestampMs`. `sourceTimestampMs` is nullable platform capture time in milliseconds; `observedAtMs` is the owner clock. Empty collections → `null`; `connectable`, `appearance` (0..65535) and `rawRecordB64` are `null` when the platform does not report them. | adds `connectable`, `solicitedServiceUuids`, `overflowServiceUuids` (legacy CoreBluetooth advertisement parity), and `appearance`/`rawRecordB64` (legacy Android parity, PR210-69; CoreBluetooth reports neither) |
-| `scan-end`     | `operationId` (membership), `reason`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | emitted with `source-failed` when the OS stops the scan or a widening restart fails                                                                                                                               |
-| `value`        | `consumer,valueB64,delivery`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | —                                                                                                                                                                                                                 |
-| `stream-end`   | `consumer,reason:"overflow"\|"invalidated"\|"closed",droppedItems,droppedBytes`                                                                                                                                                                                                                                                                                                                                                                                                                                     | —                                                                                                                                                                                                                 |
-| `adapter`      | `state` (as `adapter.state`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | from platform `AdapterState` ingress                                                                                                                                                                              |
-| `link`         | `peerId,connectionGeneration,databaseGeneration\|null,reason:"local"\|"peer"\|"adapter"`                                                                                                                                                                                                                                                                                                                                                                                                                            | —                                                                                                                                                                                                                 |
-| `db-changed`   | `peerId,connectionGeneration,databaseGeneration`                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `databaseGeneration` is the generation the change invalidated; the database is undiscovered until the next `gatt.discover`                                                                                        |
-| `ingress-drop` | `class:"advertisement"\|"notification"\|"control",count`                                                                                                                                                                                                                                                                                                                                                                                                                                                            | consecutive drops of one class coalesce                                                                                                                                                                           |
-| `readiness`    | `peerId,connectionGeneration\|null,ready`                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | **new**. Apple `peripheralIsReady(toSendWriteWithoutResponse:)`. A null generation is not applied to open watches.                                                                                                |
-| `security`     | `peerId,state`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | **new**                                                                                                                                                                                                           |
-| `restored`     | `peers:[{peerId,name,connected}]`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | **new**                                                                                                                                                                                                           |
+| `t`                | fields                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Δ                                                                                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `adv`              | `operationId,startOperationId,peerId,localName,rssi,txPower,serviceUuids,manufacturerData[{companyId,payloadB64}],serviceData[{uuid,payloadB64}],connectable,solicitedServiceUuids,overflowServiceUuids,appearance,rawRecordB64,observedAtMs,sourceTimestampMs`. `sourceTimestampMs` is nullable platform capture time in milliseconds; `observedAtMs` is the owner clock. Empty collections → `null`; `connectable`, `appearance` (0..65535) and `rawRecordB64` are `null` when the platform does not report them. | adds `connectable`, `solicitedServiceUuids`, `overflowServiceUuids` (legacy CoreBluetooth advertisement parity), and `appearance`/`rawRecordB64` (legacy Android parity, PR210-69; CoreBluetooth reports neither)  |
+| `scan-end`         | `operationId` (membership), `reason`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | emitted with `source-failed` when the OS stops the scan or a widening restart fails                                                                                                                                |
+| `value`            | `consumer,valueB64,delivery`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | —                                                                                                                                                                                                                  |
+| `peer-source-loss` | `consumer,peerId,generation,skippedRecords`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Ordered with values. Generation and known skipped source-record counts are decimal strings; `skippedRecords:null` means unknown. The count is peer-scoped and must not be added to per-characteristic loss totals. |
+
+| `stream-end` | `consumer,reason:"overflow"\|"invalidated"\|"closed"\|"source-failed",droppedItems,droppedBytes,error?` | — |
+| `adapter` | `state` (as `adapter.state`) | from platform `AdapterState` ingress |
+| `link` | `peerId,connectionGeneration,databaseGeneration\|null,reason:"local"\|"peer"\|"adapter"` | — |
+| `db-changed` | `peerId,connectionGeneration,databaseGeneration` | `databaseGeneration` is the generation the change invalidated; the database is undiscovered until the next `gatt.discover` |
+| `ingress-drop` | `class:"advertisement"\|"notification"\|"control",count` | consecutive drops of one class coalesce |
+| `readiness` | `peerId,connectionGeneration\|null,ready` | **new**. Apple `peripheralIsReady(toSendWriteWithoutResponse:)`. A null generation is not applied to open watches. |
+| `security` | `peerId,state` | **new** |
+| `restored` | `peers:[{peerId,name,connected}]` | **new** |
+
+A `value` may additionally carry `provenance` (`notification`, `read-or-notification`, or `unknown`) and the paired `sourceGeneration` and `sourceOrdinal` decimal strings. These identify the native source observation independently of the optional clock receipt; absence means unavailable and never implies a timestamp.
+
+These fields belong to individual subscription records; they do not themselves
+provide an ordered collection across characteristics. `ubm-mobile-wire/3`
+does provide the connection-owned `gatt.ordered.*` operation family: reserve,
+open, status, poll, acknowledge/discard, close, and final group acknowledgement
+or forgetting. That family negotiates its own ordered-group protocol version
+(`gatt.ordered.version`, currently `2`) and requires the native
+connection-owned route to be installed before any member is enabled. Consumers
+must use that family rather than merge individual subscription streams by
+`sourceGeneration`/`sourceOrdinal`; the latter have neither group lifecycle nor
+complete group loss/cleanup semantics.
 
 Ordering per peer:
 
@@ -608,6 +828,14 @@ radio requests have no owner-side count: the core's own bounds apply
 (`CentralConfig::default()`). A drain call takes at most the requested items
 and bytes but always at least one record, so no record is too large to drain.
 
+## Android notification ownership and source failure
+
+Android arms notification staging before enabling the local registration. Values accepted for one characteristic drain in order through activation; a full staging queue reports lost notification records through the host-global ingress-drop path. That report indicates source loss, not which individual consumer lost a value or how many bytes it lost. It does not establish an order across characteristics. If an enable fails or is cancelled before activation, staged observations that cannot be delivered are accounted as loss before the setup result settles.
+
+A notification delivery failure is separate from a known dropped record. It carries the characteristic instance and the originating enable epoch, and ends that source with `source-failed` after already admitted values drain. When a structured source error is available, the stream-end record carries it in `error`; other terminal reasons do not carry that field. Android preserves the typed stop category and available platform status while replacing arbitrary exception text with a safe message. If the host cannot admit this control, it closes admission and fails the owner rather than leaving a subscription apparently live. Cleanup remains owned and retryable. When a cancelled Android enable later succeeds at the peer, its physical claim remains fenced until an asynchronous CCCD disable succeeds or the GATT generation closes; a replacement cannot take that claim while cleanup remains pending.
+
+The legacy Native Protocol v2 ABI 8 carries scoped notification loss and source termination events, and the requested delivery constraint separately from the selected CCCD mode. Pending and active subscriptions use the same correlated events, including sanitized typed stop categories and available Android status. These mechanisms describe native and deterministic behavior; they are not physical-radio qualification.
+
 ## Delivery modes
 
 `deliveryMode` accepts `prefer-notification`, `prefer-indication`,
@@ -677,6 +905,38 @@ The full shapes are in `crates/ubm-mobile/src/radio.rs`,
 `android/src/main/java/com/ubm/core/MobileCoreBridge.java` and
 `bindings/uniffi/src/ubm_echo.udl`.
 
+**Ordered-open admission owner negotiation (private, version 3)**
+
+At installation JNI and UniFFI require version 3 of the
+ordered-open admission owner identity. Version 3 attests that the adapter and
+binding carry typed late failures and unknown omission evidence; the slot
+identity and operations retain their version 2 format. Versions 1 and 2 are
+refused at installation in either direction, before a radio request. The response is a canonical lowercase
+version-4 UUID minted once by the actual Android ordered-group port or Apple
+ordered-group bridge that owns admission receipts. Empty, malformed, or
+unsupported responses fail installation; Rust stores the validated identity on
+`MobileHost`. A different adapter over the same owner must return the same
+identity; a replacement owner mints a fresh random UUID. UUID collision
+resistance is probabilistic, not a durable cross-process uniqueness ledger.
+The Rust `PlatformRadio` seam may report no identity for non-production test
+radios; that does not negotiate admission slots.
+
+The identity alone neither fences old work nor proves native teardown. The old
+owner and its recovery/cleanup ownership must remain reachable until all its
+submissions and effects are resolved, or native teardown proves they cannot
+survive. If that proof is unavailable, the bindings retain and report the
+unresolved host.
+
+Source contains a separate, experimental owner-retirement protocol version 4.
+Its intended distinct canonical UUID prevents a slot-retirement receipt from
+being confused with complete host retirement, and its intended coordinator
+would close owner admission and join relevant native obligations before
+reporting `quiescent`. It is not advertised by `ubm-mobile-wire/3`, is not in a
+released Android artifact, and has not qualified Android owner quiescence. It
+therefore supplies neither a production capability nor a release claim. The
+only current contract is the v3 behavior above: absent an exact released proof,
+the host retains the unresolved owner and reports `release-failed`.
+
 **Requests and their expected completions**
 
 - `AdapterState` → `Adapter`
@@ -694,6 +954,27 @@ The full shapes are in `crates/ubm-mobile/src/radio.rs`,
 - `WriteDescriptor` → `Unit`
 - `EnableNotifications{epoch,requested,preferred}` → `NotifyEnabled(delivery written)`
 - `DisableNotifications` → `Unit`
+- The in-progress native ordered-source interface defines `OrderedOpen`,
+  `OrderedRegister`, `OrderedRetire`, `OrderedBarrier`, `OrderedDrain`,
+  `OrderedAcknowledgeBatch`, `OrderedClose`, `OrderedRetainClaim`,
+  `OrderedConfirmCleanup`, `OrderedRemove` and `OrderedForgetRemovalReceipt`.
+  A drain returns a bounded batch
+  with an ID, replayed until the host acknowledges that exact ID after
+  processing its records and fences. Source-failed terminals retain any available
+  classified platform failure and actual status through the public ordered poll;
+  Android replaces arbitrary exception text with a safe description and does
+  not invent a native code when the platform supplied none. An empty drain has no batch ID. Requests
+  for a non-retiring barrier place a control in the source FIFO; the host
+  reports its fence only after admitting and acknowledging that control.
+  after open and source wakes include the tagged source generation and group
+  ID; source ordinals and IDs stay u64 at the native boundary. Removal receipts
+  stay owned until the host has observed removal and
+  definitively forgotten the exact tagged receipt; group IDs are not reused
+  during the host lifetime. The `gatt.ordered.*` v3 operation family exposes
+  the collection only through the JavaScript host orchestration: its nested
+  ordered-group protocol is negotiated as version 2, and the host must retain,
+  poll, acknowledge, and close the exact collection. Platform adapter
+  operations alone are not a public collection API.
 - `ReadMtu` → `Mtu(n|none)`. On Apple this is `none`: CoreBluetooth does not expose the negotiated ATT MTU, and `maximumWriteValueLength` can include a long write.
 - `ReadWriteLimits` → `WriteLimits{withResponse,withoutResponse}`: the
   largest single write the OS accepts per mode, both positive. It bounds
@@ -851,8 +1132,27 @@ orphan renderer wake records.
 The `continuation_execute`, `continuation_describe_backlog`,
 `continuation_prepare_claim` and `continuation_acknowledge_claim` methods return
 the standard success/failure envelope. JNI uses their `nativeContinuation*`
-counterparts. The prepared token pins the decoded prefix until acknowledgement;
-failed release retains ownership, and the sealed outbox reports subsequent
+counterparts. Untagged JNI continuation calls require the legacy host; they
+reject when a binding-scoped host is retained instead of selecting another
+host implicitly. Untagged recording control likewise rejects in that case,
+while an explicit host-independent recording route accesses the shared journal
+registry without selecting a host. Android JNI also
+exposes exact-binding continuation, ordered-recording and session receipt
+controls; an unknown or retired binding is rejected. Its explicit retained
+claim v1 prepare, acknowledgement and receipt retirement entrypoints coexist
+with the legacy claim protocol and are declared in the TurboModule schema.
+The Android production factory uses the binding-aware port for radio callbacks,
+host ownership and session controls. Because the registry cannot yet identify
+the owner of a legacy recording across hosts, Android refuses a journal stop
+when another host or an installation is retained. Offline stop requires no
+retained host; a bound stop requires that binding to be the sole retained host.
+The refusal is retryable after ownership is resolved. Apple has not implemented
+the retained-claim v1 module methods and its React Native binding does not
+advertise them.
+The prepared token pins one prefix until explicit application
+acknowledgement; a receipt may require another prepare/ACK cycle for an unread
+or cleanup-generated tail. A lost ACK reply is retried using the same token.
+Failed release retains ownership, and the sealed outbox reports subsequent
 intake through cutoff loss counters. No native release is authorized by an
 unvalidated JavaScript payload. `continuationOutcome` is the latest recovery
 attempt, distinct from the platform's persisted original wake result.
@@ -1053,3 +1353,49 @@ status and data, not a persistence receipt or proof all owners are quiescent.
 Install the observer before the initial recovery pass and repeat a pass when a
 hint arrives during it. Observer installation does not open or close a session
 or install Bluetooth; delivery is not an OS wake guarantee.
+
+### Apple notification-failure spool
+
+`notificationFailureSpoolConfigure(recordingId, maxBytes, maxRecords)` is an explicit Apple-only
+durability attachment for an **already existing, host-owned** ordered recording.
+It accepts an opaque recording ID, never a path, plus decimal `u64` bounds for
+the separate sidecar; it returns versioned JSON with `status: "configured"`
+and the accepted independent quota, or an explicit closed/error status; other
+hosts report `unsupported`. Once
+configured, an Apple source-failure callback that cannot use its bounded
+in-memory receipt is durably appended with an adapter-monotonic sequence.
+On a later enable the adapter resumes from the spool's nondecreasing source
+watermark, drains the exact FIFO page only after older in-memory receipts, and
+acknowledges a row only after V1 source ingress reports `accepted`. A lost
+acknowledgement remains replayable with the same source identity and failure;
+configuration, a successful append, or a wake hint is not itself downstream
+acceptance.
+
+### Ordered terminal failure summary
+
+Shared ordered terminal and recording wire records use `failureSummaryVersion: 1`
+alongside `secondaryFailure`, `additionalFailureCount`,
+`failureCountOverflowed`, and `failureObservationsOmitted`. The first field
+retains one typed later failure. The decimal count includes separately observed
+failures after that first one; it is exact unless the counter-overflow flag is
+true. The omitted flag says native overflow may have hidden an unknown number;
+that number is never added to the observed count. Legacy records without flags
+leave these answers unknown. The summary is folded into the final terminal
+before publication and retained in terminal discard evidence.
+
+The zero-member failed-setup source retains its bounded control prefix separately
+from the terminal and summarizes later failures and overflow before publication.
+Exact late overflow rejection evidence uses the terminal's available rejection
+fields; conflicting evidence is refused and remains unacknowledged. If the
+preterminal control queue fills, the native batch likewise remains unacknowledged
+and can prevent final drain. Android transports typed subsequent failures and unknown omission records
+through JNI into the shared summary. Apple retains later failure observations
+until sealing and transports them through UniFFI, with a separate unknown
+omission marker when its bounded failure queue fills. The mobile ordered-group
+protocol nested inside `ubm-mobile-wire/3` requires version 2; the desktop native binding requires group version 5
+and recording-reclaim version 2, and
+Electron/Tauri IPC negotiates versions 6 through 10. Ordered routes require a
+selected version of at least 9; a lower selected version is refused before an
+ordered source opens. Historical recording rows without these fields remain
+readable and retain their original bytes. Native artifact rebuilds and the
+cross-host runtime qualification remain separate release steps.

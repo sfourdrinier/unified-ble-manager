@@ -17,17 +17,31 @@ export {
   createNativeContinuationControl
 } from './backends/desktop/native-continuation-controller'
 export { openNativeContinuationRecordings } from './backends/desktop/native-continuation-recording'
+export { openDesktopScanFailureRecovery } from './backends/desktop/scan-failure-recovery-recording'
+export type {
+  DesktopContinuationRecordingController,
+  DesktopLegacyRecoveryPage
+} from './backends/desktop/native-continuation-recording'
+export type {
+  DesktopScanFailureRecovery,
+  DesktopScanFailureRecoveryChunk,
+  DesktopScanFailureRecoveryHead,
+  DesktopScanFailureRecoveryOwner
+} from './backends/desktop/scan-failure-recovery-recording'
 export type {
   ContinuationRecordingController,
   ContinuationRecordingStatus,
   ContinuationRecordingBatch,
   ContinuationRecordingMetadata,
   ContinuationRecordingFailure,
+  ContinuationRecordingDiagnosticMarker,
   ContinuationRecordingPrepareOptions
 } from './core/continuation-recording'
 export type {
   NativeContinuationController,
+  NativeContinuationControllerV1,
   NativeContinuationControl,
+  NativeContinuationControlV1,
   NativeContinuationControlAccess,
   NativeContinuationCompleted,
   NativeContinuationFailed,
@@ -36,6 +50,8 @@ export type {
 export type { NativeContinuationClaimOptions } from './core/native-continuation-claim'
 export type {
   ContinuationBacklog,
+  ContinuationRetainedPrefixV1,
+  ContinuationClaimAcknowledgement,
   ContinuationBacklogValue,
   ContinuationBacklogStreamEnd
 } from './backends/reactnative/react-native-continuation-claim'
@@ -54,7 +70,10 @@ export {
 } from './backends/desktop/desktop-rust-core-provider'
 export type {
   DesktopRustCoreProfile,
-  DesktopRustCoreProviderOptions
+  DesktopRustCoreProviderOptions,
+  DesktopPeerNotificationFailureRecovery,
+  DesktopPeerNotificationFailureRecoveryOffer,
+  DesktopDurablePeerNotificationFailureRecovery
 } from './backends/desktop/desktop-rust-core-provider'
 export {
   desktopRustCoreError,

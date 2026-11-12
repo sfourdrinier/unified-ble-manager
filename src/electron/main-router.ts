@@ -42,7 +42,7 @@ import {
 } from '../backend-contract/primitives'
 import type { SubscriptionOptions } from '../backend-contract/operations'
 import { snapshotCapabilityDescriptors } from '../backend-contract/capabilities'
-import { snapshotSerializableRecord } from '../backend-contract/serializable'
+import { serializableRecordsEqual, snapshotSerializableRecord } from '../backend-contract/serializable'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 import { decodeIpcScanQuery, encodeIpcScanPlan } from '../ipc/scan-planning'
@@ -73,6 +73,27 @@ import type { SecurityPairingResponse, SecurityPairingChallenge } from '../backe
 import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../backend-contract/streams'
 import { decodeIpcScanPlatform } from '../ipc/scan-platform'
 import { waitForChildCleanup } from '../ipc/cleanup-drain'
+import { OrderedDelivery } from '../ipc/ordered-delivery'
+import { ElectronOrderedRecordingRegistry } from './ordered-recording-registry'
+import { ElectronOrderedRecordingRecovery } from './ordered-recording-recovery'
+import { ElectronOrderedMarkerRegistry } from './ordered-marker-registry'
+import {
+  DesktopRustCoreBackend,
+  type DesktopDurablePeerNotificationFailureRecovery
+} from '../backends/desktop/desktop-rust-core-provider'
+import type { DesktopScanFailureRecovery } from '../backends/desktop/scan-failure-recovery-recording'
+import { normalizeContinuationRecording } from '../backend-contract/continuation-setup'
+import { isRecordingId } from '../backend-contract/continuation-recording-bounds'
+import { parseOrderedRecordingHostCleanup, parseOrderedRecordingStopReceipt } from '../core/continuation-recording'
+import { isCanonicalIngressOrdinal } from '../core/ordered-notification-contract'
+import { accountOrderedDiscard } from '../core/ordered-notification-stream'
+import { orderedWireRecord } from '../ipc/ordered-wire'
+import type { OrderedNotificationItem, OrderedNotificationSetup } from '../core/ordered-notification-contract'
+import type {
+  TerminalEvidenceReservation,
+  TerminalEvidenceReservationRequest,
+  TerminalEvidenceSource
+} from '../backend-contract/terminal-evidence'
 
 export type { ElectronEventDelivery } from './renderer-stream-registry'
 
@@ -102,12 +123,35 @@ const DEFAULT_DELIVERY: SubscriptionOptions['delivery'] = Object.freeze({
  */
 const CANCELLATION_CORRELATION_TTL_MILLISECONDS = 30_000
 
+/**
+ * IPC 9 added the ordered failure-observation and platform-metadata shapes.
+ * Earlier renderers can still use the 5.2.1 ordinary GATT route set, but they
+ * cannot faithfully receive the ordered stream contract. Keep this at the
+ * main-process boundary so a crafted legacy envelope cannot acquire an ordered
+ * resource before the incompatibility is reported.
+ */
+const ORDERED_ROUTE_MINIMUM_IPC_PROTOCOL = 9
+
 export interface ElectronMainBleRouterOptions {
   readonly manager: MainManager
   readonly maximumMessageBytes: number
   readonly maximumOutstandingOperations: number
   readonly maximumRetainedBytes: number
   readonly publish: (rendererClientId: string, event: ElectronBleIpcEvent) => Promise<ElectronEventDelivery>
+  /**
+   * Trusted Electron-main opt-in for durable recovery. The callback receives
+   * only the authenticated identity established at bootstrap; renderer input
+   * can never request a grant or name a recording.
+   */
+  readonly grantPeerFailureRecovery?: (renderer: RendererIdentity<string, string>) => boolean
+  /**
+   * Trusted Electron-main opt-in for scan failure recovery.  The callback
+   * closes over host-selected recovery recordings; no renderer input names a
+   * directory, recording, capability, or native handle.
+   */
+  readonly grantScanFailureRecovery?: (
+    renderer: RendererIdentity<string, string>
+  ) => readonly DesktopScanFailureRecovery[]
   /** Injected for deterministic expiry of lease-scoped cancellation correlation records. */
   readonly cancellationClock?: () => number
 }
@@ -153,11 +197,17 @@ interface RendererResources {
     }
   >
   readonly rendererLease: RendererLeaseIdentity
+  readonly ownerKey: string
+  /** Main-process-only authority for rows selected by this recovery controller. */
+  readonly terminalEvidenceRecoveryLeaseId: string
   readonly scans: Map<string, ManagedScan>
   readonly connections: Map<string, MainConnection>
   readonly connectionEventSubscriptions: Map<string, ManagedConnectionEventSubscription>
   readonly databases: Map<string, ManagedDatabase>
   readonly subscriptions: Map<string, ManagedSubscription>
+  readonly orderedGroups: Map<string, ManagedOrderedGroup>
+  readonly releasedOrderedGroups: Map<string, SerializableRecord>
+  readonly forgottenOrderedGroups: Set<string>
   readonly acquiredWriters: Map<string, ManagedAcquiredWriter>
   readonly reservedHandles: Set<string>
   readonly pendingRollbacks: Map<string, OperationAcquisitions>
@@ -172,8 +222,46 @@ interface RendererResources {
    * `ownership.denied`. Dies with the scope; never consulted across leases.
    */
   readonly releasedHandles: Set<string>
+  /** Opaque, lease-bound projections; native provenance never enters IPC. */
+  readonly peerFailureRecoveries: Map<string, DesktopDurablePeerNotificationFailureRecovery>
+  /** True only when Electron-main granted this v10-only capability to this lease. */
+  peerFailureRecoveryGranted: boolean
+  /** Renderer-local aliases for process-private scan-recovery handles. */
+  readonly scanFailureRecoveries: Map<string, DesktopScanFailureRecovery>
+  readonly scanFailureHandles: Map<
+    string,
+    {
+      readonly recovery: DesktopScanFailureRecovery
+      readonly nativeHandle: string
+      readonly kind: 'owner' | 'head' | 'cleanup'
+    }
+  >
+  /** True only when trusted Electron-main explicitly admitted this v10 lease. */
+  scanFailureRecoveryGranted: boolean
   lifecycle: 'active' | 'releasing'
   releaseResult: Promise<CleanupRecord> | null
+}
+
+interface ManagedOrphanReceipt {
+  readonly record: SerializableRecord
+  readonly scalars: readonly string[]
+  cursor: number
+  nextOffset: number | null
+  page: SerializableRecord | null
+  complete: boolean
+}
+
+interface ManagedOrderedGroup {
+  readonly databaseHandle: string
+  readonly setup: OrderedNotificationSetup
+  readonly delivery: OrderedDelivery<OrderedNotificationItem> | null
+  readonly openResponse: SerializableRecord
+  readonly openRequest: SerializableRecord
+  readonly pendingSetupObservations: OrderedNotificationItem[]
+  readonly markerKey: string
+  readonly acknowledgedMarkerOrdinals: Set<string>
+  cleanupReleased: boolean
+  cleanupResponse: SerializableRecord | null
 }
 
 interface ManagedAcquiredWriter {
@@ -205,7 +293,64 @@ interface OperationAcquisitions {
   readonly connectionEventSubscriptions: Set<string>
   readonly databases: Set<string>
   readonly subscriptions: Set<string>
+  readonly orderedGroups: Set<string>
   readonly acquiredWriters: Set<string>
+}
+
+interface ProcessOrderedOwners {
+  readonly recordings: ElectronOrderedRecordingRegistry
+  readonly markers: ElectronOrderedMarkerRegistry
+  readonly recovery: ElectronOrderedRecordingRecovery
+}
+
+interface ElectronTerminalEvidenceEntry {
+  readonly ownerKey: string
+  /** Private recovery-controller authority; never derived from renderer identity. */
+  recoveryLeaseId: string | null
+  readonly producer: 'scan' | 'subscription'
+  readonly scope: TerminalEvidenceReservationRequest['scope'] | null
+  readonly source: ElectronTerminalEvidenceSource
+  readonly reservation: TerminalEvidenceReservation
+  ref: string | null
+  digest: string | null
+  byteLength: number | null
+  recoverable: boolean
+}
+
+interface ElectronTerminalEvidenceSource extends TerminalEvidenceSource {
+  readonly readTerminalEvidence: NonNullable<TerminalEvidenceSource['readTerminalEvidence']>
+  readonly releaseTerminalEvidence: NonNullable<TerminalEvidenceSource['releaseTerminalEvidence']>
+}
+
+interface ProcessTerminalEvidenceOwners {
+  readonly entries: Map<string, ElectronTerminalEvidenceEntry>
+  nextId: number
+}
+
+// The backend is the process-host authority shared by all child managers.
+const processOrderedOwners = new WeakMap<DesktopRustCoreBackend, ProcessOrderedOwners>()
+const processTerminalEvidenceOwners = new WeakMap<object, ProcessTerminalEvidenceOwners>()
+let nextRouterScope = 0n
+
+function confirmProcessRecordingFinished(
+  owners: ProcessOrderedOwners,
+  recordingId: string,
+  result: import('../core/continuation-recording').OrderedRecordingHostStopResult
+): void {
+  if (!isRecordingId(recordingId)) throw contractError('argument.invalid', 'cleanup', 'electron.ordered-recording.id')
+  // Electron's desktop owner negotiates receipt revision 2 before it can
+  // admit an ordered recorder.  Parsing this completion as the legacy v1
+  // shape discards the negotiated failure evidence and incorrectly rejects a
+  // valid finished recording.
+  const recording = parseOrderedRecordingStopReceipt(result.recording, 2)
+  const cleanup = parseOrderedRecordingHostCleanup(result.hostCleanup)
+  if (recording.state !== 'finished' || (cleanup.state !== 'released' && cleanup.state !== 'not-applicable'))
+    throw contractError('lifecycle.invalid-state', 'cleanup', 'electron.ordered-recording.not-finished')
+  owners.recordings.confirmFinished(
+    recordingId,
+    (owner, id) => !owners.markers.hasActive(JSON.stringify([owner, 'recording', id])),
+    (owner, id) => owners.recovery.forgetRecording(owner, id)
+  )
 }
 
 /**
@@ -213,6 +358,7 @@ interface OperationAcquisitions {
  * handles; renderer messages contain only opaque IDs and copied byte values.
  */
 export class ElectronMainBleRouter {
+  private readonly registryScope = String(++nextRouterScope)
   private readonly manager: MainManager
   private readonly detachAttachmentListener: () => void
   /** The attachment renderers route under; main rebinds it after an adapter loss. */
@@ -222,17 +368,58 @@ export class ElectronMainBleRouter {
   private readonly maximumOutstandingOperations: number
   private readonly cancellationClock: () => number
   private readonly resources = new Map<string, RendererResources>()
+  private readonly rendererOwners = new Map<string, string>()
+  private readonly orderedRecordings: ElectronOrderedRecordingRegistry
+  private readonly orderedMarkers: ElectronOrderedMarkerRegistry
+  private readonly orderedRecovery: ElectronOrderedRecordingRecovery
+  private readonly terminalEvidence: ProcessTerminalEvidenceOwners
+  private readonly orphanReceipts = new Map<string, Map<string, ManagedOrphanReceipt>>()
+  private orphanReservations = 0
   private readonly arbiter: ElectronMainArbiterContext<string>
   private readonly streams: ElectronRendererStreamRegistry
   private readonly connectionEvents: ElectronConnectionEventStreamRegistry
+  private readonly grantPeerFailureRecovery: ((renderer: RendererIdentity<string, string>) => boolean) | undefined
+  private readonly grantScanFailureRecovery:
+    | ((renderer: RendererIdentity<string, string>) => readonly DesktopScanFailureRecovery[])
+    | undefined
   private nextHandle = 1
   private nextEvent = 1
+  private nextTerminalEvidenceRecoveryLease = 1
 
   constructor(options: ElectronMainBleRouterOptions) {
     this.manager = options.manager
     this.publish = options.publish
     this.maximumMessageBytes = options.maximumMessageBytes
     this.maximumOutstandingOperations = options.maximumOutstandingOperations
+    this.grantPeerFailureRecovery = options.grantPeerFailureRecovery
+    this.grantScanFailureRecovery = options.grantScanFailureRecovery
+    const backend = this.manager.attachedBackend.backend
+    let owners = backend instanceof DesktopRustCoreBackend ? processOrderedOwners.get(backend) : undefined
+    if (owners === undefined) {
+      owners = {
+        recordings: new ElectronOrderedRecordingRegistry(options.maximumOutstandingOperations),
+        markers: new ElectronOrderedMarkerRegistry(),
+        recovery: new ElectronOrderedRecordingRecovery(options.maximumOutstandingOperations)
+      }
+      if (backend instanceof DesktopRustCoreBackend) {
+        processOrderedOwners.set(backend, owners)
+        const processOwners = owners
+        backend.observeOrderedRecordingFinished(async (id, result) =>
+          confirmProcessRecordingFinished(processOwners, id, result)
+        )
+      }
+    }
+    this.orderedRecordings = owners.recordings
+    this.orderedMarkers = owners.markers
+    this.orderedRecovery = owners.recovery
+    const terminalOwner = this.manager.attachedBackend.backend
+    const persistentTerminalOwner = terminalOwner !== null && typeof terminalOwner === 'object'
+    let terminalEvidence = persistentTerminalOwner ? processTerminalEvidenceOwners.get(terminalOwner) : undefined
+    if (terminalEvidence === undefined) {
+      terminalEvidence = { entries: new Map(), nextId: 1 }
+      if (persistentTerminalOwner) processTerminalEvidenceOwners.set(terminalOwner, terminalEvidence)
+    }
+    this.terminalEvidence = terminalEvidence
     this.cancellationClock = options.cancellationClock ?? (() => Date.now())
     this.streams = new ElectronRendererStreamRegistry({
       maximumMessageBytes: this.maximumMessageBytes,
@@ -292,6 +479,9 @@ export class ElectronMainBleRouter {
       })
     })
     for (const resources of this.resources.values()) {
+      resources.peerFailureRecoveries.clear()
+      resources.scanFailureRecoveries.clear()
+      resources.scanFailureHandles.clear()
       if (resources.lifecycle !== 'active') continue
       const event = this.event(resources.rendererLease, IPC_ATTACHMENT_STREAM_ID, item)
       this.publish(String(resources.rendererLease.leaseId), event).then(
@@ -318,7 +508,23 @@ export class ElectronMainBleRouter {
       const renderer = rendererIdentity(sender)
       const versions = createElectronIpcVersionAxes(this.manager.identity.versions, request.offer)
       const rendererLease = this.arbiter.registerRenderer(renderer, versions, sender.securityPermissions)
-      this.resourcesFor(rendererLease)
+      this.rendererOwners.set(
+        String(rendererLease.leaseId),
+        JSON.stringify([String(renderer.clientId), renderer.windowScope, renderer.sessionScope])
+      )
+      const resources = this.resourcesFor(rendererLease)
+      await this.hydrateTerminalEvidenceRecovery(resources)
+      if (versions.ipcProtocol.selected.value >= 10 && this.grantPeerFailureRecovery?.(renderer) === true) {
+        this.grantDurablePeerFailureRecovery(resources)
+        resources.peerFailureRecoveryGranted = true
+      }
+      if (versions.ipcProtocol.selected.value >= 10 && this.grantScanFailureRecovery !== undefined) {
+        const scanRecoveries = this.grantScanFailureRecovery(renderer)
+        resources.scanFailureRecoveryGranted = true
+        for (const recovery of scanRecoveries) {
+          resources.scanFailureRecoveries.set(`scan-failure-recovery-${this.nextHandle++}`, recovery)
+        }
+      }
       return {
         kind: 'bootstrap',
         bootstrap: this.bootstrap(renderer, rendererLease, versions)
@@ -333,6 +539,11 @@ export class ElectronMainBleRouter {
       return { kind: 'release', cleanup }
     }
     throw contractError('protocol.violation', 'ipc', 'electron-main-router.event-ack-binding-required')
+  }
+
+  /** Checks compatibility without allocating a lease or touching host resources. */
+  validateBootstrapOffer(offer: IpcCompatibilityOffer): void {
+    createElectronIpcVersionAxes(this.manager.identity.versions, offer)
   }
 
   /** Enforces the configured byte limit before any request reaches routing or acknowledgement state. */
@@ -415,6 +626,39 @@ export class ElectronMainBleRouter {
     this.publish = publish
   }
 
+  /**
+   * Announces a v10 recovery grant only after the binding has registered the
+   * authenticated renderer that can receive the attachment event. Bootstrap
+   * cannot publish this itself: its dispatch happens before binding ownership
+   * is installed, which would terminalize a valid lease as unavailable.
+   */
+  async publishPeerFailureRecoveryAvailability(rendererLease: RendererLeaseIdentity): Promise<ElectronEventDelivery> {
+    const resources = this.resources.get(String(rendererLease.leaseId))
+    if (
+      resources === undefined ||
+      resources.lifecycle !== 'active' ||
+      String(resources.rendererLease.generation) !== String(rendererLease.generation)
+    ) {
+      return 'terminalized'
+    }
+    if (!resources.peerFailureRecoveryGranted) return 'delivered'
+    return this.publish(
+      String(rendererLease.leaseId),
+      this.event(
+        rendererLease,
+        IPC_ATTACHMENT_STREAM_ID,
+        Object.freeze({
+          kind: 'value',
+          value: Object.freeze({
+            kind: 'diagnostic-warning',
+            schemaVersion: 1,
+            code: 'gatt.peer-failure-recovery-available'
+          })
+        })
+      )
+    )
+  }
+
   private bootstrap<Renderer extends string>(
     renderer: RendererIdentity<string, Renderer>,
     rendererLease: RendererLeaseIdentity,
@@ -439,6 +683,7 @@ export class ElectronMainBleRouter {
     let receivedAt: number | null = null
     const receiptClock = (): number => (receivedAt ??= this.manager.monotonicNow())
     const envelope = { ...received, payload: admitRelativeBudget(received.payload, receiptClock) }
+    this.assertOrderedRouteProtocol(envelope)
     const resources = this.resourcesFor(envelope.rendererLease)
     if (resources.lifecycle !== 'active') {
       throw contractError('lifecycle.invalid-state', 'ipc', 'electron-main-router.renderer-releasing')
@@ -485,7 +730,27 @@ export class ElectronMainBleRouter {
       }
       admitted = true
       let response: SerializableRecord
-      if (envelope.command === 'scan.start') {
+      if (envelope.command === 'peerFailureRecovery.list') {
+        this.assertPeerFailureRecoveryProtocol(envelope)
+        response = this.listPeerFailureRecovery(resources)
+      } else if (envelope.command === 'peerFailureRecovery.read') {
+        this.assertPeerFailureRecoveryProtocol(envelope)
+        response = await this.readPeerFailureRecovery(resources, envelope.payload)
+      } else if (envelope.command === 'peerFailureRecovery.ack') {
+        this.assertPeerFailureRecoveryProtocol(envelope)
+        response = await this.acknowledgePeerFailureRecovery(resources, envelope.payload)
+      } else if (envelope.command.startsWith('scanFailureRecovery.')) {
+        this.assertScanFailureRecoveryProtocol(envelope)
+        response = await this.routeScanFailureRecovery(resources, envelope.command, envelope.payload)
+      } else if (envelope.command.startsWith('terminalEvidence.')) {
+        this.assertTerminalEvidenceProtocol(envelope)
+        response = await this.routeTerminalEvidence(
+          resources,
+          envelope.command,
+          envelope.payload,
+          envelope.binaryPayload
+        )
+      } else if (envelope.command === 'scan.start') {
         response = await this.startScan(resources, envelope, controller, acquisitions)
       } else if (envelope.command === 'scan.stop') {
         response = await this.stopScan(resources, envelope.payload)
@@ -604,6 +869,142 @@ export class ElectronMainBleRouter {
         response = cleanupRecord(
           await this.closeAcquiredWriter(resources, requiredString(envelope.payload, 'acquiredHandle'))
         )
+      } else if (envelope.command === 'gatt.ordered-recording.recovery') {
+        const startHandle = requiredString(envelope.payload, 'startHandle')
+        const recovery = this.orderedRecordings.recovery(resources.ownerKey, startHandle)
+        response = this.orderedRecovery.issue(resources.ownerKey, startHandle, recovery.peer, () => recovery.handle)
+      } else if (envelope.command === 'gatt.ordered-recording.reclaim.pending') {
+        const after = envelope.payload.after
+        const limit = envelope.payload.limit
+        if (after !== undefined && after !== null && typeof after !== 'string')
+          throw contractError('protocol.malformed', 'ipc', 'electron.recording-recovery.cursor')
+        if (limit !== undefined && typeof limit !== 'number')
+          throw contractError('protocol.malformed', 'ipc', 'electron.recording-recovery.limit')
+        let pageLimit = limit ?? 64
+        response = this.orderedRecovery.pending(resources.ownerKey, after ?? null, pageLimit)
+        while (snapshotSerializableRecord(response).byteLength > this.maximumMessageBytes && pageLimit > 1) {
+          pageLimit = Math.max(1, Math.floor(pageLimit / 2))
+          response = this.orderedRecovery.pending(resources.ownerKey, after ?? null, pageLimit)
+        }
+      } else if (envelope.command === 'gatt.ordered-recording.reclaim.reserve') {
+        const database = this.database(resources, envelope.payload)
+        const connection = requiredResource(resources.connections, database.connectionHandle, 'connection')
+        const reserve = database.database.reserveOrderedRecordingReclaim
+        if (!reserve) throw contractError('capability.unsupported', 'gatt', 'electron.recording-recovery')
+        response = this.orderedRecovery.reserve(
+          resources.ownerKey,
+          requiredString(envelope.payload, 'recoveryToken'),
+          requiredString(envelope.payload, 'callerKey'),
+          requiredString(envelope.payload, 'databaseHandle'),
+          this.recordingLease(resources),
+          String(connection.peerId),
+          handle => reserve.call(database.database, handle)
+        )
+      } else if (envelope.command.startsWith('gatt.ordered-recording.reclaim.')) {
+        const action = envelope.command.slice('gatt.ordered-recording.reclaim.'.length)
+        const id = requiredString(envelope.payload, 'reclaimHandle')
+        const lease = this.recordingLease(resources)
+        if (action === 'ack-retirement') response = this.orderedRecovery.acknowledge(resources.ownerKey, id, lease)
+        else if (action === 'forget-retirement') response = this.orderedRecovery.forget(resources.ownerKey, id, lease)
+        else if (action === 'confirm-forgotten')
+          response = this.orderedRecovery.confirmForgotten(resources.ownerKey, id, lease)
+        else if (
+          action === 'start' ||
+          action === 'status' ||
+          action === 'commit' ||
+          action === 'cancel' ||
+          action === 'release' ||
+          action === 'retire'
+        )
+          response = await this.orderedRecovery.action(resources.ownerKey, id, lease, action)
+        else throw contractError('protocol.malformed', 'ipc', 'electron.recording-recovery.action')
+      } else if (envelope.command === 'gatt.ordered-recording.marker-owner') {
+        const database = this.database(resources, envelope.payload)
+        const connection = requiredResource(resources.connections, database.connectionHandle, 'connection')
+        if (!database.database.reserveOrderedRecordingMarker)
+          throw contractError('capability.unsupported', 'gatt', 'electron.ordered-recording.marker')
+        const startHandle = this.orderedRecovery.markerOwner(
+          resources.ownerKey,
+          requiredString(envelope.payload, 'reclaimHandle'),
+          requiredString(envelope.payload, 'databaseHandle'),
+          this.recordingLease(resources)
+        )
+        const recordingId = this.orderedRecordings.markerRecordingId(
+          resources.ownerKey,
+          startHandle,
+          String(connection.peerId)
+        )
+        if (recordingId !== requiredString(envelope.payload, 'recordingId'))
+          throw contractError('ownership.denied', 'ipc', 'electron.recording-recovery.recording')
+        response = { startHandle }
+      } else if (envelope.command === 'gatt.ordered-recording.markers') {
+        const startHandle = requiredString(envelope.payload, 'startHandle')
+        this.orderedRecordings.assertOwned(resources.ownerKey, startHandle)
+        response = await this.orderedMarkers.list(JSON.stringify([resources.ownerKey, 'recording', startHandle]))
+      } else if (
+        envelope.command.startsWith('gatt.ordered.marker.') ||
+        envelope.command.startsWith('gatt.ordered-recording.marker.')
+      ) {
+        response = await this.orderedMarker(
+          resources,
+          envelope.command,
+          envelope.payload,
+          envelope.binaryPayload,
+          controller
+        )
+      } else if (envelope.command === 'gatt.ordered-recording.reserve') {
+        response = this.orderedRecordings.reserve(
+          resources.ownerKey,
+          this.recordingLease(resources),
+          requiredString(envelope.payload, 'reservationToken')
+        )
+      } else if (envelope.command === 'gatt.ordered-recording.starts') {
+        const after = envelope.payload.after
+        const limit = envelope.payload.limit
+        if (after !== undefined && after !== null && typeof after !== 'string')
+          throw contractError('protocol.malformed', 'ipc', 'electron.ordered-recording.after')
+        if (limit !== undefined && typeof limit !== 'number')
+          throw contractError('protocol.malformed', 'ipc', 'electron.ordered-recording.limit')
+        let pageLimit = limit ?? 64
+        response = this.orderedRecordings.list(resources.ownerKey, after ?? null, pageLimit)
+        while (snapshotSerializableRecord(response).byteLength > this.maximumMessageBytes && pageLimit > 1) {
+          pageLimit = Math.max(1, Math.floor(pageLimit / 2))
+          response = this.orderedRecordings.list(resources.ownerKey, after ?? null, pageLimit)
+        }
+      } else if (envelope.command === 'gatt.ordered-recording.status') {
+        response = await this.orderedRecordings.status(
+          resources.ownerKey,
+          requiredString(envelope.payload, 'startHandle')
+        )
+      } else if (envelope.command === 'gatt.ordered-recording.retire') {
+        const startHandle = requiredString(envelope.payload, 'startHandle')
+        const markerKey = JSON.stringify([resources.ownerKey, 'recording', startHandle])
+        response = await this.orderedRecordings.retire(
+          resources.ownerKey,
+          startHandle,
+          !this.orderedMarkers.hasActive(markerKey)
+        )
+        if (!this.orderedRecordings.has(resources.ownerKey, startHandle)) this.orderedMarkers.releaseOwner(markerKey)
+      } else if (envelope.command === 'gatt.ordered-recording.start') {
+        response = await this.startOrderedRecording(resources, envelope.payload, controller)
+      } else if (envelope.command === 'gatt.ordered.open') {
+        response = await this.openOrdered(resources, envelope.payload, controller, acquisitions)
+      } else if (envelope.command === 'gatt.ordered.orphans') {
+        response = this.inspectOrderedOrphans(resources.ownerKey)
+      } else if (envelope.command === 'gatt.ordered.orphan-page') {
+        response = this.pageOrderedOrphan(resources.ownerKey, envelope.payload)
+      } else if (envelope.command === 'gatt.ordered.orphan-ack') {
+        response = this.acknowledgeOrderedOrphan(resources.ownerKey, requiredString(envelope.payload, 'receiptId'))
+      } else if (envelope.command === 'gatt.ordered.status') {
+        response = this.statusOrdered(resources, envelope.payload)
+      } else if (envelope.command === 'gatt.ordered.forget') {
+        response = this.forgetOrdered(resources, envelope.payload)
+      } else if (envelope.command === 'gatt.ordered.retire') {
+        response = this.retireOrdered(resources, envelope.payload)
+      } else if (envelope.command === 'gatt.ordered.next') {
+        response = await this.nextOrdered(resources, envelope.payload)
+      } else if (envelope.command === 'gatt.ordered.close') {
+        response = await this.closeOrdered(resources, envelope.payload)
       } else if (envelope.command === 'gatt.acquire-notifications') {
         response = await this.subscribe(resources, envelope, controller, acquisitions, true)
       } else if (envelope.command === 'gatt.subscribe') {
@@ -1728,6 +2129,11 @@ export class ElectronMainBleRouter {
     if (lifecycleCleanup.state === 'release-failed') {
       return cleanupRecord(lifecycleCleanup)
     }
+    const orderedCleanup = await this.releaseOrderedGroups(
+      resources,
+      group => resources.databases.get(group.databaseHandle)?.connectionHandle === handle
+    )
+    if (orderedCleanup.state === 'release-failed') return cleanupRecord(orderedCleanup)
     const subscriptionCleanup = await this.releaseSubscriptionsForConnection(resources, handle)
     if (subscriptionCleanup.state === 'release-failed') {
       return cleanupRecord(subscriptionCleanup)
@@ -1775,6 +2181,498 @@ export class ElectronMainBleRouter {
     return cleanupRecord(cleanup)
   }
 
+  private recordingLease(resources: RendererResources): string {
+    return JSON.stringify([this.registryScope, String(resources.rendererLease.leaseId)])
+  }
+
+  private async orderedMarker(
+    resources: RendererResources,
+    command: string,
+    payload: SerializableRecord,
+    binary: OwnedBytes | null,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const recording = command.startsWith('gatt.ordered-recording.')
+    const handle = requiredString(payload, recording ? 'startHandle' : 'orderedHandle')
+    const group = recording ? null : requiredResource(resources.orderedGroups, handle, 'ordered-group')
+    const key = recording ? JSON.stringify([resources.ownerKey, 'recording', handle]) : group?.markerKey
+    if (recording) this.orderedRecordings.assertOwned(resources.ownerKey, handle)
+    if (key === undefined) throw contractError('ownership.denied', 'ipc', 'electron.ordered-marker.owner')
+    const action = command.slice(command.lastIndexOf('.') + 1)
+    if (action === 'list' && recording) {
+      if (binary !== null) throw contractError('protocol.malformed', 'ipc', 'electron.ordered-marker.binary')
+      return this.orderedMarkers.list(key)
+    }
+    if (action === 'reserve') {
+      if (binary !== null) throw contractError('protocol.malformed', 'ipc', 'electron.ordered-marker.binary')
+      if (group !== null && group.setup.state !== 'ready')
+        throw contractError('lifecycle.invalid-state', 'gatt', 'electron.ordered-marker.group')
+      if (recording) {
+        this.orderedRecordings.assertMarkerOwner(resources.ownerKey, handle)
+        const lease = this.recordingLease(resources)
+        if (
+          !this.orderedRecordings.isOriginLease(resources.ownerKey, handle, lease) &&
+          !this.orderedRecovery.hasMapping(resources.ownerKey, handle, lease)
+        )
+          throw contractError('ownership.denied', 'ipc', 'electron.recording-recovery.mapping')
+      }
+      return this.orderedMarkers.reserve(
+        key,
+        requiredString(payload, 'reservationToken'),
+        this.recordingLease(resources)
+      )
+    }
+    const markerId = requiredString(payload, 'markerHandle')
+    if (!isCanonicalIngressOrdinal(markerId))
+      throw contractError('protocol.malformed', 'ipc', 'electron.ordered-marker.id')
+    if (action === 'status' || action === 'cancel') {
+      if (binary !== null) throw contractError('protocol.malformed', 'ipc', 'electron.ordered-marker.binary')
+      return this.orderedMarkers.status(key, markerId, action === 'cancel')
+    }
+    if (action === 'forget') {
+      if (binary !== null) throw contractError('protocol.malformed', 'ipc', 'electron.ordered-marker.binary')
+      const result = await this.orderedMarkers.forget(
+        key,
+        markerId,
+        ordinal => recording || (group?.acknowledgedMarkerOrdinals.has(ordinal) ?? false)
+      )
+      group?.acknowledgedMarkerOrdinals.clear()
+      return result
+    }
+    if (action !== 'start' || binary === null || typeof payload.withResponse !== 'boolean')
+      throw contractError('protocol.malformed', 'ipc', 'electron.ordered-marker.start')
+    const database = this.database(resources, payload)
+    if (group !== null && group.databaseHandle !== requiredString(payload, 'databaseHandle'))
+      throw contractError('ownership.denied', 'ipc', 'electron.ordered-marker.database')
+    if (group !== null && group.setup.state !== 'ready')
+      throw contractError('lifecycle.invalid-state', 'gatt', 'electron.ordered-marker.group')
+    const target = this.characteristic(database, payload)
+    const bytes = new Uint8Array(binary)
+    const fingerprint = orderedWireRecord({
+      databaseHandle: requiredString(payload, 'databaseHandle'),
+      characteristicHandle: requiredString(payload, 'characteristicHandle'),
+      withResponse: payload.withResponse,
+      bytes
+    })
+    return this.orderedMarkers.start(
+      key,
+      markerId,
+      fingerprint,
+      () => {
+        if (recording) {
+          const connection = requiredResource(resources.connections, database.connectionHandle, 'connection')
+          const lease = this.recordingLease(resources)
+          const databaseHandle = requiredString(payload, 'databaseHandle')
+          if (
+            !this.orderedRecordings.isOriginLease(resources.ownerKey, handle, lease) &&
+            !this.orderedRecovery.hasMapping(resources.ownerKey, handle, lease, databaseHandle)
+          )
+            throw contractError('ownership.denied', 'ipc', 'electron.recording-recovery.mapping')
+          const recordingId = this.orderedRecordings.markerRecordingId(
+            resources.ownerKey,
+            handle,
+            String(connection.peerId)
+          )
+          const reserve = database.database.reserveOrderedRecordingMarker
+          if (!reserve) throw contractError('capability.unsupported', 'gatt', 'electron.ordered-recording.marker')
+          return reserve.call(database.database, recordingId)
+        }
+        const reserve = group?.setup.stream.reserveMarkerWrite
+        if (!reserve || group === null) throw contractError('capability.unsupported', 'gatt', 'electron.ordered-marker')
+        return reserve.call(group.setup.stream)
+      },
+      target,
+      bytes,
+      payload.withResponse,
+      operationOptions(payload, controller)
+    )
+  }
+
+  private async startOrderedRecording(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const database = this.database(resources, payload)
+    const handle = requiredString(payload, 'startHandle')
+    if (!isCanonicalIngressOrdinal(handle))
+      throw contractError('protocol.malformed', 'ipc', 'electron.ordered-recording.handle')
+    const recording = normalizeContinuationRecording(payload.recording)
+    if (!Array.isArray(payload.members) || payload.members.length === 0)
+      throw contractError('protocol.malformed', 'ipc', 'electron.ordered-recording.members')
+    const members = payload.members.map(entry => {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry) || entry instanceof Uint8Array)
+        throw contractError('protocol.malformed', 'ipc', 'electron.ordered-recording.member')
+      const deliveryMode = requiredDeliveryMode(entry.deliveryMode)
+      if (deliveryMode === undefined)
+        throw contractError('protocol.malformed', 'ipc', 'electron.ordered-recording.delivery')
+      return { memberId: requiredString(entry, 'memberId'), path: this.characteristic(database, entry), deliveryMode }
+    })
+    if (
+      new Set(members.map(member => member.memberId)).size !== members.length ||
+      new Set(
+        payload.members.map(entry => {
+          if (entry === null || typeof entry !== 'object' || Array.isArray(entry) || entry instanceof Uint8Array)
+            throw contractError('protocol.malformed', 'ipc', 'electron.ordered-recording.member')
+          return requiredString(entry, 'characteristicHandle')
+        })
+      ).size !== members.length
+    )
+      throw contractError('argument.invalid', 'gatt', 'electron.ordered-recording.duplicate')
+    const delivery = deliveryFromPayload({ ...payload, streamOverflowPolicy: 'error' })
+    const fingerprint = snapshotSerializableRecord({
+      databaseHandle: requiredString(payload, 'databaseHandle'),
+      members: payload.members,
+      recording: orderedWireRecord(recording),
+      streamItemCapacity: Number(delivery.itemCapacity),
+      streamByteCapacity: Number(delivery.byteCapacity),
+      streamReservedControlCapacity: Number(delivery.reservedControlCapacity)
+    }).value
+    const connection = requiredResource(resources.connections, database.connectionHandle, 'connection')
+    return this.orderedRecordings.start(
+      resources.ownerKey,
+      handle,
+      recording.id,
+      String(connection.peerId),
+      fingerprint,
+      () => database.database.reserveOrderedRecordingStart(),
+      owner => owner.start(members, { ...operationOptions(payload, controller), delivery, recording })
+    )
+  }
+
+  /** Trusted process owner reports a confirmed finished recorder and host cleanup. */
+  confirmOrderedRecordingFinished(
+    recordingId: string,
+    result: import('../core/continuation-recording').OrderedRecordingHostStopResult
+  ): void {
+    confirmProcessRecordingFinished(
+      { recordings: this.orderedRecordings, markers: this.orderedMarkers, recovery: this.orderedRecovery },
+      recordingId,
+      result
+    )
+  }
+
+  private async openOrdered(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController,
+    acquisitions: OperationAcquisitions
+  ): Promise<SerializableRecord> {
+    const database = this.database(resources, payload)
+    const handle = requiredString(payload, 'orderedHandle')
+    const openRequest = snapshotSerializableRecord({
+      databaseHandle: requiredString(payload, 'databaseHandle'),
+      members: payload.members ?? null,
+      streamItemCapacity: payload.streamItemCapacity ?? null,
+      streamByteCapacity: payload.streamByteCapacity ?? null,
+      streamReservedControlCapacity: payload.streamReservedControlCapacity ?? null,
+      streamOverflowPolicy: payload.streamOverflowPolicy ?? null
+    }).value
+    const existing = resources.orderedGroups.get(handle)
+    if (existing !== undefined) {
+      if (!serializableRecordsEqual(existing.openRequest, openRequest))
+        throw contractError('protocol.violation', 'ipc', 'electron.ordered.open-retry')
+      return existing.openResponse
+    }
+    if (
+      resources.reservedHandles.has(handle) ||
+      resources.releasedOrderedGroups.has(handle) ||
+      resources.releasedHandles.has(handle)
+    )
+      throw contractError('ownership.denied', 'ipc', 'electron.ordered.handle')
+    if (
+      resources.orderedGroups.size + resources.releasedOrderedGroups.size + resources.reservedHandles.size >=
+      this.maximumOutstandingOperations
+    )
+      throw contractError('stream.quota', 'ipc', 'electron.ordered.group-capacity')
+    if (!Array.isArray(payload.members) || payload.members.length === 0)
+      throw contractError('protocol.malformed', 'ipc', 'electron.ordered.members')
+    const members = payload.members.map(entry => {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry) || entry instanceof Uint8Array)
+        throw contractError('protocol.malformed', 'ipc', 'electron.ordered.member')
+      const deliveryMode = requiredDeliveryMode(entry.deliveryMode)
+      if (deliveryMode === undefined) throw contractError('protocol.malformed', 'ipc', 'electron.ordered.delivery')
+      return { memberId: requiredString(entry, 'memberId'), path: this.characteristic(database, entry), deliveryMode }
+    })
+    resources.reservedHandles.add(handle)
+    try {
+      if (
+        new Set(members.map(member => member.memberId)).size !== members.length ||
+        new Set(
+          payload.members.map(entry => {
+            if (entry === null || typeof entry !== 'object' || Array.isArray(entry) || entry instanceof Uint8Array)
+              throw contractError('protocol.malformed', 'ipc', 'electron.ordered.member')
+            return requiredString(entry, 'characteristicHandle')
+          })
+        ).size !== members.length
+      )
+        throw contractError('argument.invalid', 'gatt', 'electron.ordered.duplicate-member')
+      const setup = await database.database.subscribeOrdered(members, {
+        ...operationOptions(payload, controller),
+        delivery: deliveryFromPayload(payload)
+      })
+      let iterator = setup.stream[Symbol.asyncIterator]()
+      const pendingSetupObservations: OrderedNotificationItem[] = []
+      let openResponse =
+        setup.state === 'ready'
+          ? orderedWireRecord({
+              handle,
+              state: setup.state,
+              sourceGeneration: setup.sourceGeneration ?? null,
+              members: setup.members.map(member => ({
+                memberId: member.memberId,
+                requestedDelivery: member.requestedDelivery,
+                effectiveDelivery: member.effectiveDelivery
+              })),
+              limits: setup.stream.limits
+            })
+          : orderedWireRecord({
+              handle,
+              state: setup.state,
+              sourceGeneration: setup.sourceGeneration ?? null,
+              members: setup.members,
+              error: setup.error,
+              observations: setup.observations,
+              uncertainTail: setup.uncertainTail,
+              cleanup: setup.cleanup
+            })
+      if (setup.state === 'failed' && snapshotSerializableRecord(openResponse).byteLength > this.maximumMessageBytes) {
+        const remaining = iterator
+        pendingSetupObservations.push(...setup.observations)
+        iterator = (async function* (): AsyncGenerator<OrderedNotificationItem, undefined, undefined> {
+          while (pendingSetupObservations.length > 0) {
+            const item = pendingSetupObservations.shift()
+            if (item !== undefined) yield item
+          }
+          for (;;) {
+            const next = await remaining.next()
+            if (next.done) return undefined
+            yield next.value
+          }
+        })()
+        openResponse = orderedWireRecord({
+          handle,
+          state: setup.state,
+          sourceGeneration: setup.sourceGeneration ?? null,
+          members: setup.members,
+          error: setup.error,
+          observations: [],
+          uncertainTail: setup.uncertainTail,
+          cleanup: setup.cleanup
+        })
+      }
+      const delivery = new OrderedDelivery<OrderedNotificationItem>(iterator, error => ({
+        kind: 'terminal',
+        reason: 'source-failed',
+        uncertainTail: true,
+        error: normalizedCleanupError(error)
+      }))
+      resources.orderedGroups.set(handle, {
+        databaseHandle: requiredString(payload, 'databaseHandle'),
+        setup,
+        delivery,
+        openResponse,
+        openRequest,
+        pendingSetupObservations,
+        markerKey: JSON.stringify([resources.ownerKey, this.recordingLease(resources), handle]),
+        acknowledgedMarkerOrdinals: new Set(),
+        cleanupReleased: false,
+        cleanupResponse: null
+      })
+      acquisitions.orderedGroups.add(handle)
+      return openResponse
+    } finally {
+      resources.reservedHandles.delete(handle)
+    }
+  }
+
+  /** Trusted desktop hosts inspect only payload-free summaries for their authenticated window. */
+  inspectOrderedOrphans(ownerKey: string): SerializableRecord {
+    const available = this.orphanReceipts.get(ownerKey)
+    const receipts: SerializableRecord[] = []
+    for (const item of available?.values() ?? []) {
+      const receipt = item.record
+      if (typeof receipt.uncertainTail !== 'boolean')
+        throw contractError('protocol.malformed', 'ipc', 'electron.ordered.orphan-summary')
+      const summary = {
+        format: requiredString(receipt, 'format'),
+        receiptId: requiredString(receipt, 'receiptId'),
+        values: requiredString(receipt, 'values'),
+        bytes: requiredString(receipt, 'bytes'),
+        controls: requiredString(receipt, 'controls'),
+        uncertainTail: receipt.uncertainTail
+      }
+      if (
+        snapshotSerializableRecord({ receipts: [...receipts, summary], truncated: true }).byteLength >
+        this.maximumMessageBytes
+      ) {
+        if (receipts.length === 0) throw contractError('bytes.too-large', 'ipc', 'electron.ordered.orphan-summary-size')
+        break
+      }
+      receipts.push(summary)
+    }
+    return { receipts, truncated: receipts.length < (available?.size ?? 0) }
+  }
+
+  private ownedOrderedOrphan(ownerKey: string, receiptId: string): ManagedOrphanReceipt | null {
+    const item = this.orphanReceipts.get(ownerKey)?.get(receiptId)
+    if (item !== undefined) return item
+    for (const [otherOwner, receipts] of this.orphanReceipts) {
+      if (otherOwner !== ownerKey && receipts.has(receiptId))
+        throw contractError('ownership.denied', 'ipc', 'electron.ordered.orphan-ownership')
+    }
+    return null
+  }
+
+  pageOrderedOrphan(ownerKey: string, payload: SerializableRecord): SerializableRecord {
+    const item = this.ownedOrderedOrphan(ownerKey, requiredString(payload, 'receiptId'))
+    if (item === null) throw contractError('ownership.denied', 'ipc', 'electron.ordered.orphan-unknown')
+    const offset = payload.offset
+    if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0)
+      throw contractError('protocol.malformed', 'ipc', 'electron.ordered.orphan-offset')
+    if (offset === 0 && item.cursor !== 0) {
+      item.cursor = 0
+      item.nextOffset = null
+      item.page = null
+    }
+    if (offset === item.cursor && item.page !== null) return item.page
+    if (item.nextOffset !== null && offset === item.nextOffset) {
+      item.cursor = offset
+      item.page = null
+      item.nextOffset = null
+    } else if (offset !== item.cursor)
+      throw contractError('protocol.violation', 'ipc', 'electron.ordered.orphan-offset')
+    if (offset === item.scalars.length) {
+      item.complete = true
+      item.page = { chunk: '', nextOffset: offset, done: true }
+      return item.page
+    }
+    let length = Math.min(
+      4096,
+      item.scalars.length - offset,
+      Math.max(1, Math.floor((this.maximumMessageBytes - 256) / 12))
+    )
+    let page: SerializableRecord = {
+      chunk: item.scalars.slice(offset, offset + length).join(''),
+      nextOffset: offset + length,
+      done: false
+    }
+    while (snapshotSerializableRecord(page).byteLength > this.maximumMessageBytes && length > 1) {
+      length = Math.max(1, Math.floor(length / 2))
+      page = { chunk: item.scalars.slice(offset, offset + length).join(''), nextOffset: offset + length, done: false }
+    }
+    if (snapshotSerializableRecord(page).byteLength > this.maximumMessageBytes)
+      throw contractError('bytes.too-large', 'ipc', 'electron.ordered.orphan-page-size')
+    item.nextOffset = offset + length
+    item.page = page
+    return page
+  }
+
+  acknowledgeOrderedOrphan(ownerKey: string, receiptId: string): SerializableRecord {
+    const item = this.ownedOrderedOrphan(ownerKey, receiptId)
+    if (item !== null && !item.complete)
+      throw contractError('lifecycle.invalid-state', 'ipc', 'electron.ordered.orphan-unread')
+    const receipts = this.orphanReceipts.get(ownerKey)
+    receipts?.delete(receiptId)
+    if (receipts?.size === 0) this.orphanReceipts.delete(ownerKey)
+    return { state: 'forgotten' }
+  }
+
+  private statusOrdered(resources: RendererResources, payload: SerializableRecord): SerializableRecord {
+    const handle = requiredString(payload, 'orderedHandle')
+    const group = resources.orderedGroups.get(handle)
+    if (group !== undefined) return { state: 'result', result: group.openResponse }
+    if (resources.reservedHandles.has(handle)) return { state: 'pending' }
+    return { state: 'unknown' }
+  }
+
+  private forgetOrdered(resources: RendererResources, payload: SerializableRecord): SerializableRecord {
+    const handle = requiredString(payload, 'orderedHandle')
+    const group = resources.orderedGroups.get(handle)
+    if (group !== undefined) {
+      if (
+        !group.cleanupReleased ||
+        group.delivery === null ||
+        !group.delivery.drained ||
+        this.orderedMarkers.hasActive(group.markerKey)
+      )
+        throw contractError('lifecycle.invalid-state', 'ipc', 'electron.ordered.forget-before-drain')
+      resources.orderedGroups.delete(handle)
+      this.orderedMarkers.releaseOwner(group.markerKey)
+      if (group.cleanupResponse !== null) resources.releasedOrderedGroups.set(handle, group.cleanupResponse)
+    }
+    if (resources.reservedHandles.has(handle))
+      throw contractError('lifecycle.invalid-state', 'ipc', 'electron.ordered.forget-pending')
+    if (!resources.releasedOrderedGroups.has(handle) && !resources.releasedHandles.has(handle))
+      throw contractError('ownership.denied', 'ipc', 'electron.ordered.forget-owner')
+    resources.forgottenOrderedGroups.add(handle)
+    return { state: 'forgotten' }
+  }
+
+  private retireOrdered(resources: RendererResources, payload: SerializableRecord): SerializableRecord {
+    const handle = requiredString(payload, 'orderedHandle')
+    if (
+      resources.orderedGroups.has(handle) ||
+      resources.reservedHandles.has(handle) ||
+      (resources.releasedOrderedGroups.has(handle) && !resources.forgottenOrderedGroups.has(handle))
+    )
+      throw contractError('lifecycle.invalid-state', 'ipc', 'electron.ordered.retire-before-forget')
+    resources.releasedOrderedGroups.delete(handle)
+    resources.forgottenOrderedGroups.delete(handle)
+    return { state: 'retired' }
+  }
+
+  private async nextOrdered(resources: RendererResources, payload: SerializableRecord): Promise<SerializableRecord> {
+    const group = requiredResource(resources.orderedGroups, requiredString(payload, 'orderedHandle'), 'ordered-group')
+    if (group.delivery === null) return { state: 'closed' }
+    const ack = payload.ackDeliveryId
+    if (ack !== undefined && typeof ack !== 'string')
+      throw contractError('protocol.malformed', 'ipc', 'electron.ordered.ack')
+    const current = group.delivery.current
+    if (ack !== undefined && current?.deliveryId === ack && current.item.kind === 'marker')
+      group.acknowledgedMarkerOrdinals.add(current.item.ordinal)
+    const result = group.delivery.poll(ack)
+    if (
+      result.state === 'item' &&
+      snapshotSerializableRecord(orderedWireRecord(result)).byteLength > this.maximumMessageBytes
+    ) {
+      // Do not discard the stream to make room: later records may carry
+      // independent failure evidence. Retain this delivery for retry/recovery.
+      throw contractError('bytes.too-large', 'ipc', 'electron.ordered.record-size')
+    }
+    if (result.state === 'closed' && group.cleanupReleased && !this.orderedMarkers.hasActive(group.markerKey)) {
+      const handle = requiredString(payload, 'orderedHandle')
+      resources.orderedGroups.delete(handle)
+      if (group.cleanupResponse !== null) resources.releasedOrderedGroups.set(handle, group.cleanupResponse)
+      resources.releasedHandles.add(handle)
+    }
+    return orderedWireRecord(result)
+  }
+
+  private async closeOrdered(resources: RendererResources, payload: SerializableRecord): Promise<SerializableRecord> {
+    const handle = requiredString(payload, 'orderedHandle')
+    const group = resources.orderedGroups.get(handle)
+    if (group === undefined) {
+      const released = resources.releasedOrderedGroups.get(handle)
+      if (released !== undefined) return released
+      throw contractError('ownership.denied', 'ipc', 'electron.ordered.ownership')
+    }
+    const cleanup = await (group.setup.state === 'ready' ? group.setup.stream.close() : group.setup.close())
+    group.cleanupReleased =
+      cleanup.group.state === 'released' && cleanup.members.every(member => member.cleanup.state === 'released')
+    group.cleanupResponse = orderedWireRecord({ cleanup })
+    if (
+      group.cleanupReleased &&
+      (group.delivery === null || group.delivery.drained) &&
+      !this.orderedMarkers.hasActive(group.markerKey)
+    ) {
+      resources.orderedGroups.delete(handle)
+      resources.releasedOrderedGroups.set(handle, group.cleanupResponse)
+      resources.releasedHandles.add(handle)
+    }
+    return group.cleanupResponse
+  }
+
   private async unsubscribe(resources: RendererResources, payload: SerializableRecord): Promise<SerializableRecord> {
     const handle = requiredString(payload, 'subscriptionHandle')
     const resource = resources.subscriptions.get(handle)
@@ -1801,6 +2699,7 @@ export class ElectronMainBleRouter {
     }
     const cleanup = await this.releaseAcquiredWriters(resources, entry => entry.databaseHandle === handle)
     const failures = [...cleanup.failures]
+    failures.push(...(await this.releaseOrderedGroups(resources, group => group.databaseHandle === handle)).failures)
     for (const [subscriptionHandle, subscription] of resources.subscriptions) {
       if (subscription.databaseHandle === handle)
         failures.push(
@@ -1862,6 +2761,7 @@ export class ElectronMainBleRouter {
       cleanup => {
         if (cleanup.state === 'released') {
           this.resources.delete(key)
+          this.rendererOwners.delete(key)
         } else {
           resources.lifecycle = 'active'
           resources.releaseResult = null
@@ -1900,7 +2800,13 @@ export class ElectronMainBleRouter {
       await operation.settled
     }
     const failures: CleanupFailure[] = []
+    failures.push(...(await this.retainTerminalEvidenceForRecovery(resources)))
+    failures.push(...(await this.releaseTerminalEvidenceRecoveryLease(resources)))
+    this.orderedRecordings.retireUnused(resources.ownerKey, this.recordingLease(resources))
+    this.orderedMarkers.retireUnusedForLease(this.recordingLease(resources))
+    this.orderedRecovery.releaseLease(this.recordingLease(resources))
     failures.push(...(await this.releaseAcquiredWriters(resources)).failures)
+    failures.push(...(await this.releaseOrderedGroups(resources, () => true, true)).failures)
     failures.push(...(await this.releaseReadinessWatches(resources)))
     failures.push(...(await this.releaseParameterWatches(resources)))
     for (const handle of resources.securityWatches.keys()) {
@@ -1953,6 +2859,7 @@ export class ElectronMainBleRouter {
       resources.scans.size === 0 &&
       resources.connectionEventSubscriptions.size === 0 &&
       resources.subscriptions.size === 0 &&
+      resources.orderedGroups.size === 0 &&
       resources.acquiredWriters.size === 0 &&
       resources.connections.size === 0 &&
       resources.databases.size === 0
@@ -1968,6 +2875,48 @@ export class ElectronMainBleRouter {
       })
     }
     return { state: 'release-failed', failures }
+  }
+
+  private async retainTerminalEvidenceForRecovery(resources: RendererResources): Promise<readonly CleanupFailure[]> {
+    const failures: CleanupFailure[] = []
+    for (const [handle, entry] of this.terminalEvidence.entries) {
+      if (entry.ownerKey !== resources.ownerKey || entry.recoverable) continue
+      if (entry.ref !== null) {
+        // Commit retains the reservation's runtime authority until abandon.
+        // Release it at renderer teardown so a same-process renderer reload
+        // can recover the committed bytes (and create a later reservation),
+        // while the durable ledger row remains for explicit recovery ACK.
+        try {
+          await entry.reservation.release()
+          entry.recoverable = true
+        } catch (error) {
+          failures.push({ resourceKind: 'terminal-evidence', error: normalizedCleanupError(error) })
+        }
+        continue
+      }
+      try {
+        await entry.reservation.release()
+        this.terminalEvidence.entries.delete(handle)
+      } catch (error) {
+        failures.push({ resourceKind: 'terminal-evidence', error: normalizedCleanupError(error) })
+      }
+    }
+    return failures
+  }
+
+  /** Drop only this renderer controller's native recovery authority. */
+  private async releaseTerminalEvidenceRecoveryLease(resources: RendererResources): Promise<readonly CleanupFailure[]> {
+    const backend = this.manager.attachedBackend.backend
+    if (!(backend instanceof DesktopRustCoreBackend) || !backend.hasTerminalEvidenceRecovery()) return []
+    try {
+      await backend.releaseTerminalEvidenceRecoveryLease(resources.terminalEvidenceRecoveryLeaseId)
+      for (const entry of this.terminalEvidence.entries.values()) {
+        if (entry.recoveryLeaseId === resources.terminalEvidenceRecoveryLeaseId) entry.recoveryLeaseId = null
+      }
+      return []
+    } catch (error) {
+      return [{ resourceKind: 'terminal-evidence', error: normalizedCleanupError(error) }]
+    }
   }
 
   /** Failed compensation remains owned independently of renderer admission.
@@ -1995,6 +2944,10 @@ export class ElectronMainBleRouter {
     acquisitions: OperationAcquisitions
   ): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
+    failures.push(
+      ...(await this.releaseOrderedGroups(resources, (_group, handle) => acquisitions.orderedGroups.has(handle)))
+        .failures
+    )
     failures.push(
       ...(await this.releaseAcquiredWriters(resources, (_entry, handle) => acquisitions.acquiredWriters.has(handle)))
         .failures
@@ -2157,6 +3110,120 @@ export class ElectronMainBleRouter {
     }
   }
 
+  private async releaseOrderedGroups(
+    resources: RendererResources,
+    include: (group: ManagedOrderedGroup, handle: string) => boolean = () => true,
+    abandon = false
+  ): Promise<CleanupRecord> {
+    const failures: CleanupFailure[] = []
+    for (const [handle, group] of resources.orderedGroups) {
+      if (!include(group, handle)) continue
+      try {
+        if (abandon) {
+          let receiptCount = 0
+          for (const receipts of this.orphanReceipts.values()) receiptCount += receipts.size
+          if (
+            resources.ownerKey.length === 0 ||
+            receiptCount + this.orphanReservations >= this.maximumOutstandingOperations
+          ) {
+            failures.push({
+              resourceKind: 'ordered-orphan-capacity',
+              error: contractError('stream.quota', 'cleanup', 'electron.ordered.orphan-capacity').normalized
+            })
+            continue
+          }
+          this.orphanReservations += 1
+          try {
+            await this.orderedMarkers.cancelAll(group.markerKey)
+            const markerWrites = await this.orderedMarkers.snapshots(group.markerKey)
+            const cleanup = await group.setup.stream.discard()
+            if (
+              cleanup.group.state === 'release-failed' ||
+              cleanup.members.some(member => member.cleanup.state === 'release-failed')
+            ) {
+              failures.push(...cleanup.group.failures)
+              for (const member of cleanup.members) failures.push(...member.cleanup.failures)
+              continue
+            }
+            await this.orderedMarkers.forgetAll(group.markerKey)
+            const retained = [
+              ...(group.delivery === null ? [] : await group.delivery.snapshotRetained()),
+              ...(group.pendingSetupObservations ?? [])
+            ]
+            const local = accountOrderedDiscard(retained)
+            const native = cleanup.discarded ?? {
+              values: '0',
+              bytes: '0',
+              controls: '0',
+              uncertainTail: true,
+              terminal: null,
+              losses: []
+            }
+            const receiptId = this.allocateHandle('ordered-orphan')
+            const receipt = orderedWireRecord({
+              format: 'public',
+              receiptVersion: 2,
+              receiptId,
+              values: String(BigInt(native.values) + BigInt(local.values)),
+              bytes: String(BigInt(native.bytes) + BigInt(local.bytes)),
+              controls: String(BigInt(native.controls) + BigInt(local.controls)),
+              uncertainTail: native.uncertainTail || retained.length > 0,
+              terminal: local.terminal ?? native.terminal ?? null,
+              losses: [...(local.losses ?? []), ...(native.losses ?? [])],
+              failureObservations: [...(local.failureObservations ?? []), ...(native.failureObservations ?? [])],
+              failureObservationsOmitted: [
+                ...(local.failureObservationsOmitted ?? []),
+                ...(native.failureObservationsOmitted ?? [])
+              ],
+              markers: [...(local.markers ?? []), ...(native.markers ?? [])],
+              markerWrites,
+              trustedValues: native.trustedValues ?? []
+            })
+            const receipts = this.orphanReceipts.get(resources.ownerKey) ?? new Map<string, ManagedOrphanReceipt>()
+            receipts.set(receiptId, {
+              record: receipt,
+              scalars: Array.from(JSON.stringify(receipt)),
+              cursor: 0,
+              nextOffset: null,
+              page: null,
+              complete: false
+            })
+            this.orphanReceipts.set(resources.ownerKey, receipts)
+            group.delivery?.commitAbandonment()
+            group.pendingSetupObservations?.splice(0)
+            resources.orderedGroups.delete(handle)
+            resources.releasedHandles.add(handle)
+          } finally {
+            this.orphanReservations -= 1
+          }
+          continue
+        }
+        const cleanup = await (group.setup.state === 'ready' ? group.setup.stream.close() : group.setup.close())
+        failures.push(...cleanup.group.failures)
+        for (const member of cleanup.members) failures.push(...member.cleanup.failures)
+        group.cleanupReleased =
+          cleanup.group.state === 'released' && cleanup.members.every(member => member.cleanup.state === 'released')
+        if (
+          group.cleanupReleased &&
+          (group.delivery === null || group.delivery.drained) &&
+          !this.orderedMarkers.hasActive(group.markerKey)
+        ) {
+          resources.orderedGroups.delete(handle)
+          this.orderedMarkers.releaseOwner(group.markerKey)
+          resources.releasedHandles.add(handle)
+        } else if (group.cleanupReleased) {
+          failures.push({
+            resourceKind: 'ordered-group-uncertain-tail',
+            error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.ordered.undrained').normalized
+          })
+        }
+      } catch (error) {
+        failures.push({ resourceKind: 'ordered-group', error: normalizedCleanupError(error) })
+      }
+    }
+    return { state: failures.length === 0 ? 'released' : 'release-failed', failures }
+  }
+
   private async releaseSubscriptionsForConnection(
     resources: RendererResources,
     connectionHandle: string
@@ -2203,6 +3270,9 @@ export class ElectronMainBleRouter {
     for (const entry of resources.acquiredWriters.values()) {
       if (entry.connectionHandle === connectionHandle) return true
     }
+    for (const group of resources.orderedGroups.values()) {
+      if (resources.databases.get(group.databaseHandle)?.connectionHandle === connectionHandle) return true
+    }
     for (const resource of resources.connectionEventSubscriptions.values()) {
       if (resource.connectionHandle === connectionHandle) {
         return true
@@ -2238,7 +3308,12 @@ export class ElectronMainBleRouter {
         entry => entry.databaseHandle === databaseHandle
       )
       failures.push(...writerCleanup.failures)
-      let retired = writerCleanup.state === 'released'
+      const orderedCleanup = await this.releaseOrderedGroups(
+        resources,
+        group => group.databaseHandle === databaseHandle
+      )
+      failures.push(...orderedCleanup.failures)
+      let retired = writerCleanup.state === 'released' && orderedCleanup.state === 'released'
       for (const [subscriptionHandle, subscription] of resources.subscriptions) {
         if (subscription.databaseHandle !== databaseHandle) {
           continue
@@ -2268,11 +3343,16 @@ export class ElectronMainBleRouter {
       parameterWatches: new Map(),
       pairingChallenges: new Map(),
       rendererLease,
+      ownerKey: this.rendererOwners.get(String(rendererLease.leaseId)) ?? '',
+      terminalEvidenceRecoveryLeaseId: `electron-terminal-evidence-recovery-${this.registryScope}-${this.nextTerminalEvidenceRecoveryLease++}`,
       scans: new Map(),
       connections: new Map(),
       connectionEventSubscriptions: new Map(),
       databases: new Map(),
       subscriptions: new Map(),
+      orderedGroups: new Map(),
+      releasedOrderedGroups: new Map(),
+      forgottenOrderedGroups: new Set(),
       acquiredWriters: new Map(),
       reservedHandles: new Set(),
       pendingRollbacks: new Map(),
@@ -2281,6 +3361,11 @@ export class ElectronMainBleRouter {
       preCancelledOperations: new Map(),
       settledOperations: new Map(),
       releasedHandles: new Set(),
+      peerFailureRecoveries: new Map(),
+      peerFailureRecoveryGranted: false,
+      scanFailureRecoveries: new Map(),
+      scanFailureHandles: new Map(),
+      scanFailureRecoveryGranted: false,
       lifecycle: 'active',
       releaseResult: null
     }
@@ -2288,8 +3373,615 @@ export class ElectronMainBleRouter {
     return resources
   }
 
+  private grantDurablePeerFailureRecovery(resources: RendererResources): void {
+    const backend = this.manager.attachedBackend.backend
+    if (!(backend instanceof DesktopRustCoreBackend)) {
+      throw contractError(
+        'capability.unsupported',
+        'restoration',
+        'electron.peer-failure-recovery.desktop-core-required'
+      )
+    }
+    for (const recovery of backend.durablePeerNotificationFailureRecoveries()) {
+      resources.peerFailureRecoveries.set(`peer-failure-recovery-${this.nextHandle++}`, recovery)
+    }
+  }
+
+  private assertPeerFailureRecoveryProtocol(envelope: IpcEnvelope<string, string, string>): void {
+    if (envelope.versions.ipcProtocol.selected.value < 10) {
+      throw contractError('capability.unsupported', 'restoration', 'electron.peer-failure-recovery.ipc-v10-required')
+    }
+  }
+
+  private assertOrderedRouteProtocol(envelope: IpcEnvelope<string, string, string>): void {
+    if (
+      isOrderedRouteCommand(envelope.command) &&
+      envelope.versions.ipcProtocol.selected.value < ORDERED_ROUTE_MINIMUM_IPC_PROTOCOL
+    ) {
+      throw contractError('capability.unsupported', 'gatt', 'electron.ordered.ipc-v9-required')
+    }
+  }
+
+  private listPeerFailureRecovery(resources: RendererResources): SerializableRecord {
+    if (resources.peerFailureRecoveries.size === 0) {
+      throw contractError('ownership.denied', 'restoration', 'electron.peer-failure-recovery.not-granted')
+    }
+    return Object.freeze({
+      recoveries: Object.freeze(
+        [...resources.peerFailureRecoveries.entries()].map(([handleId, recovery]) => {
+          const characteristicUuid = recovery.provenance.selector.characteristicUuid
+          if (characteristicUuid === undefined)
+            throw contractError('protocol.malformed', 'restoration', 'electron.peer-failure-recovery.selector')
+          return Object.freeze({
+            handleId,
+            peerId: recovery.provenance.peerId,
+            selector: Object.freeze({
+              serviceUuid: recovery.provenance.selector.serviceUuid,
+              serviceOccurrence: String(recovery.provenance.selector.serviceOccurrence),
+              characteristicUuid,
+              characteristicOccurrence: String(recovery.provenance.selector.characteristicOccurrence)
+            }),
+            contiguousRead: recovery.provenance.contiguousRead,
+            acknowledged: recovery.provenance.acknowledged,
+            producerAck: recovery.provenance.producerAck
+          })
+        })
+      )
+    })
+  }
+
+  private async readPeerFailureRecovery(
+    resources: RendererResources,
+    payload: SerializableRecord
+  ): Promise<SerializableRecord> {
+    const handleId = requiredString(payload, 'handleId')
+    const offset = requiredString(payload, 'offset')
+    if (!/^(?:0|[1-9][0-9]*)$/.test(offset))
+      throw contractError('argument.invalid', 'restoration', 'electron.peer-failure-recovery.offset')
+    const recovery = requiredResource(resources.peerFailureRecoveries, handleId, 'peer-failure-recovery')
+    const result = await recovery.read(offset)
+    if (resources.lifecycle !== 'active' || resources.peerFailureRecoveries.get(handleId) !== recovery)
+      throw contractError('ownership.denied', 'restoration', 'electron.peer-failure-recovery.revoked')
+    return Object.freeze({
+      offset: result.offset,
+      nextOffset: result.nextOffset,
+      bytes: ownBytes(result.bytes, byteLimit(this.maximumMessageBytes)),
+      done: result.done
+    })
+  }
+
+  private async acknowledgePeerFailureRecovery(
+    resources: RendererResources,
+    payload: SerializableRecord
+  ): Promise<SerializableRecord> {
+    const handleId = requiredString(payload, 'handleId')
+    const recovery = requiredResource(resources.peerFailureRecoveries, handleId, 'peer-failure-recovery')
+    await recovery.acknowledge()
+    if (resources.lifecycle !== 'active' || resources.peerFailureRecoveries.get(handleId) !== recovery)
+      throw contractError('ownership.denied', 'restoration', 'electron.peer-failure-recovery.revoked')
+    resources.peerFailureRecoveries.delete(handleId)
+    return Object.freeze({ acknowledged: true })
+  }
+
+  private assertScanFailureRecoveryProtocol(envelope: IpcEnvelope<string, string, string>): void {
+    if (envelope.versions.ipcProtocol.selected.value < 10)
+      throw contractError('capability.unsupported', 'restoration', 'electron.scan-failure-recovery.ipc-v10-required')
+  }
+
+  private assertTerminalEvidenceProtocol(envelope: IpcEnvelope<string, string, string>): void {
+    if (envelope.versions.ipcProtocol.selected.value < 11)
+      throw contractError('capability.unsupported', 'restoration', 'electron.terminal-evidence.ipc-v11-required')
+  }
+
+  private scanRecovery(resources: RendererResources, handleId: string): DesktopScanFailureRecovery {
+    const recovery = requiredResource(resources.scanFailureRecoveries, handleId, 'scan-failure-recovery')
+    if (resources.lifecycle !== 'active' || resources.scanFailureRecoveries.get(handleId) !== recovery)
+      throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+    return recovery
+  }
+
+  private scanHandle(
+    resources: RendererResources,
+    handleId: string,
+    kind: 'owner' | 'head' | 'cleanup'
+  ): { readonly recovery: DesktopScanFailureRecovery; readonly nativeHandle: string } {
+    const handle = requiredResource(resources.scanFailureHandles, handleId, 'scan-failure-recovery-handle')
+    if (
+      handle.kind !== kind ||
+      resources.lifecycle !== 'active' ||
+      resources.scanFailureHandles.get(handleId) !== handle
+    )
+      throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+    return handle
+  }
+
+  private bindScanHandle(
+    resources: RendererResources,
+    recovery: DesktopScanFailureRecovery,
+    nativeHandle: string,
+    kind: 'owner' | 'head' | 'cleanup'
+  ): string {
+    for (const [handleId, handle] of resources.scanFailureHandles) {
+      if (handle.recovery === recovery && handle.nativeHandle === nativeHandle && handle.kind === kind) return handleId
+    }
+    const handleId = `scan-failure-${kind}-${this.nextHandle++}`
+    resources.scanFailureHandles.set(handleId, Object.freeze({ recovery, nativeHandle, kind }))
+    return handleId
+  }
+
+  private async routeScanFailureRecovery(
+    resources: RendererResources,
+    command: string,
+    payload: SerializableRecord
+  ): Promise<SerializableRecord> {
+    if (!resources.scanFailureRecoveryGranted)
+      throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.not-granted')
+    if (command === 'scanFailureRecovery.list') {
+      return Object.freeze({
+        recoveries: Object.freeze(
+          [...resources.scanFailureRecoveries.keys()].map(handleId => Object.freeze({ handleId }))
+        )
+      })
+    }
+    const recoveryId = requiredString(payload, 'recoveryId')
+    const recovery = this.scanRecovery(resources, recoveryId)
+    if (command === 'scanFailureRecovery.owners') {
+      const owners = await recovery.owners()
+      if (resources.lifecycle !== 'active' || resources.scanFailureRecoveries.get(recoveryId) !== recovery)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+      return Object.freeze({
+        owners: Object.freeze(
+          owners.map(owner =>
+            Object.freeze({
+              handleId: this.bindScanHandle(resources, recovery, owner.handleId, 'owner'),
+              prepared: owner.prepared,
+              producerFinished: owner.producerFinished,
+              rawRetired: owner.rawRetired,
+              rawReleased: owner.rawReleased,
+              memberCount: owner.memberCount,
+              released: owner.released
+            })
+          )
+        )
+      })
+    }
+    if (command === 'scanFailureRecovery.cleanup.list') {
+      const receipts = await recovery.pendingCleanupReceipts()
+      if (resources.lifecycle !== 'active' || resources.scanFailureRecoveries.get(recoveryId) !== recovery)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+      return Object.freeze({
+        cleanupReceiptIds: Object.freeze(
+          receipts.map(native => this.bindScanHandle(resources, recovery, native, 'cleanup'))
+        )
+      })
+    }
+    const handleId = requiredString(payload, 'handleId')
+    if (command === 'scanFailureRecovery.member' || command === 'scanFailureRecovery.head') {
+      const owner = this.scanHandle(resources, handleId, 'owner')
+      if (owner.recovery !== recovery)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.owner')
+      const indexValue = payload.index
+      if (typeof indexValue !== 'number' || !Number.isSafeInteger(indexValue) || indexValue < 0)
+        throw contractError('argument.invalid', 'restoration', 'electron.scan-failure-recovery.index')
+      const index = indexValue
+      if (command === 'scanFailureRecovery.member') {
+        const member = await recovery.member(owner.nativeHandle, index)
+        if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+          throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+        return Object.freeze({ member: Object.freeze({ recipient: member.recipient, delivery: member.delivery }) })
+      }
+      const head = await recovery.head(owner.nativeHandle, index)
+      if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+      return Object.freeze({
+        head:
+          head === null
+            ? null
+            : Object.freeze({
+                handleId: this.bindScanHandle(resources, recovery, head.handleId, 'head'),
+                contiguousRead: head.contiguousRead,
+                acknowledged: head.acknowledged
+              })
+      })
+    }
+    if (
+      command === 'scanFailureRecovery.raw.info' ||
+      command === 'scanFailureRecovery.raw.member' ||
+      command === 'scanFailureRecovery.raw.token' ||
+      command === 'scanFailureRecovery.raw.retire' ||
+      command === 'scanFailureRecovery.raw.release' ||
+      command === 'scanFailureRecovery.raw.finalize'
+    ) {
+      const owner = this.scanHandle(resources, handleId, 'owner')
+      if (owner.recovery !== recovery)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.owner')
+      const wholeNumber = (name: string): number => {
+        const value = payload[name]
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
+          throw contractError('argument.invalid', 'restoration', `electron.scan-failure-recovery.raw.${name}`)
+        return value
+      }
+      if (command === 'scanFailureRecovery.raw.info') {
+        const info = await recovery.rawInfo(owner.nativeHandle)
+        if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+          throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+        return Object.freeze({ info })
+      }
+      if (command === 'scanFailureRecovery.raw.member') {
+        const member = await recovery.rawMember(owner.nativeHandle, wholeNumber('index'))
+        if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+          throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+        return Object.freeze({ member })
+      }
+      if (command === 'scanFailureRecovery.raw.token') {
+        const maxBytes = wholeNumber('maxBytes')
+        if (maxBytes < 1 || maxBytes > 65536 || maxBytes > this.maximumMessageBytes)
+          throw contractError('argument.invalid', 'restoration', 'electron.scan-failure-recovery.raw-token.max-bytes')
+        const token = await recovery.rawToken(owner.nativeHandle, wholeNumber('index'), wholeNumber('offset'), maxBytes)
+        if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+          throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+        return Object.freeze({ token })
+      }
+      if (command === 'scanFailureRecovery.raw.retire') await recovery.rawRetire(owner.nativeHandle)
+      else if (command === 'scanFailureRecovery.raw.release') await recovery.rawRelease(owner.nativeHandle)
+      else {
+        const nativeReceipt = await recovery.rawFinalize(owner.nativeHandle)
+        if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+          throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+        return Object.freeze({ cleanupReceiptId: this.bindScanHandle(resources, recovery, nativeReceipt, 'cleanup') })
+      }
+      if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+      return Object.freeze({ completed: true })
+    }
+    if (command === 'scanFailureRecovery.read') {
+      const head = this.scanHandle(resources, handleId, 'head')
+      if (head.recovery !== recovery)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.head')
+      const offset = requiredString(payload, 'offset')
+      const page = await recovery.read(head.nativeHandle, offset)
+      if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+      return Object.freeze({
+        offset: page.offset,
+        nextOffset: page.nextOffset,
+        bytes: ownBytes(page.bytes, byteLimit(this.maximumMessageBytes)),
+        done: page.done
+      })
+    }
+    if (
+      command === 'scanFailureRecovery.ack' ||
+      command === 'scanFailureRecovery.retire' ||
+      command === 'scanFailureRecovery.release' ||
+      command === 'scanFailureRecovery.finalize'
+    ) {
+      const head = this.scanHandle(resources, handleId, 'head')
+      if (head.recovery !== recovery)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.head')
+      if (command === 'scanFailureRecovery.ack') await recovery.acknowledge(head.nativeHandle)
+      else if (command === 'scanFailureRecovery.retire') await recovery.retire(head.nativeHandle)
+      else if (command === 'scanFailureRecovery.release') await recovery.release(head.nativeHandle)
+      else {
+        const nativeReceipt = await recovery.finalizeRelease(head.nativeHandle)
+        if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+          throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+        return Object.freeze({ cleanupReceiptId: this.bindScanHandle(resources, recovery, nativeReceipt, 'cleanup') })
+      }
+      if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+      return Object.freeze({ acknowledged: command === 'scanFailureRecovery.ack', completed: true })
+    }
+    if (command === 'scanFailureRecovery.cleanup.retire') {
+      const cleanup = this.scanHandle(resources, handleId, 'cleanup')
+      if (cleanup.recovery !== recovery)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.cleanup')
+      await recovery.retireCleanup(cleanup.nativeHandle)
+      if (resources.lifecycle !== 'active' || resources.scanFailureHandles.get(handleId) === undefined)
+        throw contractError('ownership.denied', 'restoration', 'electron.scan-failure-recovery.revoked')
+      resources.scanFailureHandles.delete(handleId)
+      return Object.freeze({ retired: true })
+    }
+    throw contractError('protocol.violation', 'ipc', 'electron.scan-failure-recovery.command')
+  }
+
+  private async routeTerminalEvidence(
+    resources: RendererResources,
+    command: string,
+    payload: SerializableRecord,
+    binaryPayload: OwnedBytes | null
+  ): Promise<SerializableRecord> {
+    if (command === 'terminalEvidence.reserve') {
+      if (binaryPayload !== null) throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.reserve')
+      const request = terminalEvidenceReservationRequest(payload)
+      const source = this.terminalEvidenceSource(request.producer)
+      const reservation = await source.reserveTerminalEvidence(request)
+      const reservationId = `terminal-evidence-${this.terminalEvidence.nextId++}`
+      this.terminalEvidence.entries.set(reservationId, {
+        ownerKey: resources.ownerKey,
+        recoveryLeaseId: null,
+        producer: request.producer,
+        scope: request.scope,
+        source,
+        reservation,
+        ref: null,
+        digest: null,
+        byteLength: null,
+        recoverable: false
+      })
+      return Object.freeze({ kind: 'reserved', reservationId, maximumBytes: reservation.maximumBytes })
+    }
+    if (command === 'terminalEvidence.commit') {
+      const request = terminalEvidenceCommitRequest(payload, binaryPayload)
+      const entry = this.terminalEvidenceOwner(resources, request.reservationId, 'electron.terminal-evidence.commit')
+      if (entry.ref !== null)
+        throw contractError('lifecycle.invalid-state', 'restoration', 'electron.terminal-evidence.commit')
+      const backend = this.manager.attachedBackend.backend
+      if (backend instanceof DesktopRustCoreBackend) {
+        await backend.stageTerminalEvidenceForRecovery(
+          entry.producer,
+          entry.scope,
+          resources.ownerKey,
+          request.canonicalBytes
+        )
+      }
+      const result = await entry.reservation.commit({ canonicalBytes: request.canonicalBytes, digest: request.digest })
+      if ('kind' in result) return Object.freeze({ kind: 'refused', reason: result.reason })
+      entry.ref = result.ref
+      entry.digest = result.digest
+      entry.byteLength = result.byteLength
+      this.terminalEvidence.entries.set(result.ref, entry)
+      return Object.freeze({
+        kind: 'committed',
+        ref: result.ref,
+        byteLength: String(result.byteLength),
+        digest: result.digest,
+        formatVersion: 1,
+        durability: 'committed'
+      })
+    }
+    if (command === 'terminalEvidence.read') {
+      if (binaryPayload !== null) throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.read')
+      const ref = terminalEvidenceReference(payload, 'electron.terminal-evidence.read')
+      const entry = this.terminalEvidenceOwner(resources, ref, 'electron.terminal-evidence.read')
+      if (entry.ref === null) throw contractError('ownership.denied', 'restoration', 'electron.terminal-evidence.read')
+      const result = await entry.source.readTerminalEvidence(entry.ref, entry.byteLength ?? 0)
+      if (result.kind !== 'committed') return Object.freeze({ kind: result.kind })
+      return Object.freeze({
+        kind: 'committed',
+        canonicalBytes: ownBytes(result.canonicalBytes, byteLimit(result.canonicalBytes.byteLength)),
+        digest: result.digest
+      })
+    }
+    if (command === 'terminalEvidence.release') {
+      if (binaryPayload !== null) throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.release')
+      const reservationId = terminalEvidenceReference(payload, 'electron.terminal-evidence.release')
+      const entry = this.terminalEvidenceOwner(resources, reservationId, 'electron.terminal-evidence.release')
+      await entry.reservation.release()
+      // Stream drainage abandons only the runtime lease. Exact staged or
+      // committed bytes remain owned by recovery and keep their quota until
+      // the authenticated recovery ACK below succeeds.
+      if (entry.ref === null) {
+        this.terminalEvidence.entries.delete(reservationId)
+      } else {
+        entry.recoverable = true
+      }
+      return Object.freeze({ kind: 'released' })
+    }
+    if (command === 'terminalEvidence.recovery.list') {
+      terminalEvidenceRecoveryList(payload, binaryPayload)
+      const backend = this.manager.attachedBackend.backend
+      if (backend instanceof DesktopRustCoreBackend && backend.hasTerminalEvidenceRecovery()) {
+        // Preserve the legacy strict list contract: a producer lane held by
+        // another controller remains an explicit Busy failure, never an empty
+        // recovery result. Bootstrap uses the additive status path so the
+        // renderer can subsequently choose that richer result.
+        const recovered = await backend.recoverTerminalEvidenceForRecipient(
+          resources.ownerKey,
+          resources.terminalEvidenceRecoveryLeaseId
+        )
+        for (const record of recovered) this.bindTerminalEvidenceRecovery(resources, record)
+      } else {
+        this.bindLocalTerminalEvidenceRecovery(resources)
+      }
+      const records = [...this.terminalEvidence.entries.entries()]
+        .filter(
+          ([handle, entry]) =>
+            handle !== entry.ref &&
+            entry.ownerKey === resources.ownerKey &&
+            entry.recoveryLeaseId === resources.terminalEvidenceRecoveryLeaseId &&
+            entry.recoverable &&
+            entry.ref !== null
+        )
+        .map(([handle, entry]) =>
+          Object.freeze({
+            handle,
+            producer: entry.producer,
+            byteLength: entry.byteLength,
+            digest: entry.digest,
+            formatVersion: 1
+          })
+        )
+      return Object.freeze({ records: Object.freeze(records) })
+    }
+    if (command === 'terminalEvidence.recovery.listWithStatus') {
+      terminalEvidenceRecoveryList(payload, binaryPayload)
+      const backend = this.manager.attachedBackend.backend
+      let busyProducers: readonly ('scan' | 'subscription')[] = []
+      if (backend instanceof DesktopRustCoreBackend && backend.hasTerminalEvidenceRecovery()) {
+        const refreshed = await backend.recoverTerminalEvidenceForRecipientWithStatus(
+          resources.ownerKey,
+          resources.terminalEvidenceRecoveryLeaseId
+        )
+        busyProducers = refreshed.busyProducers
+        for (const record of refreshed.records) this.bindTerminalEvidenceRecovery(resources, record)
+      } else {
+        this.bindLocalTerminalEvidenceRecovery(resources)
+      }
+      const records = [...this.terminalEvidence.entries.entries()]
+        .filter(
+          ([handle, entry]) =>
+            handle !== entry.ref &&
+            entry.ownerKey === resources.ownerKey &&
+            entry.recoveryLeaseId === resources.terminalEvidenceRecoveryLeaseId &&
+            entry.recoverable &&
+            entry.ref !== null
+        )
+        .map(([handle, entry]) =>
+          Object.freeze({
+            handle,
+            producer: entry.producer,
+            byteLength: entry.byteLength,
+            digest: entry.digest,
+            formatVersion: 1
+          })
+        )
+      return Object.freeze({ records: Object.freeze(records), busyProducers: Object.freeze(busyProducers) })
+    }
+    if (command === 'terminalEvidence.recovery.read') {
+      const request = terminalEvidenceRecoveryRead(payload, binaryPayload)
+      const entry = this.terminalEvidenceRecoveryOwner(
+        resources,
+        request.handle,
+        'electron.terminal-evidence.recovery.read'
+      )
+      const result = await entry.source.readTerminalEvidence(entry.ref!, request.maximumBytes)
+      if (result.kind !== 'committed')
+        throw contractError('platform.failure', 'restoration', 'electron.terminal-evidence.recovery.read')
+      return Object.freeze({
+        kind: 'committed',
+        canonicalBytes: ownBytes(result.canonicalBytes, byteLimit(result.canonicalBytes.byteLength)),
+        digest: result.digest
+      })
+    }
+    if (command === 'terminalEvidence.recovery.ack') {
+      const handle = terminalEvidenceRecoveryAck(payload, binaryPayload)
+      const entry = this.terminalEvidenceRecoveryOwner(resources, handle, 'electron.terminal-evidence.recovery.ack')
+      await entry.source.releaseTerminalEvidence(entry.ref!)
+      this.terminalEvidence.entries.delete(handle)
+      this.terminalEvidence.entries.delete(entry.ref!)
+      return Object.freeze({ state: 'released' })
+    }
+    throw contractError('argument.invalid', 'ipc', 'electron.terminal-evidence.command')
+  }
+
+  private terminalEvidenceSource(producer: 'scan' | 'subscription'): ElectronTerminalEvidenceSource {
+    const backend = this.manager.attachedBackend.backend
+    const source = producer === 'scan' ? backend.scanner : backend.gatt
+    if (
+      source.reserveTerminalEvidence === undefined ||
+      source.readTerminalEvidence === undefined ||
+      source.releaseTerminalEvidence === undefined
+    ) {
+      throw contractError('capability.unsupported', 'restoration', 'electron.terminal-evidence.source')
+    }
+    return Object.freeze({
+      reserveTerminalEvidence: source.reserveTerminalEvidence,
+      readTerminalEvidence: source.readTerminalEvidence,
+      releaseTerminalEvidence: source.releaseTerminalEvidence
+    })
+  }
+
+  private async hydrateTerminalEvidenceRecovery(resources: RendererResources): Promise<void> {
+    const backend = this.manager.attachedBackend.backend
+    if (!(backend instanceof DesktopRustCoreBackend)) return
+    // A host without a configured ledger has no retained evidence to recover.
+    // Bootstrap must not turn another live controller's authority into a
+    // renderer-start failure. The status path restores cold records and
+    // preserves contended lanes for the explicit public status query.
+    if (!backend.hasTerminalEvidenceRecovery()) return
+    const recovered = await backend.recoverTerminalEvidenceForRecipientWithStatus(
+      resources.ownerKey,
+      resources.terminalEvidenceRecoveryLeaseId
+    )
+    for (const record of recovered.records) this.bindTerminalEvidenceRecovery(resources, record)
+  }
+
+  /**
+   * Attaches a recovered row to exactly the controller that selected it. A
+   * process-wide entry is retained for durable bytes, but its renderer alias
+   * is never process-wide: a new controller revokes a stale controller's
+   * ability to read or acknowledge the same reference.
+   */
+  private bindTerminalEvidenceRecovery(
+    resources: RendererResources,
+    record: {
+      readonly producer: 'scan' | 'subscription'
+      readonly reservationId: string
+      readonly reference: string
+      readonly digest: string
+      readonly byteLength: number
+    }
+  ): void {
+    const existing = [...this.terminalEvidence.entries.values()].find(entry => entry.ref === record.reference)
+    if (existing !== undefined) {
+      if (existing.ownerKey !== resources.ownerKey)
+        throw contractError('ownership.denied', 'restoration', 'electron.terminal-evidence.recovery-owner')
+      existing.recoveryLeaseId = resources.terminalEvidenceRecoveryLeaseId
+      existing.recoverable = true
+      return
+    }
+    const source = this.terminalEvidenceSource(record.producer)
+    const reservation: TerminalEvidenceReservation = Object.freeze({
+      maximumBytes: record.byteLength,
+      commit: async () => {
+        throw contractError('lifecycle.invalid-state', 'restoration', 'electron.terminal-evidence.recovered-commit')
+      },
+      release: async () => undefined
+    })
+    this.terminalEvidence.entries.set(`terminal-evidence-recovery-${this.terminalEvidence.nextId++}`, {
+      ownerKey: resources.ownerKey,
+      recoveryLeaseId: resources.terminalEvidenceRecoveryLeaseId,
+      producer: record.producer,
+      scope: null,
+      source,
+      reservation,
+      ref: record.reference,
+      digest: record.digest,
+      byteLength: record.byteLength,
+      recoverable: true
+    })
+  }
+
+  /** Test and non-durable hosts still fence in-process recovery aliases by lease. */
+  private bindLocalTerminalEvidenceRecovery(resources: RendererResources): void {
+    for (const entry of this.terminalEvidence.entries.values()) {
+      if (entry.ownerKey === resources.ownerKey && entry.recoverable && entry.ref !== null)
+        entry.recoveryLeaseId = resources.terminalEvidenceRecoveryLeaseId
+    }
+  }
+
+  private terminalEvidenceOwner(
+    resources: RendererResources,
+    handle: string,
+    operation: string
+  ): ElectronTerminalEvidenceEntry {
+    const entry = this.terminalEvidence.entries.get(handle)
+    if (entry === undefined || entry.ownerKey !== resources.ownerKey)
+      throw contractError('ownership.denied', 'restoration', operation)
+    return entry
+  }
+
+  private terminalEvidenceRecoveryOwner(
+    resources: RendererResources,
+    handle: string,
+    operation: string
+  ): ElectronTerminalEvidenceEntry {
+    const entry = this.terminalEvidenceOwner(resources, handle, operation)
+    if (!entry.recoverable || entry.ref === null || entry.recoveryLeaseId !== resources.terminalEvidenceRecoveryLeaseId)
+      throw contractError('ownership.denied', 'restoration', operation)
+    return entry
+  }
+
   private allocateHandle(
-    kind: 'scan' | 'connection' | 'characteristic' | 'descriptor' | 'database' | 'subscription' | 'acquired-writer'
+    kind:
+      | 'scan'
+      | 'connection'
+      | 'characteristic'
+      | 'descriptor'
+      | 'database'
+      | 'subscription'
+      | 'acquired-writer'
+      | 'ordered-orphan'
   ): string {
     for (;;) {
       const handle = `${kind}-${this.nextHandle++}`
@@ -2388,6 +4080,8 @@ function coreCompatibilityOffer(core: HostNeutralBackendIdentity<string>['versio
 function rendererIdentity<Renderer extends string>(
   sender: TrustedIpcSender<string, Renderer>
 ): RendererIdentity<string, Renderer> {
+  if (typeof sender.authenticatedWindowScope !== 'string' || sender.authenticatedWindowScope.trim().length === 0)
+    throw contractError('ownership.denied', 'ipc', 'electron.ordered.window-scope')
   return Object.freeze({
     clientId: sender.authenticatedClientId,
     windowScope: sender.authenticatedWindowScope,
@@ -2408,6 +4102,7 @@ function isResourceAcquisitionCommand(command: string): boolean {
     'gatt.discover',
     'gatt.acquire-write',
     'gatt.acquire-notifications',
+    'gatt.ordered.open',
     'gatt.subscribe'
   ].includes(command)
 }
@@ -2422,6 +4117,7 @@ function createOperationAcquisitions(): OperationAcquisitions {
     connectionEventSubscriptions: new Set(),
     databases: new Set(),
     subscriptions: new Set(),
+    orderedGroups: new Set(),
     acquiredWriters: new Set()
   }
 }
@@ -2455,6 +4151,84 @@ function requiredString(payload: SerializableRecord, key: string): string {
     throw contractError('protocol.malformed', 'ipc', `electron-main-router.${key}`)
   }
   return value
+}
+
+function terminalEvidenceReservationRequest(payload: SerializableRecord): TerminalEvidenceReservationRequest {
+  const maximumBytes = payload.maximumBytes
+  if (
+    payload.version !== 1 ||
+    payload.formatVersion !== 1 ||
+    (payload.producer !== 'scan' && payload.producer !== 'subscription') ||
+    typeof maximumBytes !== 'number' ||
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    !isSerializableRecordValue(payload.scope)
+  ) {
+    throw contractError('argument.invalid', 'restoration', 'electron.terminal-evidence.reserve')
+  }
+  const scope = payload.scope
+  return Object.freeze({
+    producer: payload.producer,
+    maximumBytes,
+    formatVersion: 1,
+    scope: Object.freeze({
+      managerId: requiredString(scope, 'managerId'),
+      operationId: requiredString(scope, 'operationId'),
+      incarnation: requiredString(scope, 'incarnation')
+    })
+  })
+}
+
+function terminalEvidenceCommitRequest(
+  payload: SerializableRecord,
+  binaryPayload: OwnedBytes | null
+): { readonly reservationId: string; readonly digest: string; readonly canonicalBytes: Uint8Array } {
+  if (payload.version !== 1 || binaryPayload === null)
+    throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.commit')
+  const digest = requiredString(payload, 'digest')
+  if (!/^[0-9a-f]{64}$/.test(digest) || binaryPayload.byteLength === 0)
+    throw contractError('argument.invalid', 'restoration', 'electron.terminal-evidence.commit')
+  return Object.freeze({
+    reservationId: requiredString(payload, 'reservationId'),
+    digest,
+    canonicalBytes: new Uint8Array(binaryPayload)
+  })
+}
+
+function terminalEvidenceReference(payload: SerializableRecord, operation: string): string {
+  if (payload.version !== 1) throw contractError('protocol.malformed', 'ipc', operation)
+  return requiredString(payload, operation.endsWith('.release') ? 'reservationId' : 'ref')
+}
+
+function terminalEvidenceRecoveryList(payload: SerializableRecord, binaryPayload: OwnedBytes | null): void {
+  if (binaryPayload !== null || payload.version !== 1)
+    throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.recovery.list')
+}
+
+function terminalEvidenceRecoveryRead(
+  payload: SerializableRecord,
+  binaryPayload: OwnedBytes | null
+): { readonly handle: string; readonly maximumBytes: number } {
+  const maximumBytes = payload.maximumBytes
+  if (
+    binaryPayload !== null ||
+    payload.version !== 1 ||
+    typeof maximumBytes !== 'number' ||
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1
+  )
+    throw contractError('argument.invalid', 'restoration', 'electron.terminal-evidence.recovery.read')
+  return Object.freeze({ handle: requiredString(payload, 'handle'), maximumBytes })
+}
+
+function terminalEvidenceRecoveryAck(payload: SerializableRecord, binaryPayload: OwnedBytes | null): string {
+  if (binaryPayload !== null || payload.version !== 1)
+    throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.recovery.ack')
+  return requiredString(payload, 'handle')
+}
+
+function isSerializableRecordValue(value: SerializableRecord[string] | undefined): value is SerializableRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Uint8Array)
 }
 
 function requiredDeliveryMode(
@@ -2563,9 +4337,25 @@ function isDestructiveCleanupCommand(command: string): boolean {
     command === 'connection.disconnect' ||
     command === 'connection.events.unsubscribe' ||
     command === 'gatt.unsubscribe' ||
+    command === 'gatt.ordered.close' ||
+    command === 'gatt.ordered.forget' ||
+    command === 'gatt.ordered.retire' ||
+    command === 'gatt.ordered.orphan-ack' ||
+    command === 'gatt.ordered-recording.retire' ||
+    command === 'gatt.ordered-recording.reclaim.cancel' ||
+    command === 'gatt.ordered-recording.reclaim.release' ||
+    command === 'gatt.ordered-recording.reclaim.retire' ||
+    command === 'gatt.ordered-recording.reclaim.ack-retirement' ||
+    command === 'gatt.ordered-recording.reclaim.forget-retirement' ||
+    command === 'gatt.ordered-recording.reclaim.confirm-forgotten' ||
     command === 'gatt.acquired-write.close' ||
     command === 'gatt.database.release'
   )
+}
+
+/** Every ordered route requires the IPC-9 ordered failure-observation contract. */
+function isOrderedRouteCommand(command: string): boolean {
+  return command.startsWith('gatt.ordered.') || command.startsWith('gatt.ordered-recording.')
 }
 
 /**
@@ -2578,6 +4368,14 @@ function isDestructiveCleanupCommand(command: string): boolean {
 function reportsCompletedEffect(command: string): boolean {
   return (
     isDestructiveCleanupCommand(command) ||
+    command === 'gatt.ordered.open' ||
+    command === 'gatt.ordered-recording.reserve' ||
+    command === 'gatt.ordered-recording.start' ||
+    command.startsWith('gatt.ordered-recording.reclaim.') ||
+    command === 'gatt.ordered-recording.recovery' ||
+    command.startsWith('gatt.ordered.marker.') ||
+    command.startsWith('gatt.ordered-recording.marker.') ||
+    command === 'gatt.ordered.next' ||
     command === 'connection.request-priority' ||
     command === 'gatt.write' ||
     command === 'gatt.acquired-write' ||

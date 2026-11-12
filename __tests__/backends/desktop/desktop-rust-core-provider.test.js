@@ -21,6 +21,7 @@ const {
 } = require('../../../src/backends/desktop/desktop-rust-core-binding')
 const { DESKTOP_RUST_CORE_PARITY } = require('../../../src/backends/desktop/desktop-rust-core-parity')
 const { normalizeScanQuery } = require('../../../src/public/scan-query')
+const { createDesktopCoreBleManager } = require('../../../src/node-desktop-manager')
 
 test('WinRT scan planning includes the connectability reported by native observations', () => {
   expect(DESKTOP_RUST_CORE_PROFILES.winrt.observationFields).toContain('connectable')
@@ -36,6 +37,40 @@ test('the provider retains an unavailable runtime parameter descriptor and its n
     state: 'unavailable',
     limitations: [{ code: 'runtime-api-absent' }]
   })
+})
+
+test('V2 peer failure error wire preserves exact platform metadata and escaped bytes', () => {
+  const message = [
+    'platform.failure',
+    'platform',
+    'gatt.notification.source-failure',
+    'caller-decides',
+    '',
+    JSON.stringify({
+      domain: 'winrt',
+      code: '0x80004005',
+      message: 'native \u0000 evidence',
+      metadata: { hresult: '0x80004005', gattStatus: 'protocol-error' },
+      metadataEntries: [
+        { key: 'hresult', value: { kind: 'text', value: '0x80004005' } },
+        { key: 'gattStatus', value: { kind: 'text', value: 'protocol-error' } }
+      ]
+    }),
+    'producer \u0000 evidence'
+  ].join('|')
+  const decoded = parseDesktopRustCoreWireError(message)
+  expect(decoded).toMatchObject({
+    code: 'platform.failure',
+    domain: 'platform',
+    operation: 'gatt.notification.source-failure',
+    detail: 'producer \u0000 evidence',
+    platform: { domain: 'winrt', code: '0x80004005', message: 'native \u0000 evidence' }
+  })
+  expect(decoded.platform.metadata).toEqual({ hresult: '0x80004005', gattStatus: 'protocol-error' })
+  expect(decoded.platform.metadataEntries).toEqual([
+    { key: 'hresult', value: { kind: 'text', value: '0x80004005' } },
+    { key: 'gattStatus', value: { kind: 'text', value: 'protocol-error' } }
+  ])
 })
 const {
   HRM_MEASUREMENT,
@@ -54,8 +89,269 @@ const {
   scanOptions,
   subscribeOptions
 } = require('../../helpers/desktop-rust-core-harness')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const crypto = require('node:crypto')
 
 jest.setTimeout(30000)
+
+test('desktop scan reserves durable terminal evidence before native activation and binds its exact scope', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-evidence-'))
+  try {
+    const { backend, harness } = await openBackend('corebluetooth', {
+      terminalEvidenceStore: { directory, maxBytes: '4096' }
+    })
+    const scope = { managerId: 'desktop-manager', operationId: 'desktop-scan', incarnation: '1' }
+    const reservation = await backend.scanner.reserveTerminalEvidence({
+      producer: 'scan', maximumBytes: 4096, formatVersion: 1, scope
+    })
+    const lease = await backend.scanner.start(scanOptions({ terminalEvidenceScope: scope }))
+    const names = callNames(harness.calls)
+    expect(names.indexOf('reserveTerminalEvidence')).toBeGreaterThanOrEqual(0)
+    expect(names.indexOf('reserveTerminalEvidence')).toBeLessThan(names.indexOf('startScan'))
+    const reserve = harness.calls.find(([name]) => name === 'reserveTerminalEvidence')[1][0]
+    const start = harness.calls.find(([name]) => name === 'startScan')[1][0]
+    expect(reserve).toMatchObject({ producer: 'scan', maximumBytes: '4096', formatVersion: 1, scope })
+    expect(start.terminalEvidenceScope).toEqual(reserve.scope)
+    await lease.stop()
+    await reservation.release()
+    await backend.destroy()
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('desktop terminal evidence hydrates exact committed bytes and retires them only on explicit release', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-evidence-'))
+  try {
+    const { backend } = await openBackend('corebluetooth', {
+      terminalEvidenceStore: { directory, maxBytes: '4096' }
+    })
+    const bytes = new Uint8Array([1, 3, 3, 7])
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex')
+    const reservation = await backend.scanner.reserveTerminalEvidence({
+      producer: 'scan',
+      maximumBytes: bytes.byteLength,
+      formatVersion: 1,
+      scope: { managerId: 'desktop-manager', operationId: 'hydrate', incarnation: '1' }
+    })
+    const committed = await reservation.commit({ canonicalBytes: bytes, digest })
+    expect(committed).toMatchObject({ durability: 'committed', digest, byteLength: bytes.byteLength })
+    const hydrated = await backend.scanner.readTerminalEvidence(committed.ref, bytes.byteLength)
+    expect(hydrated).toEqual({ kind: 'committed', canonicalBytes: bytes, digest })
+    // A direct Node commit is durably staged for its trusted host before it
+    // becomes recoverable. Relinquish the source authority, then acquire the
+    // private recovery lease before acknowledging the durable bytes.
+    await reservation.release()
+    await backend.recoverTerminalEvidenceForHost('hydrate-recovery-lease')
+    await backend.scanner.releaseTerminalEvidence(committed.ref)
+    await expect(backend.scanner.readTerminalEvidence(committed.ref, bytes.byteLength)).resolves.toEqual({ kind: 'missing' })
+    await backend.destroy()
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('desktop direct Node commit stages to its trusted host owner for restart recovery and ACK', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-direct-restart-'))
+  try {
+    const scope = { managerId: 'direct-node-manager', operationId: 'direct-node-operation', incarnation: '1' }
+    const bytes = new Uint8Array([6, 2, 6])
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex')
+    const owner = 'direct-node-owner'
+    const first = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const reservation = await first.backend.scanner.reserveTerminalEvidence({ producer: 'scan', maximumBytes: bytes.byteLength, formatVersion: 1, scope })
+    const committed = await reservation.commit({ canonicalBytes: bytes, digest })
+    await reservation.release()
+    await first.backend.destroy()
+
+    const second = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const recovered = await second.backend.recoverTerminalEvidenceForRecipient(owner, 'direct-node-recovery-lease')
+    expect(recovered).toEqual([expect.objectContaining({ producer: 'scan', reference: committed.ref, digest, byteLength: bytes.byteLength })])
+    await second.backend.scanner.releaseTerminalEvidence(committed.ref)
+    await expect(second.backend.scanner.readTerminalEvidence(committed.ref, bytes.byteLength)).resolves.toEqual({ kind: 'missing' })
+    await second.backend.destroy()
+  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('desktop recovery leases fence concurrent controllers and release without retiring bytes', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-recovery-lease-'))
+  try {
+    const owner = 'recovery-lease-owner'
+    const scope = { managerId: 'recovery-lease-manager', operationId: 'recovery-lease-operation', incarnation: '1' }
+    const bytes = new Uint8Array([2, 7, 1, 8])
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex')
+    const opened = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const reservation = await opened.backend.scanner.reserveTerminalEvidence({
+      producer: 'scan', maximumBytes: bytes.byteLength, formatVersion: 1, scope
+    })
+    const committed = await reservation.commit({ canonicalBytes: bytes, digest })
+    await reservation.release()
+    await opened.backend.destroy()
+
+    const recovery = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    await expect(recovery.backend.recoverTerminalEvidenceForRecipient(owner, 'recovery-lease-a')).resolves.toHaveLength(1)
+    await expect(recovery.backend.recoverTerminalEvidenceForRecipient(owner, 'recovery-lease-b')).rejects.toThrow()
+    await recovery.backend.releaseTerminalEvidenceRecoveryLease('recovery-lease-a')
+    const recovered = await recovery.backend.recoverTerminalEvidenceForRecipient(owner, 'recovery-lease-b')
+    expect(recovered).toEqual([expect.objectContaining({ reference: committed.ref, digest, byteLength: bytes.byteLength })])
+    await recovery.backend.scanner.releaseTerminalEvidence(committed.ref)
+    await recovery.backend.destroy()
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('desktop recovery status returns cold evidence while explicitly naming a live producer lane', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-recovery-status-'))
+  try {
+    const owner = 'recovery-status-owner'
+    const source = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const make = async (operationId, value) => {
+      const bytes = new Uint8Array([value])
+      const reservation = await source.backend.scanner.reserveTerminalEvidence({
+        producer: 'scan', maximumBytes: bytes.byteLength, formatVersion: 1,
+        scope: { managerId: 'recovery-status-manager', operationId, incarnation: '1' }
+      })
+      await reservation.commit({ canonicalBytes: bytes, digest: crypto.createHash('sha256').update(bytes).digest('hex') })
+      return reservation
+    }
+    const live = await make('live', 1)
+    const cold = await make('cold', 2)
+    await cold.release()
+    const recovery = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const first = await recovery.backend.recoverTerminalEvidenceForHostWithStatus('recovery-status-lease')
+    expect(first.busyProducers).toEqual(['scan'])
+    expect(first.records).toHaveLength(1)
+    await live.release()
+    const refreshed = await recovery.backend.recoverTerminalEvidenceForHostWithStatus('recovery-status-lease')
+    expect(refreshed.busyProducers).toEqual([])
+    expect(refreshed.records).toHaveLength(2)
+    await recovery.backend.releaseTerminalEvidenceRecoveryLease('recovery-status-lease')
+    await recovery.backend.destroy()
+    await source.backend.destroy()
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('desktop recovery status rejects a malformed non-boolean native busy marker', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-recovery-status-wire-'))
+  try {
+    const owner = 'recovery-status-wire-owner'
+    const opened = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const native = opened.backend.central
+    const recover = native.recoverTerminalEvidenceWithStatus
+    native.recoverTerminalEvidenceWithStatus = async () => ({ entries: [], busy: 'no' })
+    await expect(opened.backend.recoverTerminalEvidenceForHostWithStatus('malformed-status-lease')).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'direct-gatt.terminal-evidence.recover-status' }
+    })
+    native.recoverTerminalEvidenceWithStatus = recover
+    await opened.backend.destroy()
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('public Node manager recovers, reads, and acknowledges source evidence after restart', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-node-public-terminal-recovery-'))
+  try {
+    const owner = 'node-public-recovery-owner'
+    const scope = { managerId: 'node-public-manager', operationId: 'node-public-operation', incarnation: '1' }
+    const bytes = new Uint8Array([4, 8, 15, 16, 23, 42])
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex')
+    const initial = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const reservation = await initial.backend.scanner.reserveTerminalEvidence({
+      producer: 'scan', maximumBytes: bytes.byteLength, formatVersion: 1, scope
+    })
+    await reservation.commit({ canonicalBytes: bytes, digest })
+    await reservation.release()
+    await initial.backend.destroy()
+
+    const first = await createDesktopCoreBleManager('corebluetooth', {
+      owner,
+      binding: realBinding('corebluetooth').binding,
+      terminalEvidenceStore: { directory, maxBytes: '4096' }
+    })
+    await expect(first.terminalEvidenceRecovery.listWithStatus()).resolves.toMatchObject({
+      busyProducers: [],
+      records: [expect.objectContaining({ producer: 'scan', byteLength: bytes.byteLength, digest })]
+    })
+    const [record] = await first.terminalEvidenceRecovery.list()
+    expect(record).toMatchObject({ producer: 'scan', byteLength: bytes.byteLength, digest, formatVersion: 1 })
+    await expect(first.terminalEvidenceRecovery.read(record.handle, bytes.byteLength)).resolves.toEqual({ canonicalBytes: bytes, digest })
+    const staleHandle = record.handle
+    await first.destroy()
+    await expect(first.terminalEvidenceRecovery.read(staleHandle, bytes.byteLength)).rejects.toThrow('lifecycle.destroyed')
+
+    const second = await createDesktopCoreBleManager('corebluetooth', {
+      owner,
+      binding: realBinding('corebluetooth').binding,
+      terminalEvidenceStore: { directory, maxBytes: '4096' }
+    })
+    await expect(second.terminalEvidenceRecovery.read(staleHandle, bytes.byteLength)).rejects.toThrow('ownership.denied')
+    const [recovered] = await second.terminalEvidenceRecovery.list()
+    await expect(second.terminalEvidenceRecovery.read(recovered.handle, bytes.byteLength)).resolves.toEqual({ canonicalBytes: bytes, digest })
+    await second.terminalEvidenceRecovery.acknowledge(recovered.handle)
+    await expect(second.terminalEvidenceRecovery.list()).resolves.toEqual([])
+    await expect(second.terminalEvidenceRecovery.read(recovered.handle, bytes.byteLength)).rejects.toThrow('ownership.denied')
+    await second.destroy()
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('desktop provider promotes trusted staged terminal evidence after native restart', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-restart-'))
+  try {
+    const first = await openBackend('corebluetooth', { terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const bytes = new Uint8Array([9, 8, 7])
+    const scope = { managerId: 'restart-manager', operationId: 'restart-operation', incarnation: '1' }
+    const reservation = await first.backend.scanner.reserveTerminalEvidence({ producer: 'scan', maximumBytes: bytes.byteLength, formatVersion: 1, scope })
+    await first.backend.stageTerminalEvidenceForRecovery('scan', scope, 'trusted-recipient', bytes)
+    await reservation.release()
+    await first.backend.destroy()
+    const second = await openBackend('corebluetooth', { terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const recovered = await second.backend.recoverTerminalEvidenceForRecipient('trusted-recipient', 'trusted-recovery-lease')
+    expect(recovered).toHaveLength(1)
+    expect(recovered[0]).toMatchObject({ producer: 'scan', byteLength: bytes.byteLength })
+    await second.backend.scanner.releaseTerminalEvidence(recovered[0].reference)
+    await second.backend.destroy()
+  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('a later recovered commit failure releases the private lease so every durable row can retry', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-recovery-retry-'))
+  try {
+    const owner = 'recovery-retry-owner'
+    const recipient = 'recovery-retry-recipient'
+    const first = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    for (const [operationId, value] of [['first', 1], ['second', 2]]) {
+      const bytes = new Uint8Array([value])
+      const scope = { managerId: 'recovery-retry-manager', operationId, incarnation: '1' }
+      const reservation = await first.backend.scanner.reserveTerminalEvidence({ producer: 'scan', maximumBytes: bytes.byteLength, formatVersion: 1, scope })
+      await first.backend.stageTerminalEvidenceForRecovery('scan', scope, recipient, bytes)
+      await reservation.release()
+    }
+    await first.backend.destroy()
+
+    const second = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const native = second.backend.central
+    const commit = native.commitRecoveredTerminalEvidence
+    let commits = 0
+    native.commitRecoveredTerminalEvidence = async options => {
+      commits += 1
+      if (commits === 2) throw new Error('second recovered commit failed')
+      return commit(options)
+    }
+    await expect(second.backend.recoverTerminalEvidenceForRecipient(recipient, 'failed-recovery-lease')).rejects.toThrow('second recovered commit failed')
+    native.commitRecoveredTerminalEvidence = commit
+    await expect(second.backend.recoverTerminalEvidenceForRecipient(recipient, 'retry-recovery-lease')).resolves.toHaveLength(2)
+    await second.backend.releaseTerminalEvidenceRecoveryLease('retry-recovery-lease')
+    await second.backend.destroy()
+  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+})
 
 const PLATFORMS = ['bluez', 'corebluetooth', 'winrt']
 /** The legacy 4.x backend and provider ids the Rust path keeps (LEGACY-AUDIT-1 #67). */
@@ -159,10 +455,81 @@ describe('profiles and the pre-load platform guard (PR210-02, PR210-29)', () => 
 })
 
 describe('native notification receipt boundary', () => {
+  test('V2 retained source failures expose their exact error and retry through the trusted recovery controller', async () => {
+    await withBackend('corebluetooth', async ({ backend, stage }) => {
+      const { lease, database, measurement } = await connectAndDiscover(backend, stage)
+      const nativePoll = stage.pollNotificationV2.bind(stage)
+      const retry = jest.fn(async () => 0)
+      Object.defineProperty(stage, 'retryPeerFailureRecoveryStaging', { configurable: true, value: retry })
+      let offered = false
+      const recovery = {
+        protocol: 1,
+        representation: 'ubm-peer-source-failure/1',
+        host: 'synthetic-host',
+        peer: 'peer-1',
+        sourceGenerationIdentity: 'source-generation-1',
+        nativeGroup: 'native-group-1',
+        transfer: 'transfer-1',
+        recovery: 'recovery-1',
+        encodedLength: '3',
+        chunkBytes: 3,
+        recipientLease: 'lease-1'
+      }
+      const recoveryError = [
+        'platform.failure',
+        'platform',
+        'gatt.notification.source-failure',
+        'caller-decides',
+        '',
+        JSON.stringify({
+          domain: 'winrt',
+          code: '0x80004005',
+          message: 'native \u0000 evidence',
+          metadata: { hresult: '0x80004005', gattStatus: 'protocol-error' },
+          metadataEntries: [
+            { key: 'hresult', value: { kind: 'text', value: '0x80004005' } },
+            { key: 'gattStatus', value: { kind: 'text', value: 'protocol-error' } }
+          ]
+        }),
+        'producer \u0000 evidence'
+      ].join('|')
+      const spy = jest.spyOn(stage, 'pollNotificationV2').mockImplementation(async options => {
+        const result = await nativePoll(options)
+        if (!offered && result.kind === 'empty') {
+          offered = true
+          return { kind: 'source-failure-recovery', recovery, recoveryError }
+        }
+        return result
+      })
+      try {
+        const subscription = await database.subscribe(measurement.path, subscribeOptions())
+        const recovered = await backend.peerNotificationFailureRecovery(subscription).next()
+        expect(recovered.descriptor).toEqual(recovery)
+        expect(recovered.error).toMatchObject({
+          detail: 'producer \u0000 evidence',
+          platform: {
+            message: 'native \u0000 evidence',
+            metadata: { hresult: '0x80004005', gattStatus: 'protocol-error' },
+            metadataEntries: [
+              { key: 'hresult', value: { kind: 'text', value: '0x80004005' } },
+              { key: 'gattStatus', value: { kind: 'text', value: 'protocol-error' } }
+            ]
+          }
+        })
+        expect(retry).toHaveBeenCalledTimes(1)
+        await subscription.remove()
+        await lease.release()
+      } finally {
+        spy.mockRestore()
+        delete stage.retryPeerFailureRecoveryStaging
+      }
+    })
+  })
+
   test.each([true, false])('preserves valid receipt metadata and rejects invalid metadata (valid=%s)', async valid => {
     await withBackend('corebluetooth', async ({ backend, stage }) => {
       const { lease, database, measurement } = await connectAndDiscover(backend, stage)
-      const nativePoll = stage.pollNotification.bind(stage)
+      const nativePoll = stage.pollNotificationV2.bind(stage)
       const receipt = {
         receivedAtUtcMs: -0.5,
         receivedAtMonotonicMs: valid ? 42.25 : -1,
@@ -171,9 +538,9 @@ describe('native notification receipt boundary', () => {
       }
       // Inject only optional ingress evidence at the external binding boundary;
       // connection, subscription, queueing and cleanup still use the real core.
-      const spy = jest.spyOn(stage, 'pollNotification').mockImplementation(async options => {
+      const spy = jest.spyOn(stage, 'pollNotificationV2').mockImplementation(async options => {
         const result = await nativePoll(options)
-        return result.kind === 'value' ? { ...result, receipt } : result
+        return result.kind === 'value' ? { ...result, receipt, provenance: 'read-or-notification', sourceGeneration: '18446744073709551615', sourceOrdinal: '9007199254740993' } : result
       })
       try {
         const subscription = await database.subscribe(measurement.path, subscribeOptions())
@@ -188,7 +555,7 @@ describe('native notification receipt boundary', () => {
         })
         const item = await nextItem(values, 5000)
         if (valid) {
-          expect(item).toMatchObject({ kind: 'value', value: { receipt } })
+          expect(item).toMatchObject({ kind: 'value', value: { receipt, provenance: 'read-or-notification', sourceGeneration: '18446744073709551615', sourceOrdinal: '9007199254740993' } })
           expect(Object.isFrozen(item.value.receipt)).toBe(true)
         } else expect(item).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
         await subscription.remove()
@@ -361,7 +728,7 @@ describe('real addon, synthetic radio: every verb executes Rust', () => {
         }
         expect(counters.notificationValues).toBeGreaterThan(0)
         expect(callNames(harness.calls)).toEqual(
-          expect.arrayContaining(['pollNotification', 'createTicket', 'releaseTicket'])
+          expect.arrayContaining(['pollNotificationV2', 'createTicket', 'releaseTicket'])
         )
       })
     }
@@ -836,6 +1203,83 @@ describe('adapter enumeration and selection (parity row adapter.enumerate-select
     await expect(provider.create({ selectedAdapterId: adapters[2].adapterId })).rejects.toMatchObject({
       normalized: { code: 'adapter.unavailable' }
     })
+  })
+})
+
+describe('trusted WinRT native failure evidence storage', () => {
+  test('forwards the exact trusted store before production radio open', async () => {
+    const productionRequests = []
+    const listingCentral = {
+      runtimeCapabilityStates: async () => [],
+      adapterState: async () => 'powered-on',
+      adapterAuthorization: async () => 'allowed',
+      setEventWaker: () => {},
+      takeLifecycleEvent: async () => null,
+      takeSecurityEvent: async () => null,
+      takeWriteReadinessEvent: async () => null,
+      takeScanTerminalEvent: async () => null,
+      takeAdapterResetEvent: async () => null,
+      takeAdapterEvent: async () => null,
+      close: async () => ({ state: 'released', failures: [] })
+    }
+    const provider = createTestDesktopRustCoreBackendProvider({
+      platform: 'winrt',
+      owner: 'failure-evidence',
+      now: () => performance.now(),
+      radio: 'production',
+      binding: {
+        listAdapters: async () => [
+          { index: 0, label: 'trusted-winrt-adapter', error: null, displayName: null, default: true }
+        ],
+        openProduction: async options => {
+          productionRequests.push(options)
+          if (productionRequests.length === 1) return listingCentral
+          throw new Error('stop after validating production constructor options')
+        }
+      },
+      hostPlatform: 'win32',
+      failureEvidenceStore: { directory: '/trusted/winrt-evidence', maxBytes: '1048576' }
+    })
+    const [adapter] = await provider.listAdapters()
+    await expect(provider.create({ selectedAdapterId: adapter.adapterId })).rejects.toMatchObject({
+      normalized: { operation: 'winrt.native-boundary.create' }
+    })
+    expect(productionRequests.at(-1)).toMatchObject({
+        platform: 'winrt',
+        failureEvidenceDirectory: '/trusted/winrt-evidence',
+        failureEvidenceMaxBytes: '1048576'
+      })
+  })
+
+  test.each([
+    ['corebluetooth', 'darwin'],
+    ['bluez', 'linux']
+  ])('forwards trusted native evidence storage to %s before radio open', async (platform, hostPlatform) => {
+    const productionRequests = []
+    const provider = createTestDesktopRustCoreBackendProvider({
+      platform,
+      owner: `evidence-store-${platform}`,
+      now: () => performance.now(),
+      radio: 'production',
+      binding: {
+        listAdapters: async () => [{ index: 0, label: `trusted-${platform}-adapter`, error: null, default: true }],
+        openProduction: async options => {
+          productionRequests.push(options)
+          throw new Error('stop after validating production constructor options')
+        }
+      },
+      hostPlatform,
+      failureEvidenceStore: { directory: `/trusted/${platform}-evidence`, maxBytes: '1048576' }
+    })
+    const [adapter] = await provider.listAdapters()
+    await expect(provider.create({ selectedAdapterId: adapter.adapterId })).rejects.toBeDefined()
+    expect(productionRequests).toContainEqual(
+      expect.objectContaining({
+        platform,
+        failureEvidenceDirectory: `/trusted/${platform}-evidence`,
+        failureEvidenceMaxBytes: '1048576'
+      })
+    )
   })
 })
 
@@ -1915,6 +2359,7 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
   test.each([
     ['corebluetooth', {}, { read: 'unknown', write: 'unknown' }],
     ['winrt', {}, { read: 'unknown', write: 'unknown' }],
+    ['bluez', {}, { read: 'unknown', write: 'unknown' }],
     [
       'bluez',
       {
@@ -1930,6 +2375,16 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
       false
     ],
     ['bluez', { secureRead: false, encryptRead: false, authorize: false }, { read: 'unknown', write: 'unknown' }],
+    [
+      'bluez',
+      { secureRead: false, encryptRead: false, encryptAuthenticatedRead: false, authorize: false },
+      { read: 'none', write: 'unknown' }
+    ],
+    [
+      'bluez',
+      { secureWrite: false, encryptWrite: false, encryptAuthenticatedWrite: false, authorize: false },
+      { read: 'unknown', write: 'none' }
+    ],
     [
       'bluez',
       {

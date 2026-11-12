@@ -65,7 +65,11 @@ pub(crate) fn cleanup_result(
             }
         }
     }
-    Err(failures.remove(0).with_platform(platform))
+    // Keep each independent failure intact. The prefixed map above remains a
+    // compatibility view, but cannot represent repeated native metadata keys.
+    let first = failures[0].clone();
+    platform.cleanup_failures = failures;
+    Err(first.with_platform(platform))
 }
 
 /// One typed platform metadata value (finding 113).
@@ -74,6 +78,13 @@ pub enum PlatformValue {
     Int(i64),
     Text(String),
     Bool(bool),
+}
+
+/// One entry in the order supplied by a platform metadata producer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformMetadataEntry {
+    pub key: String,
+    pub value: PlatformValue,
 }
 
 /// The platform's own answer behind an error, as typed fields rather than
@@ -91,6 +102,14 @@ pub struct PlatformDetail {
     pub code: String,
     pub message: Option<String>,
     pub metadata: BTreeMap<String, PlatformValue>,
+    /// The producer's exact sequence, when one was supplied. An empty
+    /// sequence is distinct from the absence of an ordered source.
+    pub metadata_entries: Option<Vec<PlatformMetadataEntry>>,
+    /// Independent cleanup details in occurrence order, never part of the
+    /// primary sequence. Each detail can have its own cleanup details.
+    pub cleanup: Vec<PlatformDetail>,
+    /// Independent errors combined by a multi-failure cleanup result.
+    pub cleanup_failures: Vec<DesktopError>,
 }
 
 impl PlatformDetail {
@@ -102,6 +121,9 @@ impl PlatformDetail {
             code: code.into(),
             message: None,
             metadata: BTreeMap::new(),
+            metadata_entries: None,
+            cleanup: Vec::new(),
+            cleanup_failures: Vec::new(),
         }
     }
 
@@ -112,7 +134,7 @@ impl PlatformDetail {
         self
     }
 
-    /// This detail with one metadata entry.
+    /// Add to the compatibility map without claiming a producer sequence.
     #[must_use]
     pub fn with_metadata(mut self, key: impl Into<String>, value: PlatformValue) -> Self {
         self.metadata.insert(key.into(), value);
@@ -322,6 +344,153 @@ pub struct DesktopError {
     platform: Option<Box<PlatformDetail>>,
     commit: Option<CommitState>,
     retryability: Retryability,
+}
+
+/// The original, owned fields of a desktop error, without a wire projection.
+/// Ordered metadata and nested cleanup failures remain in the platform detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopErrorEvidence {
+    pub code: BleErrorCode,
+    pub domain: BleErrorDomain,
+    pub operation: String,
+    pub detail: Option<String>,
+    pub platform: Option<Box<PlatformDetail>>,
+    pub commit: Option<CommitState>,
+    pub retryability: Retryability,
+}
+
+impl From<DesktopError> for DesktopErrorEvidence {
+    fn from(error: DesktopError) -> Self {
+        let DesktopError {
+            code,
+            domain,
+            operation,
+            detail,
+            platform,
+            commit,
+            retryability,
+        } = error;
+        Self {
+            code,
+            domain,
+            operation,
+            detail,
+            platform,
+            commit,
+            retryability,
+        }
+    }
+}
+
+impl From<DesktopErrorEvidence> for DesktopError {
+    fn from(evidence: DesktopErrorEvidence) -> Self {
+        let DesktopErrorEvidence {
+            code,
+            domain,
+            operation,
+            detail,
+            platform,
+            commit,
+            retryability,
+        } = evidence;
+        Self {
+            code,
+            domain,
+            operation,
+            detail,
+            platform,
+            commit,
+            retryability,
+        }
+    }
+}
+
+impl DesktopErrorEvidence {
+    /// Consume the original fields into flat typed prefix tokens. Error values
+    /// are seven-element arrays: code, domain, operation, detail, platform,
+    /// commit and retryability. Platform values are seven-element arrays:
+    /// domain, code, message, map entries, ordered entries, cleanup details
+    /// and cleanup failures. Each metadata entry is a two-element array.
+    /// Optional values use null; a present empty sequence remains an array.
+    /// Nested cleanup causes are traversed iteratively.
+    #[must_use]
+    pub fn into_tokens(self) -> Vec<ubm_core::oversized_evidence::EvidenceToken> {
+        use ubm_core::oversized_evidence::EvidenceToken as T;
+        enum Work {
+            Token(T),
+            Error(DesktopErrorEvidence),
+            Platform(PlatformDetail),
+            Value(PlatformValue),
+            Entry(String, PlatformValue),
+        }
+        fn optional_text(value: Option<String>) -> T {
+            value.map_or(T::Null, T::Text)
+        }
+        let mut work = vec![Work::Error(self)];
+        let mut tokens = Vec::new();
+        while let Some(item) = work.pop() {
+            match item {
+                Work::Token(token) => tokens.push(token),
+                Work::Error(error) => {
+                    tokens.push(T::Array(7));
+                    work.push(Work::Token(T::Text(error.retryability.as_str().into())));
+                    work.push(Work::Token(
+                        error.commit.map_or(T::Null, |v| T::Text(v.as_str().into())),
+                    ));
+                    work.push(
+                        error
+                            .platform
+                            .map_or(Work::Token(T::Null), |v| Work::Platform(*v)),
+                    );
+                    work.push(Work::Token(optional_text(error.detail)));
+                    work.push(Work::Token(T::Text(error.operation)));
+                    work.push(Work::Token(T::Text(error.domain.as_str().into())));
+                    work.push(Work::Token(T::Text(error.code.as_str().into())));
+                }
+                Work::Platform(platform) => {
+                    tokens.push(T::Array(7));
+                    let failure_count = platform.cleanup_failures.len() as u64;
+                    for error in platform.cleanup_failures.into_iter().rev() {
+                        work.push(Work::Error(error.into()));
+                    }
+                    work.push(Work::Token(T::Array(failure_count)));
+                    let cleanup_count = platform.cleanup.len() as u64;
+                    for detail in platform.cleanup.into_iter().rev() {
+                        work.push(Work::Platform(detail));
+                    }
+                    work.push(Work::Token(T::Array(cleanup_count)));
+                    if let Some(entries) = platform.metadata_entries {
+                        let count = entries.len() as u64;
+                        for entry in entries.into_iter().rev() {
+                            work.push(Work::Entry(entry.key, entry.value));
+                        }
+                        work.push(Work::Token(T::Array(count)));
+                    } else {
+                        work.push(Work::Token(T::Null));
+                    }
+                    let map_count = platform.metadata.len() as u64;
+                    for (key, value) in platform.metadata.into_iter().rev() {
+                        work.push(Work::Entry(key, value));
+                    }
+                    work.push(Work::Token(T::Array(map_count)));
+                    work.push(Work::Token(optional_text(platform.message)));
+                    work.push(Work::Token(T::Text(platform.code)));
+                    work.push(Work::Token(T::Text(platform.domain)));
+                }
+                Work::Value(value) => tokens.push(match value {
+                    PlatformValue::Int(value) => T::I64(value),
+                    PlatformValue::Text(value) => T::Text(value),
+                    PlatformValue::Bool(value) => T::Bool(value),
+                }),
+                Work::Entry(key, value) => {
+                    tokens.push(T::Array(2));
+                    work.push(Work::Value(value));
+                    work.push(Work::Token(T::Text(key)));
+                }
+            }
+        }
+        tokens
+    }
 }
 
 impl DesktopError {
@@ -674,6 +843,341 @@ impl std::error::Error for DesktopError {}
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn owned_scan_error_reconstructs_from_outbox_after_capacity_retry() {
+        use super::{
+            DesktopError, DesktopErrorEvidence, PlatformDetail, PlatformMetadataEntry,
+            PlatformValue,
+        };
+        use crate::continuation_outbox::{
+            Outbox, SCAN_FAILURE_SOURCE_BYTES, ScanFailureOutboxError, WakeSink,
+        };
+        use std::sync::Arc;
+        use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
+        use ubm_core::oversized_evidence::{
+            EvidenceLimits, EvidenceSource, EvidenceToken, ScanFailureIdentity, ScanFailureLimits,
+            ScanFailureMember, ScanFailureOccurrence,
+        };
+
+        struct NoWake;
+        impl WakeSink for NoWake {
+            fn wake(&self, _: u64) {}
+        }
+
+        // Decode the actual streamed evidence representation, not a clone of
+        // the original error or a direct inspection of the producer's tokens.
+        fn value(input: &mut &[u8]) -> serde_json::Value {
+            fn read_u64(input: &mut &[u8]) -> u64 {
+                let (head, tail) = input.split_at(8);
+                *input = tail;
+                u64::from_be_bytes(head.try_into().unwrap())
+            }
+            let (tag, tail) = input.split_first().unwrap();
+            *input = tail;
+            match tag {
+                0 => serde_json::Value::Null,
+                1 => false.into(),
+                2 => true.into(),
+                3 => (read_u64(input) as i64).into(),
+                4 => read_u64(input).into(),
+                6 => {
+                    let len = usize::try_from(read_u64(input)).unwrap();
+                    let (text, tail) = input.split_at(len);
+                    *input = tail;
+                    std::str::from_utf8(text).unwrap().into()
+                }
+                9 => (0..read_u64(input)).map(|_| value(input)).collect(),
+                _ => panic!("unexpected evidence tag {tag}"),
+            }
+        }
+
+        let mut platform = PlatformDetail::new("native", "scan");
+        platform.metadata_entries = Some(vec![
+            PlatformMetadataEntry {
+                key: "duplicate".into(),
+                value: PlatformValue::Text("first".into()),
+            },
+            PlatformMetadataEntry {
+                key: "duplicate".into(),
+                value: PlatformValue::Text("second".into()),
+            },
+        ]);
+        platform.cleanup_failures.push(
+            DesktopError::new(BleErrorCode::BackendReset, BleErrorDomain::Core, "cleanup")
+                .with_detail("nested"),
+        );
+        let error = DesktopError::new(
+            BleErrorCode::ScanStartFailed,
+            BleErrorDomain::Scan,
+            "scan.start",
+        )
+        .with_detail("source failure")
+        .with_platform(platform);
+        let mut tokens = vec![EvidenceToken::Array(3)];
+        tokens.extend(DesktopErrorEvidence::from(error).into_tokens());
+        tokens.extend([EvidenceToken::Text("radio".into()), EvidenceToken::U64(17)]);
+        let member = ScanFailureMember {
+            recipient: [1; 16],
+            delivery: [2; 16],
+        };
+        let identity = ScanFailureIdentity {
+            host: [3; 16],
+            scan: [4; 16],
+            start: [5; 16],
+            source_generation: [6; 16],
+            occurrence: [7; 16],
+        };
+        let mut source = Some(ScanFailureOccurrence::new(
+            identity,
+            vec![member],
+            Arc::new(EvidenceSource::new(tokens)),
+        ));
+        let capacity = source
+            .as_ref()
+            .unwrap()
+            .retained_source_capacity(SCAN_FAILURE_SOURCE_BYTES)
+            .unwrap();
+        let limits = ScanFailureLimits {
+            evidence: EvidenceLimits {
+                max_depth: 32,
+                max_tokens: 256,
+                max_encoded_bytes: 16_384,
+                max_chunks: 256,
+                chunk_bytes: 64,
+            },
+            max_recipients: 1,
+            max_bookkeeping_bytes: 8192,
+        };
+        let outbox = Outbox::new(1, Arc::new(NoWake));
+        let mut too_small = outbox
+            .reserve_scan_failure_with_source_capacity(limits, 1)
+            .unwrap();
+        assert_eq!(
+            outbox.commit_scan_failure(&mut too_small, &mut source),
+            Err(ScanFailureOutboxError::Capacity)
+        );
+        assert!(
+            source.is_some(),
+            "refusal retains the exact occurrence for retry"
+        );
+        drop(too_small);
+        let mut reservation = outbox
+            .reserve_scan_failure_with_source_capacity(limits, capacity)
+            .unwrap();
+        outbox.push_control(serde_json::json!({"t":"prefix"}));
+        outbox
+            .commit_scan_failure(&mut reservation, &mut source)
+            .unwrap();
+        assert!(source.is_none());
+        outbox.push_control(serde_json::json!({"t":"suffix"}));
+        assert!(outbox.scan_failure_head(member).unwrap().is_none());
+        let prefix = outbox.claim_drain(10, 4096).unwrap().unwrap();
+        assert_eq!(prefix.records.len(), 1);
+        assert_eq!(prefix.records[0]["t"], "prefix");
+        assert!(outbox.acknowledge_drain(prefix.id));
+        let head = outbox.scan_failure_head(member).unwrap().unwrap();
+        let other = ScanFailureMember {
+            recipient: [9; 16],
+            delivery: [2; 16],
+        };
+        assert!(outbox.scan_failure_head(other).is_err());
+        let mut bytes = Vec::new();
+        let mut offset = 0;
+        while offset < head.evidence.encoded_length {
+            let chunk = outbox.read_scan_failure(&head, offset).unwrap();
+            bytes.extend_from_slice(&chunk.bytes);
+            offset = chunk.next_offset;
+        }
+        let mut input = bytes.as_slice();
+        let reconstructed = value(&mut input);
+        assert!(input.is_empty());
+        assert_eq!(
+            reconstructed[0][4][4],
+            serde_json::json!([["duplicate", "first"], ["duplicate", "second"]])
+        );
+        assert_eq!(reconstructed[0][4][6][0][2], "cleanup");
+        assert_eq!(reconstructed[0][4][6][0][3], "nested");
+        assert_eq!(reconstructed[1], "radio");
+        assert_eq!(reconstructed[2], 17);
+        assert!(
+            outbox.claim_drain(10, 4096).is_err(),
+            "the suffix stays behind the failure"
+        );
+        outbox.acknowledge_scan_failure(&head).unwrap();
+        outbox.retire_scan_failure(&head).unwrap();
+        outbox
+            .finish_scan_failure_producer(&mut reservation)
+            .unwrap();
+        outbox.release_scan_failure_receipt(&head).unwrap();
+        let confirmation = outbox.confirm_scan_failure_receipt_release(&head).unwrap();
+        outbox.finalize_scan_failure_release(&confirmation).unwrap();
+        let suffix = outbox.claim_drain(10, 4096).unwrap().unwrap();
+        assert_eq!(suffix.records.len(), 1);
+        assert_eq!(suffix.records[0]["t"], "suffix");
+    }
+
+    #[test]
+    fn owned_error_evidence_moves_every_field_and_round_trips_duplicate_metadata() {
+        use super::{
+            DesktopError, DesktopErrorEvidence, PlatformDetail, PlatformMetadataEntry,
+            PlatformValue, Retryability,
+        };
+        use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState};
+
+        let mut platform = PlatformDetail::new("native", "failure").with_message("original");
+        platform
+            .metadata
+            .insert("map".into(), PlatformValue::Int(i64::MIN));
+        platform
+            .metadata
+            .insert("flag".into(), PlatformValue::Bool(true));
+        platform.metadata_entries = Some(vec![
+            PlatformMetadataEntry {
+                key: "duplicate".into(),
+                value: PlatformValue::Text("first".into()),
+            },
+            PlatformMetadataEntry {
+                key: "duplicate".into(),
+                value: PlatformValue::Text("second".into()),
+            },
+        ]);
+        platform
+            .cleanup
+            .push(PlatformDetail::new("native", "cleanup"));
+        platform.cleanup_failures.push(
+            DesktopError::new(BleErrorCode::BackendReset, BleErrorDomain::Core, "cleanup")
+                .with_detail("nested"),
+        );
+        let error = DesktopError::new(
+            BleErrorCode::ScanStartFailed,
+            BleErrorDomain::Scan,
+            "scan.start",
+        )
+        .with_detail("original failure")
+        .with_platform(platform)
+        .with_outcome(Some(CommitState::Unknown), Retryability::CallerDecides);
+        let original = error.clone();
+        let detail_ptr = error.detail().unwrap().as_ptr();
+        let evidence = DesktopErrorEvidence::from(error);
+        assert_eq!(
+            evidence.detail.as_ref().unwrap().as_ptr(),
+            detail_ptr,
+            "the original allocation is moved"
+        );
+        let entries = evidence
+            .platform
+            .as_ref()
+            .unwrap()
+            .metadata_entries
+            .as_ref()
+            .unwrap();
+        assert_eq!(entries[0].key, entries[1].key);
+        assert_eq!(entries[0].value, PlatformValue::Text("first".into()));
+        assert_eq!(entries[1].value, PlatformValue::Text("second".into()));
+        fn value(
+            tokens: &mut impl Iterator<Item = ubm_core::oversized_evidence::EvidenceToken>,
+        ) -> serde_json::Value {
+            use ubm_core::oversized_evidence::EvidenceToken as T;
+            match tokens.next().expect("complete token tree") {
+                T::Null => serde_json::Value::Null,
+                T::Bool(v) => v.into(),
+                T::I64(v) => v.into(),
+                T::Text(v) => v.into(),
+                T::Array(n) => (0..n).map(|_| value(tokens)).collect(),
+                other => panic!("unexpected token {other:?}"),
+            }
+        }
+        assert_eq!(DesktopError::from(evidence.clone()), original);
+        let encoded = evidence.into_tokens();
+        assert!(
+            matches!(&encoded[4], ubm_core::oversized_evidence::EvidenceToken::Text(detail) if detail.as_ptr() == detail_ptr)
+        );
+        let mut tokens = encoded.into_iter();
+        let reconstructed = value(&mut tokens);
+        assert!(tokens.next().is_none());
+        assert_eq!(
+            reconstructed,
+            serde_json::json!([
+                original.code().as_str(),
+                original.domain().as_str(),
+                "scan.start",
+                "original failure",
+                [
+                    "native",
+                    "failure",
+                    "original",
+                    [["flag", true], ["map", i64::MIN]],
+                    [["duplicate", "first"], ["duplicate", "second"]],
+                    [["native", "cleanup", null, [], null, [], []]],
+                    [[
+                        BleErrorCode::BackendReset.as_str(),
+                        BleErrorDomain::Core.as_str(),
+                        "cleanup",
+                        "nested",
+                        null,
+                        null,
+                        "never"
+                    ]]
+                ],
+                "unknown",
+                "caller-decides"
+            ])
+        );
+        let mut empty_sequence = PlatformDetail::new("native", "empty");
+        empty_sequence.metadata_entries = Some(Vec::new());
+        let mut empty_tokens = DesktopErrorEvidence::from(
+            DesktopError::new(
+                BleErrorCode::BackendReset,
+                BleErrorDomain::Core,
+                "operation",
+            )
+            .with_platform(empty_sequence),
+        )
+        .into_tokens()
+        .into_iter();
+        let empty_reconstruction = value(&mut empty_tokens);
+        assert_eq!(empty_reconstruction[4][4], serde_json::json!([]));
+        assert_eq!(reconstructed[4][5][0][4], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn aggregate_cleanup_retains_typed_sequences_as_distinct_causes() {
+        use super::{
+            DesktopError, PlatformDetail, PlatformMetadataEntry, PlatformValue, cleanup_result,
+        };
+        let mut first = PlatformDetail::new("native", "first");
+        first.metadata_entries = Some(vec![
+            PlatformMetadataEntry {
+                key: "number".into(),
+                value: PlatformValue::Int(i64::MIN),
+            },
+            PlatformMetadataEntry {
+                key: "number".into(),
+                value: PlatformValue::Int(i64::MAX),
+            },
+            PlatformMetadataEntry {
+                key: "flag".into(),
+                value: PlatformValue::Bool(true),
+            },
+            PlatformMetadataEntry {
+                key: "text".into(),
+                value: PlatformValue::Text("9223372036854775807".into()),
+            },
+        ]);
+        let mut second = PlatformDetail::new("native", "second");
+        second.metadata_entries = Some(vec![]);
+        let failures = vec![
+            DesktopError::read_failed("one").with_platform(first.clone()),
+            DesktopError::read_failed("two").with_platform(second.clone()),
+        ];
+        let aggregate = cleanup_result("native", failures.clone()).unwrap_err();
+        let platform = aggregate.platform().unwrap();
+        assert!(platform.metadata_entries.is_none());
+        assert_eq!(platform.cleanup_failures, failures);
+        assert_eq!(platform.cleanup_failures[0].platform(), Some(&first));
+        assert_eq!(platform.cleanup_failures[1].platform(), Some(&second));
+    }
 
     /// Finding 113: the platform's structured answer rides the error
     /// through outcome classification unchanged and never alters the

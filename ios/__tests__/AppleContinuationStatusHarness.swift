@@ -325,6 +325,18 @@ enum AppleContinuationStatusHarness {
     check(claim["code"] as? String == "lifecycle.invalid-state", "claim code: \(claim)")
     check(claim["operation"] as? String == "continuation.claim", "claim operation: \(claim)")
 
+    var retainedFailure: String?
+    sessions.prepareRetainedContinuationClaimV1(maxItems: 0, maxBytes: 1) { _, failure in retainedFailure = failure }
+    check(json(retainedFailure ?? "{}") ["code"] as? String == "argument.invalid", "v1 bounds rejected")
+    sessions.prepareRetainedContinuationClaimV1(maxItems: 1, maxBytes: 1) { _, failure in retainedFailure = failure }
+    check(json(retainedFailure ?? "{}") ["code"] as? String == "lifecycle.invalid-state", "v1 cold claim does not install radio")
+    sessions.acknowledgeRetainedContinuationClaimV1("") { _, failure in retainedFailure = failure }
+    check(json(retainedFailure ?? "{}") ["code"] as? String == "argument.invalid", "v1 empty token rejected")
+    sessions.retireRetainedContinuationClaimReceiptV1(String(repeating: "a", count: 257)) { _, failure in retainedFailure = failure }
+    check(json(retainedFailure ?? "{}") ["code"] as? String == "argument.invalid", "v1 oversized token rejected")
+    sessions.retireRetainedContinuationClaimReceiptV1("token") { _, failure in retainedFailure = failure }
+    check(json(retainedFailure ?? "{}") ["code"] as? String == "lifecycle.invalid-state", "v1 cold receipt does not install radio")
+
     clear()
     print("[AppleContinuationStatusHarness] validated declare, status, strategy refusal, installation failure, malformed counter and lastWake passed (deterministic; no physical radio).")
   }

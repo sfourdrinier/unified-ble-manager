@@ -41,6 +41,8 @@ enum class NativeCancellationState {
   notCancellable,
 };
 
+enum class NativeEpochAllocation { contiguous, androidScanLanes };
+
 enum class NativeRestorationOutcome {
   adopted,
   alreadyConsumed,
@@ -52,9 +54,10 @@ enum class NativeRestorationOutcome {
 
 class NativeOperationRegistry final {
  public:
-  explicit NativeOperationRegistry(NativeAttachmentIdentity attachment, std::size_t maximumOperations = 1024U);
+  explicit NativeOperationRegistry(NativeAttachmentIdentity attachment, std::size_t maximumOperations = 1024U,
+                                   NativeEpochAllocation allocation = NativeEpochAllocation::contiguous);
 
-  void registerOperation(const NativeOperationIdentity& operation, bool cancellable);
+  void registerOperation(const NativeOperationIdentity& operation, bool cancellable, bool scanStart = false);
   NativeCancellationState cancel(const NativeOperationIdentity& operation);
   bool settle(const NativeOperationIdentity& operation, NativeOperationState terminal);
   bool acceptsLateCallback(const NativeOperationIdentity& operation) const;
@@ -73,8 +76,10 @@ class NativeOperationRegistry final {
   mutable std::mutex mutex_;
   NativeAttachmentIdentity attachment_;
   const std::size_t maximumOperations_;
+  const NativeEpochAllocation allocation_;
   std::unordered_map<std::string, PendingOperation> pending_;
   std::uint64_t nextDispatchEpoch_ = 1U;
+  std::uint64_t nextOtherEpoch_ = 2U;
 };
 
 struct RestorationJournalEntry {

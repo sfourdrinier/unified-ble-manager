@@ -6,6 +6,8 @@
 // any core call (the option audit, docs/NODE.md).
 
 const path = require('node:path')
+const fs = require('node:fs')
+const os = require('node:os')
 
 const { realBinding, dispatchCalls } = require('../../helpers/desktop-rust-core-harness')
 
@@ -79,6 +81,54 @@ describe('no-options factories execute the shared Rust core', () => {
       })
       expect(harness.calls).toHaveLength(0)
       expect(harness.productionRequests).toHaveLength(0)
+    }
+  )
+
+  test.each(FACTORIES)(
+    '$factory reports missing terminal-evidence storage instead of silently disabling it',
+    async ({ platform, os: platformName, module, factory }) => {
+      const harness = realBinding(platform)
+      const manager = await withPlatform(platformName, () =>
+        load(module)[factory]({
+          binding: harness.binding,
+          terminalEvidence: { maximumCanonicalBytes: 512, maximumDurableBytes: 4096 }
+        })
+      )
+      try {
+        await expect(manager.scan()).rejects.toMatchObject({ code: 'capability.unsupported' })
+        expect(harness.calls.map(([name]) => name)).not.toContain('startScan')
+      } finally {
+        await manager.destroy()
+      }
+    }
+  )
+})
+
+describe('public terminal evidence configuration', () => {
+  test.each(FACTORIES)(
+    '$factory reserves native terminal evidence before scan activation',
+    async ({ platform, os: platformName, module, factory }) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-node-terminal-evidence-'))
+      const harness = realBinding(platform)
+      let manager
+      let scan
+      try {
+        manager = await withPlatform(platformName, () =>
+          load(module)[factory]({
+            binding: harness.binding,
+            terminalEvidence: { maximumCanonicalBytes: 512, maximumDurableBytes: 4096 },
+            terminalEvidenceStore: { directory, maxBytes: '4096' }
+          })
+        )
+        scan = await manager.scan()
+        const calls = harness.calls.map(([name]) => name)
+        expect(calls.indexOf('reserveTerminalEvidence')).toBeGreaterThanOrEqual(0)
+        expect(calls.indexOf('reserveTerminalEvidence')).toBeLessThan(calls.indexOf('startScan'))
+      } finally {
+        await scan?.stop()
+        await manager?.destroy()
+        fs.rmSync(directory, { recursive: true, force: true })
+      }
     }
   )
 })

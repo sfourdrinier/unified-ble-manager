@@ -103,10 +103,18 @@ describe('Unified Android native protocol structure', () => {
       // Runtime-gated public Android encryption/subrate API adapters.
       'radio/AndroidEncryptionApi.kt',
       'radio/AndroidGattDisconnectOwners.kt',
+      // Ordered notification groups are an admitted native boundary: they
+      // preserve the radio callback order through the Rust session rather
+      // than reconstructing it in JavaScript.
+      'radio/AndroidOrderedGroupOwner.kt',
+      'radio/AndroidOrderedOpenSlots.kt',
       'radio/AndroidSubrateApi.kt',
       'radio/DeferredCoreShadow.kt',
       'radio/GattCentralWire.kt',
       'radio/GattOccurrenceResolver.kt',
+      'radio/NotificationOwnershipFifo.kt',
+      'radio/OrderedMarkerTransactions.kt',
+      'radio/OrderedNotificationSource.kt',
       'radio/OwnedAndroidGattRadio.kt',
       'radio/OwnedAndroidLog.kt',
       'radio/UbmGattCentralBridge.kt',
@@ -133,8 +141,12 @@ describe('Unified Android native protocol structure', () => {
       // RustRadioHostAdapterTest, RustCoreSessionsTest, RustCoreJsonTest and
       // OwnedRadioPortMappingTest. RustCoreAdapterStateReader and
       // RustCoreSessionRouter are legacy, kept until Phase 4 deletion.
+      'rustcore/AndroidOwnerQuiescenceCoordinator.kt',
       'rustcore/AndroidRadioPort.kt',
       'rustcore/MobileCorePort.kt',
+      'rustcore/OrderedGroupBridgeMapper.kt',
+      'rustcore/OrderedGroupPort.kt',
+      'rustcore/OwnedOrderedGroupPort.kt',
       'rustcore/OwnedRadioPort.kt',
       'rustcore/PlatformServicePorts.kt',
       'rustcore/ReactCompanionChooser.kt',

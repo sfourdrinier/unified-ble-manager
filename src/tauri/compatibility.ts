@@ -1,10 +1,12 @@
 // src/tauri/compatibility.ts
 
-import { IPC_PROTOCOL_VERSION } from '../ipc/protocol'
+import { IPC_PROTOCOL_MINIMUM_VERSION, IPC_PROTOCOL_VERSION } from '../ipc/protocol'
 
 export const TAURI_PLUGIN_COMPATIBILITY = Object.freeze({
   npmRange: '^5.1.0',
   crateRange: '^5.1.0',
+  /** Oldest plugin wire revision compatible with ordinary BLE routes. */
+  ipcProtocolMinimum: IPC_PROTOCOL_MINIMUM_VERSION,
   ipcProtocol: IPC_PROTOCOL_VERSION,
   // F01: the linked ubm-core contract revision the candidate plugin must
   // report at bootstrap. Pinned like the ranges above; the Tauri suite

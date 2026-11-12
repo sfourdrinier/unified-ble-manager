@@ -90,7 +90,10 @@ async fn wait_until<F: Fn() -> bool>(what: &str, done: F) {
 }
 
 async fn known_peer(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
-    central.boundary().push_event(advertisement(peer_id));
+    central
+        .boundary()
+        .push_event(advertisement(peer_id))
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.peer_key_for(peer_id).await.is_some() {
             return;
@@ -159,7 +162,8 @@ async fn a_power_loss_tears_down_everything_live_and_advances_the_generation() {
 
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+        .expect("synthetic event admission failed");
 
     let reset = tokio::time::timeout(Duration::from_secs(5), resets.recv())
         .await
@@ -274,7 +278,8 @@ async fn adapter_reads_racing_a_reset_answer_the_post_transition_state() {
         .set_adapter_authorization(AdapterAuthorization::Denied);
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::Unsupported));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::Unsupported))
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(5), resets.recv())
         .await
         .expect("reset")
@@ -296,20 +301,28 @@ async fn one_loss_resets_once_and_power_on_ends_the_loss() {
     let central = open(os_radio(AdmissionPolicy::LifecycleOnly)).await;
     let mut resets = central.adapter_reset_events();
     let radio = central.boundary();
-    radio.push_event(RadioEvent::AdapterState(AdapterPowerState::Resetting));
-    radio.push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+    radio
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::Resetting))
+        .expect("synthetic event admission failed");
+    radio
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+        .expect("synthetic event admission failed");
     let first = tokio::time::timeout(Duration::from_secs(5), resets.recv())
         .await
         .expect("reset")
         .expect("event");
     assert_eq!(first.cause, AdapterLossCause::Resetting);
-    radio.push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOn));
+    radio
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOn))
+        .expect("synthetic event admission failed");
     wait_until("power on", || !central.adapter_status().lost).await;
     assert!(
         resets.try_recv().is_err(),
         "a second loss state while lost is not a second reset"
     );
-    radio.push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+    radio
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+        .expect("synthetic event admission failed");
     let second = tokio::time::timeout(Duration::from_secs(5), resets.recv())
         .await
         .expect("reset")
@@ -325,7 +338,8 @@ async fn a_removed_adapter_or_restarted_daemon_resets_and_reads_unavailable() {
     live_link(&central, "peer-2").await;
     central
         .boundary()
-        .push_event(RadioEvent::AdapterLost(AdapterLossCause::DaemonRestarted));
+        .push_event(RadioEvent::AdapterLost(AdapterLossCause::DaemonRestarted))
+        .expect("synthetic event admission failed");
     let reset = tokio::time::timeout(Duration::from_secs(5), resets.recv())
         .await
         .expect("reset")
@@ -338,7 +352,10 @@ async fn a_removed_adapter_or_restarted_daemon_resets_and_reads_unavailable() {
         central.adapter_status().availability,
         AdapterAvailability::Unavailable
     );
-    central.boundary().push_event(RadioEvent::AdapterRestored);
+    central
+        .boundary()
+        .push_event(RadioEvent::AdapterRestored)
+        .expect("synthetic event admission failed");
     wait_until("the adapter to come back", || {
         central.adapter_status().availability != AdapterAvailability::Unavailable
     })
@@ -357,7 +374,8 @@ async fn a_radio_without_teardown_reports_the_state_only() {
         .expect("connect");
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+        .expect("synthetic event admission failed");
     let event = tokio::time::timeout(Duration::from_secs(5), adapter.recv())
         .await
         .expect("state")
@@ -395,7 +413,8 @@ async fn corebluetooth_admission_refuses_before_any_effect_in_legacy_order() {
         .boundary()
         .push_event(RadioEvent::AdapterAuthorization(
             AdapterAuthorization::NotDetermined,
-        ));
+        ))
+        .expect("synthetic event admission failed");
     wait_until("authorization", || {
         central.adapter_status().authorization == Some(AdapterAuthorization::NotDetermined)
     })
@@ -410,7 +429,8 @@ async fn corebluetooth_admission_refuses_before_any_effect_in_legacy_order() {
         .boundary()
         .push_event(RadioEvent::AdapterAuthorization(
             AdapterAuthorization::Granted,
-        ));
+        ))
+        .expect("synthetic event admission failed");
     wait_until("granted", || {
         central.adapter_status().authorization == Some(AdapterAuthorization::Granted)
     })
@@ -423,7 +443,8 @@ async fn corebluetooth_admission_refuses_before_any_effect_in_legacy_order() {
 
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::Resetting));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::Resetting))
+        .expect("synthetic event admission failed");
     wait_until("resetting", || {
         central.adapter_status().power == Some(AdapterPowerState::Resetting)
     })
@@ -436,7 +457,8 @@ async fn corebluetooth_admission_refuses_before_any_effect_in_legacy_order() {
 
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::Unsupported));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::Unsupported))
+        .expect("synthetic event admission failed");
     wait_until("unsupported", || {
         central.adapter_status().availability == AdapterAvailability::Unsupported
     })
@@ -449,7 +471,8 @@ async fn corebluetooth_admission_refuses_before_any_effect_in_legacy_order() {
 
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOn));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOn))
+        .expect("synthetic event admission failed");
     wait_until("powered on", || usable(&central)).await;
     central
         .connect("peer-4", "lease-a", OpControl::budget_ms(5000))
@@ -484,7 +507,8 @@ async fn corebluetooth_cleanup_stays_admitted_while_winrt_gates_unsubscribe() {
         live_link(&central, "peer-5").await;
         central
             .boundary()
-            .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+            .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+            .expect("synthetic event admission failed");
         wait_until("powered off", || {
             central.adapter_status().power == Some(AdapterPowerState::PoweredOff)
         })
@@ -525,7 +549,8 @@ async fn winrt_admission_reads_availability_before_authorization() {
     assert_eq!(error.code_str(), "permission.denied");
     central
         .boundary()
-        .push_event(RadioEvent::AdapterLost(AdapterLossCause::Removed));
+        .push_event(RadioEvent::AdapterLost(AdapterLossCause::Removed))
+        .expect("synthetic event admission failed");
     wait_until("removed", || {
         central.adapter_status().availability == AdapterAvailability::Unavailable
     })
@@ -540,12 +565,16 @@ async fn winrt_admission_reads_availability_before_authorization() {
         "availability wins over authorization on WinRT"
     );
     // A pending decision reads as an unusable adapter on WinRT.
-    central.boundary().push_event(RadioEvent::AdapterRestored);
+    central
+        .boundary()
+        .push_event(RadioEvent::AdapterRestored)
+        .expect("synthetic event admission failed");
     central
         .boundary()
         .push_event(RadioEvent::AdapterAuthorization(
             AdapterAuthorization::NotDetermined,
-        ));
+        ))
+        .expect("synthetic event admission failed");
     wait_until("not determined", || {
         central.adapter_status().authorization == Some(AdapterAuthorization::NotDetermined)
             && central.adapter_status().availability != AdapterAvailability::Unavailable
@@ -614,7 +643,8 @@ async fn the_first_usable_state_is_awaited_within_the_bound() {
     };
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOn));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOn))
+        .expect("synthetic event admission failed");
     assert_eq!(
         waiter.await.expect("join").expect("usable"),
         AdapterPowerState::PoweredOn
@@ -624,7 +654,8 @@ async fn the_first_usable_state_is_awaited_within_the_bound() {
         .boundary()
         .push_event(RadioEvent::AdapterAuthorization(
             AdapterAuthorization::Denied,
-        ));
+        ))
+        .expect("synthetic event admission failed");
     wait_until("denied", || {
         central.adapter_status().authorization == Some(AdapterAuthorization::Denied)
     })
