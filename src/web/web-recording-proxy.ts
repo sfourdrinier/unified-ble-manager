@@ -151,6 +151,10 @@ export async function createWebRecordingProxy(
   let receiveSeq = 0
   let lastIncoming = ''
   let lastReply = ''
+  // A retry can arrive while its owner request is queued or executing. This
+  // remains bounded by `enqueued` (at most 32 distinct raw frames) and records
+  // one replay demand per authenticated request without another execution.
+  const deferredOwnerReplays = new Set<string>()
   let acknowledged = 0
   let releaseSending = false
   let work = Promise.resolve()
@@ -168,6 +172,7 @@ export async function createWebRecordingProxy(
   const close = (): void => {
     if (closed) return
     closed = true
+    deferredOwnerReplays.clear()
     unsubscribe()
     channel.close()
     settleRelease(proxyError('closed'))
@@ -261,7 +266,11 @@ export async function createWebRecordingProxy(
         close()
         return
       }
-      if (role === 'owner' && lastReply) channel.postMessage(lastReply)
+      if (role === 'owner' && lastReply) {
+        const replay = deferredOwnerReplays.delete(raw)
+        channel.postMessage(lastReply)
+        if (replay) channel.postMessage(lastReply)
+      }
       return
     }
     if (parsed.s !== receiveSeq + 1) {
@@ -327,7 +336,11 @@ export async function createWebRecordingProxy(
       if (closed) return
       try {
         lastReply = await seal(result)
-        if (!closed) channel.postMessage(lastReply)
+        const replay = deferredOwnerReplays.delete(raw)
+        if (!closed) {
+          channel.postMessage(lastReply)
+          if (replay) channel.postMessage(lastReply)
+        }
       } catch {
         close()
       }
@@ -358,7 +371,14 @@ export async function createWebRecordingProxy(
         !('direction' in route && route.direction === receiveDirection))
     )
       return
-    if (enqueued.has(raw) || (role === 'owner' && raw === lastIncoming && !lastReply)) return
+    if (enqueued.has(raw)) {
+      if (role === 'owner') deferredOwnerReplays.add(raw)
+      return
+    }
+    if (role === 'owner' && raw === lastIncoming && !lastReply) {
+      deferredOwnerReplays.add(raw)
+      return
+    }
     if (queued >= 32) return
     queued++
     enqueued.add(raw)
@@ -368,6 +388,17 @@ export async function createWebRecordingProxy(
       .finally(() => {
         queued--
         enqueued.delete(raw)
+        // A duplicate can arrive after `receive` sent its reply but before
+        // this queue entry retires. It still gets one authenticated cached
+        // response; malformed or failed work simply releases its marker.
+        const replay = deferredOwnerReplays.delete(raw)
+        if (replay && role === 'owner' && raw === lastIncoming && lastReply && !closed) {
+          try {
+            channel.postMessage(lastReply)
+          } catch {
+            close()
+          }
+        }
       })
   })
   const sendRelease = (): void => {

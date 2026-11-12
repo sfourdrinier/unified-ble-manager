@@ -177,6 +177,37 @@ test('unauthenticated floods are shed without closing the live owner', async () 
   attacker.close()
 })
 
+test('duplicate unauthenticated frames release their queued replay candidates', async () => {
+  const network = bus()
+  const execute = jest.fn(async value => value)
+  const owner = await handoffOwner({ crypto: webcrypto, channel: network.channel(), lifetimeMs: 1000, execute })
+  const client = await importWebRecordingHandoff({
+    crypto: webcrypto,
+    channel: network.channel(),
+    ticket: owner.ticket,
+    timeoutMs: 1000
+  })
+  const attacker = network.channel()
+  for (let i = 1; i <= 64; i++) {
+    const invalid = JSON.stringify({
+      v: owner.ticket.version,
+      r: owner.ticket.rendezvous,
+      d: 'client',
+      s: i,
+      c: '00',
+      m: '00'
+    })
+    attacker.postMessage(invalid)
+    attacker.postMessage(invalid)
+  }
+  await tick()
+  expect(await client.request('1', 'still alive', 1000)).toBe('still alive')
+  expect(execute).toHaveBeenCalledTimes(1)
+  attacker.close()
+  client.close()
+  owner.close()
+})
+
 test('more than 32 identical retries coalesce while execution is slow', async () => {
   const network = bus()
   let finish
@@ -699,10 +730,15 @@ test('a valid MAC over different bytes at the same sequence closes the owner end
 
 test('a lost reply is replayed byte-for-byte without re-executing the request', async () => {
   let dropped = false
+  let replyDropped
+  const droppedReply = new Promise(resolve => {
+    replyDropped = resolve
+  })
   const network = bus(message => {
     const packet = JSON.parse(message)
     if (!dropped && packet.d === 'owner') {
       dropped = true
+      replyDropped()
       return true
     }
     return false
@@ -721,11 +757,173 @@ test('a lost reply is replayed byte-for-byte without re-executing the request', 
     timeoutMs: 1000
   })
   await expect(client.request('1', 'payload', 50)).rejects.toMatchObject({ code: 'timeout' })
+  // A busy worker can expire the client timer before the owner has produced
+  // the reply that this test deliberately drops. Do not retry until that
+  // replay boundary is actually established.
+  await droppedReply
   expect(await client.request('1', 'payload', 1000)).toBe('answer')
   const replies = network.messages.filter(message => JSON.parse(message).d === 'owner')
   expect(replies).toHaveLength(2)
   expect(replies[0]).toBe(replies[1])
   expect(execute).toHaveBeenCalledTimes(1)
+  client.close()
+  owner.close()
+})
+
+test('an in-flight retry replays one lost completed reply without re-executing', async () => {
+  let dropped = false
+  const network = bus(message => {
+    const packet = JSON.parse(message)
+    if (!dropped && packet.d === 'owner') {
+      dropped = true
+      return true
+    }
+    return false
+  })
+  let start
+  const started = new Promise(resolve => {
+    start = resolve
+  })
+  let finish
+  const execute = jest.fn(
+    () =>
+      new Promise(resolve => {
+        finish = resolve
+        start()
+      })
+  )
+  const owner = await handoffOwner({ crypto: webcrypto, channel: network.channel(), lifetimeMs: 10000, execute })
+  const client = await importWebRecordingHandoff({
+    crypto: webcrypto,
+    channel: network.channel(),
+    ticket: owner.ticket,
+    timeoutMs: 1000
+  })
+  const first = client.request('1', 'payload', 50)
+  await started
+  await expect(first).rejects.toMatchObject({ code: 'timeout' })
+  const retry = client.request('1', 'payload', 1000)
+  // The retried frame is delivered through the bus microtask before the
+  // held owner operation completes, so the replay request is observable
+  // without relying on a scheduler delay.
+  await Promise.resolve()
+  finish('answer')
+  expect(await retry).toBe('answer')
+  const replies = network.messages.filter(message => JSON.parse(message).d === 'owner')
+  expect(replies).toHaveLength(2)
+  expect(replies[0]).toBe(replies[1])
+  expect(execute).toHaveBeenCalledTimes(1)
+  client.close()
+  owner.close()
+})
+
+test('a retry queued before owner authentication replays the lost reply once', async () => {
+  let dropped = false
+  const network = bus(message => {
+    const packet = JSON.parse(message)
+    if (!dropped && packet.d === 'owner') {
+      dropped = true
+      return true
+    }
+    return false
+  })
+  let holdDecrypt = false
+  let enterDecrypt
+  const decryptEntered = new Promise(resolve => {
+    enterDecrypt = resolve
+  })
+  let releaseDecrypt
+  const decryptReleased = new Promise(resolve => {
+    releaseDecrypt = resolve
+  })
+  const subtle = new Proxy(webcrypto.subtle, {
+    get(target, key) {
+      if (key === 'decrypt')
+        return async (...args) => {
+          if (holdDecrypt) {
+            enterDecrypt()
+            await decryptReleased
+          }
+          return target.decrypt(...args)
+        }
+      const value = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    }
+  })
+  const owner = await handoffOwner({
+    crypto: { getRandomValues: webcrypto.getRandomValues.bind(webcrypto), subtle },
+    channel: network.channel(),
+    lifetimeMs: 10000,
+    execute: async () => 'answer'
+  })
+  const client = await importWebRecordingHandoff({
+    crypto: webcrypto,
+    channel: network.channel(),
+    ticket: owner.ticket,
+    timeoutMs: 1000
+  })
+  holdDecrypt = true
+  const first = client.request('1', 'payload', 50)
+  await decryptEntered
+  await expect(first).rejects.toMatchObject({ code: 'timeout' })
+  const retry = client.request('1', 'payload', 1000)
+  await Promise.resolve()
+  releaseDecrypt()
+  expect(await retry).toBe('answer')
+  expect(dropped).toBe(true)
+  const replies = network.messages.filter(message => JSON.parse(message).d === 'owner')
+  expect(replies).toHaveLength(2)
+  expect(replies[0]).toBe(replies[1])
+  client.close()
+  owner.close()
+})
+
+test('repeated completed replies do not suppress a later in-flight replay', async () => {
+  let dropOwnerReplies = 0
+  const network = bus(message => {
+    const packet = JSON.parse(message)
+    if (packet.d === 'owner' && dropOwnerReplies > 0) {
+      dropOwnerReplies -= 1
+      return true
+    }
+    return false
+  })
+  let beginSecond
+  const secondStarted = new Promise(resolve => {
+    beginSecond = resolve
+  })
+  let finishSecond
+  const execute = jest.fn(payload => {
+    if (payload === 'first') return Promise.resolve('first')
+    return new Promise(resolve => {
+      finishSecond = resolve
+      beginSecond()
+    })
+  })
+  const owner = await handoffOwner({ crypto: webcrypto, channel: network.channel(), lifetimeMs: 10000, execute })
+  const client = await importWebRecordingHandoff({
+    crypto: webcrypto,
+    channel: network.channel(),
+    ticket: owner.ticket,
+    timeoutMs: 1000
+  })
+  expect(await client.request('1', 'first', 1000)).toBe('first')
+  const firstWire = network.messages.find(message => JSON.parse(message).d === 'client')
+  const peer = network.channel()
+  peer.postMessage(firstWire)
+  peer.postMessage(firstWire)
+  await tick()
+  client.retire('1')
+  dropOwnerReplies = 1
+  const firstAttempt = client.request('2', 'second', 50)
+  await secondStarted
+  await expect(firstAttempt).rejects.toMatchObject({ code: 'timeout' })
+  const retry = client.request('2', 'second', 1000)
+  await Promise.resolve()
+  finishSecond('second')
+  expect(await retry).toBe('second')
+  expect(execute).toHaveBeenCalledTimes(2)
+  peer.close()
   client.close()
   owner.close()
 })

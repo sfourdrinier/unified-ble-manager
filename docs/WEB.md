@@ -45,6 +45,10 @@ failure. A hidden page alone does not release an active connection. Browser
 freezing, unloading, storage failure, and connection loss can still interrupt a
 recording; these paths are not physical-radio qualification.
 
+For a recording handoff, a retry of the same request can arrive while the
+owner is still processing it. The owner retains a bounded replay request and
+returns the same sealed response without executing the operation again.
+
 If IndexedDB closes for a version change, an active recording can reopen the
 compatible database before a new transaction. The active delivery path can
 retry transient readiness failures while the recording still owns authority;

@@ -34,6 +34,8 @@ All notable changes to `unified-ble-manager` are documented here.
   recorded subscriptions, including retryable cleanup of cancelled late starts.
 - Linux discovery cancellation stops read-only graph work before a late reply
   can publish a database; effectful operations retain their cleanup ownership.
+- Web recording handoff retains a bounded replay request when a retry arrives
+  while its original request is still being processed, without executing it twice.
 
 ## [5.2.1] - 2026-11-08
 
