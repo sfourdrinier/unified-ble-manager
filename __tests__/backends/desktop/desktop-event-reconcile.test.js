@@ -180,8 +180,6 @@ function awaitLag(control, method) {
 
 /**
  * A promise for the next event-waker call the stubbed binding observes.
- * Subscribe BEFORE the trigger and await after it: the wake itself orders
- * the test, not a wall-clock poll.
  */
 function nextWake(control) {
   return new Promise(resolve => {
@@ -478,14 +476,19 @@ describe('values the core still holds reach the stream before its lifecycle term
   })
 })
 
-describe('the addon wakes the provider instead of waiting for the next poll (LEGACY-AUDIT-4 R2)', () => {
-  test.each(PLATFORMS)('%s: a notification and a link loss each wake the provider', async platform => {
+describe('the addon reports wake callbacks while its provider drains work (LEGACY-AUDIT-4 R2)', () => {
+  test.each(PLATFORMS)('%s: observes a wake while a notification and a link loss are delivered', async platform => {
     await withLaggingBackend(platform, async ({ backend, stage, control }) => {
       const events = backend.events()[Symbol.asyncIterator]()
       const { database, measurement } = await connectAndDiscover(backend, stage)
       const subscription = await database.subscribe(measurement.path, subscribeOptions())
       const values = subscription.values[Symbol.asyncIterator]()
-      const beforeValue = control.wakes
+      // Drain setup work, then hold the notification poll. The value cannot
+      // be delivered by its periodic backstop before the observed wake.
+      await backend.settleCoreEvents()
+      control.holdPolls = true
+      const beforeBurst = control.wakes
+      const notificationWake = nextWake(control)
       await stage.stageNotification({
         peerId: 'peer-1',
         serviceUuid: HRM_SERVICE,
@@ -494,12 +497,22 @@ describe('the addon wakes the provider instead of waiting for the next poll (LEG
         characteristicOccurrence: 0,
         value: Buffer.from([0x2a])
       })
-      expect([...(await nextValue(values, 5000)).value]).toEqual([0x2a])
-      expect(control.wakes).toBeGreaterThan(beforeValue)
-      const beforeLoss = control.wakes
+      await notificationWake
+      let delivered = false
+      const notification = nextValue(values, 5000).then(value => {
+        delivered = true
+        return value
+      })
+      await Promise.resolve()
+      expect(delivered).toBe(false)
+      control.holdPolls = false
+      expect([...((await notification).value)]).toEqual([0x2a])
       await stage.stageLinkLoss('peer-1')
       await nextEvent(events, event => event.kind === 'connection-lost', 5000)
-      expect(control.wakes).toBeGreaterThan(beforeLoss)
+      // EventWaker intentionally coalesces while one JS callback is pending.
+      // This records the observable batch invariant; focused individual
+      // report tests elsewhere cover their direct wake paths.
+      expect(control.wakes).toBeGreaterThan(beforeBurst)
       expect(stage.eventWakeFailures()).toBe(0)
     })
   })

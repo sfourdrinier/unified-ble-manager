@@ -696,7 +696,7 @@ export class DeterministicTestBackend
     for (const physical of [...this.physicalSubscriptions.values()]) {
       if (physical.database === database) {
         for (const subscription of [...physical.consumers]) {
-          subscription.closeForInvalidation()
+          subscription.closeForInvalidation('service-changed')
         }
         this.observeCleanup(this.disablePhysicalSubscription(physical), 'subscription-invalidation-remove-failed')
       }

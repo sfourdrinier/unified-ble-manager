@@ -142,6 +142,7 @@ describe('R01 native-owned manager', () => {
         '../../core/connection-lifecycle-rules',
         '../../core/core-capabilities',
         '../../core/gatt-path-equality',
+        '../../core/terminal-evidence-codec',
         '../../core/unified-ble-core-helpers'
       ].sort()
     )
