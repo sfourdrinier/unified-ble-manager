@@ -4743,6 +4743,7 @@ async fn trusted_continuation_replays_setup_and_retains_recording_without_offlin
 async fn trusted_continuation_recording_scenario(directory: &std::path::Path) {
     let harness = Harness::new().await;
     let peer = "native-recorded-peer";
+    harness.advertise(peer).await;
     harness
         .dispatcher
         .continuation_configure_recording_directory(directory)
@@ -4760,14 +4761,12 @@ async fn trusted_continuation_recording_scenario(directory: &std::path::Path) {
     .to_string();
     harness.radio().block_op(FaultOp::Write);
     let dispatcher = harness.dispatcher.clone();
-    let first =
+    let mut first =
         tokio::spawn(async move { dispatcher.continuation_execute(peer, &declaration).await });
-    // Start the continuation before producing its appearance. A fresh Linux
-    // scheduler may otherwise consume the synthetic advertisement before the
-    // continuation has installed its appearance subscription, leaving the
-    // test waiting for a write that can never be admitted.
-    harness.advertise(peer).await;
-    harness.wait_calls("write_characteristic", 1).await;
+    tokio::select! {
+        _ = harness.wait_calls("write_characteristic", 1) => {}
+        result = &mut first => panic!("continuation ended before its setup write: {result:?}"),
+    }
     let notify = |value, epoch| RadioEvent::Notification {
         peer_id: peer.into(),
         service_uuid: HRM_SERVICE.into(),

@@ -17,6 +17,10 @@ All notable changes to `unified-ble-manager` are documented here.
   interrupts its release with `operation.reset`: wait for readiness, retry the
   same release with bounded backoff, and only reconnect after it actually
   releases. Other cleanup failures remain surfaced and terminal.
+- Retry a successor connection that still answers `adapter.resetting` through
+  the supervisor's normal bounded backoff and attempt budget, rather than
+  treating an early power-on snapshot as a ready reconnect. Powered-off and
+  unavailable adapters retain their readiness-wait behavior.
 
 ## [5.2.1] - 2026-11-08
 

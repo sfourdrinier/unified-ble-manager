@@ -165,6 +165,13 @@ treats the reset as a successful release or admits the successor early. This
 automatic retry is limited to connection-scoped `operation.reset` cleanup
 caused by that observed adapter loss; every other cleanup failure remains a
 retained, surfaced failure.
+
+The OS may report power-on before its native reset retirement has finished. If
+the resulting successor connect answers `adapter.resetting`, the supervisor
+keeps that exact result, rechecks readiness, and retries through its configured
+backoff and attempt budget. `adapter.powered-off` and `adapter.unavailable`
+remain state waits and do not consume an attempt. Thus a stale ready snapshot
+cannot create a tight retry loop or be presented as a successful reconnect.
 Before 5.0 an adapter loss destroyed the manager (its supervisor ended
 `lifecycle.destroyed`) and the application had to create a new one.
 

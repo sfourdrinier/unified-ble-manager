@@ -284,6 +284,69 @@ describe('public connection supervisor', () => {
     await supervisor.stop()
   })
 
+  test('backs off when a false-ready adapter still rejects successor connect as resetting', async () => {
+    const loss = deferred()
+    const first = connection()
+    let lifecycleRead = 0
+    first.lifecycleEvents = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          lifecycleRead += 1
+          if (lifecycleRead === 1) {
+            return {
+              done: false,
+              value: {
+                kind: 'connection-lifecycle',
+                previous: 'connecting',
+                current: 'connected',
+                cause: 'connected',
+                connectionGeneration: 'generation-1',
+                sequence: 1
+              }
+            }
+          }
+          return loss.promise
+        },
+        return: async () => ({ done: true, value: undefined })
+      })
+    }
+    const second = connection()
+    const ble = manager(first)
+    ble.connect
+      .mockResolvedValueOnce(first)
+      .mockRejectedValueOnce(new BleError('adapter.resetting', 'adapter', 'direct-gatt.connect'))
+      .mockResolvedValueOnce(second)
+    const delays = []
+    const supervisor = createConnectionSupervisor(ble, 'false-ready-resetting', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      setTimeout: (callback, delayMs) => {
+        delays.push(delayMs)
+        return globalThis.setTimeout(callback, 0)
+      }
+    })
+
+    supervisor.start()
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'connected'; turn += 1) await wait(1)
+    loss.resolve({
+      done: false,
+      value: {
+        kind: 'connection-lifecycle',
+        previous: 'connected',
+        current: 'lost',
+        cause: 'adapter-loss',
+        connectionGeneration: 'generation-1',
+        sequence: 2
+      }
+    })
+    for (let turn = 0; turn < 200 && ble.connect.mock.calls.length !== 3; turn += 1) await wait(1)
+
+    expect(supervisor.snapshot.state).toBe('connected')
+    expect(ble.connect).toHaveBeenCalledTimes(3)
+    expect(supervisor.snapshot.attempt).toBe(3)
+    expect(delays).toEqual([1, 1])
+    await supervisor.stop()
+  })
+
   test('a readiness refusal that waiting cannot fix still waits for a wake', async () => {
     const current = connection()
     const ble = manager(current)

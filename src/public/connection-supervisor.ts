@@ -151,6 +151,11 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
   // owned until a later release answers `released`; no successor may connect
   // while this flag is set.
   private adapterLossCleanupRetryPending = false
+  // A direct state read may observe the OS power-on before the desktop reset
+  // retirement publishes it. A successor connect still answers
+  // `adapter.resetting`; retry it through normal backoff, not a false-ready
+  // tight loop.
+  private adapterResettingConnectRetryPending = false
   private ownershipReleased = false
   private readonly supervisorAbort = new AbortController()
   private readonly wakeWaiters = new Set<() => void>()
@@ -345,7 +350,16 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         }
         if (this.stopRequested) break
         if (!(await this.awaitLateConfigureCleanup())) break
-        if (this.waitForAdapter || this.paused) continue
+        if (this.waitForAdapter || this.paused) {
+          if (this.adapterResettingConnectRetryPending && !this.paused) {
+            this.adapterResettingConnectRetryPending = false
+            if (this.attemptLimitReached()) break
+            const delayMs = Math.max(1, this.nextDelay())
+            this.transition('backoff', null, delayMs, null)
+            if ((await this.waitForDelay(delayMs)) === 'stop') break
+          }
+          continue
+        }
         if (this.attemptLimitReached()) break
         const delayMs = this.nextDelay()
         this.transition('backoff', null, delayMs, null)
@@ -385,6 +399,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         continue
       }
       if (this.waitForAdapter) {
+        this.transition('waiting-for-gate', null, null, null)
         try {
           const readiness = await this.awaitControl(
             this.manager.adapter.waitUntilReady({ signal: this.supervisorAbort.signal, operation: 'connect' })
@@ -478,7 +493,8 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       this.lastError = toBleError(outcome.error)
       this.transition('waiting-for-gate', null, null, null)
       if (isAdapterWaitError(this.lastError)) {
-        this.attempt -= 1
+        if (this.lastError.code === 'adapter.resetting') this.adapterResettingConnectRetryPending = true
+        else this.attempt -= 1
         this.waitForAdapter = true
       } else if (this.lastError.code === 'permission.not-determined') {
         this.attempt -= 1
