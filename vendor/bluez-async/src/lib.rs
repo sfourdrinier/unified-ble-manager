@@ -40,7 +40,7 @@ pub use self::le_gatt::{
 pub use self::le_lease::{LeLeaseProtocolError, LeLeaseReleaseReceipt, LeLeaseReleaseScope};
 pub use self::macaddress::{MacAddress, ParseMacAddressError};
 use self::match_cleanup::{MatchFailure, MatchRegistry};
-use self::messagestream::MessageStream;
+use self::messagestream::{MessageStream, ScanIngress, ScanIngressItem, ScanIngressStream};
 pub use self::modalias::{Modalias, ParseModaliasError};
 pub use self::notification_sender::{
     NotificationSender, NotificationSenderFailure, NotificationSenderMonitor,
@@ -174,6 +174,9 @@ pub enum BluetoothError {
     /// Error parsing a `Modalias` from a string.
     #[error(transparent)]
     ModaliasParseError(#[from] ParseModaliasError),
+    /// The callback-ingress lifecycle could not establish an ordered fence.
+    #[error("BlueZ scan ingress lifecycle failed: {0}")]
+    ScanIngress(String),
 }
 
 /// Error type for futures representing tasks spawned by this crate.
@@ -355,6 +358,56 @@ pub struct BluetoothSession {
 }
 
 static NEXT_CLEANUP_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Adapter-local logical scan ownership at the D-Bus callback boundary.
+///
+/// An epoch is not a claim about RF packet time: BlueZ does not report that
+/// provenance. It identifies the scan that owned the callback when dbus-rs
+/// accepted its D-Bus signal.
+#[derive(Clone)]
+pub struct AdapterScanIngress {
+    inner: ScanIngress,
+}
+
+impl AdapterScanIngress {
+    pub fn new() -> Self {
+        Self {
+            inner: ScanIngress::new(),
+        }
+    }
+
+    pub fn arm(&self, epoch: u64) -> Result<(), BluetoothError> {
+        self.inner
+            .arm(epoch)
+            .map_err(|detail| BluetoothError::ScanIngress(detail.to_owned()))
+    }
+
+    pub fn retire(&self, epoch: u64) -> Result<(), BluetoothError> {
+        self.inner
+            .retire(epoch)
+            .map_err(|detail| BluetoothError::ScanIngress(detail.to_owned()))
+    }
+
+    pub async fn fence(&self, epoch: u64) -> Result<(), BluetoothError> {
+        self.inner
+            .fence(epoch)
+            .await
+            .map_err(|detail| BluetoothError::ScanIngress(detail.to_owned()))
+    }
+
+    /// The owning adapter event consumer observed its stream end after
+    /// draining every previously queued event. This is an ingress proof, not
+    /// a claim about controller state.
+    pub fn source_closed(&self) {
+        self.inner.close();
+    }
+}
+
+impl Debug for AdapterScanIngress {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AdapterScanIngress").finish_non_exhaustive()
+    }
+}
 
 fn match_failure(error: dbus::Error) -> MatchFailure {
     MatchFailure::new(
@@ -1119,6 +1172,43 @@ impl BluetoothSession {
         adapter: &AdapterId,
     ) -> Result<impl Stream<Item = BluetoothEvent> + use<>, BluetoothError> {
         self.filtered_event_stream(Some(adapter), true).await
+    }
+
+    /// Like [`Self::adapter_event_stream`], but carries an immutable epoch
+    /// captured in the D-Bus match callback. A fence resolves only when the
+    /// same ordered stream has crossed every callback accepted before retire.
+    pub async fn adapter_event_stream_with_scan_ingress(
+        &self,
+        adapter: &AdapterId,
+        ingress: AdapterScanIngress,
+    ) -> Result<impl Stream<Item = (BluetoothEvent, Option<u64>)> + use<>, BluetoothError> {
+        let mut rules = BluetoothEvent::match_rules(Some(adapter.clone()), true);
+        for rule in &mut rules {
+            rule.sender = Some(self.destination.clone().into());
+        }
+        let stream = ScanIngressStream::new(
+            rules,
+            self.connection.clone(),
+            &self.matches,
+            self.cleanup_scope,
+            ingress.inner.clone(),
+        )
+        .await
+        .map_err(match_error)?;
+        let marker_ingress = ingress.inner;
+        Ok(stream.flat_map(move |item| {
+            let events = match item {
+                ScanIngressItem::Message { message, epoch } => BluetoothEvent::message_to_events(message)
+                    .into_iter()
+                    .map(move |event| (event, epoch))
+                    .collect(),
+                ScanIngressItem::Fence { epoch } => {
+                    marker_ingress.settle_fence(epoch);
+                    Vec::new()
+                }
+            };
+            stream::iter(events)
+        }))
     }
 
     /// Get a stream of events for a particular device. This includes events for all its

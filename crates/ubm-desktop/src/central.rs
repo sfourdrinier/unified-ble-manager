@@ -61,7 +61,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
     Arc, Mutex as StdMutex, MutexGuard, OnceLock, PoisonError, Weak,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -1894,16 +1894,69 @@ enum ScanPhase {
     StartCancelled,
     /// OS confirmed the start.
     Active,
-    /// One stop is in flight; concurrent stops wait for its answer.
-    Stopping(watch::Receiver<StopAnswer>),
-    /// The last OS stop failed or was abandoned; the kernel op stays live
-    /// and the next stop calls the OS again.
-    StopFailed,
+    /// One stop or ingress-cleanup stage is in flight; concurrent stops wait
+    /// for its answer.  `stage` is deliberately retained separately from the
+    /// wait channel: after a physical stop succeeds a retry must resume at
+    /// callback retirement or the callback fence, never issue a second OS
+    /// stop.
+    Stopping {
+        answer: watch::Receiver<StopAnswer>,
+        stage: ScanStopStage,
+        /// Shared with the stop leader so an authoritative terminal callback
+        /// can take over a physically hung stop without starting a second
+        /// ingress retirement/fence sequence.
+        flight: Arc<StopFlight>,
+    },
+    /// The last cleanup stage failed or was abandoned.  A retry starts at
+    /// exactly this stage.  In particular, `RetireIngress` and
+    /// `FenceIngress` mean the OS already accepted the physical stop.
+    StopFailed(ScanStopStage),
+}
+
+/// The durable stages of scan teardown.  The ingress epoch is armed at the
+/// native callback boundary, so release is safe only after physical stop,
+/// callback retirement, and an ordered callback-to-central fence complete in
+/// this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanStopStage {
+    PhysicalStop,
+    RetireIngress,
+    FenceIngress,
+}
+
+/// The one completion authority for a scan stop.  The explicit caller and an
+/// asynchronous OS terminal report race only to own this bit; the winner owns
+/// the remaining cleanup and publishes the one answer all followers observe.
+#[derive(Debug)]
+struct StopFlight {
+    answer: watch::Sender<StopAnswer>,
+    cleanup_owner: AtomicBool,
+}
+
+impl StopFlight {
+    fn new(answer: watch::Sender<StopAnswer>) -> Self {
+        Self {
+            answer,
+            cleanup_owner: AtomicBool::new(false),
+        }
+    }
+
+    fn claim_cleanup(&self) -> bool {
+        self.cleanup_owner
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn complete(&self, answer: Result<(), DesktopError>) {
+        let _ = self.answer.send(Some(answer));
+    }
 }
 
 #[derive(Debug)]
 struct ActiveScan {
     id: OperationId,
+    /// Immutable epoch captured by the physical scan callback at ingress.
+    ingress_epoch: u64,
     phase: ScanPhase,
     /// Native start has authoritatively refused while an earlier stop is
     /// still in flight. Once that stop settles, even a failed stop leaves
@@ -2986,6 +3039,7 @@ struct Inner<B> {
     /// updates only, never across an await, and always taken after (never
     /// while waiting for) the core lock.
     scan: StdMutex<Option<ActiveScan>>,
+    scan_ingress_epoch: AtomicU64,
     /// Completed scan tickets retained after release (R15): the kernel op
     /// is reaped by the release report, so a late duplicate completion for
     /// that scan would otherwise miss the forgotten op and report
@@ -3203,6 +3257,12 @@ struct Inner<B> {
     compensation_failures: AtomicU64,
     observer: Option<CentralObserver>,
     native_wake: broadcast::Sender<()>,
+    /// The sole radio event source ended; this central cannot truthfully
+    /// service another scan without a newly constructed boundary/session.
+    radio_source_closed: AtomicBool,
+    /// Exact refusal observed while the radio event source closed. It remains
+    /// available to cleanup/reporting; logging is never the sole evidence.
+    radio_source_close_failure: StdMutex<Option<DesktopError>>,
     shut_down: AtomicBool,
     shutdown_release_confirmed: AtomicBool,
     /// Stop signal for the central-lifetime event loop.
@@ -3286,7 +3346,11 @@ impl<B> Clone for DesktopCentral<B> {
 
 /// Role one stop call takes for the owned scan.
 enum StopRole {
-    Lead(watch::Sender<StopAnswer>, bool),
+    Lead {
+        flight: Arc<StopFlight>,
+        stage: ScanStopStage,
+        was_starting: bool,
+    },
     Follow(watch::Receiver<StopAnswer>),
     NotActive,
 }
@@ -3297,12 +3361,73 @@ enum StopRole {
 struct StopLead<'a, B> {
     inner: &'a Inner<B>,
     id: OperationId,
-    tx: Option<watch::Sender<StopAnswer>>,
+    stage: ScanStopStage,
+    flight: Arc<StopFlight>,
+    completed: bool,
+}
+
+/// Ownership handoff for a queued callback-ingress arm. A one-shot sender is
+/// insufficient here: cancellation can win the caller's biased select after
+/// the sender reports success. The worker therefore waits for an explicit
+/// claim or abandonment before deciding who owns a late native result.
+struct ArmHandoff {
+    outcome: Mutex<Option<Result<(), DesktopError>>>,
+    state: AtomicU8,
+    changed: tokio::sync::Notify,
+}
+
+impl ArmHandoff {
+    const PENDING: u8 = 0;
+    const CLAIMED: u8 = 1;
+    const ABANDONED: u8 = 2;
+
+    fn new() -> Self {
+        Self {
+            outcome: Mutex::new(None),
+            state: AtomicU8::new(Self::PENDING),
+            changed: tokio::sync::Notify::new(),
+        }
+    }
+
+    async fn claim(&self) -> Result<(), DesktopError> {
+        loop {
+            // Register before inspecting the outcome. `notify_waiters` does
+            // not retain a permit for a future waiter, so checking first
+            // could otherwise lose publication in that gap forever.
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(outcome) = self.outcome.lock().await.take() {
+                self.state.store(Self::CLAIMED, Ordering::Release);
+                self.changed.notify_waiters();
+                return outcome;
+            }
+            notified.await;
+        }
+    }
+
+    fn abandon(&self) {
+        self.state.store(Self::ABANDONED, Ordering::Release);
+        self.changed.notify_waiters();
+    }
+
+    async fn wait_for_resolution(&self) -> u8 {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let state = self.state.load(Ordering::Acquire);
+            if state != Self::PENDING {
+                return state;
+            }
+            changed.await;
+        }
+    }
 }
 
 impl<B> StopLead<'_, B> {
     /// The OS stop did not complete: keep the scan, answer the followers.
-    fn fail(&mut self, error: DesktopError) {
+    fn fail(&mut self, stage: ScanStopStage, error: DesktopError) {
         {
             let mut slot = self.inner.scan_slot();
             if let Some(active) = slot.as_mut()
@@ -3311,29 +3436,28 @@ impl<B> StopLead<'_, B> {
                 if active.start_refused {
                     *slot = None;
                 } else {
-                    active.phase = ScanPhase::StopFailed;
+                    active.phase = ScanPhase::StopFailed(stage);
                 }
             }
         }
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Some(Err(error)));
-        }
+        self.flight.complete(Err(error));
+        self.completed = true;
     }
 
     /// The OS confirmed the stop: the marker is already gone.
     fn succeed(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Some(Ok(())));
-        }
+        self.flight.complete(Ok(()));
+        self.completed = true;
     }
 }
 
 impl<B> Drop for StopLead<'_, B> {
     fn drop(&mut self) {
-        if self.tx.is_some() {
-            self.fail(DesktopError::scan_stop_failed(
-                "stop abandoned before the OS answered",
-            ));
+        if !self.completed && self.flight.claim_cleanup() {
+            self.fail(
+                self.stage,
+                DesktopError::scan_stop_failed("stop abandoned before the OS answered"),
+            );
         }
     }
 }
@@ -4272,6 +4396,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             reset_events: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             reset_sequence: AtomicU64::new(0),
             scan: StdMutex::new(None),
+            scan_ingress_epoch: AtomicU64::new(0),
             completed_scans: StdMutex::new(CompletedScanTickets::new(&ticket_scope)),
             peers: Mutex::new(HashMap::new()),
             retirement_tail: StdMutex::new(None),
@@ -4372,6 +4497,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             compensation_failures: AtomicU64::new(0),
             observer: profile.observer,
             native_wake: broadcast::channel(1).0,
+            radio_source_closed: AtomicBool::new(false),
+            radio_source_close_failure: StdMutex::new(None),
             shut_down: AtomicBool::new(false),
             shutdown_release_confirmed: AtomicBool::new(false),
             loop_stop,
@@ -5606,11 +5733,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             name_prefix: name_prefix.map(str::to_owned),
             windows,
         };
+        if self.inner.radio_source_closed.load(Ordering::Acquire) {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnavailable,
+                BleErrorDomain::Scan,
+                "scan.start",
+            )
+            .with_detail(
+                "the radio event source ended; construct a new central before scanning again",
+            ));
+        }
         self.retry_unpublished_scan_cleanup(window, &ctl.ticket)
             .await?;
         // Cleanup may have spent the caller's budget or raced shutdown. A
         // successful old stop is not admission for a replacement operation.
         self.precheck(&ctl, "scan.start")?;
+        let ingress_epoch = self.inner.scan_ingress_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let id = {
             let mut core = self.inner.core.lock().await;
             if let Some(occupant) = self.inner.scan_slot().as_ref() {
@@ -5655,6 +5793,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             // start instead of seeing an empty slot.
             *self.inner.scan_slot() = Some(ActiveScan {
                 id: id.clone(),
+                ingress_epoch,
                 phase: ScanPhase::Starting,
                 start_refused: false,
                 unpublished_cleanup: false,
@@ -5664,6 +5803,61 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // Finding 121: a new scan starts from an empty queue; nothing an
         // earlier scan saw is delivered as this scan's observation.
         self.inner.advertisements.lock().await.clear();
+        // A queued native arm cannot safely be forgotten when the caller
+        // leaves: a delegate may execute it after our deadline. Keep its
+        // completion owned; a late successful arm compensates through the
+        // retained callback-cleanup stages before releasing the scan slot.
+        let handoff = Arc::new(ArmHandoff::new());
+        let arm_inner = Arc::clone(&self.inner);
+        let arm_id = id.clone();
+        let worker_handoff = Arc::clone(&handoff);
+        tokio::spawn(async move {
+            let result = arm_inner.boundary.arm_scan_ingress(ingress_epoch).await;
+            *worker_handoff.outcome.lock().await = Some(result.clone());
+            worker_handoff.changed.notify_waiters();
+            if worker_handoff.wait_for_resolution().await == ArmHandoff::ABANDONED {
+                let central = DesktopCentral { inner: arm_inner };
+                match result {
+                    Ok(()) => central.compensate_armed_scan_start(&arm_id).await,
+                    Err(_) => central.fail_scan_start(&arm_id).await,
+                }
+            }
+        });
+        let caller_handoff = Arc::clone(&handoff);
+        match drive(
+            &ctl.ticket,
+            window,
+            async move { caller_handoff.claim().await },
+        )
+        .await
+        {
+            Wait::Done(Ok(())) => {}
+            Wait::Done(Err(error)) => {
+                self.fail_scan_start(&id).await;
+                return Err(error);
+            }
+            Wait::Expired => {
+                handoff.abandon();
+                let mut core = self.inner.core.lock().await;
+                let mut out = batch();
+                let _ = core.settle_op(&id, ContenderKind::Timeout, true, 0, now_ms(), &mut out);
+                let _ = out.drain();
+                return Err(classify(
+                    timed_out("scan.start.ingress-arm", window),
+                    OpKind::Scan,
+                    true,
+                ));
+            }
+            Wait::Cancelled => {
+                handoff.abandon();
+                let _ = self.cancel_operation(&id).await;
+                return Err(classify(
+                    ctl.ticket.interruption("scan.start.ingress-arm"),
+                    OpKind::Scan,
+                    true,
+                ));
+            }
+        }
         match drive(&ctl.ticket, window, self.inner.boundary.start_scan(filter)).await {
             Wait::Done(Ok(())) => {
                 // R14b/R14c: only the verified owner may activate: a stop or
@@ -5749,7 +5943,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             if let Some(active) = slot.as_mut()
                 && active.id == *id
             {
-                if matches!(active.phase, ScanPhase::Stopping(_)) {
+                if matches!(active.phase, ScanPhase::Stopping { .. }) {
                     active.start_refused = true;
                 } else {
                     *slot = None;
@@ -5776,6 +5970,33 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         recycle_observations(&mut core);
     }
 
+    /// A caller left while callback ingress arming was still queued. The
+    /// physical scan was not started, so resume at callback retirement rather
+    /// than issuing an unnecessary OS stop. The normal stop state machine
+    /// retains failures and fences the accepted callback prefix before release.
+    async fn compensate_armed_scan_start(&self, id: &OperationId) {
+        {
+            let mut slot = self.inner.scan_slot();
+            let Some(active) = slot.as_mut().filter(|active| active.id == *id) else {
+                return;
+            };
+            active.unpublished_cleanup = true;
+            active.phase = ScanPhase::StopFailed(ScanStopStage::RetireIngress);
+        }
+        let control = OpControl::unbounded();
+        if self
+            .stop_scan_with(
+                id,
+                control.budget.window(COMPENSATION_TIMEOUT),
+                &control.ticket,
+            )
+            .await
+            .is_err()
+        {
+            self.inner.note_compensation_failure();
+        }
+    }
+
     /// A start that lost admission can still have turned on the OS scan.
     /// Compensation uses the same generation-bound stop owner and retry
     /// state as an explicit stop; a refused stop never discards its handle.
@@ -5799,14 +6020,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         }
                         *slot = Some(ActiveScan {
                             id: id.clone(),
-                            phase: ScanPhase::StopFailed,
+                            ingress_epoch: 0,
+                            phase: ScanPhase::StopFailed(ScanStopStage::PhysicalStop),
                             start_refused: false,
                             unpublished_cleanup: true,
                         });
                         None
                     }
                     Some((false, _)) => return,
-                    Some((true, ScanPhase::Stopping(rx))) => Some(rx.clone()),
+                    Some((true, ScanPhase::Stopping { answer, .. })) => Some(answer.clone()),
                     Some((true, _)) => None,
                 }
             };
@@ -5906,15 +6128,36 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let mut slot = self.inner.scan_slot();
             match slot.as_mut() {
                 Some(active) if active.id == *scan => match &active.phase {
-                    ScanPhase::Stopping(rx) => StopRole::Follow(rx.clone()),
-                    ScanPhase::Starting
-                    | ScanPhase::StartCancelled
-                    | ScanPhase::Active
-                    | ScanPhase::StopFailed => {
+                    ScanPhase::Stopping { answer, .. } => StopRole::Follow(answer.clone()),
+                    ScanPhase::Starting | ScanPhase::StartCancelled | ScanPhase::Active => {
                         let was_starting = matches!(active.phase, ScanPhase::Starting);
                         let (tx, rx) = watch::channel(None);
-                        active.phase = ScanPhase::Stopping(rx);
-                        StopRole::Lead(tx, was_starting)
+                        let flight = Arc::new(StopFlight::new(tx));
+                        active.phase = ScanPhase::Stopping {
+                            answer: rx,
+                            stage: ScanStopStage::PhysicalStop,
+                            flight: Arc::clone(&flight),
+                        };
+                        StopRole::Lead {
+                            flight,
+                            stage: ScanStopStage::PhysicalStop,
+                            was_starting,
+                        }
+                    }
+                    ScanPhase::StopFailed(stage) => {
+                        let stage = *stage;
+                        let (tx, rx) = watch::channel(None);
+                        let flight = Arc::new(StopFlight::new(tx));
+                        active.phase = ScanPhase::Stopping {
+                            answer: rx,
+                            stage,
+                            flight: Arc::clone(&flight),
+                        };
+                        StopRole::Lead {
+                            flight,
+                            stage,
+                            was_starting: false,
+                        }
                     }
                 },
                 _ => StopRole::NotActive,
@@ -5947,84 +6190,246 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     )),
                 }
             }
-            StopRole::Lead(tx, was_starting) => {
+            StopRole::Lead {
+                flight,
+                mut stage,
+                was_starting,
+            } => {
                 let mut lead = StopLead {
                     inner: &self.inner,
                     id: scan.clone(),
-                    tx: Some(tx),
+                    stage,
+                    flight,
+                    completed: false,
                 };
                 // Core first: Active -> Stopping, outside the radio await so
                 // a stuck OS stop never holds the core lock. Best-effort: a
                 // retried stop or a session already settled via cancel or
                 // source-close has no transition left to take.
-                {
+                if stage == ScanStopStage::PhysicalStop {
                     let mut core = self.inner.core.lock().await;
                     let mut out = batch();
                     let _ = core.stop_scan(scan, now_ms(), &mut out);
                     let _ = out.drain();
                 }
-                match drive(ticket, window, self.inner.boundary.stop_scan()).await {
-                    Wait::Done(Ok(())) => {
-                        {
-                            let mut core = self.inner.core.lock().await;
-                            let mut out = batch();
-                            let _ = core.note_scan_platform(
-                                scan,
-                                ubm_core::central::ScanPlatformEvent::PlatformStopped,
-                                now_ms(),
-                                &mut out,
-                            );
-                            let _ = out.drain();
-                            // `note_scan_platform` already settled the kernel
-                            // op for the terminal session; the follow-up
-                            // settle is a duplicate that only observes, then
-                            // the actual OS-stop success releases.
-                            let _ = core.settle_op(
-                                scan,
-                                ContenderKind::Success,
-                                true,
-                                0,
-                                now_ms(),
-                                &mut out,
-                            );
-                            let _ = out.drain();
-                            // R15: retain the completed ticket between
-                            // settlement and release, then release.
-                            if let Some(kind) = terminal_kind_of(&core, scan) {
-                                retain_completed_scan(&self.inner.completed_scans, scan, kind);
-                            }
-                            report_terminal_release(&mut core, scan, true, None);
-                            recycle_observations(&mut core);
-                            let mut slot = self.inner.scan_slot();
-                            if let Some(active) = slot.as_mut()
-                                && active.id == *scan
-                            {
-                                if was_starting && !active.start_refused {
-                                    active.phase = ScanPhase::StartCancelled;
-                                } else {
-                                    *slot = None;
+                let ingress_epoch = self
+                    .inner
+                    .scan_slot()
+                    .as_ref()
+                    .filter(|active| active.id == *scan)
+                    .map(|active| active.ingress_epoch)
+                    .ok_or_else(|| {
+                        DesktopError::scan_stop_failed("scan ingress epoch is unavailable")
+                    })?;
+
+                loop {
+                    let result = match stage {
+                        ScanStopStage::PhysicalStop => {
+                            // An aborted terminal report is authoritative even
+                            // if the platform's explicit stop never resolves.
+                            // Race the physical wait with the shared answer so
+                            // the caller is not pinned behind a hung backend.
+                            let mut answer = lead.flight.answer.subscribe();
+                            tokio::select! {
+                                result = drive(ticket, window, self.inner.boundary.stop_scan()) => result,
+                                changed = answer.wait_for(Option::is_some) => {
+                                    match changed.map(|value| value.clone()) {
+                                        Ok(Some(Ok(()))) => {
+                                            lead.completed = true;
+                                            return Ok(ScanStop::Stopped);
+                                        }
+                                        Ok(Some(Err(error))) => {
+                                            lead.completed = true;
+                                            return Err(error);
+                                        }
+                                        Ok(None) | Err(_) => Wait::Done(Err(DesktopError::scan_stop_failed(
+                                            "terminal scan stop completed without an answer",
+                                        ))),
+                                    }
                                 }
                             }
                         }
-                        lead.succeed();
-                        Ok(ScanStop::Stopped)
+                        ScanStopStage::RetireIngress => {
+                            drive(
+                                ticket,
+                                window,
+                                self.inner.boundary.retire_scan_ingress(ingress_epoch),
+                            )
+                            .await
+                        }
+                        ScanStopStage::FenceIngress => {
+                            drive(
+                                ticket,
+                                window,
+                                self.inner.boundary.fence_scan_ingress(ingress_epoch),
+                            )
+                            .await
+                        }
+                    };
+                    match result {
+                        Wait::Done(Ok(())) => {
+                            if stage == ScanStopStage::PhysicalStop && !lead.flight.claim_cleanup()
+                            {
+                                let mut answer = lead.flight.answer.subscribe();
+                                let answer = drive(ticket, window, async move {
+                                    answer
+                                        .wait_for(Option::is_some)
+                                        .await
+                                        .map(|value| value.clone())
+                                })
+                                .await;
+                                lead.completed = true;
+                                return match answer {
+                                    Wait::Done(Ok(Some(Ok(())))) => Ok(ScanStop::Stopped),
+                                    Wait::Done(Ok(Some(Err(error)))) => Err(error),
+                                    Wait::Done(Ok(None) | Err(_)) => {
+                                        Err(DesktopError::scan_stop_failed(
+                                            "terminal scan stop completed without an answer",
+                                        ))
+                                    }
+                                    Wait::Expired => Err(classify(
+                                        timed_out("scan.stop", window),
+                                        OpKind::Cleanup,
+                                        true,
+                                    )),
+                                    Wait::Cancelled => Err(classify(
+                                        ticket.interruption("scan.stop"),
+                                        OpKind::Cleanup,
+                                        true,
+                                    )),
+                                };
+                            }
+                        }
+                        Wait::Done(Err(error)) => {
+                            // A terminal callback may have taken the flight
+                            // while the physical wait was resolving. Its
+                            // answer is authoritative; never replace it with
+                            // this late backend error.
+                            if stage == ScanStopStage::PhysicalStop && !lead.flight.claim_cleanup()
+                            {
+                                let mut answer = lead.flight.answer.subscribe();
+                                let answer = drive(ticket, window, async move {
+                                    answer
+                                        .wait_for(Option::is_some)
+                                        .await
+                                        .map(|value| value.clone())
+                                })
+                                .await;
+                                lead.completed = true;
+                                return match answer {
+                                    Wait::Done(Ok(Some(Ok(())))) => Ok(ScanStop::Stopped),
+                                    Wait::Done(Ok(Some(Err(error)))) => Err(error),
+                                    Wait::Done(Ok(None) | Err(_)) => {
+                                        Err(DesktopError::scan_stop_failed(
+                                            "terminal scan stop completed without an answer",
+                                        ))
+                                    }
+                                    Wait::Expired => Err(classify(
+                                        timed_out("scan.stop", window),
+                                        OpKind::Cleanup,
+                                        true,
+                                    )),
+                                    Wait::Cancelled => Err(classify(
+                                        ticket.interruption("scan.stop"),
+                                        OpKind::Cleanup,
+                                        true,
+                                    )),
+                                };
+                            }
+                            lead.fail(stage, error.clone());
+                            return Err(error);
+                        }
+                        Wait::Expired => {
+                            let operation = match stage {
+                                ScanStopStage::PhysicalStop => "scan.stop",
+                                ScanStopStage::RetireIngress => "scan.stop.ingress-retire",
+                                ScanStopStage::FenceIngress => "scan.stop.ingress-fence",
+                            };
+                            let error =
+                                classify(timed_out(operation, window), OpKind::Cleanup, true);
+                            if stage == ScanStopStage::PhysicalStop && !lead.flight.claim_cleanup()
+                            {
+                                // Preserve this caller's deadline without
+                                // corrupting the terminal cleanup flight.
+                                lead.completed = true;
+                                return Err(error);
+                            }
+                            lead.fail(stage, error.clone());
+                            return Err(error);
+                        }
+                        Wait::Cancelled => {
+                            let operation = match stage {
+                                ScanStopStage::PhysicalStop => "scan.stop",
+                                ScanStopStage::RetireIngress => "scan.stop.ingress-retire",
+                                ScanStopStage::FenceIngress => "scan.stop.ingress-fence",
+                            };
+                            let error =
+                                classify(ticket.interruption(operation), OpKind::Cleanup, true);
+                            if stage == ScanStopStage::PhysicalStop && !lead.flight.claim_cleanup()
+                            {
+                                // Cancellation is local to this caller once
+                                // the terminal task owns cleanup.
+                                lead.completed = true;
+                                return Err(error);
+                            }
+                            lead.fail(stage, error.clone());
+                            return Err(error);
+                        }
                     }
-                    Wait::Done(Err(error)) => {
-                        lead.fail(error.clone());
-                        Err(error)
-                    }
-                    Wait::Expired => {
-                        let error = classify(timed_out("scan.stop", window), OpKind::Cleanup, true);
-                        lead.fail(error.clone());
-                        Err(error)
-                    }
-                    Wait::Cancelled => {
-                        let error =
-                            classify(ticket.interruption("scan.stop"), OpKind::Cleanup, true);
-                        lead.fail(error.clone());
-                        Err(error)
+                    stage = match stage {
+                        ScanStopStage::PhysicalStop => ScanStopStage::RetireIngress,
+                        ScanStopStage::RetireIngress => ScanStopStage::FenceIngress,
+                        ScanStopStage::FenceIngress => break,
+                    };
+                    lead.stage = stage;
+                    let mut slot = self.inner.scan_slot();
+                    if let Some(active) = slot.as_mut()
+                        && active.id == *scan
+                    {
+                        active.phase = ScanPhase::Stopping {
+                            answer: lead.flight.answer.subscribe(),
+                            stage,
+                            flight: Arc::clone(&lead.flight),
+                        };
                     }
                 }
+                {
+                    let mut core = self.inner.core.lock().await;
+                    let mut out = batch();
+                    let _ = core.note_scan_platform(
+                        scan,
+                        ubm_core::central::ScanPlatformEvent::PlatformStopped,
+                        now_ms(),
+                        &mut out,
+                    );
+                    let _ = out.drain();
+                    // `note_scan_platform` already settled the kernel
+                    // op for the terminal session; the follow-up
+                    // settle is a duplicate that only observes, then
+                    // the actual OS-stop success releases.
+                    let _ =
+                        core.settle_op(scan, ContenderKind::Success, true, 0, now_ms(), &mut out);
+                    let _ = out.drain();
+                    // R15: retain the completed ticket between
+                    // settlement and release, then release.
+                    if let Some(kind) = terminal_kind_of(&core, scan) {
+                        retain_completed_scan(&self.inner.completed_scans, scan, kind);
+                    }
+                    report_terminal_release(&mut core, scan, true, None);
+                    recycle_observations(&mut core);
+                    let mut slot = self.inner.scan_slot();
+                    if let Some(active) = slot.as_mut()
+                        && active.id == *scan
+                    {
+                        if was_starting && !active.start_refused {
+                            active.phase = ScanPhase::StartCancelled;
+                        } else {
+                            *slot = None;
+                        }
+                    }
+                }
+                lead.succeed();
+                Ok(ScanStop::Stopped)
             }
         }
     }
@@ -12821,10 +13226,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// failure in the current shutdown report. The physical marker remains
     /// owned for a later shutdown retry; no new scan admission is permitted.
     async fn final_scan_stop(&self) -> Option<DesktopError> {
-        let id = self.active_scan_id()?;
+        let Some(id) = self.active_scan_id() else {
+            return lock_std(&self.inner.radio_source_close_failure).clone();
+        };
         let window = Budget::unbounded().window(LIVENESS_CLEANUP);
         let error = match self.stop_scan_with(&id, window, &OpTicket::new()).await {
-            Ok(_) => return None,
+            Ok(_) => return lock_std(&self.inner.radio_source_close_failure).clone(),
             Err(error) => error,
         };
         {
@@ -13317,12 +13724,29 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
             event = inner.boundary.next_event() => {
                 match event {
                     None => {
+                        inner.radio_source_closed.store(true, Ordering::Release);
                         // Event source closed: settle an owned scan session
                         // as source-closed so the owner is released even
                         // when the OS never confirms a stop.
                         let id = inner.scan_slot().as_ref().map(|active| active.id.clone());
-                        if let Some(id) = id {
-                            settle_os_ended_scan(&inner, &id, ContenderKind::Success).await;
+                        if let Some((id, flight)) = id
+                            .and_then(|id| claim_os_ended_scan(&inner, &id).map(|flight| (id, flight)))
+                        {
+                            // A callback-ingress fence can be acknowledged by
+                            // the next boundary event. Do not await it from
+                            // the only event consumer, or its marker would
+                            // deadlock behind this branch.
+                            let cleanup_inner = Arc::clone(&inner);
+                            let cleanup_id = id.clone();
+                            tokio::spawn(async move {
+                                settle_os_ended_scan(
+                                    &cleanup_inner,
+                                    &cleanup_id,
+                                    ContenderKind::Success,
+                                    flight,
+                                )
+                                .await;
+                            });
                             parity::publish_scan_terminal(
                                 &inner,
                                 &id,
@@ -13343,20 +13767,64 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         let id = inner.scan_slot().as_ref().and_then(|active| {
                             (matches!(active.phase, ScanPhase::Active)
                                 || (aborted
-                                    && matches!(
-                                        active.phase,
-                                        ScanPhase::Stopping(_) | ScanPhase::StopFailed
-                                    )))
+                                    && matches!(active.phase, ScanPhase::Stopping { .. } | ScanPhase::StopFailed(_))))
                             .then(|| active.id.clone())
                         });
-                        if let Some(id) = id {
+                        if let Some((id, flight)) = id
+                            .and_then(|id| claim_os_ended_scan(&inner, &id).map(|flight| (id, flight)))
+                        {
                             let contender = if aborted {
                                 ContenderKind::Failure
                             } else {
                                 ContenderKind::Success
                             };
-                            settle_os_ended_scan(&inner, &id, contender).await;
+                            // Keep the event consumer free to carry a
+                            // callback-ingress fence marker.
+                            let cleanup_inner = Arc::clone(&inner);
+                            let cleanup_id = id.clone();
+                            tokio::spawn(async move {
+                                settle_os_ended_scan(&cleanup_inner, &cleanup_id, contender, flight).await;
+                            });
                             parity::publish_scan_terminal(&inner, &id, aborted, &detail);
+                        }
+                    }
+                    Some(RadioEvent::ScanIngressSourceClosedFailed(error)) => {
+                        // The boundary observed source closure but could not
+                        // establish that its callback ingress drained. Keep
+                        // the scan owner at the first unfinished ingress
+                        // stage; a later stop retries cleanup without an
+                        // invented physical stop or a swallowed failure.
+                        inner.radio_source_closed.store(true, Ordering::Release);
+                        *lock_std(&inner.radio_source_close_failure) = Some(error.clone());
+                        let mut slot = inner.scan_slot();
+                        if let Some(active) = slot.as_mut() {
+                            // Source closure does not prove the physical
+                            // watcher stopped; retain physical stop as the
+                            // first retry stage.  If an explicit stop is
+                            // already in flight, first win its shared
+                            // completion authority so every waiter receives
+                            // this exact source-close failure.  Never replace
+                            // a `Stopping` phase without resolving its flight.
+                            match &active.phase {
+                                ScanPhase::Stopping { flight, .. } if flight.claim_cleanup() => {
+                                    let flight = Arc::clone(flight);
+                                    active.phase =
+                                        ScanPhase::StopFailed(ScanStopStage::PhysicalStop);
+                                    flight.complete(Err(error.clone()));
+                                }
+                                ScanPhase::Stopping { .. } => {
+                                    // A terminal cleanup or the physical
+                                    // leader already owns the flight. Its
+                                    // answer remains the sole answer; the
+                                    // exact source-close failure is retained
+                                    // above for the later terminal report.
+                                }
+                                _ => {
+                                    active.phase =
+                                        ScanPhase::StopFailed(ScanStopStage::PhysicalStop);
+                                }
+                            }
+                            inner.note_compensation_failure();
                         }
                     }
                     Some(RadioEvent::WriteReadiness { peer_id, ready }) => {
@@ -13378,7 +13846,10 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         .await;
                     }
                     Some(RadioEvent::Advertisement(snapshot)) => {
-                        ingest_advertisement(&inner, snapshot).await;
+                        ingest_advertisement(&inner, snapshot, None).await;
+                    }
+                    Some(RadioEvent::AdvertisementScoped { snapshot, ingress_epoch }) => {
+                        ingest_advertisement(&inner, snapshot, Some(ingress_epoch)).await;
                     }
                     Some(RadioEvent::ConnectionParameterSourceFailed { peer_id, error }) => {
                         parity::publish_connection_parameter_source(&inner, &peer_id, Some(error), 0).await;
@@ -13861,7 +14332,12 @@ async fn adapter_reset<B: RadioBoundary>(
             "gatt.acquired",
         ),
     );
-    let scan = inner.scan_slot().take();
+    // Keep the scan marker through reset cleanup.  The core reset settles the
+    // logical operation below, but it does not prove that the native scan
+    // callback boundary has stopped admitting the old epoch.  Removing this
+    // slot early used to let a replacement arm while the old retire/fence was
+    // still pending, and left a refused stage with no retry owner.
+    let scan = inner.scan_slot().as_ref().map(|active| active.id.clone());
     let peers: Vec<(String, String)> = inner
         .peers
         .lock()
@@ -13917,12 +14393,8 @@ async fn adapter_reset<B: RadioBoundary>(
             )
         }));
         lock_std(&inner.retired_consumers).extend(core.held_consumers());
-        if let Some(active) = &scan {
-            retain_completed_scan(
-                &inner.completed_scans,
-                &active.id,
-                OperationTerminalKind::Reset,
-            );
+        if let Some(scan) = &scan {
+            retain_completed_scan(&inner.completed_scans, scan, OperationTerminalKind::Reset);
         }
         let reset = next_scope(inner.identity.as_ref(), &previous, inner.ordinal, index).and_then(
             |(current, generation)| {
@@ -13994,19 +14466,30 @@ async fn adapter_reset<B: RadioBoundary>(
     } else {
         format!("the adapter was lost ({})", cause.as_str())
     };
-    if let Some(active) = &scan {
-        parity::publish_scan_terminal(inner, &active.id, true, &detail);
-        match tokio::time::timeout(COMPENSATION_TIMEOUT, inner.boundary.stop_scan()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
+    if let Some(scan) = &scan {
+        parity::publish_scan_terminal(inner, scan, true, &detail);
+        // The reset has settled the core operation, not the native scan
+        // ownership.  Reuse the ordinary staged stop flight so an in-flight
+        // explicit stop is joined, and a refused physical stop/retire/fence
+        // remains on the same slot for an exact retry.  In particular, do not
+        // issue the old untracked `boundary.stop_scan()` here: it could stop a
+        // replacement admitted after a prematurely removed marker.
+        let central = DesktopCentral {
+            inner: Arc::clone(inner),
+        };
+        let control = OpControl::unbounded();
+        match central
+            .stop_scan_with(
+                scan,
+                control.budget.window(COMPENSATION_TIMEOUT),
+                &control.ticket,
+            )
+            .await
+        {
+            Ok(ScanStop::Stopped | ScanStop::NotActive) => {}
+            Err(error) => {
                 inner.note_compensation_failure();
                 release_failures.push(error);
-            }
-            Err(_) => {
-                inner.note_compensation_failure();
-                release_failures.push(DesktopError::scan_stop_failed(
-                    "the OS did not answer the scan stop after the reset",
-                ));
             }
         }
     }
@@ -14059,7 +14542,7 @@ async fn adapter_reset<B: RadioBoundary>(
         previous,
         current,
         cancelled_operations,
-        ended_scan: scan.map(|active| active.id),
+        ended_scan: scan,
         released_links: links
             .into_iter()
             .map(|(peer_id, _, _)| peer_id)
@@ -14077,11 +14560,55 @@ async fn adapter_reset<B: RadioBoundary>(
 /// stopped): the platform event, the settlement, the retained ticket
 /// (R15), the release, and the marker — so the owner is released even
 /// when the OS never confirms a stop.
-async fn settle_os_ended_scan<B>(
+async fn settle_os_ended_scan<B: RadioBoundary>(
     inner: &Arc<Inner<B>>,
     id: &OperationId,
     contender: ContenderKind,
+    flight: Option<Arc<StopFlight>>,
 ) {
+    // The OS has already ended radio scanning, but a callback accepted before
+    // that report can still be queued. Retire callback admission, then fence
+    // that accepted prefix before releasing the logical owner. Failures retain
+    // the exact unfinished stage so an ordinary stop retries only ingress
+    // cleanup and never asks the OS to stop a scan it already ended.
+    let ingress_epoch = {
+        let mut slot = inner.scan_slot();
+        let Some(active) = slot.as_mut().filter(|active| active.id == *id) else {
+            return;
+        };
+        active.ingress_epoch
+    };
+    if let Err(error) = inner.boundary.retire_scan_ingress(ingress_epoch).await {
+        eprintln!(
+            "{}: scan callback retirement after OS-ended scan failed: {error}",
+            inner.identity.log_tag()
+        );
+        complete_os_ended_stop(inner, id, flight, ScanStopStage::RetireIngress, error);
+        return;
+    }
+    {
+        let mut slot = inner.scan_slot();
+        if let Some(active) = slot.as_mut().filter(|active| active.id == *id) {
+            active.phase = match &flight {
+                Some(flight) => ScanPhase::Stopping {
+                    answer: flight.answer.subscribe(),
+                    stage: ScanStopStage::FenceIngress,
+                    flight: Arc::clone(flight),
+                },
+                None => ScanPhase::StopFailed(ScanStopStage::FenceIngress),
+            };
+        } else {
+            return;
+        }
+    }
+    if let Err(error) = inner.boundary.fence_scan_ingress(ingress_epoch).await {
+        eprintln!(
+            "{}: scan callback fence after OS-ended scan failed: {error}",
+            inner.identity.log_tag()
+        );
+        complete_os_ended_stop(inner, id, flight, ScanStopStage::FenceIngress, error);
+        return;
+    }
     let mut core = inner.core.lock().await;
     let mut out = batch();
     let _ = core.note_scan_platform(
@@ -14108,9 +14635,70 @@ async fn settle_os_ended_scan<B>(
     if slot.as_ref().is_some_and(|active| active.id == *id) {
         *slot = None;
     }
+    if let Some(flight) = flight {
+        flight.complete(Ok(()));
+    }
 }
 
-async fn ingest_advertisement<B: RadioBoundary>(inner: &Arc<Inner<B>>, snapshot: PeerSnapshot) {
+/// Claim one OS-ended scan before spawning its asynchronous callback cleanup.
+/// The claim is synchronous with the event loop, preventing duplicate terminal
+/// reports from creating competing retirement/fence tasks.
+fn claim_os_ended_scan<B>(
+    inner: &Arc<Inner<B>>,
+    id: &OperationId,
+) -> Option<Option<Arc<StopFlight>>> {
+    let mut slot = inner.scan_slot();
+    let Some(active) = slot.as_mut().filter(|active| active.id == *id) else {
+        return None;
+    };
+    match &active.phase {
+        ScanPhase::Active
+        | ScanPhase::Starting
+        | ScanPhase::StartCancelled
+        | ScanPhase::StopFailed(ScanStopStage::PhysicalStop) => {
+            active.phase = ScanPhase::StopFailed(ScanStopStage::RetireIngress);
+            Some(None)
+        }
+        ScanPhase::Stopping { flight, .. } => {
+            if !flight.claim_cleanup() {
+                return None;
+            }
+            let flight = Arc::clone(flight);
+            active.phase = ScanPhase::Stopping {
+                answer: flight.answer.subscribe(),
+                stage: ScanStopStage::RetireIngress,
+                flight: Arc::clone(&flight),
+            };
+            Some(Some(flight))
+        }
+        ScanPhase::StopFailed(ScanStopStage::RetireIngress | ScanStopStage::FenceIngress) => None,
+    }
+}
+
+fn complete_os_ended_stop<B>(
+    inner: &Arc<Inner<B>>,
+    id: &OperationId,
+    flight: Option<Arc<StopFlight>>,
+    stage: ScanStopStage,
+    error: DesktopError,
+) {
+    {
+        let mut slot = inner.scan_slot();
+        if let Some(active) = slot.as_mut().filter(|active| active.id == *id) {
+            active.phase = ScanPhase::StopFailed(stage);
+        }
+    }
+    inner.note_compensation_failure();
+    if let Some(flight) = flight {
+        flight.complete(Err(error));
+    }
+}
+
+async fn ingest_advertisement<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    snapshot: PeerSnapshot,
+    ingress_epoch: Option<u64>,
+) {
     // L8: resolve under the core lock, then drop the guard before the map
     // insert — the central lock is never held across the peers await, and
     // the insert stays out of the core critical section.
@@ -14131,7 +14719,9 @@ async fn ingest_advertisement<B: RadioBoundary>(inner: &Arc<Inner<B>>, snapshot:
     // Finding 121: a sighting is an observation only while a scan runs,
     // and belongs to that scan (legacy backends reported advertisements
     // only while scanning). Outside a scan it only makes the peer known.
-    let Some(scan) = inner.scan_slot().as_ref().map(|active| active.id.clone()) else {
+    let Some(scan) = inner.scan_slot().as_ref().and_then(|active| {
+        (Some(active.ingress_epoch) == ingress_epoch).then(|| active.id.clone())
+    }) else {
         return;
     };
     // F22: every advertisement stays pollable with its full facts until the
@@ -14191,11 +14781,26 @@ async fn refresh_known_peers<B: RadioBoundary>(inner: &Arc<Inner<B>>) {
 /// start). A re-read the OS cannot answer is counted and logged, never
 /// silent.
 async fn reobserve_known_peers<B: RadioBoundary>(inner: &Arc<Inner<B>>) {
+    let Some((scan_id, ingress_epoch)) = inner
+        .scan_slot()
+        .as_ref()
+        .map(|active| (active.id.clone(), active.ingress_epoch))
+    else {
+        return;
+    };
     match inner.boundary.peers().await {
         Ok(peers) => {
+            let still_owned = inner.scan_slot().as_ref().is_some_and(|active| {
+                active.id == scan_id && active.ingress_epoch == ingress_epoch
+            });
+            if !still_owned {
+                // The refresh belongs to the scan captured before the radio
+                // await; never reinterpret it as a later scan's sighting.
+                return;
+            }
             for mut snapshot in peers {
                 snapshot.extras.source = crate::boundary::ObservationSource::DeviceState;
-                ingest_advertisement(inner, snapshot).await;
+                ingest_advertisement(inner, snapshot, Some(ingress_epoch)).await;
             }
         }
         Err(error) => {
@@ -17158,6 +17763,7 @@ mod adapter_tests {
         central.boundary().unblock_all(FaultOp::PeerDirectory);
         assert!(central.peer_records().await.is_empty());
     }
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use ubm_core::central::{ConnectionState, ConsumerState, ScanSessionState};
@@ -17169,7 +17775,7 @@ mod adapter_tests {
 
     use super::{CentralProfile, DesktopCentral, services_changed_invalidated};
     use crate::errors::DesktopError;
-    use crate::op_control::OpControl;
+    use crate::op_control::{Budget, OpControl};
     use ubm_core::central::Central;
     use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
 
@@ -17739,6 +18345,704 @@ mod adapter_tests {
             1,
             "cleanup stops the OS scan exactly once"
         );
+    }
+
+    #[tokio::test]
+    async fn scan_stop_retries_only_the_unfinished_callback_fence() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start scan");
+        central.boundary().fail_next(
+            FaultOp::ScanIngressFence,
+            "transient callback fence refusal",
+        );
+
+        let error = central
+            .stop_scan(session.operation_id(), OpControl::budget_ms(5000))
+            .await
+            .expect_err("fence refusal retains cleanup");
+        assert_eq!(error.code_str(), "scan.stop-failed");
+        assert!(
+            central.has_active_scan().await,
+            "fence debt retains scan ownership"
+        );
+
+        central
+            .stop_scan(session.operation_id(), OpControl::budget_ms(5000))
+            .await
+            .expect("retry fences the already-retired callback ingress");
+        let calls = central.boundary().calls();
+        assert_eq!(
+            calls.iter().filter(|call| *call == "stop_scan").count(),
+            1,
+            "physical stop is never repeated after it succeeded"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "retire_scan_ingress")
+                .count(),
+            1,
+            "callback retirement is not repeated after it succeeded"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "fence_scan_ingress")
+                .count(),
+            2,
+            "only the refused fence is retried"
+        );
+        assert!(!central.has_active_scan().await);
+    }
+
+    #[tokio::test]
+    async fn scan_stop_retries_callback_retirement_without_repeating_physical_stop() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start scan");
+        central.boundary().fail_next(
+            FaultOp::ScanIngressRetire,
+            "transient callback retirement refusal",
+        );
+
+        central
+            .stop_scan(session.operation_id(), OpControl::budget_ms(5000))
+            .await
+            .expect_err("retirement refusal retains cleanup");
+        central
+            .stop_scan(session.operation_id(), OpControl::budget_ms(5000))
+            .await
+            .expect("retry retires then fences callback ingress");
+
+        let calls = central.boundary().calls();
+        assert_eq!(calls.iter().filter(|call| *call == "stop_scan").count(), 1);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "retire_scan_ingress")
+                .count(),
+            2,
+            "only the refused retirement is retried"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "fence_scan_ingress")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn adapter_reset_retire_refusal_retains_scan_cleanup_for_an_exact_retry() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5_000))
+            .await
+            .expect("start scan");
+        central.boundary().fail_next(
+            FaultOp::ScanIngressRetire,
+            "reset callback retirement refusal",
+        );
+        let mut resets = central.adapter_reset_events();
+
+        super::adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::PoweredOff,
+            Some(crate::boundary::AdapterPowerState::PoweredOff),
+            None,
+        )
+        .await;
+
+        let reset = resets.try_recv().expect("reset receipt");
+        assert!(
+            reset
+                .release_failures
+                .iter()
+                .any(|error| error.code_str() == "scan.stop-failed"),
+            "the reset receipt retains the exact refused cleanup"
+        );
+        assert!(
+            central.has_active_scan().await,
+            "a refused ingress retirement keeps the scan admission owner"
+        );
+        assert_eq!(
+            central
+                .start_scan("owner-b", &[], OpControl::budget_ms(5_000))
+                .await
+                .expect_err("replacement cannot bypass retained cleanup")
+                .code(),
+            BleErrorCode::ScanAlreadyActive
+        );
+
+        central
+            .stop_scan(session.operation_id(), OpControl::budget_ms(5_000))
+            .await
+            .expect("retry completes only the refused retirement and fence");
+        let calls = central.boundary().calls();
+        assert_eq!(calls.iter().filter(|call| *call == "stop_scan").count(), 1);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "retire_scan_ingress")
+                .count(),
+            2
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "fence_scan_ingress")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn adapter_reset_fence_refusal_retains_scan_cleanup_for_an_exact_retry() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5_000))
+            .await
+            .expect("start scan");
+        central
+            .boundary()
+            .fail_next(FaultOp::ScanIngressFence, "reset callback fence refusal");
+        let mut resets = central.adapter_reset_events();
+
+        super::adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::PoweredOff,
+            Some(crate::boundary::AdapterPowerState::PoweredOff),
+            None,
+        )
+        .await;
+
+        let reset = resets.try_recv().expect("reset receipt");
+        assert!(
+            reset
+                .release_failures
+                .iter()
+                .any(|error| error.code_str() == "scan.stop-failed"),
+            "the reset receipt retains the exact refused cleanup"
+        );
+        assert!(central.has_active_scan().await);
+
+        central
+            .stop_scan(session.operation_id(), OpControl::budget_ms(5_000))
+            .await
+            .expect("retry completes only the refused fence");
+        let calls = central.boundary().calls();
+        assert_eq!(calls.iter().filter(|call| *call == "stop_scan").count(), 1);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "retire_scan_ingress")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "fence_scan_ingress")
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn adapter_reset_joins_held_stop_fence_and_blocks_replacement_until_it_settles() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5_000))
+            .await
+            .expect("start scan");
+        central.boundary().block_op(FaultOp::ScanIngressFence);
+        let resetting = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                super::adapter_reset(
+                    &central.inner,
+                    crate::boundary::AdapterLossCause::PoweredOff,
+                    Some(crate::boundary::AdapterPowerState::PoweredOff),
+                    None,
+                )
+                .await;
+            })
+        };
+        central
+            .boundary()
+            .wait_for_calls("fence_scan_ingress", 1)
+            .await;
+        let following = {
+            let central = central.clone();
+            let id = session.operation_id().clone();
+            tokio::spawn(async move { central.stop_scan(&id, OpControl::budget_ms(5_000)).await })
+        };
+        assert_eq!(
+            central
+                .start_scan("owner-b", &[], OpControl::budget_ms(5_000))
+                .await
+                .expect_err("old ingress fence remains the replacement admission fence")
+                .code(),
+            BleErrorCode::ScanAlreadyActive
+        );
+
+        central.boundary().unblock_op(FaultOp::ScanIngressFence);
+        resetting.await.expect("reset task joins");
+        following
+            .await
+            .expect("following stop joins")
+            .expect("following stop observes reset cleanup success");
+        let successor = central
+            .start_scan("owner-b", &[], OpControl::budget_ms(5_000))
+            .await
+            .expect("replacement starts only after the old fence settles");
+        central
+            .stop_scan(successor.operation_id(), OpControl::budget_ms(5_000))
+            .await
+            .expect("stop successor");
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "stop_scan")
+                .count(),
+            2,
+            "one physical stop for reset A and one for successor B"
+        );
+    }
+
+    #[tokio::test]
+    async fn held_reobserve_from_old_scan_cannot_attach_to_successor() {
+        let central = open().await;
+        let first = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start A");
+        let RadioEvent::Advertisement(peer) = advertisement("refresh-peer") else {
+            unreachable!();
+        };
+        central.boundary().set_peers(vec![peer]);
+        let peer_reads = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "peers")
+            .count();
+        central.boundary().block_op(FaultOp::PeerDirectory);
+        let refresh = {
+            let inner = std::sync::Arc::clone(&central.inner);
+            tokio::spawn(async move { super::reobserve_known_peers(&inner).await })
+        };
+        central
+            .boundary()
+            .wait_for_calls("peers", peer_reads + 1)
+            .await;
+        central
+            .stop_scan(first.operation_id(), OpControl::budget_ms(5000))
+            .await
+            .expect("stop A");
+        // Releasing this gate schedules A's held refresh, but cannot poll it
+        // until this task yields. B therefore installs its distinct epoch
+        // first; then the old refresh must discard its stale snapshot.
+        central.boundary().set_peers(Vec::new());
+        central.boundary().unblock_op(FaultOp::PeerDirectory);
+        let second = central
+            .start_scan("owner-b", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start B");
+        refresh.await.expect("old refresh joins");
+        assert!(central.take_scan_observation().await.is_none());
+        central
+            .stop_scan(second.operation_id(), OpControl::budget_ms(5000))
+            .await
+            .expect("stop B");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_callback_arm_is_retained_then_retired_and_fenced() {
+        let central = open().await;
+        central.boundary().block_op(FaultOp::ScanIngressArm);
+        let starting = {
+            let central = central.clone();
+            tokio::spawn(async move {
+                central
+                    .start_scan("owner-a", &[], OpControl::budget_ms(1000))
+                    .await
+            })
+        };
+        central
+            .boundary()
+            .wait_for_calls("arm_scan_ingress", 1)
+            .await;
+        tokio::time::advance(Duration::from_millis(1000)).await;
+        let error = starting
+            .await
+            .expect("start task joins")
+            .expect_err("caller deadline expires after native arm entry");
+        assert_eq!(error.code_str(), "operation.timed-out");
+        assert!(central.has_active_scan().await, "late arm remains owned");
+        central.boundary().unblock_op(FaultOp::ScanIngressArm);
+        central
+            .boundary()
+            .wait_for_calls("fence_scan_ingress", 1)
+            .await;
+        assert!(!central.has_active_scan().await);
+        let calls = central.boundary().calls();
+        assert!(!calls.iter().any(|call| call == "start_scan"));
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "retire_scan_ingress")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "fence_scan_ingress")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn arm_handoff_claim_observes_publication_across_notify_waiters_race() {
+        let handoff = std::sync::Arc::new(super::ArmHandoff::new());
+        let claimant = {
+            let handoff = std::sync::Arc::clone(&handoff);
+            tokio::spawn(async move { handoff.claim().await })
+        };
+        // Yield so the claimant can register its enabled waiter before this
+        // publication; `notify_waiters` must never leave it stranded.
+        tokio::task::yield_now().await;
+        *handoff.outcome.lock().await = Some(Ok(()));
+        handoff.changed.notify_waiters();
+        claimant
+            .await
+            .expect("claim task joins")
+            .expect("published arm result is claimed");
+        assert_eq!(
+            handoff.state.load(Ordering::Acquire),
+            super::ArmHandoff::CLAIMED
+        );
+    }
+
+    #[tokio::test]
+    async fn arm_handoff_worker_observes_abandonment_before_wait_registration() {
+        let handoff = super::ArmHandoff::new();
+        // This is the worker's dangerous ordering: caller abandonment has
+        // already published before it begins waiting. The enabled waiter plus
+        // state re-check must complete immediately rather than strand cleanup.
+        handoff.abandon();
+        let state = tokio::time::timeout(Duration::from_millis(100), handoff.wait_for_resolution())
+            .await
+            .expect("abandonment cannot be lost before worker wait registration");
+        assert_eq!(state, super::ArmHandoff::ABANDONED);
+    }
+
+    #[tokio::test]
+    async fn source_close_refusal_without_scan_refuses_future_start() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(RadioEvent::ScanIngressSourceClosedFailed(
+                DesktopError::scan_stop_failed("source closure refused callback cleanup"),
+            ))
+            .expect("source-close failure event admission");
+        for _ in 0..100 {
+            if central.inner.radio_source_closed.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(central.inner.radio_source_closed.load(Ordering::Acquire));
+        let error = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5))
+            .await
+            .expect_err("source closure must refuse a new scan");
+        assert_eq!(error.code(), BleErrorCode::CapabilityUnavailable);
+    }
+
+    #[tokio::test]
+    async fn source_close_failure_settles_held_stop_and_follower_with_exact_error() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start scan");
+        central.boundary().block_op(FaultOp::StopScan);
+        let stopping = {
+            let central = central.clone();
+            let id = session.operation_id().clone();
+            tokio::spawn(async move { central.stop_scan(&id, OpControl::unbounded()).await })
+        };
+        central.boundary().wait_for_calls("stop_scan", 1).await;
+        let following = {
+            let central = central.clone();
+            let id = session.operation_id().clone();
+            tokio::spawn(async move { central.stop_scan(&id, OpControl::unbounded()).await })
+        };
+        central
+            .boundary()
+            .push_event(RadioEvent::ScanIngressSourceClosedFailed(
+                DesktopError::scan_stop_failed("source callback drain refused"),
+            ))
+            .expect("source-close failure event admission");
+        for result in [stopping, following] {
+            let error = tokio::time::timeout(Duration::from_millis(500), result)
+                .await
+                .expect("source-close failure settles held stop")
+                .expect("join stop")
+                .expect_err("source-close failure is exact shared answer");
+            assert_eq!(error.code_str(), "scan.stop-failed");
+            assert_eq!(error.detail(), Some("source callback drain refused"));
+        }
+        assert!(central.has_active_scan().await, "retry debt remains owned");
+        assert_eq!(
+            central
+                .inner
+                .radio_source_close_failure
+                .lock()
+                .expect("source-close failure mutex")
+                .clone()
+                .expect("exact source-close error retained")
+                .detail(),
+            Some("source callback drain refused")
+        );
+        let calls = central.boundary().calls();
+        assert_eq!(calls.iter().filter(|call| *call == "stop_scan").count(), 1);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "retire_scan_ingress")
+                .count(),
+            0
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "fence_scan_ingress")
+                .count(),
+            0
+        );
+        central.boundary().unblock_op(FaultOp::StopScan);
+    }
+
+    #[tokio::test]
+    async fn aborted_terminal_hands_off_a_held_stop_without_duplicate_ingress_cleanup() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start scan");
+        central.boundary().block_op(FaultOp::StopScan);
+        let stopping = {
+            let central = central.clone();
+            let id = session.operation_id().clone();
+            tokio::spawn(async move { central.stop_scan(&id, OpControl::budget_ms(5000)).await })
+        };
+        central.boundary().wait_for_calls("stop_scan", 1).await;
+        central
+            .boundary()
+            .push_event(RadioEvent::ScanTerminated {
+                aborted: true,
+                detail: "watcher ended while stop was pending".to_owned(),
+            })
+            .expect("terminal event admission");
+        tokio::time::timeout(Duration::from_millis(500), stopping)
+            .await
+            .expect("authoritative terminal settles the explicit caller without unblocking stop")
+            .expect("join stop")
+            .expect("terminal cleanup hands the explicit caller a successful stop result");
+        let calls = central.boundary().calls();
+        assert_eq!(calls.iter().filter(|call| *call == "stop_scan").count(), 1);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "retire_scan_ingress")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "fence_scan_ingress")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_handoff_wins_over_a_late_physical_stop_error() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start scan");
+        central.boundary().block_op(FaultOp::StopScan);
+        central.boundary().block_op(FaultOp::ScanIngressRetire);
+        let stopping = {
+            let central = central.clone();
+            let id = session.operation_id().clone();
+            tokio::spawn(async move { central.stop_scan(&id, OpControl::budget_ms(5000)).await })
+        };
+        central.boundary().wait_for_calls("stop_scan", 1).await;
+        central
+            .boundary()
+            .push_event(RadioEvent::ScanTerminated {
+                aborted: true,
+                detail: "terminal takes held stop flight".to_owned(),
+            })
+            .expect("terminal event admission");
+        central
+            .boundary()
+            .wait_for_calls("retire_scan_ingress", 1)
+            .await;
+        central
+            .boundary()
+            .fail_next(FaultOp::StopScan, "late explicit stop error");
+        central.boundary().unblock_op(FaultOp::StopScan);
+        central.boundary().unblock_op(FaultOp::ScanIngressRetire);
+        stopping
+            .await
+            .expect("join stop")
+            .expect("terminal success is not clobbered by the late stop error");
+        let calls = central.boundary().calls();
+        assert_eq!(calls.iter().filter(|call| *call == "stop_scan").count(), 1);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "retire_scan_ingress")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "fence_scan_ingress")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_stop_after_terminal_handoff_keeps_flight_for_follower() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start scan");
+        central.boundary().block_op(FaultOp::StopScan);
+        central.boundary().block_op(FaultOp::ScanIngressRetire);
+        let ticket = crate::op_control::OpTicket::new();
+        let stopping = {
+            let central = central.clone();
+            let id = session.operation_id().clone();
+            let ticket = ticket.clone();
+            tokio::spawn(async move {
+                central
+                    .stop_scan(&id, OpControl::new(Budget::unbounded(), ticket))
+                    .await
+            })
+        };
+        central.boundary().wait_for_calls("stop_scan", 1).await;
+        let following = {
+            let central = central.clone();
+            let id = session.operation_id().clone();
+            tokio::spawn(async move { central.stop_scan(&id, OpControl::unbounded()).await })
+        };
+        central
+            .boundary()
+            .push_event(RadioEvent::ScanTerminated {
+                aborted: true,
+                detail: "terminal takes held stop flight".to_owned(),
+            })
+            .expect("terminal event admission");
+        central
+            .boundary()
+            .wait_for_calls("retire_scan_ingress", 1)
+            .await;
+        central
+            .cancel(&ticket)
+            .await
+            .expect("cancel explicit stop after terminal handoff");
+        let error = stopping
+            .await
+            .expect("join cancelled stop")
+            .expect_err("cancellation remains local after terminal handoff");
+        assert_eq!(error.code_str(), "operation.aborted");
+        central.boundary().unblock_op(FaultOp::ScanIngressRetire);
+        following
+            .await
+            .expect("join follower")
+            .expect("follower observes terminal flight success");
+        let calls = central.boundary().calls();
+        assert_eq!(calls.iter().filter(|call| *call == "stop_scan").count(), 1);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "retire_scan_ingress")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| *call == "fence_scan_ingress")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_stop_after_terminal_handoff_keeps_flight_for_follower() {
+        let central = open().await;
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start scan");
+        central.boundary().block_op(FaultOp::StopScan);
+        central.boundary().block_op(FaultOp::ScanIngressRetire);
+        let stopping = {
+            let central = central.clone();
+            let id = session.operation_id().clone();
+            tokio::spawn(async move { central.stop_scan(&id, OpControl::budget_ms(1_000)).await })
+        };
+        central.boundary().wait_for_calls("stop_scan", 1).await;
+        let following = {
+            let central = central.clone();
+            let id = session.operation_id().clone();
+            tokio::spawn(async move { central.stop_scan(&id, OpControl::unbounded()).await })
+        };
+        central
+            .boundary()
+            .push_event(RadioEvent::ScanTerminated {
+                aborted: true,
+                detail: "terminal takes held stop flight".to_owned(),
+            })
+            .expect("terminal event admission");
+        central
+            .boundary()
+            .wait_for_calls("retire_scan_ingress", 1)
+            .await;
+        tokio::time::advance(Duration::from_millis(1_001)).await;
+        let error = stopping
+            .await
+            .expect("join expired stop")
+            .expect_err("deadline remains local after terminal handoff");
+        assert_eq!(error.code_str(), "operation.timed-out");
+        central.boundary().unblock_op(FaultOp::ScanIngressRetire);
+        following
+            .await
+            .expect("join follower")
+            .expect("follower observes terminal flight success");
     }
 
     #[tokio::test]

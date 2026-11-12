@@ -6,7 +6,7 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [5.2.2] - 2026-11-11
+## [5.2.2] - 2026-11-12
 
 - Preserve ordered notification ingress and durable terminal evidence across
   supported host recovery paths, including explicit partial-recovery status
@@ -40,6 +40,9 @@ All notable changes to `unified-ble-manager` are documented here.
   delayed reads, and match retired connection cleanup to the exact admission.
 - Preserve committed mobile subscription evidence across session removal and
   authenticate exact scan-cleanup retries after the session is reclaimed.
+- Preserve scan callback ownership across stop and restart, including callbacks
+  already queued by UBM and interrupted cleanup, so those observations are not
+  assigned to a later scan when the queue is drained.
 
 ## [5.2.1] - 2026-11-08
 

@@ -75,6 +75,7 @@ mod directory_tests {
             manager: manager.clone(),
             sender: sender.clone(),
             source_registry: Arc::default(),
+            scan_ingress_fences: Arc::default(),
         };
         let id = uuid::Uuid::parse_str("00e2ce71-3ba4-6569-e3de-3081ce0c95fb").unwrap();
         let mut events = adapter.events().await.unwrap();
@@ -126,6 +127,131 @@ mod directory_tests {
     }
 
     #[tokio::test]
+    async fn closed_adapter_source_fails_pending_scan_fence_without_waiting_for_actor() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let adapter = Adapter {
+            manager: Arc::new(AdapterManager::default()),
+            sender,
+            source_registry: Arc::default(),
+            scan_ingress_fences: Arc::default(),
+        };
+        let fence = CoreBluetoothReplyFuture::default();
+        adapter
+            .scan_ingress_fences
+            .lock()
+            .unwrap()
+            .register(42, fence.get_state_clone())
+            .unwrap();
+
+        adapter.scan_ingress_source_closed().await.unwrap();
+        assert!(matches!(
+            fence.await,
+            CoreBluetoothReply::Failed(error) if error.code == "scan-ingress-source-closed"
+        ));
+        assert!(matches!(
+            adapter.fence_scan_ingress(42).await,
+            Err(Error::Platform(error)) if error.code == "scan-ingress-source-closed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn scan_fence_waits_for_adapter_stream_acknowledgement() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let adapter = Adapter {
+            manager: Arc::new(AdapterManager::default()),
+            sender,
+            source_registry: Arc::default(),
+            scan_ingress_fences: Arc::default(),
+        };
+        let mut fence = CoreBluetoothReplyFuture::default();
+        let fence_id = adapter
+            .scan_ingress_fences
+            .lock()
+            .unwrap()
+            .register(41, fence.get_state_clone())
+            .unwrap();
+
+        // The delegate/actor marker has no authority to complete this reply.
+        // The adapter stream must consume the marker and call this method.
+        assert!((&mut fence).now_or_never().is_none());
+        assert!(adapter.acknowledge_scan_ingress_fence(fence_id));
+        assert!(matches!(fence.await, CoreBluetoothReply::Ok));
+    }
+
+    #[tokio::test]
+    async fn held_adapter_event_consumer_blocks_scan_fence_until_marker_acknowledgement() {
+        let (sender, mut requests) = mpsc::channel(1);
+        let adapter = Adapter {
+            manager: Arc::new(AdapterManager::default()),
+            sender,
+            source_registry: Arc::default(),
+            scan_ingress_fences: Arc::default(),
+        };
+        let mut events = adapter.events().await.unwrap();
+        let first_adapter = adapter.clone();
+        let first = tokio::spawn(async move { first_adapter.fence_scan_ingress(41).await });
+
+        let CoreBluetoothMessage::ScanIngress {
+            action: super::super::central_delegate::ScanIngressAction::Fence,
+            epoch: 41,
+            fence_id: Some(first_fence_id),
+            ..
+        } = requests.next().await.unwrap()
+        else {
+            panic!("the adapter must request an identified ingress fence");
+        };
+
+        // A caller deadline may cancel after the queue command has been
+        // accepted but before the downstream marker is acknowledged. The
+        // retry must reuse this exact pending marker rather than requiring a
+        // second physical stop/retire.
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        let waiting_adapter = adapter.clone();
+        let mut waiting = tokio::spawn(async move { waiting_adapter.fence_scan_ingress(41).await });
+        let CoreBluetoothMessage::ScanIngress {
+            action: super::super::central_delegate::ScanIngressAction::Fence,
+            epoch: 41,
+            fence_id: Some(fence_id),
+            ..
+        } = requests.next().await.unwrap()
+        else {
+            panic!("the retry must request the existing ingress fence");
+        };
+        assert_eq!(fence_id, first_fence_id);
+
+        adapter.manager.emit(CentralEvent::AdvertisementScoped {
+            id: uuid::Uuid::nil().into(),
+            report: crate::api::AdvertisementReport::default(),
+            ingress_epoch: 41,
+        });
+        adapter.manager.emit(CentralEvent::ScanIngressFence {
+            ingress_epoch: 41,
+            fence_id,
+        });
+
+        // A delegate/actor marker alone cannot release a scan while the
+        // adapter stream consumer has not crossed the earlier advertisement.
+        assert!((&mut waiting).now_or_never().is_none());
+        assert!(matches!(
+            events.next().await,
+            Some(CentralEvent::AdvertisementScoped { ingress_epoch: 41, .. })
+        ));
+        assert!((&mut waiting).now_or_never().is_none());
+
+        let Some(CentralEvent::ScanIngressFence {
+            ingress_epoch: 41,
+            fence_id: observed_id,
+        }) = events.next().await
+        else {
+            panic!("the marker must follow the scoped advertisement");
+        };
+        assert_eq!(observed_id, fence_id);
+        assert!(adapter.acknowledge_scan_ingress_fence(observed_id));
+        assert!(waiting.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
     async fn unassociated_native_callback_is_a_public_source_uncertainty_event() {
         let manager = Arc::new(AdapterManager::<Peripheral>::default());
         let mut events = manager.event_stream();
@@ -162,7 +288,7 @@ use futures::stream::{Stream, StreamExt};
 use log::*;
 use objc2_core_bluetooth::CBManagerState;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::task;
 
 /// Implementation of [api::Central](crate::api::Central).
@@ -171,6 +297,104 @@ pub struct Adapter {
     manager: Arc<AdapterManager<Peripheral>>,
     sender: Sender<CoreBluetoothMessage>,
     source_registry: Arc<super::internal::PeerSourceRegistry>,
+    /// Fences wait for an actor marker. If the authoritative adapter stream
+    /// closes, no actor can consume a queued marker, so these replies must be
+    /// completed locally rather than waiting forever.
+    scan_ingress_fences: Arc<std::sync::Mutex<ScanIngressFences>>,
+}
+
+#[derive(Debug, Default)]
+struct ScanIngressFences {
+    source_closed: bool,
+    next_id: u64,
+    /// One retiring epoch owns one downstream marker.  Several callers may
+    /// wait for it when an outer lifecycle deadline cancels and retries the
+    /// same fence before the Btleplug event consumer acknowledges it.
+    pending: BTreeMap<u64, PendingScanIngressFence>,
+}
+
+#[derive(Debug)]
+struct PendingScanIngressFence {
+    id: u64,
+    waiters: Vec<super::internal::CoreBluetoothReplyStateShared>,
+}
+
+impl ScanIngressFences {
+    fn source_closed_error() -> crate::PlatformError {
+        crate::PlatformError::new(
+            "corebluetooth",
+            "scan-ingress-source-closed",
+            "The authoritative CoreBluetooth adapter event stream closed before the scan ingress fence completed",
+        )
+    }
+
+    fn register(
+        &mut self,
+        epoch: u64,
+        reply: super::internal::CoreBluetoothReplyStateShared,
+    ) -> std::result::Result<u64, crate::PlatformError> {
+        if self.source_closed {
+            return Err(Self::source_closed_error());
+        }
+        if let Some(pending) = self.pending.get_mut(&epoch) {
+            pending.waiters.push(reply);
+            return Ok(pending.id);
+        }
+        self.next_id = self.next_id.checked_add(1).ok_or_else(|| {
+            crate::PlatformError::new(
+                "corebluetooth",
+                "scan-ingress-fence-id-exhausted",
+                "The CoreBluetooth scan ingress fence identifier space is exhausted",
+            )
+        })?;
+        self.pending.insert(
+            epoch,
+            PendingScanIngressFence {
+                id: self.next_id,
+                waiters: vec![reply],
+            },
+        );
+        Ok(self.next_id)
+    }
+
+    fn remove_waiter(
+        &mut self,
+        epoch: u64,
+        reply: &super::internal::CoreBluetoothReplyStateShared,
+    ) {
+        let remove_epoch = if let Some(pending) = self.pending.get_mut(&epoch) {
+            pending.waiters.retain(|waiter| !std::sync::Arc::ptr_eq(waiter, reply));
+            pending.waiters.is_empty()
+        } else {
+            false
+        };
+        if remove_epoch {
+            self.pending.remove(&epoch);
+        }
+    }
+
+    fn acknowledge(
+        &mut self,
+        id: u64,
+    ) -> Option<Vec<super::internal::CoreBluetoothReplyStateShared>> {
+        let epoch = self
+            .pending
+            .iter()
+            .find_map(|(&epoch, pending)| (pending.id == id).then_some(epoch))?;
+        self.pending.remove(&epoch).map(|pending| pending.waiters)
+    }
+
+    fn close(&mut self) -> Vec<super::internal::CoreBluetoothReplyStateShared> {
+        self.source_closed = true;
+        std::mem::take(&mut self.pending)
+            .into_values()
+            .flat_map(|pending| pending.waiters)
+            .collect()
+    }
+
+    fn is_closed(&self) -> bool {
+        self.source_closed
+    }
 }
 
 // UBM patch (UBM_PATCHES.md #7): resetting, unsupported and unauthorized
@@ -259,6 +483,141 @@ fn emit_unassociated_connection_observation(
 }
 
 impl Adapter {
+    /// Associate one UBM scan operation with CoreBluetooth's serial delegate
+    /// callback queue. CoreBluetooth provides neither a scan object nor an
+    /// epoch in `didDiscover`, so callers must arm before physical scanning,
+    /// then retire and fence after `stopScan` before replacement scanning.
+    pub async fn arm_scan_ingress(&self, epoch: u64) -> Result<()> {
+        self.scan_ingress(super::central_delegate::ScanIngressAction::Arm, epoch)
+            .await
+    }
+
+    /// Stop accepting new callback ownership for `epoch`. This does not make
+    /// a claim about radio hardware; use [`Self::fence_scan_ingress`] to
+    /// drain the accepted callback prefix into the actor.
+    pub async fn retire_scan_ingress(&self, epoch: u64) -> Result<()> {
+        self.scan_ingress(super::central_delegate::ScanIngressAction::Retire, epoch)
+            .await
+    }
+
+    /// Wait until CoreBluetooth's serial callback queue and the adapter actor
+    /// have both crossed the retiring epoch's ordered marker. This is a
+    /// callback-observed fence, not an RF-generation guarantee: Apple gives
+    /// `stopScan` neither a completion callback nor a scan identity, so an
+    /// OS discovery delivered only after a later re-arm is indistinguishable
+    /// from that later scan and must not be claimed as proven old or new.
+    pub async fn fence_scan_ingress(&self, epoch: u64) -> Result<()> {
+        self.scan_ingress(super::central_delegate::ScanIngressAction::Fence, epoch)
+            .await
+    }
+
+    /// Mark the adapter event source terminal and settle every fence that was
+    /// waiting for its actor marker. The adapter stream is authoritative: once
+    /// it ends, there is no safe future callback/actor delivery to wait for.
+    pub async fn scan_ingress_source_closed(&self) -> Result<()> {
+        let pending = self
+            .scan_ingress_fences
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .close();
+        let error = ScanIngressFences::source_closed_error();
+        for fence in pending {
+            fence
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .try_set_reply(CoreBluetoothReply::Failed(error.clone()));
+        }
+        Ok(())
+    }
+
+    /// Acknowledge the ordered marker only after the adapter event stream has
+    /// consumed it. This is deliberately downstream of the CoreBluetooth
+    /// actor: an actor-only acknowledgement could release a scan while an
+    /// earlier scoped advertisement was still waiting to become a radio event.
+    pub fn acknowledge_scan_ingress_fence(&self, fence_id: u64) -> bool {
+        let reply = self
+            .scan_ingress_fences
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .acknowledge(fence_id);
+        if let Some(replies) = reply {
+            for reply in replies {
+                reply
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .try_set_reply(CoreBluetoothReply::Ok);
+            }
+            true
+        } else {
+            // This is expected if stream closure already failed the fence.
+            false
+        }
+    }
+
+    async fn scan_ingress(
+        &self,
+        action: super::central_delegate::ScanIngressAction,
+        epoch: u64,
+    ) -> Result<()> {
+        let fut = CoreBluetoothReplyFuture::default();
+        let state = fut.get_state_clone();
+        let is_fence = matches!(action, super::central_delegate::ScanIngressAction::Fence);
+        let fence_id = {
+            let mut fences = self
+                .scan_ingress_fences
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if fences.is_closed() {
+                return Err(Error::Platform(ScanIngressFences::source_closed_error()));
+            }
+            if is_fence {
+                Some(fences.register(epoch, state.clone()).map_err(Error::Platform)?)
+            } else {
+                None
+            }
+        };
+        self.sender
+            .to_owned()
+            .send(CoreBluetoothMessage::ScanIngress {
+                action,
+                epoch,
+                fence_id,
+                future: state.clone(),
+            })
+            .await
+            .map_err(|error| {
+                if is_fence {
+                    if fence_id.is_some() {
+                        self.scan_ingress_fences
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove_waiter(epoch, &state);
+                    }
+                }
+                error
+            })?;
+        let reply = fut.await;
+        // A successful fence is removed by `acknowledge_scan_ingress_fence`
+        // only after its marker traverses the public adapter event stream.
+        // A failed source-close completion has already drained the registry.
+        if is_fence && !matches!(&reply, CoreBluetoothReply::Ok) {
+            if fence_id.is_some() {
+                self.scan_ingress_fences
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove_waiter(epoch, &state);
+            }
+        }
+        match reply {
+            CoreBluetoothReply::Ok => Ok(()),
+            CoreBluetoothReply::Err(detail) => Err(Error::Other(detail.into())),
+            CoreBluetoothReply::Failed(error) => Err(Error::Platform(error)),
+            reply => Err(Error::Other(
+                format!("unexpected reply to a scan ingress command: {reply:?}").into(),
+            )),
+        }
+    }
+
     /// Read-only OS directory lookup on this adapter's existing manager.
     pub async fn directory_peers(
         &self,
@@ -369,10 +728,25 @@ impl Adapter {
                     CoreBluetoothEvent::DeviceSourceUncertain { uuid, error } => {
                         emit_unassociated_connection_observation(&manager_clone, uuid, error);
                     }
-                    CoreBluetoothEvent::Advertised { uuid, report } => {
-                        manager_clone.emit(CentralEvent::Advertisement {
-                            id: uuid.into(),
-                            report,
+                    CoreBluetoothEvent::Advertised { uuid, report, ingress_epoch } => {
+                        let id = uuid.into();
+                        if let Some(ingress_epoch) = ingress_epoch {
+                            manager_clone.emit(CentralEvent::AdvertisementScoped {
+                                id,
+                                report,
+                                ingress_epoch,
+                            });
+                        } else {
+                            // An unowned callback can still update the
+                            // adapter's legacy event stream, but is never
+                            // eligible for a UBM scan session.
+                            manager_clone.emit(CentralEvent::Advertisement { id, report });
+                        }
+                    }
+                    CoreBluetoothEvent::ScanIngressFence { epoch, fence_id } => {
+                        manager_clone.emit(CentralEvent::ScanIngressFence {
+                            ingress_epoch: epoch,
+                            fence_id,
                         });
                     }
                     CoreBluetoothEvent::DidUpdateState { state } => {
@@ -387,6 +761,7 @@ impl Adapter {
             manager,
             sender: adapter_sender,
             source_registry,
+            scan_ingress_fences: Arc::default(),
         })
     }
 }

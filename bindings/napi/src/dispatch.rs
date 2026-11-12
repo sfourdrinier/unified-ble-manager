@@ -1175,6 +1175,33 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
+    async fn arm_scan_ingress(&self, ingress_epoch: u64) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.arm_scan_ingress(ingress_epoch).await,
+            Self::Synthetic(radio) => radio.arm_scan_ingress(ingress_epoch).await,
+        }
+    }
+
+    async fn retire_scan_ingress(
+        &self,
+        ingress_epoch: u64,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.retire_scan_ingress(ingress_epoch).await,
+            Self::Synthetic(radio) => radio.retire_scan_ingress(ingress_epoch).await,
+        }
+    }
+
+    async fn fence_scan_ingress(
+        &self,
+        ingress_epoch: u64,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.fence_scan_ingress(ingress_epoch).await,
+            Self::Synthetic(radio) => radio.fence_scan_ingress(ingress_epoch).await,
+        }
+    }
+
     async fn start_scan(&self, filter: ScanFilterSpec) -> std::result::Result<(), DesktopError> {
         match self {
             Self::Radio(radio) => radio.start_scan(filter).await,
@@ -10632,6 +10659,27 @@ impl UbmCentral {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn scan_ingress_lifecycle_dispatches_to_the_synthetic_radio_in_order() {
+        let dispatch = DispatchRadio::Synthetic(Box::new(FakeRadio::new()));
+
+        dispatch.arm_scan_ingress(91).await.unwrap();
+        dispatch.retire_scan_ingress(91).await.unwrap();
+        dispatch.fence_scan_ingress(91).await.unwrap();
+
+        let DispatchRadio::Synthetic(radio) = &dispatch else {
+            panic!("synthetic fixture");
+        };
+        assert_eq!(
+            radio.calls(),
+            vec![
+                "arm_scan_ingress".to_owned(),
+                "retire_scan_ingress".to_owned(),
+                "fence_scan_ingress".to_owned(),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn parameter_gap_preserves_exact_queued_source_failures_and_discards_values() {
         let central = UbmCentral::open_synthetic("failure-fence".into(), None)
             .await
@@ -13807,7 +13855,7 @@ mod tests {
         assert_eq!(read.kind, "committed");
         assert_eq!(read.canonical_bytes.expect("bytes").to_vec(), bytes);
         central
-            .release_terminal_evidence(reservation.reservation_id)
+            .release_terminal_evidence(reservation.reservation_id.clone())
             .await
             .expect("release");
         // Stream teardown abandons the reservation lease, not the committed

@@ -103,6 +103,13 @@ The addon is found only from the installed package's own location: never through
 
 The core queues reports only while a scan is live and clears the queue when a scan starts or stops, and the provider refuses (with a `scan-observation-foreign` diagnostic) any observation the core queued for another scan. A report is not necessarily a fresh over-air advertisement: scan admission can reobserve known OS device state. Each native observation's `receivedAtMonotonicMs` is when the core received it, on the host's clock, not when the host took it. `provenance` distinguishes `platform-raw`, `platform-derived`, and `core-merged`. The OS's merged device state (BlueZ `Device1`, a known-device report) is `platform-derived`; a single advertisement's own data is `platform-raw` on WinRT and `platform-derived` on CoreBluetooth (a parsed advertisement dictionary) and BlueZ.
 
+Scan ownership is captured at native callback ingress and cleanup fences the
+accepted callbacks before a replacement scan takes ownership. This identifies
+when the host delivered an observation to UBM; it does not establish when a
+radio packet was received. In particular, CoreBluetooth does not provide an
+over-the-air scan generation for a callback first delivered after a new scan
+has started.
+
 Public scan observations preserve this provenance and the optional exact `origin`:
 `advertisement` or `device-state`. The latter may contain the OS's cached service
 UUID union, including Classic services; it is not a claim that those UUIDs were

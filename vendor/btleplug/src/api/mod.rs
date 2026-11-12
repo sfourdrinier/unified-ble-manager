@@ -788,6 +788,22 @@ pub enum CentralEvent {
         id: PeripheralId,
         report: AdvertisementReport,
     },
+    /// One advertisement captured under the owning callback-ingress epoch.
+    /// Consumers must preserve this immutable stamp instead of associating it
+    /// with a later scan at dequeue time. CoreBluetooth cannot assert an RF
+    /// scan generation because its callbacks carry no scan identity.
+    AdvertisementScoped {
+        id: PeripheralId,
+        report: AdvertisementReport,
+        ingress_epoch: u64,
+    },
+    /// Ordered internal scan-ingress marker. The desktop bridge acknowledges
+    /// it only after every earlier scoped advertisement has traversed its
+    /// event-stream handoff.
+    ScanIngressFence {
+        ingress_epoch: u64,
+        fence_id: u64,
+    },
     /// UBM patch (UBM_PATCHES.md #17): a sighting whose data the OS could
     /// not be asked for (BlueZ `Device1` properties unreadable); reported
     /// instead of dropped.

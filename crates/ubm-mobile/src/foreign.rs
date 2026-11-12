@@ -114,6 +114,7 @@ type DropHook = Arc<dyn Fn(IngressClass, u64) + Send + Sync>;
 
 #[derive(Default)]
 struct Ingress {
+    scan_ingress_epoch: Option<u64>,
     advertisements: VecDeque<(u64, RadioEvent)>,
     data: VecDeque<(u64, RadioEvent)>,
     data_bytes: usize,
@@ -1752,7 +1753,14 @@ impl ForeignRadio {
         ingress.sequence += 1;
         let sequence = ingress.sequence;
         let outcome = match event {
-            RadioEvent::Advertisement(_) => {
+            RadioEvent::Advertisement(snapshot) => {
+                let event = match ingress.scan_ingress_epoch {
+                    Some(ingress_epoch) => RadioEvent::AdvertisementScoped {
+                        snapshot,
+                        ingress_epoch,
+                    },
+                    None => RadioEvent::Advertisement(snapshot),
+                };
                 if ingress.advertisements.len() >= ADVERTISEMENT_INGRESS_CAP {
                     Err(IngressClass::Advertisement)
                 } else {
@@ -2149,6 +2157,51 @@ fn marker_status(
 }
 
 impl RadioBoundary for ForeignRadio {
+    async fn arm_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        let mut ingress = lock(&self.shared.ingress);
+        if ingress.closed || ingress.scan_ingress_epoch.is_some() {
+            return Err(DesktopError::scan_start_failed(
+                "mobile scan ingress is unavailable",
+            ));
+        }
+        ingress.scan_ingress_epoch = Some(ingress_epoch);
+        Ok(())
+    }
+
+    async fn retire_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        let mut ingress = lock(&self.shared.ingress);
+        if ingress.scan_ingress_epoch != Some(ingress_epoch) {
+            return Err(DesktopError::scan_stop_failed(
+                "mobile scan ingress epoch is unavailable",
+            ));
+        }
+        ingress.scan_ingress_epoch = None;
+        Ok(())
+    }
+
+    async fn fence_scan_ingress(&self, _ingress_epoch: u64) -> Result<(), DesktopError> {
+        {
+            let ingress = lock(&self.shared.ingress);
+            if ingress.closed {
+                if ingress.advertisements.is_empty()
+                    && ingress.data.is_empty()
+                    && ingress.control.is_empty()
+                    && ingress.barriers.is_empty()
+                {
+                    return Ok(());
+                }
+                return Err(DesktopError::scan_stop_failed(
+                    "mobile scan ingress closed before its accepted prefix drained",
+                ));
+            }
+        }
+        // `retire_scan_ingress` closed callback admission under this same
+        // mutex first. This marker therefore follows every accepted old-epoch
+        // advertisement; dropping it resumes the consumer after observation.
+        drop(self.fence_ingress().await?);
+        Ok(())
+    }
+
     async fn open_ordered_reclaim_authority(&self, request: u64) -> Result<u64, DesktopError> {
         let mut receiver = {
             let mut entries = lock(&self.shared.reclaim_authority_opens);
@@ -3991,6 +4044,65 @@ mod tests {
             MobilePlatform::Android,
             "stub-adapter".to_owned(),
         )
+    }
+
+    fn advertisement(peer_id: &str) -> RadioEvent {
+        RadioEvent::Advertisement(PeerSnapshot {
+            id: peer_id.to_owned(),
+            address: None,
+            service_uuids: Vec::new(),
+            rssi: Some(-60),
+            local_name: None,
+            manufacturer_data: Vec::new(),
+            service_data: Vec::new(),
+            tx_power_level: None,
+            extras: ubm_desktop::boundary::AdvertisementExtras::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn retired_scan_ingress_fence_accepts_closed_drained_source() {
+        let radio = radio();
+
+        radio.arm_scan_ingress(41).await.unwrap();
+        radio.retire_scan_ingress(41).await.unwrap();
+        radio.close_events();
+
+        radio.fence_scan_ingress(41).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retired_scan_ingress_fence_refuses_closed_undrained_prefix_then_succeeds() {
+        let radio = radio();
+
+        radio.arm_scan_ingress(42).await.unwrap();
+        radio
+            .push_event(advertisement("accepted-before-retirement"))
+            .unwrap();
+        radio.retire_scan_ingress(42).await.unwrap();
+        radio.close_events();
+
+        let error = radio.fence_scan_ingress(42).await.unwrap_err();
+        assert_eq!(error.code(), BleErrorCode::ScanStopFailed);
+        assert_eq!(
+            radio.next_event().await,
+            Some(RadioEvent::AdvertisementScoped {
+                snapshot: PeerSnapshot {
+                    id: "accepted-before-retirement".to_owned(),
+                    address: None,
+                    service_uuids: Vec::new(),
+                    rssi: Some(-60),
+                    local_name: None,
+                    manufacturer_data: Vec::new(),
+                    service_data: Vec::new(),
+                    tx_power_level: None,
+                    extras: ubm_desktop::boundary::AdvertisementExtras::default(),
+                },
+                ingress_epoch: 42,
+            })
+        );
+
+        radio.fence_scan_ingress(42).await.unwrap();
     }
 
     #[test]

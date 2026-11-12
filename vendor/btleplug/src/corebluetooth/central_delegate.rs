@@ -322,6 +322,12 @@ pub enum CentralDelegateEvent {
         state: CBManagerState,
     },
     AdapterBarrierFailed { error: crate::PlatformError },
+    /// A serial-delegate-queue marker. All discovery callbacks accepted
+    /// before it already precede it in the actor channel.
+    ScanIngressFence {
+        epoch: u64,
+        fence_id: u64,
+    },
     DiscoveredPeripheral {
         cbperipheral: Retained<CBPeripheral>,
         advertisement_name: Option<String>,
@@ -457,6 +463,10 @@ pub enum CentralDelegateEvent {
         peripheral_uuid: Uuid,
         report: crate::api::AdvertisementReport,
         advertisement_name: Option<String>,
+        /// Captured on CoreBluetooth's serial delegate queue when the native
+        /// callback arrives. It is deliberately not looked up again by the
+        /// asynchronous actor, which may already be serving another scan.
+        ingress_epoch: Option<u64>,
     },
     // UBM patch (UBM_PATCHES.md #14/#15): an attribute callback carried an
     // `NSError`. Upstream dropped it, leaving the waiting read, write or
@@ -498,6 +508,11 @@ impl Debug for CentralDelegateEvent {
         match self {
             CentralDelegateEvent::Ticketed { event, .. } | CentralDelegateEvent::AdapterTicketed { event, .. } => f.debug_tuple("Ticketed").field(event).finish(),
             CentralDelegateEvent::AdapterBarrierFailed { error } => f.debug_tuple("AdapterBarrierFailed").field(error).finish(),
+            CentralDelegateEvent::ScanIngressFence { epoch, fence_id } => f
+                .debug_struct("ScanIngressFence")
+                .field("epoch", epoch)
+                .field("fence_id", fence_id)
+                .finish(),
             CentralDelegateEvent::DidUpdateState { state } => f
                 .debug_struct("CentralDelegateEvent")
                 .field("state", state)
@@ -711,11 +726,13 @@ impl Debug for CentralDelegateEvent {
                 peripheral_uuid,
                 report,
                 advertisement_name,
+                ingress_epoch,
             } => f
                 .debug_struct("Advertised")
                 .field("peripheral_uuid", peripheral_uuid)
                 .field("report", report)
                 .field("advertisement_name", advertisement_name)
+                .field("ingress_epoch", ingress_epoch)
                 .finish(),
             CentralDelegateEvent::AttributeFailed {
                 peripheral_uuid,
@@ -769,6 +786,16 @@ static DELEGATE_CONTEXT_KEY: u8 = 0;
 #[derive(Debug)]
 pub(super) struct AdapterDispatchFence(std::sync::atomic::AtomicU64);
 
+/// A command whose ordering is defined by CoreBluetooth's serial delegate
+/// queue. CoreBluetooth offers no physical scan identifier, so this is the
+/// narrowest possible scan-ingress ownership boundary.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ScanIngressAction {
+    Arm,
+    Retire,
+    Fence,
+}
+
 impl AdapterDispatchFence {
     fn new() -> Self {
         // Generation one, initially available. A production manager publishes
@@ -812,6 +839,83 @@ struct DelegateQueueContext {
     >>,
     #[cfg(test)] test_events: Option<futures::channel::mpsc::Receiver<CentralDelegateEvent>>,
     #[cfg(test)] adapter_invalidation_observer: Option<Box<dyn FnMut(CBManagerState)>>,
+}
+
+struct DelegateScanIngressJob {
+    action: ScanIngressAction,
+    epoch: u64,
+    fence_id: Option<u64>,
+    reply: super::internal::CoreBluetoothReplyStateShared,
+}
+
+fn scan_ingress_error(code: &'static str, message: impl Into<String>) -> crate::PlatformError {
+    crate::PlatformError::new("corebluetooth", code, message.into())
+}
+
+unsafe extern "C" fn run_delegate_scan_ingress(context: *mut std::ffi::c_void) {
+    let job = unsafe { Box::from_raw(context.cast::<DelegateScanIngressJob>()) };
+    let key = std::ptr::addr_of!(DELEGATE_CONTEXT_KEY).cast();
+    let local = unsafe { super::ffi::dispatch_get_specific(key) }.cast::<DelegateQueueContext>();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(context) = (!local.is_null()).then(|| unsafe { &mut *local }) else {
+            return Err(scan_ingress_error(
+                "scan-ingress-delegate-unavailable",
+                "The CoreBluetooth delegate queue is unavailable",
+            ));
+        };
+        let delegate = &context.delegate;
+        match job.action {
+            ScanIngressAction::Arm => delegate.arm_scan_ingress(job.epoch),
+            ScanIngressAction::Retire => delegate.retire_scan_ingress(job.epoch),
+            ScanIngressAction::Fence => delegate.enqueue_scan_ingress_fence(
+                job.epoch,
+                job.fence_id.ok_or_else(|| scan_ingress_error(
+                    "scan-ingress-fence-id-missing",
+                    "The CoreBluetooth scan ingress fence had no adapter acknowledgment identifier",
+                ))?,
+            ),
+        }
+    }))
+    .unwrap_or_else(|_| {
+        Err(scan_ingress_error(
+            "scan-ingress-delegate-failed",
+            "The CoreBluetooth delegate queue rejected a scan ingress command",
+        ))
+    });
+    match result {
+        Ok(()) if !matches!(job.action, ScanIngressAction::Fence) => {
+            job.reply.lock().unwrap().set_reply(super::internal::CoreBluetoothReply::Ok);
+        }
+        Ok(()) => {}
+        Err(error) => {
+            job.reply
+                .lock()
+                .unwrap()
+                .set_reply(super::internal::CoreBluetoothReply::Failed(error));
+        }
+    }
+}
+
+/// Queue a command behind every delegate callback that CoreBluetooth had
+/// already accepted. `Fence` completes only when the actor has consumed this
+/// ordered marker, so its caller also knows the accepted callback prefix has
+/// crossed the delegate-to-actor handoff.
+pub(super) unsafe fn schedule_scan_ingress(
+    queue: super::ffi::dispatch_queue_t,
+    registry: std::sync::Arc<super::internal::PeerSourceRegistry>,
+    action: ScanIngressAction,
+    epoch: u64,
+    fence_id: Option<u64>,
+    reply: super::internal::CoreBluetoothReplyStateShared,
+) -> Result<(), ()> {
+    if registry.queue_closed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(());
+    }
+    let job = Box::new(DelegateScanIngressJob { action, epoch, fence_id, reply });
+    fn require_send<T: Send>(_: &T) {}
+    require_send(&job);
+    unsafe { super::ffi::dispatch_async_f(queue, Box::into_raw(job).cast(), run_delegate_scan_ingress) };
+    Ok(())
 }
 
 unsafe extern "C" fn drop_delegate_queue_context(_: *mut std::ffi::c_void) {
@@ -1250,6 +1354,18 @@ pub struct CentralDelegateIvars {
         std::sync::Mutex<Option<futures::channel::oneshot::Sender<crate::PlatformError>>>,
     source_registry: std::sync::Arc<super::internal::PeerSourceRegistry>,
     adapter_dispatch_fence: std::sync::Arc<AdapterDispatchFence>,
+    /// CoreBluetooth exposes one lifetime delegate rather than a distinct
+    /// callback object for each scan. This value therefore lives on that
+    /// delegate's serial queue: a discovery callback snapshots it at ingress
+    /// and carries the immutable epoch through the actor pipeline.
+    scan_ingress_epoch: std::cell::Cell<Option<u64>>,
+    /// The epoch removed from native callback ownership but whose actor
+    /// handoff marker has not yet been enqueued.
+    retiring_scan_ingress_epoch: std::cell::Cell<Option<u64>>,
+    /// A retiring epoch whose marker has been emitted but has not yet been
+    /// acknowledged after traversing the adapter event stream. A retry uses
+    /// this same marker identity; it must not repeat the physical stop.
+    fenced_scan_ingress: std::cell::Cell<Option<(u64, u64)>>,
     services: RefCell<HashMap<Uuid, Vec<Retained<CBService>>>>,
     root_snapshots: RefCell<CallbackSlots<DiscoverySlot>>,
     adapter_transitions: RefCell<AdapterTransitions>,
@@ -1360,6 +1476,11 @@ declare_class!(
 
             self.ensure_queue_context();
             self.register_native_manager(central);
+            // CBCentralManager provides a single lifetime delegate and no
+            // scan-generation argument. This queue-local snapshot is the
+            // only honest ownership boundary: the actor must never infer an
+            // epoch from mutable state after this callback has been queued.
+            let ingress_epoch = self.ivars().scan_ingress_epoch.get();
 
             let advertisement_name = adv_data
                 .get(unsafe { CBAdvertisementDataLocalNameKey })
@@ -1481,6 +1602,7 @@ declare_class!(
                 peripheral_uuid,
                 report,
                 advertisement_name,
+                ingress_epoch,
             });
         }
     }
@@ -1819,6 +1941,9 @@ impl CentralDelegate {
             failure_signal: std::sync::Mutex::new(failure_signal),
             source_registry,
             adapter_dispatch_fence: std::sync::Arc::new(AdapterDispatchFence::new()),
+            scan_ingress_epoch: std::cell::Cell::new(None),
+            retiring_scan_ingress_epoch: std::cell::Cell::new(None),
+            fenced_scan_ingress: std::cell::Cell::new(None),
             services: RefCell::new(HashMap::new()),
             root_snapshots: RefCell::new(CallbackSlots::new(256)),
             adapter_transitions: RefCell::new(AdapterTransitions::default()),
@@ -1829,6 +1954,106 @@ impl CentralDelegate {
 
     pub(super) fn adapter_dispatch_fence(&self) -> std::sync::Arc<AdapterDispatchFence> {
         self.ivars().adapter_dispatch_fence.clone()
+    }
+
+    // These methods run only through `run_delegate_scan_ingress`, on the
+    // same serial queue CoreBluetooth uses for delegate callbacks.
+    fn arm_scan_ingress(&self, epoch: u64) -> Result<(), crate::PlatformError> {
+        if let Some(active) = self
+            .ivars()
+            .scan_ingress_epoch
+            .get()
+            .or(self.ivars().retiring_scan_ingress_epoch.get())
+        {
+            return Err(scan_ingress_error(
+                "scan-ingress-already-armed",
+                format!("scan ingress epoch {active} is still active"),
+            ));
+        }
+        // The caller can only issue a replacement arm after its fence future
+        // resolved from the downstream event-stream acknowledgement. This is
+        // therefore the safe point to forget the completed marker.
+        self.ivars().fenced_scan_ingress.set(None);
+        self.ivars().scan_ingress_epoch.set(Some(epoch));
+        Ok(())
+    }
+
+    fn retire_scan_ingress(&self, epoch: u64) -> Result<(), crate::PlatformError> {
+        match self.ivars().scan_ingress_epoch.get() {
+            Some(active) if active == epoch => {
+                self.ivars().scan_ingress_epoch.set(None);
+                self.ivars().retiring_scan_ingress_epoch.set(Some(epoch));
+                Ok(())
+            }
+            Some(active) => Err(scan_ingress_error(
+                "scan-ingress-epoch-mismatch",
+                format!("cannot retire scan ingress epoch {epoch}; epoch {active} is active"),
+            )),
+            None => Err(scan_ingress_error(
+                "scan-ingress-not-armed",
+                format!("cannot retire scan ingress epoch {epoch}; no epoch is active"),
+            )),
+        }
+    }
+
+    fn enqueue_scan_ingress_fence(
+        &self,
+        epoch: u64,
+        fence_id: u64,
+    ) -> Result<(), crate::PlatformError> {
+        // `retire_scan_ingress` ran before this barrier in the same queue.
+        // While it is retired every later native callback is unowned, never
+        // relabelled as a future scan. Sending the marker on this queue also
+        // places it after every accepted callback handoff.
+        if self.ivars().scan_ingress_epoch.get().is_some() {
+            return Err(scan_ingress_error(
+                "scan-ingress-still-armed",
+                format!("cannot fence retired scan ingress epoch {epoch}; another epoch is active"),
+            ));
+        }
+        if let Some((fenced_epoch, fenced_id)) = self.ivars().fenced_scan_ingress.get() {
+            if fenced_epoch != epoch || fenced_id != fence_id {
+                return Err(scan_ingress_error(
+                    "scan-ingress-fence-mismatch",
+                    format!("cannot retry scan ingress epoch {epoch} with a different fence identity"),
+                ));
+            }
+            // The original marker may still be waiting downstream, but a
+            // timed-out caller needs an exact retry. Re-emitting the same
+            // opaque marker is safe: the adapter acknowledges it at most once.
+            return self
+                .ivars()
+                .sender
+                .lock()
+                .unwrap()
+                .try_send(CentralDelegateEvent::ScanIngressFence { epoch, fence_id })
+                .map_err(|failure| {
+                    let detail = if failure.is_full() { "full" } else { "closed" };
+                    scan_ingress_error(
+                        "scan-ingress-fence-handoff-failed",
+                        format!("The delegate event channel was {detail}"),
+                    )
+                });
+        }
+        if self.ivars().retiring_scan_ingress_epoch.get() != Some(epoch) {
+            return Err(scan_ingress_error(
+                "scan-ingress-not-retiring",
+                format!("cannot fence scan ingress epoch {epoch}; it was not retired"),
+            ));
+        }
+        let event = CentralDelegateEvent::ScanIngressFence { epoch, fence_id };
+        if let Err(failure) = self.ivars().sender.lock().unwrap().try_send(event) {
+            let detail = if failure.is_full() { "full" } else { "closed" };
+            let error = scan_ingress_error(
+                "scan-ingress-fence-handoff-failed",
+                format!("The delegate event channel was {detail}"),
+            );
+            self.fail_control(error.clone(), None);
+            return Err(error);
+        }
+        self.ivars().retiring_scan_ingress_epoch.set(None);
+        self.ivars().fenced_scan_ingress.set(Some((epoch, fence_id)));
+        Ok(())
     }
 
     fn ensure_queue_context(&self) {
@@ -2763,6 +2988,94 @@ fn descriptor_debug(descriptor: &CBDescriptor) -> String {
 #[cfg(test)]
 mod delegate_executor_lifetime_tests {
     use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn scan_ingress_epoch_is_snapshotted_then_retired_before_the_actor_fence() {
+        let (sender, mut receiver) = futures::channel::mpsc::channel(4);
+        let registry = Arc::new(super::super::internal::PeerSourceRegistry::default());
+        let delegate = CentralDelegate::new(sender, registry, None);
+
+        delegate.arm_scan_ingress(41).unwrap();
+        assert_eq!(delegate.ivars().scan_ingress_epoch.get(), Some(41));
+        assert!(matches!(
+            delegate.arm_scan_ingress(42),
+            Err(error) if error.code == "scan-ingress-already-armed"
+        ));
+
+        // A native callback would capture this exact value immediately on
+        // CBqueue, before any actor scheduling can observe another scan.
+        let captured_at_ingress = delegate.ivars().scan_ingress_epoch.get();
+        // Model a discovery callback accepted before retirement. The actor
+        // must see this immutable old epoch before the fence marker, even if
+        // it does not consume either item until after the stop request.
+        delegate.send_event(CentralDelegateEvent::Advertised {
+            peripheral_uuid: Uuid::nil(),
+            report: crate::api::AdvertisementReport::default(),
+            advertisement_name: None,
+            ingress_epoch: captured_at_ingress,
+        });
+        delegate.retire_scan_ingress(41).unwrap();
+        assert_eq!(captured_at_ingress, Some(41));
+        assert_eq!(delegate.ivars().scan_ingress_epoch.get(), None);
+
+        // A callback CoreBluetooth delivers after retirement but before a
+        // replacement arm is deliberately unowned. There is no API for us to
+        // decide whether its RF packet belonged to the old physical scan.
+        delegate.send_event(CentralDelegateEvent::Advertised {
+            peripheral_uuid: Uuid::nil(),
+            report: crate::api::AdvertisementReport::default(),
+            advertisement_name: None,
+            ingress_epoch: delegate.ivars().scan_ingress_epoch.get(),
+        });
+
+        delegate
+            .enqueue_scan_ingress_fence(41, 7)
+            .unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(CentralDelegateEvent::Advertised {
+                ingress_epoch: Some(41),
+                ..
+            })
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(CentralDelegateEvent::Advertised {
+                ingress_epoch: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(CentralDelegateEvent::ScanIngressFence { epoch: 41, fence_id: 7 })
+        ));
+
+        // A lifecycle deadline can cancel its first wait after the marker was
+        // enqueued but before the downstream Btleplug stream acknowledges it.
+        // Retrying exactly this retired epoch must re-publish the same marker,
+        // not require a second retire/physical stop or leave the delegate
+        // permanently unable to fence the scan.
+        delegate.enqueue_scan_ingress_fence(41, 7).unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(CentralDelegateEvent::ScanIngressFence { epoch: 41, fence_id: 7 })
+        ));
+        assert!(matches!(
+            delegate.enqueue_scan_ingress_fence(41, 8),
+            Err(error) if error.code == "scan-ingress-fence-mismatch"
+        ));
+
+        // The marker has been placed after the accepted callback prefix, so
+        // the next epoch may arm only after the caller receives its reply.
+        delegate.arm_scan_ingress(42).unwrap();
+        let callback_after_rearm = delegate.ivars().scan_ingress_epoch.get();
+        assert_eq!(callback_after_rearm, Some(42));
+        // Once re-armed, CoreBluetooth provides no physical scan identity.
+        // A callback delivered now is correctly stamped as callback-observed
+        // epoch 42, while its RF origin remains intentionally unknowable.
+        assert_eq!(delegate.ivars().scan_ingress_epoch.get(), Some(42));
+    }
 
     #[test]
     fn adapter_dispatch_generation_rejects_queued_connect_and_disconnect_across_reset_before_actor_receipt() {

@@ -1037,12 +1037,83 @@ pub const NOTIFICATION_CAP: usize = ubm_core::contracts::MAX_STREAM_ITEM_CAPACIT
 /// [`NOTIFICATION_CAP`].
 pub const NOTIFICATION_BYTES: u64 = ubm_core::contracts::BACKEND_INGRESS_AGGREGATE_BYTES;
 
+/// The adapter event stream can only end once, but `next_event` may be
+/// polled again after that end has been observed. Keep the source-close
+/// result separate from the stream itself so a refused close reaches the
+/// central exactly once instead of being retried forever (or silently lost).
+#[derive(Debug)]
+enum ScanIngressSourceClose {
+    Open,
+    Closing,
+    Closed,
+    Failed(DesktopError),
+}
+
+impl Default for ScanIngressSourceClose {
+    fn default() -> Self {
+        Self::Open
+    }
+}
+
+impl ScanIngressSourceClose {
+    /// Claims the single adapter-side close attempt. A concurrent or later
+    /// event-loop poll must not invent another close attempt after EOF.
+    fn begin(&mut self) -> bool {
+        if matches!(self, Self::Open) {
+            *self = Self::Closing;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Records the exact mapped failure for diagnostics and emits it once.
+    /// The adapter owns the retryable platform state: a later lifecycle fence
+    /// must ask that same adapter and receive its retained refusal.
+    fn complete(&mut self, outcome: Result<(), DesktopError>) -> Option<DesktopError> {
+        debug_assert!(matches!(self, Self::Closing));
+        match outcome {
+            Ok(()) => {
+                *self = Self::Closed;
+                None
+            }
+            Err(error) => {
+                *self = Self::Failed(error.clone());
+                Some(error)
+            }
+        }
+    }
+
+    /// A typed source-close refusal is a cleanup blocker, not EOF evidence.
+    /// Keeping the event loop pending after it is reported once prevents a
+    /// second poll from converting that refusal into successful source-close
+    /// settlement before the lifecycle's explicit fence retry runs.
+    fn has_failed(&self) -> bool {
+        match self {
+            Self::Failed(error) => {
+                let _ = error;
+                true
+            }
+            Self::Open | Self::Closing | Self::Closed => false,
+        }
+    }
+
+    #[cfg(test)]
+    fn retained_failure(&self) -> Option<&DesktopError> {
+        match self {
+            Self::Failed(error) => Some(error),
+            Self::Open | Self::Closing | Self::Closed => None,
+        }
+    }
+}
+
 /// Production radio backend over one btleplug adapter.
 pub struct BtleplugRadio {
     adapter: Adapter,
     adapter_label: String,
     spawn: tokio::runtime::Handle,
     events: Mutex<Option<EventStream>>,
+    scan_ingress_source_close: Mutex<ScanIngressSourceClose>,
     notifications: mpsc::Sender<RadioEvent>,
     notification_rx: Mutex<mpsc::Receiver<RadioEvent>>,
     peer_groups:
@@ -1527,6 +1598,7 @@ impl BtleplugRadio {
             adapter_label,
             spawn,
             events: Mutex::new(Some(events)),
+            scan_ingress_source_close: Mutex::new(ScanIngressSourceClose::default()),
             notifications,
             notification_rx: Mutex::new(notification_rx),
             peer_groups: StdMutex::new(HashMap::new()),
@@ -6925,6 +6997,39 @@ impl RadioBoundary for BtleplugRadio {
         self.ingress_dropped()
     }
 
+    async fn arm_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        self.adapter
+            .arm_scan_ingress(ingress_epoch)
+            .await
+            .map_err(map_radio(
+                "scan.ingress.arm",
+                BleErrorCode::ScanStartFailed,
+                BleErrorDomain::Scan,
+            ))
+    }
+
+    async fn retire_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        self.adapter
+            .retire_scan_ingress(ingress_epoch)
+            .await
+            .map_err(map_radio(
+                "scan.ingress.retire",
+                BleErrorCode::ScanStopFailed,
+                BleErrorDomain::Cleanup,
+            ))
+    }
+
+    async fn fence_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        self.adapter
+            .fence_scan_ingress(ingress_epoch)
+            .await
+            .map_err(map_radio(
+                "scan.ingress.fence",
+                BleErrorCode::ScanStopFailed,
+                BleErrorDomain::Cleanup,
+            ))
+    }
+
     async fn start_scan(&self, filter: ScanFilterSpec) -> Result<(), DesktopError> {
         if filter.windows.is_some() && !cfg!(target_os = "windows") {
             return Err(DesktopError::new(
@@ -8450,13 +8555,66 @@ impl RadioBoundary for BtleplugRadio {
                 }
                 Step::Os(Some(event)) => return Some(event),
                 Step::Os(None) => {}
-                Step::Adapter(None) => return None,
+                Step::Adapter(None) => {
+                    let close = {
+                        let mut source_close = self.scan_ingress_source_close.lock().await;
+                        source_close.begin()
+                    };
+                    if !close {
+                        if self.scan_ingress_source_close.lock().await.has_failed() {
+                            // The failure was already delivered as an event.
+                            // Do not turn its next poll into EOF: the central
+                            // must retain the cleanup owner until its explicit
+                            // fence retry receives the adapter's same refusal.
+                            std::future::pending::<()>().await;
+                        }
+                        return None;
+                    }
+                    let outcome =
+                        self.adapter
+                            .scan_ingress_source_closed()
+                            .await
+                            .map_err(map_radio(
+                                "scan.ingress.source-closed",
+                                BleErrorCode::PlatformFailure,
+                                BleErrorDomain::Cleanup,
+                            ));
+                    let failure = self
+                        .scan_ingress_source_close
+                        .lock()
+                        .await
+                        .complete(outcome);
+                    return failure.map(RadioEvent::ScanIngressSourceClosedFailed);
+                }
                 // Findings 120 and 122: every OS sighting is an observation
                 // with its own data (vendored patch 17); discovery and update
                 // events only mark the peripheral known.
+                Step::Adapter(Some(CentralEvent::ScanIngressFence { fence_id, .. })) => {
+                    // This acknowledgement is deliberately downstream of
+                    // `EventStream::next`: any earlier scoped advertisement
+                    // was already returned from this boundary and processed
+                    // by the central before it can ask for another event.
+                    // The marker itself is private ordering machinery, never
+                    // a public radio event.
+                    let _acknowledged = self.adapter.acknowledge_scan_ingress_fence(fence_id);
+                }
                 Step::Adapter(Some(CentralEvent::Advertisement { id, report })) => {
                     if let Some(event) = self.sighting(&id, report).await {
                         return Some(event);
+                    }
+                }
+                Step::Adapter(Some(CentralEvent::AdvertisementScoped {
+                    id,
+                    report,
+                    ingress_epoch,
+                })) => {
+                    if let Some(RadioEvent::Advertisement(snapshot)) =
+                        self.sighting(&id, report).await
+                    {
+                        return Some(RadioEvent::AdvertisementScoped {
+                            snapshot,
+                            ingress_epoch,
+                        });
                     }
                 }
                 Step::Adapter(Some(CentralEvent::AdvertisementUnread { id, detail })) => {
@@ -9080,6 +9238,33 @@ mod winrt_parameter_answer_tests {
 #[cfg(test)]
 mod tests {
     use ubm_core::contracts::BleErrorCode;
+
+    #[test]
+    fn scan_ingress_source_close_retains_and_reports_a_refusal_once() {
+        let expected = crate::DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Cleanup,
+            "scan.ingress.source-closed",
+        )
+        .with_detail("the platform could not close callback ingress");
+        let mut close = super::ScanIngressSourceClose::default();
+
+        assert!(
+            close.begin(),
+            "the EOF observation claims the one close attempt"
+        );
+        assert_eq!(
+            close.complete(Err(expected.clone())),
+            Some(expected.clone())
+        );
+        assert_eq!(close.retained_failure(), Some(&expected));
+        assert!(close.has_failed());
+        assert!(
+            !close.begin(),
+            "a later EOF poll must not retry and repeatedly emit the refusal"
+        );
+    }
+
     #[test]
     fn owned_corebluetooth_discovery_refusals_keep_specific_public_names() {
         for (native, expected) in [

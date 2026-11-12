@@ -21,6 +21,12 @@ use crate::errors::DesktopError;
 pub enum FaultOp {
     StartScan,
     StopScan,
+    /// Retire callback admission after a physical scan stop.
+    ScanIngressRetire,
+    /// Fence callbacks admitted before retirement into the central queue.
+    ScanIngressFence,
+    /// Callback-ingress arm before the physical scan start.
+    ScanIngressArm,
     Connect,
     Disconnect,
     Discover,
@@ -1078,6 +1084,14 @@ pub enum RadioEvent {
         reason: u8,
     },
     Advertisement(PeerSnapshot),
+    /// A scan callback stamped with its immutable callback-ingress epoch.
+    /// The central must never substitute its currently active scan here.
+    AdvertisementScoped {
+        snapshot: PeerSnapshot,
+        ingress_epoch: u64,
+    },
+    /// The platform event source ended but its scan-ingress cleanup refused.
+    ScanIngressSourceClosedFailed(DesktopError),
     Connected(String),
     /// A link transition carrying the core generation admitted by the caller.
     /// The generation is authoritative core identity, not a radio token.
@@ -2245,6 +2259,18 @@ pub trait RadioBoundary: Send + Sync + 'static {
     /// cleanup path). Cancellation is owned by the caller: drop/stop the
     /// future rather than expecting the boundary to abort it.
     fn next_event(&self) -> impl Future<Output = Option<RadioEvent>> + Send + '_;
+    fn arm_scan_ingress(
+        &self,
+        ingress_epoch: u64,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send + '_;
+    fn retire_scan_ingress(
+        &self,
+        ingress_epoch: u64,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send + '_;
+    fn fence_scan_ingress(
+        &self,
+        ingress_epoch: u64,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send + '_;
     /// Teardown hook: abort live notification forwarders and best-effort
     /// release OS-side CCCDs. Wired into central shutdown so no live OS
     /// subscription outlives the central. Infallible by contract: per-scope
@@ -2877,6 +2903,7 @@ impl RadioCloseFailure {
 }
 
 struct FakeInner {
+    scan_ingress_epoch: Option<u64>,
     #[cfg(any(test, feature = "reclaim-test-support"))]
     reclaim_permits: HashMap<(u64, u64), (OrderedReclaimGraphKey, bool)>,
     #[cfg(any(test, feature = "reclaim-test-support"))]
@@ -3291,6 +3318,7 @@ impl FakeRadio {
             acquired: crate::acquired_gatt::synthetic::SyntheticAcquiredGatt::default(),
             ordered: StdMutex::new(crate::fake_ordered_source::FakeOrderedSource::default()),
             state: Arc::new(StdMutex::new(FakeInner {
+                scan_ingress_epoch: None,
                 #[cfg(any(test, feature = "reclaim-test-support"))]
                 reclaim_permits: HashMap::new(),
                 #[cfg(any(test, feature = "reclaim-test-support"))]
@@ -3608,6 +3636,16 @@ impl FakeRadio {
         if state.events_closed {
             return Ok(());
         }
+        let event = match event {
+            RadioEvent::Advertisement(snapshot) => match state.scan_ingress_epoch {
+                Some(ingress_epoch) => RadioEvent::AdvertisementScoped {
+                    snapshot,
+                    ingress_epoch,
+                },
+                None => RadioEvent::Advertisement(snapshot),
+            },
+            event => event,
+        };
         self.fake_admit_event(&event)?;
         let seq = state.seq.saturating_add(1);
         state.seq = seq;
@@ -4147,6 +4185,55 @@ impl Drop for FakePhysicalLossGuard {
 }
 
 impl RadioBoundary for FakeRadio {
+    async fn arm_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        self.record("arm_scan_ingress");
+        self.gate(FaultOp::ScanIngressArm).await;
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::ScanIngressArm) {
+            return Err(scripted(DesktopError::scan_start_failed(detail), platform));
+        }
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .scan_ingress_epoch = Some(ingress_epoch);
+        Ok(())
+    }
+
+    async fn retire_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        self.record("retire_scan_ingress");
+        self.gate(FaultOp::ScanIngressRetire).await;
+        if let Some(ScriptedFault { detail, platform }) =
+            self.take_fault(FaultOp::ScanIngressRetire)
+        {
+            return Err(scripted(DesktopError::scan_stop_failed(detail), platform));
+        }
+        let mut state = self.state.lock().expect("fake radio state");
+        if state.scan_ingress_epoch == Some(ingress_epoch) {
+            state.scan_ingress_epoch = None;
+            Ok(())
+        } else {
+            Err(DesktopError::scan_stop_failed(
+                "scan callback ingress epoch is no longer active",
+            ))
+        }
+    }
+
+    async fn fence_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        self.record("fence_scan_ingress");
+        self.gate(FaultOp::ScanIngressFence).await;
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::ScanIngressFence)
+        {
+            return Err(scripted(DesktopError::scan_stop_failed(detail), platform));
+        }
+        let state = self.state.lock().expect("fake radio state");
+        if state.scan_ingress_epoch != Some(ingress_epoch) {
+            Ok(())
+        } else {
+            Err(DesktopError::scan_stop_failed(
+                "scan callback ingress is still accepting epoch",
+            ))
+        }
+    }
+
     async fn prepare_notification_activation(
         &self,
         scope: &InstanceKey,
@@ -5662,12 +5749,14 @@ impl RadioBoundary for FakeRadio {
 
     async fn peers(&self) -> Result<Vec<PeerSnapshot>, DesktopError> {
         self.record("peers");
-        Ok(self
+        let peers = self
             .state
             .lock()
             .expect("fake radio state")
             .known_peers
-            .clone())
+            .clone();
+        self.gate(FaultOp::PeerDirectory).await;
+        Ok(peers)
     }
 
     async fn connect_when_available(

@@ -3,7 +3,7 @@ use crate::api::{Central, CentralEvent, CentralState, ScanFilter};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use bluez_async::{
-    AdapterEvent, AdapterId, BluetoothError, BluetoothEvent, BluetoothSession, DeviceEvent,
+    AdapterEvent, AdapterId, AdapterScanIngress, BluetoothError, BluetoothEvent, BluetoothSession, DeviceEvent,
     DiscoveryFilter, Transport,
 };
 use futures::stream::{self, Stream, StreamExt};
@@ -15,6 +15,7 @@ pub struct Adapter {
     session: BluetoothSession,
     adapter: AdapterId,
     peers: std::sync::Arc<super::peer_source::PeerRegistry>,
+    scan_ingress: AdapterScanIngress,
 }
 
 impl Adapter {
@@ -49,6 +50,7 @@ impl Adapter {
             session: session.scoped_match_cleanup(),
             adapter,
             peers,
+            scan_ingress: AdapterScanIngress::new(),
         }
     }
 
@@ -56,6 +58,20 @@ impl Adapter {
     pub async fn drain_match_cleanup(&self) -> Result<()> {
         self.session.drain_match_cleanup().await?;
         Ok(())
+    }
+
+    pub async fn arm_scan_ingress(&self, epoch: u64) -> Result<()> { self.scan_ingress.arm(epoch)?; Ok(()) }
+    pub async fn retire_scan_ingress(&self, epoch: u64) -> Result<()> { self.scan_ingress.retire(epoch)?; Ok(()) }
+    pub async fn fence_scan_ingress(&self, epoch: u64) -> Result<()> { self.scan_ingress.fence(epoch).await?; Ok(()) }
+    pub async fn scan_ingress_source_closed(&self) -> Result<()> { self.scan_ingress.source_closed(); Ok(()) }
+
+    /// BlueZ settles its private D-Bus callback marker before it reaches the
+    /// public central-event stream. A common fence marker therefore cannot
+    /// name BlueZ ownership; `false` explicitly reports that no completion
+    /// was performed here.
+    pub fn acknowledge_scan_ingress_fence(&self, fence_id: u64) -> bool {
+        let _ = fence_id;
+        false
     }
 }
 
@@ -74,7 +90,7 @@ impl Central for Adapter {
         // There's a race between getting this event stream and getting the current set of devices.
         // Get the stream first, on the basis that it's better to have a duplicate DeviceDiscovered
         // event than to miss one. It's unlikely to happen in any case.
-        let events = self.session.adapter_event_stream(&self.adapter).await?;
+        let events = self.session.adapter_event_stream_with_scan_ingress(&self.adapter, self.scan_ingress.clone()).await?;
         let source_events = self.peers.lifecycle_events();
 
         // Synthesise `DeviceDiscovered' and `DeviceConnected` events for existing peripherals.
@@ -103,7 +119,7 @@ impl Central for Adapter {
         let session = self.session.clone();
         let adapter_id = self.adapter.clone();
         let events = events
-            .filter_map(move |event| central_events(event, session.clone(), adapter_id.clone()))
+            .filter_map(move |(event, ingress_epoch)| central_events(event, ingress_epoch, session.clone(), adapter_id.clone()))
             .flat_map(stream::iter);
         let source_adapter = self.adapter.clone();
         let source_events = tokio_stream::wrappers::BroadcastStream::new(source_events).filter_map(move |event| {
@@ -304,11 +320,11 @@ impl DeviceState {
 /// legacy BlueZ backend reported one on discovery and on every
 /// advertisement-bearing property change; an unreadable device is reported,
 /// never dropped.
-async fn sighting(session: &BluetoothSession, id: &bluez_async::DeviceId) -> CentralEvent {
+async fn sighting(session: &BluetoothSession, id: &bluez_async::DeviceId, ingress_epoch: Option<u64>) -> CentralEvent {
     match session.get_device_info(id).await {
-        Ok(device) => CentralEvent::Advertisement {
-            id: device.id.clone().into(),
-            report: device_state_report(&device),
+        Ok(device) => match ingress_epoch {
+            Some(ingress_epoch) => CentralEvent::AdvertisementScoped { id: device.id.clone().into(), report: device_state_report(&device), ingress_epoch },
+            None => CentralEvent::Advertisement { id: device.id.clone().into(), report: device_state_report(&device) },
         },
         Err(error) => CentralEvent::AdvertisementUnread {
             id: id.clone().into(),
@@ -319,6 +335,7 @@ async fn sighting(session: &BluetoothSession, id: &bluez_async::DeviceId) -> Cen
 
 async fn central_events(
     event: BluetoothEvent,
+    ingress_epoch: Option<u64>,
     session: BluetoothSession,
     adapter_id: AdapterId,
 ) -> Option<Vec<CentralEvent>> {
@@ -326,7 +343,7 @@ async fn central_events(
     // advertisement-bearing property change is also a sighting.
     if let BluetoothEvent::Device { id, event } = &event {
         if id.adapter() == adapter_id && reports_sighting(event) {
-            let report = sighting(&session, id).await;
+            let report = sighting(&session, id, ingress_epoch).await;
             let mut events = upstream_central_events(event.clone(), &session, id, adapter_id)
                 .await
                 .unwrap_or_default();

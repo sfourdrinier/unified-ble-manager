@@ -410,7 +410,21 @@ advertisement was delivered once per earlier scan.
 { error, error_name }` with the raw `BluetoothError` (0 = `Success`).
   - The `Received` registration token is kept and removed on `stop()` and
     before the next `start()`.
+  - Each logical scan receives a central-owned ingress epoch before native
+    start. Its `Received` handler captures that epoch immutably, closes
+    admission on retirement, and drains the already-admitted native callback
+    prefix. Queued manager events retain their original epoch instead of
+    being associated with the later scan.
 - `src/winrtble/adapter.rs` adds `Adapter::scan_stopped_events()`.
+  It also exposes the arm/retire/fence ingress controls and emits
+  `CentralEvent::AdvertisementScoped` for WinRT scan reports. If its manager
+  event stream closes, it verifies the native watcher is `Stopped` or
+  `Aborted` before closing ingress admission; `Starting`, `Started`, and
+  `Stopping` remain an explicit unresolved platform failure. The normal
+  central retire/fence still drains the accepted callback prefix. After that
+  drain it emits an ordered adapter-stream marker and waits for the desktop
+  bridge to consume it. A cancelled fence waiter leaves one epoch-keyed
+  marker flight; an exact retry joins it instead of queuing another marker.
 - `src/winrtble/mod.rs`: `ble` is now `pub(crate)`.
 - `src/platform.rs` re-exports `ScanStopped` on Windows.
 - `build.rs` lists `winrt-scan-stopped`.
@@ -419,7 +433,12 @@ advertisement was delivered once per earlier scan.
 covers the central side: an OS-ended scan releases the scan owner and is
 reported with the OS's reason, and a report with no active scan ends
 nothing. On the radio side, stops the radio requested itself are counted
-and skipped. The Windows code is type-checked only. Windows host check, not
+and skipped. `winrtble::ble::watcher::ubm_scan_mode_tests::ingress_epoch_fence_waits_for_an_admitted_callback_before_replacement`
+proves retirement rejects later old callbacks, the fence drains only the
+already-admitted callback, and a lost fence reply can retry after the next
+epoch is armed. That watcher unit test proves the native callback portion;
+the desktop bridge regression proves the later adapter-stream marker
+acknowledgement. The Windows code is type-checked only. Windows host check, not
 yet run: turn the radio off during a scan and confirm `scan_terminal_events`
 reports `aborted` and a new scan starts; then run two consecutive scans and
 confirm each advertisement arrives once.

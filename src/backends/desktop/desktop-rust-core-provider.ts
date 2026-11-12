@@ -1412,6 +1412,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   /** One stream per `events()` caller (each manager on this backend), as the 4.x backends fanned out. */
   private readonly eventStreams = new Set<OwnedCoreBoundedStream<BackendEvent<string>>>()
   private scanGroup: ScanGroup | null = null
+  /** The provider is the sole reader of the core-wide scan ingress queue. */
+  private scanPumpRunning: Promise<void> | null = null
   private nextOrdinalValue = 1
   private nextEventOrdinalValue = 1
   /** Highest adapter-state event sequence applied from the core. */
@@ -3375,7 +3377,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     this.scanGroup = group
     const consumer = this.addScanConsumer(group, ownerLeaseId, options, options.filter)
-    this.pumpScanObservations(group).catch(error => this.failScanSource(group, 'scan-pump-failed', error))
+    this.ensureScanPump()
     return this.scanLease(group, consumer)
   }
 
@@ -3496,33 +3498,65 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     return Object.freeze({ state: 'released', failures: Object.freeze([]) })
   }
 
-  private async pumpScanObservations(group: ScanGroup): Promise<void> {
-    while (!this.destroyed && this.scanGroup === group) {
+  /** Start the one provider-owned reader of the core's process-wide scan queue. */
+  private ensureScanPump(): void {
+    if (this.destroyed || this.scanPumpRunning !== null || this.scanGroup === null) return
+    const pump = this.pumpScanObservations()
+    this.scanPumpRunning = pump
+    pump
+      .catch(error => {
+        this.noteBackgroundFailure('scan-pump-failed', error)
+        this.noteDiagnostic('scan-pump-failed', 'the provider scan pump failed outside a scan take')
+      })
+      .finally(() => {
+        this.scanPumpRunning = null
+        // A stop can make the prior turn retire while a new scan starts. The
+        // successor must still get the sole reader rather than waiting for a
+        // future start that may never happen.
+        this.ensureScanPump()
+      })
+  }
+
+  private noteForeignScanObservation(group: ScanGroup, scanOperationId: string): void {
+    group.foreignRefused += 1
+    this.noteDiagnostic('scan-observation-foreign', 'an observation queued for another scan was refused', {
+      scanOperationId: String(scanOperationId).slice(0, 128),
+      refused: group.foreignRefused
+    })
+  }
+
+  private async pumpScanObservations(): Promise<void> {
+    while (!this.destroyed) {
+      const groupAtTake = this.scanGroup
+      if (groupAtTake === null) return
       const polledAt = this.wakeSequence
       let taken: DesktopRustCoreScanObservation | null
       try {
         taken = await this.central.takeScanObservation()
       } catch (error) {
-        await this.failScanSource(group, 'scan-take-failed', error)
-        return
+        await this.failScanSource(groupAtTake, 'scan-pump-failed', error)
+        continue
       }
       if (taken === null || taken === undefined) {
         await this.pumpWait(polledAt)
         continue
       }
+      const group = this.scanGroup
+      if (group === null || group.state !== 'active') continue
       // 4.x reported advertisements only while a scan was active: a
       // sighting the core queued for another scan is never attributed to
       // this one (LEGACY-AUDIT-5 S2). It is refused loudly, not delivered.
       if (taken.scanOperationId !== group.coreOperationId) {
-        group.foreignRefused += 1
-        this.noteDiagnostic('scan-observation-foreign', 'an observation queued for another scan was refused', {
-          scanOperationId: String(taken.scanOperationId).slice(0, 128),
-          refused: group.foreignRefused
-        })
+        this.noteForeignScanObservation(group, taken.scanOperationId)
         continue
       }
       const next = taken.advertisement
-      await this.ensureAddressType(next)
+      try {
+        await this.ensureAddressType(next)
+      } catch (error) {
+        await this.failScanSource(group, 'scan-pump-failed', error)
+        continue
+      }
       let observation: AdvertisementObservation<string>
       try {
         observation = this.mapObservation(next, group.scanSessionId, taken.ageMs)
@@ -3531,7 +3565,15 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         this.countMalformedObservation(group)
         continue
       }
-      this.deliverObservation(group, observation, next.peerId)
+      // Address resolution may await. Never emit an old scan's observation
+      // into a group that stopped or was replaced while that work ran.
+      const current = this.scanGroup
+      if (current === null || current.state !== 'active') continue
+      if (taken.scanOperationId !== current.coreOperationId) {
+        this.noteForeignScanObservation(current, taken.scanOperationId)
+        continue
+      }
+      this.deliverObservation(current, observation, next.peerId)
     }
   }
 
@@ -3541,8 +3583,17 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * no stream stays open on a pump that will never deliver again.
    */
   private async failScanSource(group: ScanGroup, code: string, error: unknown): Promise<void> {
-    if (this.destroyed || this.scanGroup !== group) return
+    if (this.destroyed) return
     this.noteBackgroundFailure(code, error)
+    if (this.scanGroup !== group) {
+      this.noteDiagnostic(
+        code,
+        this.scanGroup === null
+          ? 'the provider scan pump failed after its scan stopped'
+          : 'the provider scan pump failed after ownership moved to another scan'
+      )
+      return
+    }
     for (const consumer of group.consumers.values()) consumer.stream.closeWithReason('source-failed')
     const owner = group.consumers.get(String(group.ownerLeaseId))
     if (owner === undefined) return

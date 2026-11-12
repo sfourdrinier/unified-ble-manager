@@ -2034,6 +2034,15 @@ pub enum CoreBluetoothMessage {
         // was refused.
         future: CoreBluetoothReplyStateShared,
     },
+    /// Arm/retire/fence one CoreBluetooth delegate-queue scan ingress epoch.
+    /// The platform has no physical scan identity, so the serial delegate
+    /// queue is the only boundary that can preserve callback ownership.
+    ScanIngress {
+        action: super::central_delegate::ScanIngressAction,
+        epoch: u64,
+        fence_id: Option<u64>,
+        future: CoreBluetoothReplyStateShared,
+    },
     StopScanning,
     ConnectDevice {
         identity: NativeRequestIdentity,
@@ -2142,6 +2151,7 @@ impl CoreBluetoothMessage {
             Self::DirectoryLookup { future, .. }
             | Self::GetAdapterState { future }
             | Self::StartScanning { future, .. }
+            | Self::ScanIngress { future, .. }
             | Self::ConnectDevice { future, .. }
             | Self::DisconnectDevice { future, .. }
             | Self::ReadValue { future, .. }
@@ -2201,6 +2211,11 @@ pub enum CoreBluetoothEvent {
     Advertised {
         uuid: Uuid,
         report: crate::api::AdvertisementReport,
+        ingress_epoch: Option<u64>,
+    },
+    ScanIngressFence {
+        epoch: u64,
+        fence_id: u64,
     },
 }
 
@@ -3646,6 +3661,9 @@ impl CoreBluetoothInternal {
                     // "ready" variable in our adapter that will cause scans/etc
                     // to fail if this hasn't updated.
                     CentralDelegateEvent::AdapterBarrierFailed { error } => { self.fail_actor(&error); }
+                    CentralDelegateEvent::ScanIngressFence { epoch, fence_id } => {
+                        self.dispatch_event(CoreBluetoothEvent::ScanIngressFence { epoch, fence_id }).await;
+                    }
                     CentralDelegateEvent::DidUpdateState{state} => {
                         // UBM patch (UBM_PATCHES.md #7): CoreBluetooth
                         // invalidates every peripheral when it resets or
@@ -3767,6 +3785,7 @@ impl CoreBluetoothInternal {
                         peripheral_uuid,
                         report,
                         advertisement_name,
+                        ingress_epoch,
                     } => {
                         // UBM patch (UBM_PATCHES.md #17, finding 205): label
                         // a nameless sighting with the last advertised name
@@ -3788,6 +3807,7 @@ impl CoreBluetoothInternal {
                         self.dispatch_event(CoreBluetoothEvent::Advertised {
                             uuid: peripheral_uuid,
                             report,
+                            ingress_epoch,
                         })
                         .await
                     },
@@ -3819,6 +3839,9 @@ impl CoreBluetoothInternal {
                         self.get_adapter_state(future);
                     },
                     CoreBluetoothMessage::StartScanning{filter, future} => self.start_discovery(filter, future),
+                    CoreBluetoothMessage::ScanIngress { action, epoch, fence_id, future } => {
+                        self.scan_ingress(action, epoch, fence_id, future);
+                    }
                     CoreBluetoothMessage::DirectoryLookup {services, identifier, future} => self.directory_lookup(services, identifier, future).await,
                     CoreBluetoothMessage::StopScanning => self.stop_discovery(),
                     CoreBluetoothMessage::ConnectDevice{identity, future} => {
@@ -3964,6 +3987,34 @@ impl CoreBluetoothInternal {
     fn stop_discovery(&mut self) {
         trace!("BluetoothAdapter::stop_discovery");
         if let Some(manager) = &self.manager_lifetime.manager { unsafe { manager.stopScan() }; }
+    }
+
+    fn scan_ingress(
+        &mut self,
+        action: super::central_delegate::ScanIngressAction,
+        epoch: u64,
+        fence_id: Option<u64>,
+        future: CoreBluetoothReplyStateShared,
+    ) {
+        let queued = unsafe {
+            super::central_delegate::schedule_scan_ingress(
+                self.manager_lifetime.delegate_queue,
+                self.source_registry.clone(),
+                action,
+                epoch,
+                fence_id,
+                future.clone(),
+            )
+        };
+        if queued.is_err() {
+            future.lock().unwrap().set_reply(CoreBluetoothReply::Failed(
+                crate::PlatformError::new(
+                    "corebluetooth",
+                    "scan-ingress-delegate-unavailable",
+                    "The CoreBluetooth delegate queue is unavailable",
+                ),
+            ));
+        }
     }
 }
 
