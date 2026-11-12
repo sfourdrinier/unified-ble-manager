@@ -263,17 +263,27 @@ function createTerminalEvidenceRecovery(
     )
       return malformed('list.item.committed')
     const producer = text(source.producer, 'list.item.producer')
-    if (producer !== 'scan' && producer !== 'subscription') return malformed('list.item.producer')
-    const recoveredScope = terminalEvidenceScopeFromNative(
-      producer,
-      Object.freeze({
-        managerId: text(scope.managerId, 'list.item.scope.manager-id'),
-        operationId: text(scope.operationId, 'list.item.scope.operation-id'),
-        incarnation: text(scope.incarnation, 'list.item.scope.incarnation'),
-        ...(hasRawScope ? { scopeUtf16leBase64: text(scope.scopeUtf16leBase64, 'list.item.scope.scope-utf16le') } : {})
-      }),
-      `${operation}.list.item`
-    )
+    // Historical mobile recovery rows predate the producer vocabulary and
+    // retain a descriptive owner such as `mobile-owner`. Their scalar scope
+    // remains recoverable. A raw UTF-16 sidecar, however, cryptographically
+    // binds its producer and therefore accepts only the current vocabulary.
+    const visibleScope = Object.freeze({
+      managerId: text(scope.managerId, 'list.item.scope.manager-id'),
+      operationId: text(scope.operationId, 'list.item.scope.operation-id'),
+      incarnation: text(scope.incarnation, 'list.item.scope.incarnation'),
+      ...(hasRawScope ? { scopeUtf16leBase64: text(scope.scopeUtf16leBase64, 'list.item.scope.scope-utf16le') } : {})
+    })
+    const recoveredScope = (() => {
+      if (hasRawScope) {
+        if (producer !== 'scan' && producer !== 'subscription') return malformed('list.item.producer')
+        return terminalEvidenceScopeFromNative(producer, visibleScope, `${operation}.list.item`)
+      }
+      return Object.freeze({
+        managerId: visibleScope.managerId,
+        operationId: visibleScope.operationId,
+        incarnation: visibleScope.incarnation
+      })
+    })()
     return Object.freeze({
       handle: text(source.handle, 'list.item.handle'),
       producer,

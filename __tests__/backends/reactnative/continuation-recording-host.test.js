@@ -164,6 +164,42 @@ test('terminal evidence recovery carries a staged entry through exact read and n
   await expect(recovery.acknowledge('opaque-staged-entry')).resolves.toBeUndefined()
 })
 
+test('terminal evidence recovery rejects a legacy producer when a raw UTF-16 scope claims current framing', async () => {
+  const binding = {
+    terminalEvidenceRecoveryOpenSelected: jest.fn(async () =>
+      JSON.stringify({ ok: true, value: { leaseId: 'lease-raw' } })
+    ),
+    terminalEvidenceRecoveryList: jest.fn(async () =>
+      JSON.stringify({
+        ok: true,
+        value: {
+          items: [
+            {
+              handle: 'opaque-raw-entry',
+              producer: 'mobile-owner',
+              scope: {
+                managerId: 'native-manager',
+                operationId: 'scan-terminal',
+                incarnation: '8',
+                scopeUtf16leBase64: 'BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+              },
+              state: 'staged'
+            }
+          ],
+          more: false
+        }
+      })
+    ),
+    terminalEvidenceRecoveryRead: jest.fn(),
+    terminalEvidenceRecoveryAcknowledge: jest.fn()
+  }
+  const recovery = createReactNativeContinuationRecordings({ rustCore: binding }).terminalEvidenceRecovery
+  await expect(recovery.list({ maxItems: 1, maxBytes: 64 })).rejects.toMatchObject({
+    code: 'protocol.malformed',
+    operation: 'terminal-evidence-recovery.list.item.producer'
+  })
+})
+
 test('offline ordered context uses only the dedicated trusted native control', async () => {
   const context = { kind: 'ordered-recording', version: 1, peerId: 'peer', connectionGeneration: '7', databaseGeneration: '8', maxItems: 8, maxBytes: 1024, maxControls: 4, members: [{ memberId: '0', publicMemberId: 'a', selector: { serviceUuid: 'service', serviceOccurrence: '0', characteristicUuid: 'characteristic', characteristicOccurrence: '0' }, delivery: null, preference: 'notification' }] }
   const binding = { orderedRecordingOfflineContext: jest.fn(async id => JSON.stringify({ ok: true, value: context })) }

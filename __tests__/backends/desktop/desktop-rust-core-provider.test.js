@@ -310,15 +310,16 @@ test('public Node manager recovers, reads, and acknowledges source evidence afte
 test('desktop provider promotes trusted staged terminal evidence after native restart', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-restart-'))
   try {
-    const first = await openBackend('corebluetooth', { terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const owner = 'restart-owner'
+    const first = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
     const bytes = new Uint8Array([9, 8, 7])
     const scope = { managerId: 'restart-manager', operationId: 'restart-operation', incarnation: '1' }
     const reservation = await first.backend.scanner.reserveTerminalEvidence({ producer: 'scan', maximumBytes: bytes.byteLength, formatVersion: 1, scope })
-    await first.backend.stageTerminalEvidenceForRecovery('scan', scope, 'trusted-recipient', bytes)
+    await first.backend.stageTerminalEvidenceForRecovery('scan', scope, owner, bytes)
     await reservation.release()
     await first.backend.destroy()
-    const second = await openBackend('corebluetooth', { terminalEvidenceStore: { directory, maxBytes: '4096' } })
-    const recovered = await second.backend.recoverTerminalEvidenceForRecipient('trusted-recipient', 'trusted-recovery-lease')
+    const second = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const recovered = await second.backend.recoverTerminalEvidenceForRecipient(owner, 'trusted-recovery-lease')
     expect(recovered).toHaveLength(1)
     expect(recovered[0]).toMatchObject({ producer: 'scan', byteLength: bytes.byteLength })
     await second.backend.scanner.releaseTerminalEvidence(recovered[0].reference)
@@ -330,7 +331,7 @@ test('a later recovered commit failure releases the private lease so every durab
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-recovery-retry-'))
   try {
     const owner = 'recovery-retry-owner'
-    const recipient = 'recovery-retry-recipient'
+    const recipient = owner
     const first = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
     for (const [operationId, value] of [['first', 1], ['second', 2]]) {
       const bytes = new Uint8Array([value])
