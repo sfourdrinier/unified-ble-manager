@@ -1185,16 +1185,7 @@ interface SubscriptionRecord {
   /** A V2 retained source failure. The pump pauses until explicit ACK. */
   recovery: DesktopPeerNotificationFailureRecoveryOffer | null
   readonly recoveryWaiters: Set<() => void>
-  /**
-   * The terminal a lifecycle event decided (link lost, database changed,
-   * adapter lost). The stream ends with it only after the values the core
-   * still holds for this consumer are delivered (LEGACY-AUDIT-4 R2).
-   */
-  pendingTerminal: SubscriptionLifecycleTerminal | null
 }
-
-/** A notification stream end a lifecycle event decides. */
-type SubscriptionLifecycleTerminal = 'connection-lost' | 'service-changed' | 'source-failed'
 
 interface ParameterWatch {
   readonly record: ConnectionRecord
@@ -2380,9 +2371,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     for (const subscriptionId of record.subscriptions) {
       const subscription = this.subscriptions.get(subscriptionId)
       if (subscription === undefined) continue
-      this.endSubscriptionAfterDrain(subscription, 'source-failed')
       this.subscriptions.delete(subscriptionId)
     }
+    // A lifecycle event proves the link is gone but not which terminal
+    // invalidation reached an individual consumer first. The native poll
+    // owns that answer (adapter reset, link end, or an earlier service
+    // change), so wake it without preempting its terminal.
+    this.wakePumps()
     record.subscriptions.clear()
     for (const databaseId of record.databases) this.databases.delete(databaseId)
     record.databases.clear()
@@ -2654,7 +2649,6 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     if (event.kind === 'services-changed') {
       for (const record of records) {
-        this.invalidateConnectionState(record, 'service-changed')
         for (const databaseId of [...record.databases]) {
           const database = this.databases.get(databaseId)
           this.databases.delete(databaseId)
@@ -2669,6 +2663,11 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
           })
         }
       }
+      // A lifecycle notification only establishes that a database changed.
+      // The native notification poll retains the first terminal cause for
+      // each consumer (service change versus adjacent adapter reset), so it
+      // alone decides this stream's terminal reason.
+      this.wakePumps()
       return
     }
     const requested = event.kind === 'released' && event.requested === true
@@ -2690,6 +2689,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         ...(platform === undefined ? {} : { platform })
       })
     }
+    this.wakePumps()
   }
 
   /**
@@ -2731,11 +2731,6 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   }
 
   private invalidateConnectionState(record: ConnectionRecord, reason: 'connection-lost' | 'service-changed'): void {
-    for (const subscriptionId of [...record.subscriptions]) {
-      const subscription = this.subscriptions.get(subscriptionId)
-      if (subscription === undefined) continue
-      this.endSubscriptionAfterDrain(subscription, reason)
-    }
     if (reason === 'connection-lost') {
       for (const databaseId of record.databases) this.databases.delete(databaseId)
       record.databases.clear()
@@ -3222,49 +3217,6 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       leaseId: claims.leaseId
     })
     this.terminalEvidenceAcknowledgements.delete(reference)
-  }
-
-  private terminalEvidenceFromCore(
-    value: unknown,
-    producer: 'scan' | 'subscription',
-    scope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string } | null,
-    operation: string
-  ): TerminalEvidenceCommit | undefined {
-    if (value == null) return undefined
-    if (typeof value !== 'object' || scope === null) {
-      throw contractError('protocol.malformed', 'core', `${operation}.terminal-evidence`)
-    }
-    const candidate = value
-    const sourceScope = Reflect.get(candidate, 'scope')
-    const ref = Reflect.get(candidate, 'ref')
-    const byteLength = Reflect.get(candidate, 'byteLength')
-    const digest = Reflect.get(candidate, 'digest')
-    if (
-      Reflect.get(candidate, 'producer') !== producer ||
-      typeof ref !== 'string' ||
-      ref.length === 0 ||
-      !/^[0-9]+$/.test(String(byteLength)) ||
-      !Number.isSafeInteger(Number(byteLength)) ||
-      typeof digest !== 'string' ||
-      Reflect.get(candidate, 'formatVersion') !== 1 ||
-      Reflect.get(candidate, 'durability') !== 'committed' ||
-      typeof sourceScope !== 'object' ||
-      sourceScope === null ||
-      Reflect.get(sourceScope, 'managerId') !== scope.managerId ||
-      Reflect.get(sourceScope, 'operationId') !== scope.operationId ||
-      Reflect.get(sourceScope, 'incarnation') !== scope.incarnation
-    ) {
-      throw contractError('protocol.malformed', 'core', `${operation}.terminal-evidence`)
-    }
-    return Object.freeze({
-      producer,
-      ref,
-      byteLength: Number(byteLength),
-      digest,
-      formatVersion: 1,
-      durability: 'committed',
-      scope
-    })
   }
 
   private async commitPendingTerminalEvidence(
@@ -7158,7 +7110,6 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         overflowPolicy: request.options.delivery.overflowPolicy,
         terminalEvidenceScope: request.terminalEvidenceScope ?? null,
         closed: false,
-        pendingTerminal: null,
         surfacedLoss: 0,
         countersCheckedAt: -1,
         emptyPolls: 0,
@@ -7206,25 +7157,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   }
 
   /**
-   * A lifecycle event ended this consumer's link or database. Native
-   * callbacks delivered every value that arrived before the event ahead of
-   * the stream's end, so the stream ends with `reason` only once its pump
-   * has drained what the core still holds; the pump is woken to do so now.
-   */
-  private endSubscriptionAfterDrain(subscription: SubscriptionRecord, reason: SubscriptionLifecycleTerminal): void {
-    if (subscription.closed || subscription.pendingTerminal !== null) return
-    subscription.pendingTerminal = reason
-    this.wakePumps()
-  }
-
-  /**
    * End a consumer's stream exactly once, after the values it already
    * accepted: a value the pump delivered before the end is still read
    * ahead of the terminal, whether or not anyone was reading when it ended.
    */
   private closeSubscription(
     subscription: SubscriptionRecord,
-    reason: SubscriptionLifecycleTerminal | 'overflow' | 'closed',
+    reason: 'connection-lost' | 'service-changed' | 'source-failed' | 'overflow' | 'closed',
     error?: NormalizedBleError,
     evidence?: TerminalEvidenceCommit
   ): void {
@@ -7302,17 +7241,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             : await this.central.pollNotificationV2(options)
       } catch (error) {
         if (subscription.closed || this.destroyed) return
-        // A consumer whose lifecycle end is already decided ends with that
-        // reason; any other poll failure is a failed source.
-        if (subscription.pendingTerminal !== null) this.closeSubscription(subscription, subscription.pendingTerminal)
-        else this.closeSubscription(subscription, 'source-failed', desktopRustCoreError(error, operation).normalized)
+        // A provider-side poll failure has no native terminal receipt, so it
+        // is a failed source. Lifecycle events never set a competing local
+        // terminal; the native poll names their first invalidation cause.
+        this.closeSubscription(subscription, 'source-failed', desktopRustCoreError(error, operation).normalized)
         return
       }
       if (poll.kind === 'empty') {
-        if (subscription.pendingTerminal !== null) {
-          this.closeSubscription(subscription, subscription.pendingTerminal)
-          return
-        }
         await this.surfaceCoreLoss(subscription, operation)
         if (subscription.closed) return
         await this.pumpWait(polledAt)
@@ -7435,7 +7370,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         }
         continue
       }
-      if (poll.kind === 'terminal' && subscription.pendingTerminal === null) {
+      if (poll.kind === 'terminal') {
         // The core ended an `error` consumer on overflow, its own or values
         // lost upstream: the stream ends overflow with the core's counts, as
         // a local `error` overflow does.
@@ -7465,24 +7400,16 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         )
         return
       }
-      const evidence =
-        poll.kind === 'terminal'
-          ? this.terminalEvidenceFromCore(poll.evidence, 'subscription', subscription.terminalEvidenceScope, operation)
-          : undefined
       this.closeSubscription(
         subscription,
-        subscription.pendingTerminal ??
-          (poll.kind === 'terminal'
-            ? 'overflow'
-            : poll.kind === 'invalidated'
-              ? poll.cause === 'services-changed'
-                ? 'service-changed'
-                : poll.cause === 'adapter-reset'
-                  ? 'source-failed'
-                  : 'connection-lost'
-              : 'closed'),
-        undefined,
-        evidence
+        poll.kind === 'invalidated'
+          ? poll.cause === 'services-changed'
+            ? 'service-changed'
+            : poll.cause === 'adapter-reset'
+              ? 'source-failed'
+              : 'connection-lost'
+          : 'closed',
+        undefined
       )
       return
     }

@@ -2990,6 +2990,16 @@ type ExactDisableSettlement = notification_settlement::Settlement<
     DesktopError,
 >;
 
+/// Test-only rendezvous for the exact poll race where the first core read is
+/// released before source-failure routing reacquires the core.  Production
+/// has no hook: the test must prove the reset lands in that specific gap,
+/// rather than merely racing two tasks around an unrelated mutex.
+#[cfg(test)]
+struct NotificationPollCoreGap {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
 struct Inner<B> {
     acquired: Arc<crate::acquired_gatt::ownership::Registry>,
     /// Completed discovery admission per live lease, with exact generations.
@@ -3115,6 +3125,8 @@ struct Inner<B> {
     /// exact source-time cleanup debt, so later route retirement cannot make
     /// a late durable result authorize a replacement route.
     peer_failure_recovery_transition: Mutex<()>,
+    #[cfg(test)]
+    notification_poll_core_gap: StdMutex<Option<Arc<NotificationPollCoreGap>>>,
     notification_failures: StdMutex<HashMap<usize, NotificationSourceFailure>>,
     peer_failure_recoveries: StdMutex<
         HashMap<
@@ -4442,6 +4454,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             half_open_cleanup: StdMutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
             peer_failure_recovery_transition: Mutex::new(()),
+            #[cfg(test)]
+            notification_poll_core_gap: StdMutex::new(None),
             notification_failures: StdMutex::new(HashMap::new()),
             peer_failure_recoveries: StdMutex::new(HashMap::new()),
             peer_failure_recovery_persistence: Mutex::new(()),
@@ -12624,30 +12638,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 "gatt.take-notification",
             ));
         }
-        let observed_cause = core
-            .consumer_invalidation_cause(&peer_key, selector, consumer)
-            .map(|cause| match cause {
-                NotificationInvalidationCause::ServicesChanged => {
-                    InvalidationCause::ServicesChanged
-                }
-                NotificationInvalidationCause::LinkEnded => InvalidationCause::LinkEnded,
-                NotificationInvalidationCause::AdapterReset => InvalidationCause::AdapterReset,
-            });
-        let cause = observed_cause.unwrap_or_else(|| {
-            if lock_std(&self.inner.reset_peers).contains(&peer_key) {
-                // A reset fence is the authoritative retirement cause even while
-                // the core's prior connection state remains observable during
-                // teardown. It must not be recast as a services-only change.
-                InvalidationCause::AdapterReset
-            } else {
-                match core.connection_state(&peer_key) {
-                    Some(ConnectionState::Connected | ConnectionState::Connecting) => {
-                        InvalidationCause::ServicesChanged
-                    }
-                    _ => InvalidationCause::LinkEnded,
-                }
-            }
-        });
+        let cause = self.notification_invalidation_cause(&core, &peer_key, selector, consumer);
         // Finding 111: the consumer's own subscription, whatever its
         // generation, so values it held at a service change, link loss or
         // adapter reset drain before the invalidation.
@@ -12688,6 +12679,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // initial read guard for every path: an unresolved consumer must not
         // deadlock itself by attempting that second acquisition.
         drop(core);
+        #[cfg(test)]
+        let notification_poll_core_gap =
+            { lock_std(&self.inner.notification_poll_core_gap).clone() };
+        #[cfg(test)]
+        if let Some(gap) = notification_poll_core_gap {
+            gap.entered.notify_one();
+            gap.release.notified().await;
+        }
         if owns_consumer {
             // A path index is recyclable after an unsubscribe and rediscovery.
             // Do not let a terminal recorded by an old native callback close
@@ -12775,7 +12774,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 | ubm_core::central::ConsumerState::Removing,
             ) => Ok(NotificationPoll::Empty),
             Some(ubm_core::central::ConsumerState::Invalid) => {
-                Ok(NotificationPoll::Invalidated(cause))
+                // The source-failure recovery path above deliberately drops
+                // `core`. A concurrent adapter reset can invalidate this
+                // consumer during that gap, so a fallback computed under the
+                // first lock is no longer authoritative. Preserve an explicit
+                // earlier service-change cause, but derive all fallback state
+                // from this final ownership observation.
+                Ok(NotificationPoll::Invalidated(
+                    self.notification_invalidation_cause(&core, &peer_key, selector, consumer),
+                ))
             }
             Some(
                 ubm_core::central::ConsumerState::Failed
@@ -12783,6 +12790,37 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             )
             | None => Ok(NotificationPoll::Closed),
         }
+    }
+
+    fn notification_invalidation_cause(
+        &self,
+        core: &Central,
+        peer_key: &str,
+        selector: &PathSelector,
+        consumer: &str,
+    ) -> InvalidationCause {
+        core.consumer_invalidation_cause(peer_key, selector, consumer)
+            .map(|cause| match cause {
+                NotificationInvalidationCause::ServicesChanged => {
+                    InvalidationCause::ServicesChanged
+                }
+                NotificationInvalidationCause::LinkEnded => InvalidationCause::LinkEnded,
+                NotificationInvalidationCause::AdapterReset => InvalidationCause::AdapterReset,
+            })
+            .unwrap_or_else(|| {
+                if lock_std(&self.inner.reset_peers).contains(peer_key) {
+                    // A reset fence is authoritative even while the core's
+                    // prior connection state remains observable in teardown.
+                    InvalidationCause::AdapterReset
+                } else {
+                    match core.connection_state(peer_key) {
+                        Some(ConnectionState::Connected | ConnectionState::Connecting) => {
+                            InvalidationCause::ServicesChanged
+                        }
+                        _ => InvalidationCause::LinkEnded,
+                    }
+                }
+            })
     }
 
     /// Notifications the OS lost before they reached one consumer's stream
@@ -22882,6 +22920,69 @@ mod adapter_tests {
                 .unwrap(),
             super::NotificationPoll::Invalidated(super::InvalidationCause::AdapterReset)
         );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn notification_poll_recomputes_invalidation_after_reset_in_core_gap() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe("peer", &selector, "consumer", None, OpControl::unbounded())
+            .await
+            .unwrap();
+
+        let gap = std::sync::Arc::new(super::NotificationPollCoreGap {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *super::lock_std(&central.inner.notification_poll_core_gap) =
+            Some(std::sync::Arc::clone(&gap));
+        // Register before starting the poll so the test cannot miss the
+        // exact post-core-lock publication.
+        let entered = gap.entered.notified();
+        let polling = {
+            let central = central.clone();
+            let selector = selector.clone();
+            tokio::spawn(async move {
+                central
+                    .poll_notification("peer", &selector, "consumer")
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered)
+            .await
+            .expect("poll crossed its initial core read before reset");
+        // The initial read saw a ready consumer and therefore computed the
+        // historical service-change fallback.  Reset in the gap before the
+        // source-failure transition can reacquire the core.  Returning that
+        // stale fallback would be the old bug; the final invalidated branch
+        // must inspect the first cause retained by reset instead.
+        let resetting = {
+            let inner = std::sync::Arc::clone(&central.inner);
+            tokio::spawn(async move {
+                super::adapter_reset(
+                    &inner,
+                    crate::boundary::AdapterLossCause::DaemonRestarted,
+                    None,
+                    None,
+                )
+                .await;
+            })
+        };
+        resetting.await.expect("reset joins");
+        gap.release.notify_one();
+        assert_eq!(
+            polling.await.expect("poll joins").expect("poll result"),
+            super::NotificationPoll::Invalidated(super::InvalidationCause::AdapterReset)
+        );
+        *super::lock_std(&central.inner.notification_poll_core_gap) = None;
         central.shutdown().await;
     }
 

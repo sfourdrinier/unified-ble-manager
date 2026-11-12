@@ -51,6 +51,7 @@ async function openLaggingBackend(platform) {
     lagWaiters: new Map(),
     lagTaken: new Set(),
     eventReadHolds: new Map(),
+    lifecycleOverrides: [],
     wakeWaiters: []
   }
   const original = harness.binding.openSynthetic
@@ -60,6 +61,9 @@ async function openLaggingBackend(platform) {
       get(target, property) {
         const value = Reflect.get(target, property)
         if (typeof value !== 'function') return value
+        if (property === 'takeLifecycleEvent' && control.lifecycleOverrides.length > 0) {
+          return async () => control.lifecycleOverrides.shift()
+        }
         if (property === 'setEventWaker') {
           return wake =>
             Reflect.apply(value, target, [
@@ -145,6 +149,14 @@ async function withLaggingBackend(platform, run) {
   } finally {
     await opened.backend.destroy()
   }
+}
+
+async function generationAdvanced(backend, generation) {
+  const deadline = Date.now() + 5000
+  while (backend.identity.attachment.backendGeneration === generation && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  expect(backend.identity.attachment.backendGeneration).not.toBe(generation)
 }
 
 /**
@@ -514,6 +526,54 @@ describe('the addon reports wake callbacks while its provider drains work (LEGAC
       // report tests elsewhere cover their direct wake paths.
       expect(control.wakes).toBeGreaterThan(beforeBurst)
       expect(stage.eventWakeFailures()).toBe(0)
+    })
+  })
+})
+
+// The lifecycle broadcast and notification poll are separate native queues.
+// The provider may observe both lifecycle facts before the held poll resumes,
+// but it must not turn that observation order into the terminal reason: the
+// core retains the first invalidation recorded for the consumer.
+describe('notification terminal cause remains native-authoritative across lifecycle queue order', () => {
+  test.each(PLATFORMS)('%s: service change before reset remains service-changed', async platform => {
+    await withLaggingBackend(platform, async ({ backend, stage, control }) => {
+      const events = backend.events()[Symbol.asyncIterator]()
+      const { database, measurement } = await connectAndDiscover(backend, stage)
+      const subscription = await database.subscribe(measurement.path, subscribeOptions())
+      const values = subscription.values[Symbol.asyncIterator]()
+      const generation = backend.identity.attachment.backendGeneration
+      control.holdPolls = true
+
+      await stage.stageServicesChanged('peer-1')
+      await nextEvent(events, event => event.kind === 'database-changed', 5000)
+      await stage.stageAdapterReset('removed')
+      await generationAdvanced(backend, generation)
+
+      control.holdPolls = false
+      expect(await nextItem(values, 5000)).toMatchObject({ kind: 'terminal', reason: 'service-changed' })
+    })
+  })
+
+  test.each(PLATFORMS)('%s: a queued stale service event cannot override reset', async platform => {
+    await withLaggingBackend(platform, async ({ backend, stage, control }) => {
+      const events = backend.events()[Symbol.asyncIterator]()
+      const { database, measurement } = await connectAndDiscover(backend, stage)
+      const subscription = await database.subscribe(measurement.path, subscribeOptions())
+      const values = subscription.values[Symbol.asyncIterator]()
+      const generation = backend.identity.attachment.backendGeneration
+      control.holdPolls = true
+
+      // This exact wire-valid lifecycle record models a service event
+      // accepted by its independent queue before the reset's notification
+      // terminal reaches JavaScript. It is deliberately injected through the
+      // same `takeLifecycleEvent` boundary, not by changing provider state.
+      control.lifecycleOverrides.push({ kind: 'services-changed', peerId: 'peer-1' })
+      await nextEvent(events, event => event.kind === 'database-changed', 5000)
+      await stage.stageAdapterReset('removed')
+      await generationAdvanced(backend, generation)
+
+      control.holdPolls = false
+      expect(await nextItem(values, 5000)).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
     })
   })
 })
