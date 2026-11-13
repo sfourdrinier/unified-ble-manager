@@ -21,6 +21,8 @@ All notable changes to `unified-ble-manager` are documented here.
   Saved rows and journals with live owners or unpersisted diagnostics remain retained.
 - Preserve Web notifications admitted before a same-turn disconnect when terminal
   evidence is enabled. Explicit owner removal retains its unread-value discard behavior.
+- Correct iOS/tvOS terminal-evidence bridge selectors and propagate Swift failures
+  through the existing structured JSON error channel.
 - Compensate a late successful scan start with a physical stop while avoiding
   a second retirement of an ingress epoch that an early stop already fenced.
 - Preserve immediate scan restart after an OS-ended terminal: the next start

@@ -32,6 +32,16 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     // a host that has already installed its ledger.
     try mobileConfigureTerminalEvidenceMaximumBytes(maximumBytes: value)
   }
+
+  @objc(configureTerminalEvidenceMaximumBytes:completion:)
+  public func configureTerminalEvidenceMaximumBytes(_ maximumBytes: String, completion: @escaping (String?) -> Void) {
+    do {
+      try configureTerminalEvidenceMaximumBytes(maximumBytes)
+      completion(nil)
+    } catch {
+      completion(Self.failureJson(error, operation: "mobile.terminal-evidence.configure"))
+    }
+  }
   private var accessoryStartupFailure: String?
   private var accessoryStartupQueryInFlight = false
 
@@ -525,6 +535,50 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   }
   public func terminalEvidenceRecoveryAcknowledge(_ handle: String) throws -> String {
     try installedHost().terminalEvidenceRecoveryAcknowledge(handle: handle)
+  }
+
+  @objc(terminalEvidenceRecoveryOpenSelectedWithCompletion:)
+  public func terminalEvidenceRecoveryOpenSelected(completion: @escaping (String?, String?) -> Void) {
+    do { completion(try terminalEvidenceRecoveryOpenSelected(), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.open")) }
+  }
+
+  @objc(terminalEvidenceRecoveryList:maxItems:maxBytes:completion:)
+  public func terminalEvidenceRecoveryList(_ leaseId: String, maxItems: Double, maxBytes: Double,
+                                           completion: @escaping (String?, String?) -> Void) {
+    guard let items = UInt32(exactly: maxItems), items > 0,
+          let bytes = UInt64(exactly: maxBytes), bytes > 0 else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "core", operation: "terminal-evidence.recovery.list", detail: "maxItems and maxBytes must be positive integers in range"))
+    }
+    do { completion(try terminalEvidenceRecoveryList(leaseId, maxItems: items, maxBytes: bytes), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.list")) }
+  }
+
+  @objc(terminalEvidenceRecoveryListWithStatus:maxItems:maxBytes:completion:)
+  public func terminalEvidenceRecoveryListWithStatus(_ leaseId: String, maxItems: Double, maxBytes: Double,
+                                                     completion: @escaping (String?, String?) -> Void) {
+    guard let items = UInt32(exactly: maxItems), items > 0,
+          let bytes = UInt64(exactly: maxBytes), bytes > 0 else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "core", operation: "terminal-evidence.recovery.list-with-status", detail: "maxItems and maxBytes must be positive integers in range"))
+    }
+    do { completion(try terminalEvidenceRecoveryListWithStatus(leaseId, maxItems: items, maxBytes: bytes), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.list-with-status")) }
+  }
+
+  @objc(terminalEvidenceRecoveryRead:offset:maxBytes:completion:)
+  public func terminalEvidenceRecoveryRead(_ handle: String, offset: String, maxBytes: Double,
+                                           completion: @escaping (String?, String?) -> Void) {
+    guard let bytes = UInt32(exactly: maxBytes), bytes > 0 else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "core", operation: "terminal-evidence.recovery.read", detail: "maxBytes must be a positive integer in range"))
+    }
+    do { completion(try terminalEvidenceRecoveryRead(handle, offset: offset, maxBytes: bytes), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.read")) }
+  }
+
+  @objc(terminalEvidenceRecoveryAcknowledge:completion:)
+  public func terminalEvidenceRecoveryAcknowledge(_ handle: String, completion: @escaping (String?, String?) -> Void) {
+    do { completion(try terminalEvidenceRecoveryAcknowledge(handle), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.acknowledge")) }
   }
 
   public func scanFailureRecoveryOwners(_ leaseId: String, completion: @escaping (String?, String?) -> Void) {

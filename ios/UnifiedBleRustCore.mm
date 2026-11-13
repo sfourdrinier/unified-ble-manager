@@ -129,8 +129,10 @@ class ScanFailureRecoveryRuntime final : public jsi::HostObject {
 - (void)configureTerminalEvidenceMaximumBytes:(NSString *)maximumBytes
                                       resolve:(RCTPromiseResolveBlock)resolve
                                        reject:(RCTPromiseRejectBlock)reject {
-  @try { [[UnifiedBleRustCoreSessions shared] configureTerminalEvidenceMaximumBytes:maximumBytes]; resolve(nil); }
-  @catch (NSException *error) { reject(@"configureTerminalEvidenceMaximumBytes", error.reason, error); }
+  [[UnifiedBleRustCoreSessions shared] configureTerminalEvidenceMaximumBytes:maximumBytes completion:^(NSString *failure) {
+    if (failure != nil) { rejectWithFailure(reject, failure); return; }
+    resolve(nil);
+  }];
 }
 
 RCT_EXPORT_MODULE(UnifiedBleRustCore)
@@ -364,11 +366,11 @@ RCT_EXPORT_MODULE(UnifiedBleRustCore)
 - (void)orderedRecordingReserve:(NSString *)sessionId id:(NSString *)recordingId resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
   [self orderedRecordingReceipt:@"reserve" sessionId:sessionId id:recordingId resolve:resolve reject:reject];
 }
-- (void)orderedRecordingStartStatus:(NSString *)sessionId id:(NSString *)recordingId resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-  [self orderedRecordingReceipt:@"status" sessionId:sessionId id:recordingId resolve:resolve reject:reject];
+- (void)orderedRecordingStartStatus:(NSString *)sessionId handle:(NSString *)handle resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [self orderedRecordingReceipt:@"status" sessionId:sessionId id:handle resolve:resolve reject:reject];
 }
-- (void)orderedRecordingRetire:(NSString *)sessionId id:(NSString *)recordingId resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-  [self orderedRecordingReceipt:@"retire" sessionId:sessionId id:recordingId resolve:resolve reject:reject];
+- (void)orderedRecordingRetire:(NSString *)sessionId handle:(NSString *)handle resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [self orderedRecordingReceipt:@"retire" sessionId:sessionId id:handle resolve:resolve reject:reject];
 }
 - (void)orderedRecordingStart:(NSString *)sessionId handle:(NSString *)handle id:(NSString *)recordingId maxBytes:(NSString *)maxBytes maxRecords:(NSString *)maxRecords declarationJson:(NSString *)declarationJson budgetMs:(double)budgetMs resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
   [[UnifiedBleRustCoreSessions shared] orderedRecordingStartWithSessionId:sessionId handle:handle id:recordingId maxBytes:maxBytes maxRecords:maxRecords declarationJson:declarationJson budgetMs:budgetMs ownerToken:self completion:^(NSString *value, NSString *failure) {
@@ -434,28 +436,34 @@ RCT_EXPORT_MODULE(UnifiedBleRustCore)
 }
 
 - (void)terminalEvidenceRecoveryOpenSelected:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-  @try { resolve([[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryOpenSelected]); }
-  @catch (NSException *error) { reject(@"terminalEvidenceRecoveryOpenSelected", error.reason, error); }
+  [[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryOpenSelectedWithCompletion:^(NSString *value, NSString *failure) {
+    if (failure != nil) { rejectWithFailure(reject, failure); return; }
+    resolve(value);
+  }];
 }
 - (void)terminalEvidenceRecoveryList:(NSString *)leaseId maxItems:(double)maxItems maxBytes:(double)maxBytes resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-  @try {
-    if (maxItems < 1 || floor(maxItems) != maxItems || maxItems > UINT32_MAX || maxBytes < 1 || floor(maxBytes) != maxBytes || maxBytes > UINT64_MAX) { @throw [NSException exceptionWithName:@"argument.invalid" reason:@"invalid terminal recovery bounds" userInfo:nil]; }
-    resolve([[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryList:leaseId maxItems:(uint32_t)maxItems maxBytes:(uint64_t)maxBytes]);
-  } @catch (NSException *error) { reject(@"terminalEvidenceRecoveryList", error.reason, error); }
+  [[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryList:leaseId maxItems:maxItems maxBytes:maxBytes completion:^(NSString *value, NSString *failure) {
+    if (failure != nil) { rejectWithFailure(reject, failure); return; }
+    resolve(value);
+  }];
 }
 - (void)terminalEvidenceRecoveryListWithStatus:(NSString *)leaseId maxItems:(double)maxItems maxBytes:(double)maxBytes resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-  @try {
-    if (maxItems < 1 || floor(maxItems) != maxItems || maxItems > UINT32_MAX || maxBytes < 1 || floor(maxBytes) != maxBytes || maxBytes > UINT64_MAX) { @throw [NSException exceptionWithName:@"argument.invalid" reason:@"invalid terminal recovery bounds" userInfo:nil]; }
-    resolve([[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryListWithStatus:leaseId maxItems:(uint32_t)maxItems maxBytes:(uint64_t)maxBytes]);
-  } @catch (NSException *error) { reject(@"terminalEvidenceRecoveryListWithStatus", error.reason, error); }
+  [[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryListWithStatus:leaseId maxItems:maxItems maxBytes:maxBytes completion:^(NSString *value, NSString *failure) {
+    if (failure != nil) { rejectWithFailure(reject, failure); return; }
+    resolve(value);
+  }];
 }
 - (void)terminalEvidenceRecoveryRead:(NSString *)handle offset:(NSString *)offset maxBytes:(double)maxBytes resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-  @try { if (maxBytes < 1 || floor(maxBytes) != maxBytes || maxBytes > UINT32_MAX) { @throw [NSException exceptionWithName:@"argument.invalid" reason:@"invalid terminal recovery read bound" userInfo:nil]; } resolve([[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryRead:handle offset:offset maxBytes:(uint32_t)maxBytes]); }
-  @catch (NSException *error) { reject(@"terminalEvidenceRecoveryRead", error.reason, error); }
+  [[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryRead:handle offset:offset maxBytes:maxBytes completion:^(NSString *value, NSString *failure) {
+    if (failure != nil) { rejectWithFailure(reject, failure); return; }
+    resolve(value);
+  }];
 }
 - (void)terminalEvidenceRecoveryAcknowledge:(NSString *)handle resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-  @try { resolve([[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryAcknowledge:handle]); }
-  @catch (NSException *error) { reject(@"terminalEvidenceRecoveryAcknowledge", error.reason, error); }
+  [[UnifiedBleRustCoreSessions shared] terminalEvidenceRecoveryAcknowledge:handle completion:^(NSString *value, NSString *failure) {
+    if (failure != nil) { rejectWithFailure(reject, failure); return; }
+    resolve(value);
+  }];
 }
 - (void)scanFailureRecoveryOwners:(NSString *)leaseId resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
   [[UnifiedBleRustCoreSessions shared] scanFailureRecoveryOwners:leaseId completion:^(NSString *value, NSString *failure) {
