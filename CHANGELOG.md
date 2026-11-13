@@ -17,6 +17,8 @@ All notable changes to `unified-ble-manager` are documented here.
 - Request the Windows handle rights required to provision current-user recovery
   storage and use the canonical file full-control ACE mask, preserving the
   existing owner and protected-ACL validation.
+- Protect Windows recording directories without propagating ACL changes to
+  pre-existing recording and authority files, preserving their read/write access.
 - Release terminal-evidence and idle recording database handles after successful
   Node-API host shutdown, including when JavaScript retains the native wrapper.
   Saved rows and journals with live owners or unpersisted diagnostics remain retained.

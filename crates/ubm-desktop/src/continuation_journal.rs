@@ -752,17 +752,29 @@ fn windows_open_exact_scan_recovery_sidecar(path: &Path) -> Result<std::fs::File
 }
 
 #[cfg(windows)]
-fn windows_open_exact_scan_recovery_directory(path: &Path) -> Result<std::fs::File> {
+fn windows_open_exact_scan_recovery_directory(
+    path: &Path,
+    provisioning: bool,
+) -> Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
     use windows_sys::Win32::Storage::FileSystem::{WRITE_DAC, WRITE_OWNER};
+    use windows_sys::Win32::System::SystemServices::MAXIMUM_ALLOWED;
 
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         // See the sidecar opener: changing this object's DACL and owner
         // requires explicit security-descriptor rights on the held handle.
-        .access_mode(GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER)
+        // SetSecurityInfo does not propagate a directory DACL to existing
+        // children when the handle used for provisioning requests
+        // MAXIMUM_ALLOWED. The configured root can therefore be protected
+        // without changing pre-existing, unrelated files beside a journal.
+        .access_mode(if provisioning {
+            MAXIMUM_ALLOWED
+        } else {
+            GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER
+        })
         // BACKUP_SEMANTICS is required for a directory handle; OPEN_REPARSE_POINT
         // makes a junction/symlink fail validation rather than redirecting it.
         .custom_flags(0x0220_0000)
@@ -964,7 +976,7 @@ fn windows_provision_scan_recovery_object(path: &Path, directory: bool) -> Resul
 
     let sid = windows_current_user_sid()?;
     let file = if directory {
-        windows_open_exact_scan_recovery_directory(path)?
+        windows_open_exact_scan_recovery_directory(path, true)?
     } else {
         windows_open_exact_scan_recovery_sidecar(path)?
     };
@@ -1029,7 +1041,7 @@ fn windows_validate_scan_recovery_sidecar(path: &Path) -> Result<()> {
 #[cfg(windows)]
 fn windows_validate_scan_recovery_directory(path: &Path) -> Result<()> {
     let sid = windows_current_user_sid()?;
-    let directory = windows_open_exact_scan_recovery_directory(path)?;
+    let directory = windows_open_exact_scan_recovery_directory(path, false)?;
     windows_validate_held_scan_recovery_directory(&directory, &sid)
 }
 
@@ -20840,6 +20852,7 @@ mod authority_tests {
     #[cfg(windows)]
     #[test]
     fn windows_scan_recovery_protector_provisions_the_real_directory_and_sidecar_route() {
+        use std::io::Write;
         use std::os::windows::fs::OpenOptionsExt;
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
@@ -20854,6 +20867,8 @@ mod authority_tests {
             std::time::SystemTime::now()
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        let ordinary_file = directory.join("ordinary-preexisting-file");
+        std::fs::write(&ordinary_file, b"before-root-protection").unwrap();
         let protector = WindowsCurrentUserScanRecoveryStorageProtector::new();
         assert_eq!(
             protector.capability(),
@@ -20864,6 +20879,23 @@ mod authority_tests {
         // creating and protecting SQLite's sidecar.
         protector.provision_directory(&directory).unwrap();
         protector.validate_directory(&directory).unwrap();
+        assert_eq!(
+            std::fs::read(&ordinary_file).unwrap(),
+            b"before-root-protection"
+        );
+        let mut ordinary_file_handle = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&ordinary_file)
+            .unwrap();
+        ordinary_file_handle
+            .write_all(b"after-root-protection")
+            .unwrap();
+        drop(ordinary_file_handle);
+        assert_eq!(
+            std::fs::read(&ordinary_file).unwrap(),
+            b"after-root-protection"
+        );
         let recovery_directory = directory.join(SCAN_RECOVERY_DIRECTORY);
         std::fs::create_dir(&recovery_directory).unwrap();
         protector.provision_directory(&recovery_directory).unwrap();
