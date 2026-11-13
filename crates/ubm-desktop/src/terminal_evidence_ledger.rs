@@ -1821,6 +1821,7 @@ mod tests {
         assert_eq!(one.entries.len(), 1);
         assert_eq!(one.entries[0].canonical_bytes, b"abcd");
         assert!(one.more);
+        drop(ledger);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -2155,6 +2156,7 @@ mod tests {
         reopened
             .acknowledge(&committed.reference, "scan", "test-owner")
             .unwrap();
+        drop(reopened);
         std::fs::remove_file(path).unwrap();
     }
     #[test]
@@ -2192,6 +2194,7 @@ mod tests {
             .acknowledge(&committed.reference, "scan", "test-owner")
             .unwrap();
         reopened.reserve(&second, 1).unwrap();
+        drop(reopened);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -2232,6 +2235,7 @@ mod tests {
         ledger
             .handoff_staged_to_recovery(&reservation.reservation_id)
             .unwrap();
+        drop(competing);
         drop(ledger);
 
         let reopened = TerminalEvidenceLedger::open(&path, 64).unwrap();
@@ -2241,6 +2245,7 @@ mod tests {
             reopened.attach(&scope()).unwrap().reservation_id,
             reservation.reservation_id
         );
+        drop(reopened);
         std::fs::remove_file(path).unwrap();
     }
     #[test]
@@ -2258,6 +2263,7 @@ mod tests {
             reopened.reserve(&second, 1),
             Err(TerminalEvidenceError::Quota)
         ));
+        drop(reopened);
         std::fs::remove_file(path).unwrap();
     }
     #[test]
@@ -2279,6 +2285,7 @@ mod tests {
             ledger.reservation_maximum_bytes(&reservation.reservation_id),
             Err(TerminalEvidenceError::Missing)
         ));
+        drop(ledger);
         std::fs::remove_file(path).unwrap();
     }
     #[test]
@@ -2314,6 +2321,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        drop(ledger);
         std::fs::remove_file(path).unwrap();
     }
     #[test]

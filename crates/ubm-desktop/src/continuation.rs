@@ -575,9 +575,18 @@ impl NativeContinuation {
         .await
     }
     pub fn configure_recording_directory(&self, path: &std::path::Path) -> Result<Value> {
-        self.recordings
-            .configure_directory(path)
-            .map_err(recording_failure)
+        #[cfg(windows)]
+        let configured = self
+            .recordings
+            .configure_directory_with_scan_recovery_storage(
+            path,
+            Arc::new(
+                crate::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+            ),
+        );
+        #[cfg(not(windows))]
+        let configured = self.recordings.configure_directory(path);
+        configured.map_err(recording_failure)
     }
     pub fn recording_status(&self, id: &str) -> Result<Value> {
         self.recordings

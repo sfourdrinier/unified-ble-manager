@@ -19,6 +19,8 @@ All notable changes to `unified-ble-manager` are documented here.
   existing owner and protected-ACL validation.
 - Protect Windows recording directories without propagating ACL changes to
   pre-existing recording and authority files, preserving their read/write access.
+- Configure current-user protected storage through the public Windows native
+  continuation path, so ordinary durable recording can attach its recovery sidecar.
 - Release terminal-evidence and idle recording database handles after successful
   Node-API host shutdown, including when JavaScript retains the native wrapper.
   Saved rows and journals with live owners or unpersisted diagnostics remain retained.

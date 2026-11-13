@@ -1,8 +1,9 @@
 //! Deterministic boundary evidence, not physical-radio qualification.
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 use ubm_desktop::continuation::{ContinuationHost, ContinuationSession, NativeContinuation};
 use ubm_desktop::continuation_adapter::DesktopContinuationHost;
+use ubm_desktop::continuation_journal::JournalRegistry;
 use ubm_desktop::{
     CharacteristicSnapshot, DesktopCentral, FakeRadio, OpControl, PropertyFlags, RadioEvent,
     ServiceSnapshot,
@@ -17,6 +18,24 @@ const SECOND_CHARACTERISTIC: &str = "00002a38-0000-1000-8000-00805f9b34fb";
 fn declaration() -> String {
     json!({"onAppearance":"native","peerId":PEER,"resubscribe":[{"serviceUuid":SERVICE,"characteristicUuid":CHARACTERISTIC}]}).to_string()
 }
+
+#[cfg(windows)]
+fn configure_registry_directory(registry: &JournalRegistry, path: &Path) {
+    registry
+        .configure_directory_with_scan_recovery_storage(
+            path,
+            Arc::new(
+                ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+            ),
+        )
+        .unwrap();
+}
+
+#[cfg(not(windows))]
+fn configure_registry_directory(registry: &JournalRegistry, path: &Path) {
+    registry.configure_directory(path).unwrap();
+}
+
 async fn fixture() -> (DesktopCentral<FakeRadio>, NativeContinuation) {
     let radio = FakeRadio::new();
     radio.set_services(
@@ -612,8 +631,8 @@ async fn independent_store_stop_is_observed_without_waiting_for_sensor_ingress()
     let mut order: Value = serde_json::from_str(&declaration()).unwrap();
     order["recording"] = json!({"id":"external-stop","maxBytes":1048576,"maxRecords":1000});
     engine.execute(PEER, &order.to_string()).await.unwrap();
-    let offline = ubm_desktop::continuation_journal::JournalRegistry::default();
-    offline.configure_directory(&directory).unwrap();
+    let offline = JournalRegistry::default();
+    configure_registry_directory(&offline, &directory);
     offline.get("external-stop").unwrap().stop().unwrap();
     assert_eq!(
         engine.execute(PEER, &order.to_string()).await.unwrap_err()["code"],

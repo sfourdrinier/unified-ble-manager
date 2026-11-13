@@ -49,6 +49,9 @@ mod ordered_marker_write;
 mod ordered_member_renewal;
 mod ordered_source_recovery;
 mod ordered_source_setup;
+#[cfg(test)]
+#[path = "../../test-support/recording_fixture.rs"]
+pub(crate) mod recording_fixture;
 pub use acquired::AcquiredGattHandle;
 pub use ordered_batch_cleanup::{
     OrderedCleanupOutcome, OrderedDelivery, OrderedDiscardEvidence, OrderedDiscardReceipt,
@@ -28048,6 +28051,10 @@ mod adapter_tests {
             OrderedRecording, RecordingClose, RecordingOpen, RecordingStep,
         };
         let peer = "reclaim-durable-ack";
+        let test = "central::adapter_tests::reclaim_refuses_real_recorder_delivery_retained_through_durable_commit";
+        let Some(path) = super::recording_fixture::isolated_fixture_process(test) else {
+            return;
+        };
         let central = std::sync::Arc::new(open().await);
         central.boundary().set_gatt_snapshot_identity(
             peer,
@@ -28066,15 +28073,6 @@ mod adapter_tests {
                 core.database_generation(&key).unwrap(),
             )
         };
-        let path = std::env::temp_dir().join(format!(
-            "ubm-522-ack-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&path).unwrap();
         let registry = JournalRegistry::default();
         registry.configure_directory(&path).unwrap();
         let journal = registry
@@ -28248,17 +28246,17 @@ mod adapter_tests {
         drop(journal);
         drop(registry);
         drop(central);
-        std::fs::remove_dir_all(path).unwrap();
+        super::recording_fixture::complete_fixture_process(&path);
     }
 
     async fn reclaim_stop_fixture(
         peer: &str,
         max_items: usize,
+        path: std::path::PathBuf,
     ) -> (
         std::sync::Arc<DesktopCentral<FakeRadio>>,
         std::sync::Arc<crate::continuation_journal::JournalRegistry>,
         std::sync::Arc<crate::ordered_recording::OrderedRecording<FakeRadio>>,
-        std::path::PathBuf,
     ) {
         use crate::continuation_journal::{JournalQuota, JournalRegistry};
         use crate::ordered_recording::{
@@ -28282,15 +28280,6 @@ mod adapter_tests {
                 core.database_generation(&key).unwrap(),
             )
         };
-        let path = std::env::temp_dir().join(format!(
-            "ubm-522-{peer}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&path).unwrap();
         let registry = std::sync::Arc::new(JournalRegistry::default());
         registry.configure_directory(&path).unwrap();
         let declaration = OrderedRecordingDeclaration {
@@ -28327,12 +28316,12 @@ mod adapter_tests {
                 .unwrap()["state"],
             "active"
         );
-        (central, registry, recorder, path)
+        (central, registry, recorder)
     }
 
-    async fn reclaim_stop_failure_case(fault: FaultOp, peer: &str) {
+    async fn reclaim_stop_failure_case(fault: FaultOp, peer: &str, path: std::path::PathBuf) {
         use crate::ordered_recording::RecordingDriverStatus;
-        let (central, registry, recorder, path) = reclaim_stop_fixture(peer, 8).await;
+        let (central, registry, recorder) = reclaim_stop_fixture(peer, 8, path).await;
         let capability = recorder.issue_recovery_capability().unwrap();
         let mut permit = recorder
             .acquire_reclaim(&capability, "lease-a")
@@ -28486,17 +28475,37 @@ mod adapter_tests {
         drop(recorder);
         drop(registry);
         drop(central);
-        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[tokio::test]
     async fn recorder_stop_recovers_after_failed_native_reclaim_release() {
-        reclaim_stop_failure_case(FaultOp::ReclaimRelease, "reclaim-release-failure").await;
+        let test =
+            "central::adapter_tests::recorder_stop_recovers_after_failed_native_reclaim_release";
+        let Some(path) = super::recording_fixture::isolated_fixture_process(test) else {
+            return;
+        };
+        reclaim_stop_failure_case(
+            FaultOp::ReclaimRelease,
+            "reclaim-release-failure",
+            path.clone(),
+        )
+        .await;
+        super::recording_fixture::complete_fixture_process(&path);
     }
 
     #[tokio::test]
     async fn recorder_stop_recovers_after_failed_reclaim_receipt_retirement() {
-        reclaim_stop_failure_case(FaultOp::ReclaimForget, "reclaim-forget-failure").await;
+        let test = "central::adapter_tests::recorder_stop_recovers_after_failed_reclaim_receipt_retirement";
+        let Some(path) = super::recording_fixture::isolated_fixture_process(test) else {
+            return;
+        };
+        reclaim_stop_failure_case(
+            FaultOp::ReclaimForget,
+            "reclaim-forget-failure",
+            path.clone(),
+        )
+        .await;
+        super::recording_fixture::complete_fixture_process(&path);
     }
 
     #[tokio::test]
@@ -28542,7 +28551,11 @@ mod adapter_tests {
     #[tokio::test]
     async fn reclaim_is_denied_after_cleanup_fence_fails() {
         let peer = "reclaim-failed-fence";
-        let (central, registry, recorder, path) = reclaim_stop_fixture(peer, 8).await;
+        let test = "central::adapter_tests::reclaim_is_denied_after_cleanup_fence_fails";
+        let Some(path) = super::recording_fixture::isolated_fixture_process(test) else {
+            return;
+        };
+        let (central, registry, recorder) = reclaim_stop_fixture(peer, 8, path.clone()).await;
         let batch = central
             .inner
             .ordered_batches
@@ -28597,14 +28610,18 @@ mod adapter_tests {
         drop(recorder);
         drop(registry);
         drop(central);
-        std::fs::remove_dir_all(path).unwrap();
+        super::recording_fixture::complete_fixture_process(&path);
     }
 
     #[tokio::test]
     async fn recorder_long_held_reclaim_drains_values_within_source_capacity() {
         use crate::ordered_recording::RecordingDriverStatus;
         let peer = "reclaim-overflow";
-        let (central, registry, recorder, path) = reclaim_stop_fixture(peer, 2).await;
+        let test = "central::adapter_tests::recorder_long_held_reclaim_drains_values_within_source_capacity";
+        let Some(path) = super::recording_fixture::isolated_fixture_process(test) else {
+            return;
+        };
+        let (central, registry, recorder) = reclaim_stop_fixture(peer, 2, path.clone()).await;
         let capability = recorder.issue_recovery_capability().unwrap();
         let mut permit = recorder
             .acquire_reclaim(&capability, "lease-a")
@@ -28691,7 +28708,7 @@ mod adapter_tests {
         drop(recorder);
         drop(registry);
         drop(central);
-        std::fs::remove_dir_all(path).unwrap();
+        super::recording_fixture::complete_fixture_process(&path);
     }
 
     #[tokio::test]

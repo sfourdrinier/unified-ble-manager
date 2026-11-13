@@ -1,6 +1,8 @@
 use serde_json::json;
 use std::sync::{Arc, Barrier};
 use ubm_desktop::continuation_journal::{ContinuationJournal, JournalQuota};
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
 
 fn fixture(max_records: u64) -> (std::path::PathBuf, JournalQuota) {
     let dir = std::env::temp_dir().join(format!(
@@ -755,11 +757,16 @@ fn corrupted_prepared_page_cannot_be_acknowledged_after_process_death() {
 
 #[test]
 fn recording_ack_rejects_changed_valid_body_and_missing_membership_after_reopen() {
+    let test = "recording_ack_rejects_changed_valid_body_and_missing_membership_after_reopen";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     for missing in [false, true] {
-        let (path, quota) = fixture(10);
-        if path.exists() {
-            std::fs::remove_file(&path).unwrap();
-        }
+        let path = directory.join(format!("journal-{missing}.sqlite"));
+        let quota = JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 10,
+        };
         let journal = open(&path, quota);
         for n in 1..=2 {
             journal.append(&json!({}), &json!({"n":n})).unwrap();
@@ -786,6 +793,7 @@ fn recording_ack_rejects_changed_valid_body_and_missing_membership_after_reopen(
         );
         drop(journal);
     }
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[test]

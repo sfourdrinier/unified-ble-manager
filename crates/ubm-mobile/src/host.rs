@@ -11555,12 +11555,29 @@ mod signal_tests {
             max_bytes: 1 << 20,
             max_records: 1000,
         };
+        #[cfg(windows)]
+        let scan_recovery_storage: Option<
+            Arc<dyn ubm_desktop::continuation_journal::ScanRecoveryStorageProtector>,
+        > = {
+            use ubm_desktop::continuation_journal::ScanRecoveryStorageProtector;
+
+            let protector = Arc::new(
+                ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+            );
+            protector.provision_directory(&directory).unwrap();
+            Some(protector)
+        };
+        #[cfg(not(windows))]
+        let scan_recovery_storage: Option<
+            Arc<dyn ubm_desktop::continuation_journal::ScanRecoveryStorageProtector>,
+        > = None;
         let journal = std::sync::Arc::new(
-            ubm_desktop::continuation_journal::ContinuationJournal::open(
+            ubm_desktop::continuation_journal::ContinuationJournal::open_with_scan_recovery_storage(
                 &path,
                 "stopped-batch",
                 &serde_json::json!({"onAppearance":"native"}),
                 quota,
+                scan_recovery_storage.clone(),
             )
             .unwrap(),
         );
@@ -11571,11 +11588,12 @@ mod signal_tests {
         outbox
             .register_journal_consumer("c", serde_json::json!({"generation":"a"}))
             .unwrap();
-        ubm_desktop::continuation_journal::ContinuationJournal::open(
+        ubm_desktop::continuation_journal::ContinuationJournal::open_with_scan_recovery_storage(
             &path,
             "stopped-batch",
             &serde_json::json!({"onAppearance":"native"}),
             quota,
+            scan_recovery_storage,
         )
         .unwrap()
         .stop()

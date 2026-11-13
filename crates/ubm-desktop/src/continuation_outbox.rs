@@ -4112,6 +4112,34 @@ mod tests {
 
     use crate::continuation_journal::private_fixture_directory as private_directory;
 
+    fn open_scan_fixture(
+        path: &std::path::Path,
+        recording_id: &str,
+        declaration: &Value,
+        quota: JournalQuota,
+    ) -> std::result::Result<ContinuationJournal, JournalError> {
+        #[cfg(windows)]
+        {
+            use crate::continuation_journal::{
+                ScanRecoveryStorageProtector, WindowsCurrentUserScanRecoveryStorageProtector,
+            };
+
+            let protector: Arc<dyn ScanRecoveryStorageProtector> =
+                Arc::new(WindowsCurrentUserScanRecoveryStorageProtector::new());
+            protector.provision_directory(path.parent().expect("scan fixture parent"))?;
+            ContinuationJournal::open_with_scan_recovery_storage(
+                path,
+                recording_id,
+                declaration,
+                quota,
+                Some(protector),
+            )
+        }
+
+        #[cfg(not(windows))]
+        ContinuationJournal::open(path, recording_id, declaration, quota)
+    }
+
     fn control(n: u64) -> Value {
         object(vec![("t", Value::from("lifecycle")), ("n", Value::from(n))])
     }
@@ -4140,9 +4168,8 @@ mod tests {
                     max_bytes: 1 << 20,
                     max_records: 100,
                 };
-                let journal =
-                    Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
-                let peer = ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap();
+                let journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
+                let peer = open_scan_fixture(&path, "r", &json!({}), quota).unwrap();
                 let outbox = Arc::new(Outbox::new(1, Arc::new(NoWake)));
                 outbox.attach_journal(journal.clone(), json!({})).unwrap();
                 if mode == "data" {
@@ -4238,7 +4265,7 @@ mod tests {
         ));
         private_directory(&dir);
         let journal = Arc::new(
-            ContinuationJournal::open(
+            open_scan_fixture(
                 &dir.join("journal.sqlite"),
                 "r",
                 &json!({}),
@@ -4368,7 +4395,7 @@ mod tests {
         // outbox flag.  A cold owner cannot register a fresh consumer or append
         // a suffix past the unresolved source.
         let reopened = Arc::new(
-            ContinuationJournal::open(
+            open_scan_fixture(
                 &dir.join("journal.sqlite"),
                 "r",
                 &json!({}),
@@ -4486,7 +4513,7 @@ mod tests {
             max_bytes: 1 << 20,
             max_records: 100,
         };
-        let journal = Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         let outbox = Outbox::new(1, Arc::new(NoWake));
         outbox
             .configure_scan_failure_recovery_authority([8; 32])
@@ -4560,8 +4587,7 @@ mod tests {
         drop(outbox);
         drop(journal);
 
-        let reopened_journal =
-            Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
+        let reopened_journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         let reopened = Outbox::new(2, Arc::new(NoWake));
         reopened
             .attach_journal(Arc::clone(&reopened_journal), json!({}))
@@ -4589,8 +4615,7 @@ mod tests {
             "the final cleanup receipt needs the recorded owner domain after its envelope is gone"
         );
         drop(reopened);
-        let cleaned_journal =
-            Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
+        let cleaned_journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         let cleaned = Outbox::new(3, Arc::new(NoWake));
         cleaned
             .attach_journal(Arc::clone(&cleaned_journal), json!({}))
@@ -4621,8 +4646,7 @@ mod tests {
         );
         drop(cleaned);
         drop(cleaned_journal);
-        let retired_journal =
-            Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
+        let retired_journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         let retired = Outbox::new(4, Arc::new(NoWake));
         retired.attach_journal(retired_journal, json!({})).unwrap();
         retired.retire_scan_failure_cleanup(&retirement).unwrap();
@@ -4699,8 +4723,7 @@ mod tests {
             max_bytes: 1 << 20,
             max_records: 100,
         };
-        let journal =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let writer = Outbox::new(1, Arc::new(NoWake));
         writer
             .configure_scan_failure_recovery_authority([9; 32])
@@ -4730,7 +4753,7 @@ mod tests {
         drop(journal);
 
         let reopened_journal =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+            Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let reopened = Outbox::new(2, Arc::new(NoWake));
         reopened
             .attach_journal(Arc::clone(&reopened_journal), json!({}))
@@ -4786,8 +4809,7 @@ mod tests {
             max_bytes: 1 << 20,
             max_records: 100,
         };
-        let journal =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
 
         // The persisted owner receives the first session ordinal.
         let first = Outbox::new(1, Arc::new(NoWake));
@@ -4814,8 +4836,7 @@ mod tests {
         drop(first);
         drop(journal);
 
-        let reopened =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let reopened = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let replacement = Outbox::new(2, Arc::new(NoWake));
         replacement
             .configure_scan_failure_recovery_authority([9; 32])
@@ -4872,8 +4893,7 @@ mod tests {
             max_bytes: 1 << 20,
             max_records: 100,
         };
-        let first_journal =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let first_journal = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let first = Outbox::new(1, Arc::new(NoWake));
         first
             .configure_scan_failure_recovery_authority([9; 32])
@@ -4903,8 +4923,7 @@ mod tests {
         // The second process has a distinct wake ID. It must nevertheless
         // append to the recovered durable owner session, not mint a new
         // session that would make the sidecar unrecoverable on the next boot.
-        let second_journal =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let second_journal = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let second = Outbox::new(2, Arc::new(NoWake));
         second
             .attach_journal(Arc::clone(&second_journal), json!({}))
@@ -4928,8 +4947,7 @@ mod tests {
         drop(second);
         drop(second_journal);
 
-        let third_journal =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let third_journal = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let third = Outbox::new(3, Arc::new(NoWake));
         third
             .attach_journal(Arc::clone(&third_journal), json!({}))
@@ -4969,8 +4987,7 @@ mod tests {
             max_bytes: 1 << 20,
             max_records: 100,
         };
-        let journal =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let first = Outbox::new(1, Arc::new(NoWake));
         first
             .attach_journal(Arc::clone(&journal), json!({}))
@@ -5005,8 +5022,7 @@ mod tests {
         drop(first);
         drop(journal);
 
-        let reopened =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let reopened = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let replacement = Outbox::new(2, Arc::new(NoWake));
         replacement.push_control(control(1));
         let error = replacement
@@ -5038,8 +5054,7 @@ mod tests {
             max_bytes: 1 << 20,
             max_records: 100,
         };
-        let journal =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let first = Outbox::new(1, Arc::new(NoWake));
         first
             .attach_journal(Arc::clone(&journal), json!({}))
@@ -5074,8 +5089,7 @@ mod tests {
         drop(first);
         drop(journal);
 
-        let reopened =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let reopened = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let replacement = Outbox::new(99, Arc::new(NoWake));
         let error = replacement
             .attach_journal(reopened, json!({}))
@@ -5142,7 +5156,7 @@ mod tests {
     }
 
     fn scan_cleanup_test_child(phase: &str, path: &std::path::Path, quota: JournalQuota) {
-        let journal = Arc::new(ContinuationJournal::open(path, "scan", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(path, "scan", &json!({}), quota).unwrap());
         if phase == "retire" {
             assert_eq!(
                 Outbox::recovery_authority_from_journal(&journal).unwrap(),
@@ -5218,8 +5232,7 @@ mod tests {
         let path = directory.join("recording.sqlite");
         // Process A creates the receipt strictly through the public Outbox
         // lifecycle; it never edits the private sidecar directly.
-        let journal =
-            Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
         let outbox = Outbox::new(1, Arc::new(NoWake));
         outbox
             .configure_scan_failure_recovery_authority([8; 32])
@@ -5279,14 +5292,14 @@ mod tests {
         let first_path = first.join("recording.sqlite");
         let second_path = second.join("recording.sqlite");
         let first_journal =
-            Arc::new(ContinuationJournal::open(&first_path, "scan", &json!({}), quota).unwrap());
+            Arc::new(open_scan_fixture(&first_path, "scan", &json!({}), quota).unwrap());
         let first_outbox = Outbox::new(1, Arc::new(NoWake));
         first_outbox
             .attach_journal(Arc::clone(&first_journal), json!({}))
             .unwrap();
         let first_retirement = finalize_scan_cleanup_for_test(&first_outbox, 1);
         let second_journal =
-            Arc::new(ContinuationJournal::open(&second_path, "scan", &json!({}), quota).unwrap());
+            Arc::new(open_scan_fixture(&second_path, "scan", &json!({}), quota).unwrap());
         let second_outbox = Outbox::new(2, Arc::new(NoWake));
         second_outbox
             .attach_journal(Arc::clone(&second_journal), json!({}))
@@ -5327,8 +5340,7 @@ mod tests {
         private_directory(&directory);
         let path = directory.join("recording.sqlite");
         for generation in 1..=RECEIPTS {
-            let journal =
-                Arc::new(ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap());
+            let journal = Arc::new(open_scan_fixture(&path, "scan", &json!({}), quota).unwrap());
             let outbox = Outbox::new(u64::from(generation), Arc::new(NoWake));
             outbox
                 .attach_journal(Arc::clone(&journal), json!({}))
@@ -5361,7 +5373,7 @@ mod tests {
             max_bytes: 1 << 20,
             max_records: 100,
         };
-        let journal = Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         let outbox = Outbox::new(1, Arc::new(NoWake));
         outbox
             .attach_journal(Arc::clone(&journal), json!({}))
@@ -5435,8 +5447,7 @@ mod tests {
         drop(reservation);
         drop(outbox);
         drop(journal);
-        let reopened_journal =
-            Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
+        let reopened_journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         let reopened = Outbox::new(2, Arc::new(NoWake));
         reopened
             .attach_journal(Arc::clone(&reopened_journal), json!({}))
@@ -5483,7 +5494,7 @@ mod tests {
             max_bytes: 1 << 20,
             max_records: 100,
         };
-        let journal = Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         let outbox = Outbox::new(1, Arc::new(NoWake));
         outbox
             .attach_journal(Arc::clone(&journal), json!({}))
@@ -5687,7 +5698,7 @@ mod tests {
             max_bytes: 1 << 20,
             max_records: 100,
         };
-        let journal = Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
+        let journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         let outbox = Outbox::new(1, Arc::new(NoWake));
         outbox
             .attach_journal(Arc::clone(&journal), json!({}))
@@ -5750,8 +5761,7 @@ mod tests {
         drop(reservation);
         drop(outbox);
         drop(journal);
-        let reopened_journal =
-            Arc::new(ContinuationJournal::open(&path, "r", &json!({}), quota).unwrap());
+        let reopened_journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         reopened_journal
             .advance_scan_failure_owner_envelope(identity, &previous, &next)
             .unwrap();
@@ -5845,7 +5855,7 @@ mod tests {
         private_directory(&dir);
         let path = dir.join("journal.sqlite");
         let journal = Arc::new(
-            ContinuationJournal::open(
+            open_scan_fixture(
                 &path,
                 "r",
                 &json!({}),
@@ -5909,7 +5919,7 @@ mod tests {
         private_directory(&dir);
         let path = dir.join("journal.sqlite");
         let journal = Arc::new(
-            ContinuationJournal::open(
+            open_scan_fixture(
                 &path,
                 "r",
                 &json!({}),
@@ -6141,7 +6151,7 @@ mod tests {
         ));
         private_directory(&dir);
         let journal = Arc::new(
-            ContinuationJournal::open(
+            open_scan_fixture(
                 &dir.join("journal.sqlite"),
                 "r",
                 &json!({}),
@@ -6216,7 +6226,7 @@ mod tests {
         ));
         private_directory(&dir);
         let journal = Arc::new(
-            ContinuationJournal::open(
+            open_scan_fixture(
                 &dir.join("journal.sqlite"),
                 "r",
                 &json!({}),
@@ -6259,7 +6269,7 @@ mod tests {
         ));
         private_directory(&dir);
         let journal = Arc::new(
-            ContinuationJournal::open(
+            open_scan_fixture(
                 &dir.join("journal.sqlite"),
                 "r",
                 &json!({}),
@@ -6293,7 +6303,7 @@ mod tests {
         ));
         private_directory(&dir);
         let journal = Arc::new(
-            ContinuationJournal::open(
+            open_scan_fixture(
                 &dir.join("journal.sqlite"),
                 "r",
                 &json!({}),

@@ -48,14 +48,49 @@ fn quota() -> JournalQuota {
         max_records: 100,
     }
 }
-fn open(path: &std::path::Path) -> ContinuationJournal {
-    ContinuationJournal::open(
+fn open_with(
+    path: &std::path::Path,
+    declaration: &serde_json::Value,
+    quota: JournalQuota,
+) -> ContinuationJournal {
+    #[cfg(windows)]
+    let protector = std::sync::Arc::new(
+        ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+    );
+    #[cfg(windows)]
+    ubm_desktop::continuation_journal::ScanRecoveryStorageProtector::provision_directory(
+        protector.as_ref(),
+        path.parent().unwrap(),
+    )
+    .unwrap();
+    #[cfg(windows)]
+    let journal = ContinuationJournal::open_with_scan_recovery_storage(
         path,
         "recording-1",
-        &json!({"onAppearance":"native"}),
-        quota(),
-    )
-    .unwrap()
+        declaration,
+        quota,
+        Some(protector),
+    );
+    #[cfg(not(windows))]
+    let journal = ContinuationJournal::open(path, "recording-1", declaration, quota);
+    journal.unwrap()
+}
+fn open(path: &std::path::Path) -> ContinuationJournal {
+    open_with(path, &json!({"onAppearance":"native"}), quota())
+}
+
+fn configure_registry_directory(registry: &JournalRegistry, path: &std::path::Path) {
+    #[cfg(windows)]
+    registry
+        .configure_directory_with_scan_recovery_storage(
+            path,
+            std::sync::Arc::new(
+                ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+            ),
+        )
+        .unwrap();
+    #[cfg(not(windows))]
+    registry.configure_directory(path).unwrap();
 }
 
 #[test]
@@ -631,8 +666,8 @@ fn independent_stop_then_late_ingress_retires_one_thousand_journals() {
     };
     let writer = JournalRegistry::default();
     let reader = JournalRegistry::default();
-    writer.configure_directory(&directory).unwrap();
-    reader.configure_directory(&directory).unwrap();
+    configure_registry_directory(&writer, &directory);
+    configure_registry_directory(&reader, &directory);
     let active = writer.open("active", &json!({}), quota()).unwrap();
     active.append(&json!({}), &json!({"value":7})).unwrap();
     let mut retired = Vec::new();
@@ -1146,18 +1181,14 @@ fn simultaneous_handles_serialize_or_report_busy_without_losing_records() {
 #[test]
 fn durable_outbox_bypasses_volatile_cap_and_native_seal_never_acknowledges() {
     let path = path();
-    let journal = std::sync::Arc::new(
-        ContinuationJournal::open(
-            &path,
-            "recording-1",
-            &json!({}),
-            JournalQuota {
-                max_bytes: 8 << 20,
-                max_records: 10000,
-            },
-        )
-        .unwrap(),
-    );
+    let journal = std::sync::Arc::new(open_with(
+        &path,
+        &json!({}),
+        JournalQuota {
+            max_bytes: 8 << 20,
+            max_records: 10000,
+        },
+    ));
     let outbox = Outbox::new(1, std::sync::Arc::new(NoWake));
     outbox
         .attach_journal(journal.clone(), json!({"epoch":"a","peer":"p"}))
@@ -1352,16 +1383,14 @@ fn prepared_prefix_and_ack_receipt_survive_restart_without_losing_later_data() {
 #[test]
 fn capacity_retains_owned_data_and_clear_requires_stop_and_invalidates_old_tokens() {
     let path = path();
-    let journal = ContinuationJournal::open(
+    let journal = open_with(
         &path,
-        "recording-1",
         &json!({}),
         JournalQuota {
             max_records: 1,
             ..quota()
         },
-    )
-    .unwrap();
+    );
     journal.append(&json!({}), &json!({"value":1})).unwrap();
     let prepared = journal.prepare(1, 4096).unwrap();
     assert!(journal.clear().is_err());

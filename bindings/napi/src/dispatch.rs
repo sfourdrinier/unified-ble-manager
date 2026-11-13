@@ -11881,9 +11881,12 @@ mod tests {
     #[tokio::test]
     async fn close_releases_terminal_evidence_while_the_napi_wrapper_remains_live() {
         let directory = std::env::temp_dir().join(format!(
-            "ubm-dispatch-terminal-close-{}-{:?}",
+            "ubm-dispatch-terminal-close-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("terminal-evidence-v1.sqlite");
@@ -12484,7 +12487,15 @@ mod tests {
             assert!(!bindings.iter().any(|(id, _)| id == "poisoned"));
             assert!(bindings.contains(&("other".into(), "other-lease".into())));
         }
+        let registry = central.continuation.engine.recording_registry();
         assert_eq!(central.close().await.unwrap().state, "released");
+        drop(owner);
+        drop(slot);
+        drop(store);
+        registry
+            .release_idle_after_host_shutdown()
+            .expect("release idle fixture journal");
+        drop(registry);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

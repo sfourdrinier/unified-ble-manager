@@ -41,18 +41,32 @@ fn refused_large_suffix_is_counted_without_large_serialization_allocation() {
     std::fs::create_dir_all(&dir).unwrap();
     #[cfg(unix)]
     std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    let journal = Arc::new(
-        ContinuationJournal::open(
-            &dir.join("journal.sqlite"),
-            "r",
-            &json!({}),
-            JournalQuota {
-                max_bytes: 1 << 20,
-                max_records: 2,
-            },
-        )
-        .unwrap(),
+    let path = dir.join("journal.sqlite");
+    let quota = JournalQuota {
+        max_bytes: 1 << 20,
+        max_records: 2,
+    };
+    #[cfg(windows)]
+    let protector = Arc::new(
+        ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
     );
+    #[cfg(windows)]
+    ubm_desktop::continuation_journal::ScanRecoveryStorageProtector::provision_directory(
+        protector.as_ref(),
+        &dir,
+    )
+    .unwrap();
+    #[cfg(windows)]
+    let journal = ContinuationJournal::open_with_scan_recovery_storage(
+        &path,
+        "r",
+        &json!({}),
+        quota,
+        Some(protector),
+    );
+    #[cfg(not(windows))]
+    let journal = ContinuationJournal::open(&path, "r", &json!({}), quota);
+    let journal = Arc::new(journal.unwrap());
     let outbox = Outbox::new(1, Arc::new(NoWake));
     outbox.attach_journal(journal.clone(), json!({})).unwrap();
     outbox.register_journal_consumer("c", json!({})).unwrap();

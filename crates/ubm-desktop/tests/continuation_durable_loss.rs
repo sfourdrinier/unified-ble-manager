@@ -29,18 +29,32 @@ impl Fixture {
         Self(path)
     }
     fn journal(&self, max_records: u64) -> Arc<ContinuationJournal> {
-        Arc::new(
-            ContinuationJournal::open(
-                &self.0.join("r.sqlite"),
-                "r",
-                &json!({}),
-                JournalQuota {
-                    max_bytes: 16 * 1024 * 1024,
-                    max_records,
-                },
-            )
-            .unwrap(),
+        let quota = JournalQuota {
+            max_bytes: 16 * 1024 * 1024,
+            max_records,
+        };
+        #[cfg(windows)]
+        let protector = Arc::new(
+            ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(
+            ),
+        );
+        #[cfg(windows)]
+        ubm_desktop::continuation_journal::ScanRecoveryStorageProtector::provision_directory(
+            protector.as_ref(),
+            &self.0,
         )
+        .unwrap();
+        #[cfg(windows)]
+        let journal = ContinuationJournal::open_with_scan_recovery_storage(
+            &self.0.join("r.sqlite"),
+            "r",
+            &json!({}),
+            quota,
+            Some(protector),
+        );
+        #[cfg(not(windows))]
+        let journal = ContinuationJournal::open(&self.0.join("r.sqlite"), "r", &json!({}), quota);
+        Arc::new(journal.unwrap())
     }
 }
 impl Drop for Fixture {

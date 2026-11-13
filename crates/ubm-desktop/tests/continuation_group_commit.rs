@@ -40,13 +40,29 @@ fn quota(max_records: u64) -> JournalQuota {
     }
 }
 fn open(path: &std::path::Path, max_records: u64) -> ContinuationJournal {
-    ContinuationJournal::open(
+    let quota = quota(max_records);
+    #[cfg(windows)]
+    let protector = Arc::new(
+        ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+    );
+    #[cfg(windows)]
+    ubm_desktop::continuation_journal::ScanRecoveryStorageProtector::provision_directory(
+        protector.as_ref(),
+        path.parent().unwrap(),
+    )
+    .unwrap();
+    #[cfg(windows)]
+    let journal = ContinuationJournal::open_with_scan_recovery_storage(
         path,
         "group",
         &json!({"onAppearance":"native"}),
-        quota(max_records),
-    )
-    .unwrap()
+        quota,
+        Some(protector),
+    );
+    #[cfg(not(windows))]
+    let journal =
+        ContinuationJournal::open(path, "group", &json!({"onAppearance":"native"}), quota);
+    journal.unwrap()
 }
 /// A journal plus the file it owns, so identity checks read the stored rows
 /// with an independent connection instead of the journal's own cursor API.

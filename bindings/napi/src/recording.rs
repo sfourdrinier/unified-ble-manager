@@ -1690,7 +1690,7 @@ mod scan_recovery_handle_tests {
     #[tokio::test]
     async fn real_v2_lease_detach_releases_the_alias_and_core_lease_for_reattach() {
         let recording_id = "napi-detach-reuse".to_owned();
-        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id), 1);
+        let (store, journals, directory) = real_store(std::slice::from_ref(&recording_id), 1);
         let attached = store
             .attach(recording_id.clone())
             .await
@@ -1708,13 +1708,16 @@ mod scan_recovery_handle_tests {
             .expect("reattach after explicit detach");
         assert_ne!(attached, reattached, "a revoked alias is never revived");
         drop(store);
+        journals
+            .release_idle_after_host_shutdown()
+            .expect("release idle fixture journals");
         std::fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 
     #[tokio::test]
     async fn real_v2_lease_cannot_detach_while_an_inventory_alias_is_live() {
         let recording_id = "napi-detach-live-owner".to_owned();
-        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id), 1);
+        let (store, journals, directory) = real_store(std::slice::from_ref(&recording_id), 1);
         let attached = store
             .attach(recording_id)
             .await
@@ -1748,13 +1751,16 @@ mod scan_recovery_handle_tests {
             error.reason
         );
         drop(store);
+        journals
+            .release_idle_after_host_shutdown()
+            .expect("release idle fixture journals");
         std::fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 
     #[tokio::test]
     async fn real_v2_raw_tokens_use_the_canonical_node_json_codec_and_bounds() {
         let recording_id = "napi-raw-token-codec".to_owned();
-        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id), 1);
+        let (store, journals, directory) = real_store(std::slice::from_ref(&recording_id), 1);
         let lease = serde_json::from_str::<serde_json::Value>(
             &store.attach(recording_id).await.expect("attach"),
         )
@@ -1795,13 +1801,16 @@ mod scan_recovery_handle_tests {
         assert!(store.raw_token(owner.clone(), 0, 0, 0).await.is_err());
         assert!(store.raw_token(owner, 0, 0, 65_537).await.is_err());
         drop(store);
+        journals
+            .release_idle_after_host_shutdown()
+            .expect("release idle fixture journals");
         std::fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 
     #[tokio::test]
     async fn real_v2_detach_and_inventory_serialize_without_returning_a_revoked_owner() {
         let recording_id = "napi-detach-inventory-interleave".to_owned();
-        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id), 1);
+        let (store, journals, directory) = real_store(std::slice::from_ref(&recording_id), 1);
         let store = Arc::new(store);
         let attached = store
             .attach(recording_id)
@@ -1860,6 +1869,9 @@ mod scan_recovery_handle_tests {
             ),
         }
         drop(store);
+        journals
+            .release_idle_after_host_shutdown()
+            .expect("release idle fixture journals");
         std::fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 
@@ -1885,6 +1897,9 @@ mod scan_recovery_handle_tests {
                 .expect("detach each idle recovery");
         }
         drop(store);
+        journals
+            .release_idle_after_host_shutdown()
+            .expect("release idle fixture journals");
         std::fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 
@@ -1894,7 +1909,7 @@ mod scan_recovery_handle_tests {
             "napi-cleanup-batch-first".to_owned(),
             "napi-cleanup-batch-second".to_owned(),
         ];
-        let (store, _, directory) = real_store(&recording_ids, 4_096);
+        let (store, journals, directory) = real_store(&recording_ids, 4_096);
         let first = finalized_cleanup_receipt(&store, recording_ids[0].clone()).await;
         let second = finalized_cleanup_receipt(&store, recording_ids[1].clone()).await;
 
@@ -1927,6 +1942,9 @@ mod scan_recovery_handle_tests {
             "capacity rejection leaves no hidden partial cleanup aliases"
         );
         drop(store);
+        journals
+            .release_idle_after_host_shutdown()
+            .expect("release idle fixture journals");
         std::fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 

@@ -18,6 +18,38 @@ use tokio::sync::Mutex;
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(test)]
+fn open_scan_fixture(
+    path: &std::path::Path,
+    recording_id: &str,
+    declaration: &Value,
+    quota: crate::continuation_journal::JournalQuota,
+) -> std::result::Result<
+    crate::continuation_journal::ContinuationJournal,
+    crate::continuation_journal::JournalError,
+> {
+    #[cfg(windows)]
+    {
+        use crate::continuation_journal::{
+            ScanRecoveryStorageProtector, WindowsCurrentUserScanRecoveryStorageProtector,
+        };
+
+        let protector: Arc<dyn ScanRecoveryStorageProtector> =
+            Arc::new(WindowsCurrentUserScanRecoveryStorageProtector::new());
+        protector.provision_directory(path.parent().expect("scan fixture parent"))?;
+        crate::continuation_journal::ContinuationJournal::open_with_scan_recovery_storage(
+            path,
+            recording_id,
+            declaration,
+            quota,
+            Some(protector),
+        )
+    }
+
+    #[cfg(not(windows))]
+    crate::continuation_journal::ContinuationJournal::open(path, recording_id, declaration, quota)
+}
+
+#[cfg(test)]
 mod ingress_tests {
     use super::*;
     #[test]
@@ -88,7 +120,7 @@ mod ingress_tests {
         ));
         crate::continuation_journal::private_fixture_directory(&directory);
         let journal = Arc::new(
-            crate::continuation_journal::ContinuationJournal::open(
+            super::open_scan_fixture(
                 &directory.join("recording.sqlite"),
                 "race",
                 &json!({}),
@@ -122,7 +154,7 @@ mod group_commit_tests {
     //! The production `Session` over a `FakeRadio` central, driven without the
     //! background collector so each backlog and every pass is deterministic.
     use super::*;
-    use crate::continuation_journal::{ContinuationJournal, JournalQuota};
+    use crate::continuation_journal::JournalQuota;
     use crate::{CharacteristicSnapshot, FakeRadio, PropertyFlags, RadioEvent, ServiceSnapshot};
     use std::path::PathBuf;
     use std::time::Duration;
@@ -184,7 +216,7 @@ mod group_commit_tests {
                     crate::continuation_journal::private_fixture_directory(&directory);
                     let path = directory.join("recording.sqlite");
                     let journal = Arc::new(
-                        ContinuationJournal::open(
+                        super::open_scan_fixture(
                             &path,
                             "group",
                             &json!({}),

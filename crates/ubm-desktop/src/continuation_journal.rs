@@ -13418,6 +13418,35 @@ fn prepared_v1(connection: &Connection, token: &str, last: i64, more: bool) -> R
 mod authority_tests {
     use super::*;
 
+    fn fixture_timestamp() -> u64 {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn remove_idle_fixture_directory(directory: &Path) {
+        let identities: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "sqlite")
+            })
+            .map(|path| path_identity(&path).unwrap())
+            .collect();
+        for identity in identities {
+            let journal = shared_journals().lock().unwrap().get(&identity).cloned();
+            if let Some(journal) = journal {
+                assert_eq!(
+                    Arc::strong_count(&journal),
+                    2,
+                    "fixture must not remove a live shared journal"
+                );
+                shared_journals().lock().unwrap().remove(&identity);
+            }
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn open_current_v2_scan_fixture(
         path: &Path,
         recording_id: &str,
@@ -13449,7 +13478,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-registry-host-shutdown-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         let other_directory = directory.with_extension("other");
         std::fs::create_dir(&directory).unwrap();
@@ -13556,7 +13585,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-spool-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -13609,7 +13638,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-watermark-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -13659,7 +13688,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-ack-receipt-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -13754,7 +13783,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-v4-retirement-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -13814,7 +13843,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-schema-index-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -13857,7 +13886,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-schema-table-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -13907,7 +13936,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-schema-object-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -13942,7 +13971,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-v3-migration-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
@@ -14031,7 +14060,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-v8-migration-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
@@ -14128,7 +14157,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-v1-interrupted-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
@@ -14342,7 +14371,7 @@ mod authority_tests {
             .unwrap();
         assert!(status.success(), "fresh-process v1 export failed: {status}");
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14350,7 +14379,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-legacy-global-ack-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -14410,7 +14439,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-sequence-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -14460,7 +14489,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-first-full-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -14500,7 +14529,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-global-page-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -14573,7 +14602,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-apple-failure-clear-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -14682,7 +14711,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-peer-failure-sidecar-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -14772,7 +14801,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-peer-failure-cold-reclaim-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let quota = JournalQuota {
@@ -14831,7 +14860,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-peer-failure-direct-stage-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let journal = Arc::new(
@@ -14866,7 +14895,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-peer-failure-sidecar-refusal-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -14932,7 +14961,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-peer-failure-sidecar-corrupt-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -14989,7 +15018,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-scan-failure-sidecar-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
@@ -15133,7 +15162,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-scan-failure-sidecar-private-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
@@ -15221,7 +15250,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-scan-sidecar-protector-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         private_fixture_directory(&directory);
         let protector = Arc::new(Protector {
@@ -15302,7 +15331,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-insecure-scan-parent-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
@@ -15334,7 +15363,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-tampered-scan-child-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         private_fixture_directory(&directory);
         let journal = ContinuationJournal::open(
@@ -16412,7 +16441,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-v6-migration-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -16489,7 +16518,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-v6-rollback-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -16535,7 +16564,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-transition-schema-conflict-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -16595,7 +16624,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-transition-index-conflict-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -16654,7 +16683,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-v6-ordered-migration-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -17195,7 +17224,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-poisoned-loss-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let journal = ContinuationJournal::open(
@@ -17255,7 +17284,7 @@ mod authority_tests {
             "ubm-ledger-{label}-{}-{:?}-{:?}",
             std::process::id(),
             std::thread::current().id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -17360,7 +17389,7 @@ mod authority_tests {
             PeerFailureRecoveryState::SourceAckCommitted
         );
         drop(reopened);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -19222,7 +19251,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-ledger-v5-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("recording.sqlite");
@@ -19261,7 +19290,7 @@ mod authority_tests {
                 "ubm-failed-append-{}-{:?}-{reject_persistence}-{:?}",
                 std::process::id(),
                 std::thread::current().id(),
-                std::time::SystemTime::now()
+                fixture_timestamp()
             ));
             std::fs::create_dir(&directory).unwrap();
             let path = directory.join("recording.sqlite");
@@ -19600,7 +19629,7 @@ mod authority_tests {
             tx.commit().unwrap();
         }
         drop(reopened);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -19647,15 +19676,11 @@ mod authority_tests {
                 Ok(())
             }
         }
-        let directory = std::env::temp_dir().join(format!(
-            "ubm-legacy-owner-retry-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&directory).unwrap();
+        let test = "continuation_journal::authority_tests::legacy_stop_retains_all_owners_when_one_seal_fails";
+        let Some(directory) = crate::central::recording_fixture::isolated_fixture_process(test)
+        else {
+            return;
+        };
         let registry = JournalRegistry::default();
         registry.configure_directory(&directory).unwrap();
         let journal = registry
@@ -19692,12 +19717,7 @@ mod authority_tests {
         stop_legacy_recording(&journal).unwrap();
         assert!(second.sealed.load(Ordering::SeqCst));
         assert_eq!(journal.status().unwrap()["accepting"], false);
-        drop(journal);
-        authorities()
-            .unwrap()
-            .journals
-            .remove(&directory.join("retry.sqlite"));
-        std::fs::remove_dir_all(directory).unwrap();
+        crate::central::recording_fixture::complete_fixture_process(&directory);
     }
 
     impl OrderedSupervisor for () {
@@ -20089,7 +20109,7 @@ mod authority_tests {
         assert_eq!(count, 0);
         drop(connection);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20162,7 +20182,7 @@ mod authority_tests {
         journal.seal_ordered("producer").unwrap();
         assert_eq!(journal.status().unwrap()["lostRecords"], 0);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20250,7 +20270,7 @@ mod authority_tests {
         assert_eq!(journal.stop().unwrap()["phase"], "stopped");
         assert_eq!(journal.clear().unwrap()["records"], 1);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20278,7 +20298,7 @@ mod authority_tests {
         journal.begin_ordered("producer", "4").unwrap();
         assert_eq!(journal.status().unwrap()["orderedOwner"]["state"], "live");
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20310,7 +20330,7 @@ mod authority_tests {
             true
         );
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20344,7 +20364,7 @@ mod authority_tests {
         assert_eq!(status["orderedOwner"]["state"], "sealed");
         assert!(status["orderedOwner"]["sourceGeneration"].is_null());
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20400,7 +20420,7 @@ mod authority_tests {
         assert_eq!(status["orderedOwner"]["uncertainTail"], true);
         assert_eq!(status["phase"], "stopped");
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20507,7 +20527,7 @@ mod authority_tests {
         assert_eq!((next, identities), (3, 2));
         drop(connection);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20557,7 +20577,7 @@ mod authority_tests {
         );
         assert_eq!(journal.status().unwrap()["records"], 1);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20601,7 +20621,7 @@ mod authority_tests {
             )
             .unwrap();
         drop(database);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20644,7 +20664,7 @@ mod authority_tests {
             3
         );
         drop(database);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -20864,7 +20884,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-windows-scan-recovery-acl-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let ordinary_file = directory.join("ordinary-preexisting-file");
@@ -20943,7 +20963,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-scan-cleanup-reclaim-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
@@ -21029,7 +21049,7 @@ mod authority_tests {
         let directory = std::env::temp_dir().join(format!(
             "ubm-scan-cleanup-index-{}-{:?}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_timestamp()
         ));
         private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");

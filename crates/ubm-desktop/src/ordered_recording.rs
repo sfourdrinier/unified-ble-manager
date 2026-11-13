@@ -2490,14 +2490,12 @@ mod tests {
         use crate::continuation_journal::JournalQuota;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
-        let path = std::env::temp_dir().join(format!(
-            "ubm-recording-owner-{}-{}.sqlite",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let test = "ordered_recording::tests::lost_ack_retries_committed_delivery_and_full_refuses_before_ack";
+        let Some(directory) = crate::central::recording_fixture::isolated_fixture_process(test)
+        else {
+            return;
+        };
+        let path = directory.join("recording.sqlite");
         let journal = Arc::new(
             ContinuationJournal::open(
                 &path,
@@ -2677,20 +2675,19 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(journal.status().unwrap()["records"], 1);
         drop(journal);
-        std::fs::remove_file(path).unwrap();
+        crate::central::recording_fixture::complete_fixture_process(&directory);
     }
 
     #[tokio::test]
     async fn interleaved_value_marker_loss_and_terminal_replay_in_order() {
         use crate::continuation_journal::JournalQuota;
-        let path = std::env::temp_dir().join(format!(
-            "ubm-recording-fifo-{}-{}.sqlite",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let test =
+            "ordered_recording::tests::interleaved_value_marker_loss_and_terminal_replay_in_order";
+        let Some(directory) = crate::central::recording_fixture::isolated_fixture_process(test)
+        else {
+            return;
+        };
+        let path = directory.join("recording.sqlite");
         let journal = Arc::new(
             ContinuationJournal::open(
                 &path,
@@ -2861,7 +2858,7 @@ mod tests {
             json!({"kind":"terminal","reason":{"kind":"closed"},"tailUncertain":true})
         );
         drop(journal);
-        std::fs::remove_file(path).unwrap();
+        crate::central::recording_fixture::complete_fixture_process(&directory);
     }
 
     #[test]
