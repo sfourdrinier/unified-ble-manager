@@ -46,6 +46,9 @@ All notable changes to `unified-ble-manager` are documented here.
 - Settle failed scan admission with its original startup error even when
   releasing the acquired evidence reservation also fails. The cleanup failure
   remains visible through the existing acquisition lifecycle diagnostic.
+- Preserve commit uncertainty and ordered failure details during terminal
+  evidence hydration. Escape ordinary metadata records that collide with byte
+  tags, using the same canonical representation in TypeScript and Tauri.
 - Refuse exact legacy receipt retirement as corrupt when its required proof was
   deleted, without recreating an empty receipt table.
 - Preserve 5.2.1 TypeScript consumer shapes for existing GATT, host, diagnostics,

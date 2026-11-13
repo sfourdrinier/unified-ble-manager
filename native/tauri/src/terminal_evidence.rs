@@ -4,6 +4,7 @@ use super::{into_object, required_string, required_value, DispatchError, IpcValu
 use ubm_core::contracts::BleErrorCode;
 
 const FORMAT_VERSION: i64 = 1;
+const ENCODING_VERSION: i64 = 2;
 
 /// Exact loss accounting carried by a terminal observation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,11 +82,18 @@ pub(super) fn encode_terminal(
     if let Some(error) = error {
         terminal.insert("error".to_owned(), error.clone());
     }
+    let terminal = IpcValue::Object(terminal);
+    let marked_encoding = has_ordinary_bytes_named_object(&terminal);
     // `IpcValue::String` is Rust UTF-8 and therefore cannot represent an
     // unpaired JavaScript surrogate. The ledger retains the validated raw
     // UTF-16 sidecar precisely for this serialization boundary.
     format!(
-        "{{\"formatVersion\":{FORMAT_VERSION},\"scope\":{{\"incarnation\":{},\"managerId\":{},\"operationId\":{}}},\"terminal\":{}}}",
+        "{{{}\"formatVersion\":{FORMAT_VERSION},\"scope\":{{\"incarnation\":{},\"managerId\":{},\"operationId\":{}}},\"terminal\":{}}}",
+        if marked_encoding {
+            format!("\"encodingVersion\":{ENCODING_VERSION},")
+        } else {
+            String::new()
+        },
         ubm_desktop::terminal_evidence_ledger::canonical_scope_json_string(
             scope.scope_utf16le.as_deref(),
             3,
@@ -101,12 +109,27 @@ pub(super) fn encode_terminal(
             2,
             &scope.operation_id,
         ),
-        stable_json(&IpcValue::Object(terminal)),
+        stable_json(&terminal, marked_encoding),
     )
     .into_bytes()
 }
 
-fn stable_json(value: &IpcValue) -> String {
+fn has_ordinary_bytes_named_object(value: &IpcValue) -> bool {
+    match value {
+        IpcValue::Array(values) => values.iter().any(has_ordinary_bytes_named_object),
+        IpcValue::Object(values) => {
+            (values.len() == 1 && values.contains_key("$bytes"))
+                || values.values().any(has_ordinary_bytes_named_object)
+        }
+        IpcValue::Null
+        | IpcValue::Bool(_)
+        | IpcValue::Number(_)
+        | IpcValue::String(_)
+        | IpcValue::Bytes(_) => false,
+    }
+}
+
+fn stable_json(value: &IpcValue, marked_encoding: bool) -> String {
     match value {
         IpcValue::Null => "null".to_owned(),
         IpcValue::Bool(value) => value.to_string(),
@@ -121,8 +144,18 @@ fn stable_json(value: &IpcValue) -> String {
         ),
         IpcValue::Array(values) => format!(
             "[{}]",
-            values.iter().map(stable_json).collect::<Vec<_>>().join(",")
+            values
+                .iter()
+                .map(|value| stable_json(value, marked_encoding))
+                .collect::<Vec<_>>()
+                .join(",")
         ),
+        IpcValue::Object(values)
+            if marked_encoding && values.len() == 1 && values.contains_key("$bytes") =>
+        {
+            let value = values.get("$bytes").expect("single key is present");
+            format!("{{\"$bytes\":[{}]}}", stable_json(value, true))
+        }
         IpcValue::Object(values) => format!(
             "{{{}}}",
             values
@@ -130,7 +163,7 @@ fn stable_json(value: &IpcValue) -> String {
                 .map(|(key, value)| format!(
                     "{}:{}",
                     serde_json::to_string(key).expect("key serialization"),
-                    stable_json(value)
+                    stable_json(value, marked_encoding)
                 ))
                 .collect::<Vec<_>>()
                 .join(",")
@@ -507,6 +540,68 @@ mod tests {
             ))
             .expect("UTF-8 JSON"),
             r#"{"formatVersion":1,"scope":{"incarnation":"incarnation","managerId":"manager","operationId":"operation"},"terminal":{"droppedBytes":0,"droppedItems":0,"kind":"terminal","reason":"closed","replacedItems":0}}"#
+        );
+    }
+
+    #[test]
+    fn canonical_terminal_bytes_mark_and_escape_an_ordinary_bytes_named_object() {
+        let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+            producer: "scan".to_owned(),
+            manager_id: "manager".to_owned(),
+            operation_id: "operation".to_owned(),
+            incarnation: "incarnation".to_owned(),
+            scope_utf16le: None,
+        };
+        let error = IpcValue::Object(BTreeMap::from([(
+            "$bytes".to_owned(),
+            IpcValue::String("ordinary".to_owned()),
+        )]));
+
+        assert_eq!(
+            String::from_utf8(encode_terminal(
+                &scope,
+                "closed",
+                Some(&error),
+                TerminalCounters::ZERO,
+            ))
+            .expect("UTF-8 JSON"),
+            r#"{"encodingVersion":2,"formatVersion":1,"scope":{"incarnation":"incarnation","managerId":"manager","operationId":"operation"},"terminal":{"droppedBytes":0,"droppedItems":0,"error":{"$bytes":["ordinary"]},"kind":"terminal","reason":"closed","replacedItems":0}}"#,
+        );
+    }
+
+    #[test]
+    fn marked_terminal_encoding_escapes_nested_literals_but_keeps_real_bytes() {
+        let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+            producer: "scan".to_owned(),
+            manager_id: "manager".to_owned(),
+            operation_id: "operation".to_owned(),
+            incarnation: "incarnation".to_owned(),
+            scope_utf16le: None,
+        };
+        let error = IpcValue::Object(BTreeMap::from([(
+            "array".to_owned(),
+            IpcValue::Array(vec![
+                IpcValue::Object(BTreeMap::from([(
+                    "$bytes".to_owned(),
+                    IpcValue::String("not-hex".to_owned()),
+                )])),
+                IpcValue::Bytes(vec![0, 255]),
+                IpcValue::Object(BTreeMap::from([(
+                    "nested".to_owned(),
+                    IpcValue::Object(BTreeMap::from([("$bytes".to_owned(), IpcValue::Null)])),
+                )])),
+            ]),
+        )]));
+
+        assert_eq!(
+            String::from_utf8(encode_terminal(
+                &scope,
+                "closed",
+                Some(&error),
+                TerminalCounters::ZERO,
+            ))
+            .expect("UTF-8 JSON"),
+            r#"{"encodingVersion":2,"formatVersion":1,"scope":{"incarnation":"incarnation","managerId":"manager","operationId":"operation"},"terminal":{"droppedBytes":0,"droppedItems":0,"error":{"array":[{"$bytes":["not-hex"]},{"$bytes":"00ff"},{"nested":{"$bytes":[null]}}]},"kind":"terminal","reason":"closed","replacedItems":0}}"#,
         );
     }
 

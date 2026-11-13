@@ -1,10 +1,12 @@
 import {
+  BLE_COMMIT_UNCERTAINTIES,
   BLE_ERROR_CODES,
   BLE_ERROR_DOMAINS,
   contractError,
   optionalPlatformErrorDetail,
   type NormalizedBleError
 } from '../backend-contract/errors'
+import { parseOrderedRecordingFailure } from './ordered-recording'
 import type { StreamTerminalNotice } from '../backend-contract/streams'
 import type { TerminalEvidenceCommit } from '../backend-contract/terminal-evidence'
 
@@ -16,7 +18,14 @@ export function encodeTerminalEvidence(
   terminal: StreamTerminalNotice,
   scope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
 ): Uint8Array {
-  return encoder.encode(stable({ formatVersion: 1, scope, terminal: terminalSnapshot(terminal) }))
+  const snapshot = terminalSnapshot(terminal)
+  const encodingVersion = containsSingletonBytesRecord(snapshot) ? 2 : undefined
+  return encoder.encode(
+    stable(
+      { ...(encodingVersion === undefined ? {} : { encodingVersion }), formatVersion: 1, scope, terminal: snapshot },
+      encodingVersion === 2
+    )
+  )
 }
 
 export function decodeTerminalEvidence(bytes: Readonly<Uint8Array>): {
@@ -32,6 +41,9 @@ export function decodeTerminalEvidence(bytes: Readonly<Uint8Array>): {
   }
   if (!isRecord(parsed) || parsed.formatVersion !== 1 || !isRecord(parsed.scope) || !isRecord(parsed.terminal))
     throw contractError('protocol.malformed', 'stream', 'terminal-evidence.decode')
+  const encodingVersion = parsed.encodingVersion
+  if (encodingVersion !== undefined && encodingVersion !== 2)
+    throw contractError('protocol.malformed', 'stream', 'terminal-evidence.decode')
   return Object.freeze({
     formatVersion: 1,
     scope: Object.freeze({
@@ -39,7 +51,7 @@ export function decodeTerminalEvidence(bytes: Readonly<Uint8Array>): {
       operationId: requiredString(parsed.scope.operationId),
       incarnation: requiredString(parsed.scope.incarnation)
     }),
-    terminal: reviveRecord(parsed.terminal)
+    terminal: reviveRecord(parsed.terminal, encodingVersion === 2)
   })
 }
 
@@ -57,11 +69,32 @@ export function decodeTerminalEvidenceError(value: unknown): NormalizedBleError 
     value.retryability === 'never' || value.retryability === 'caller-decides' ? value.retryability : undefined
   if (code === undefined || domain === undefined || value.operation.length === 0 || retryability === undefined)
     throw contractError('protocol.malformed', 'stream', 'terminal-evidence.error')
+  let commit: NormalizedBleError['commit']
+  if (Object.hasOwn(value, 'commit')) {
+    commit = value.commit === null ? null : BLE_COMMIT_UNCERTAINTIES.find(candidate => candidate === value.commit)
+    if (commit === undefined) throw contractError('protocol.malformed', 'stream', 'terminal-evidence.error')
+  }
+  let orderedFailure: NormalizedBleError['orderedFailure']
+  if (Object.hasOwn(value, 'orderedFailure')) {
+    try {
+      orderedFailure = parseOrderedRecordingFailure(value.orderedFailure, 2)
+    } catch {
+      throw contractError('protocol.malformed', 'stream', 'terminal-evidence.error')
+    }
+    if (
+      orderedFailure.code !== code ||
+      orderedFailure.domain !== domain ||
+      orderedFailure.operation !== value.operation
+    )
+      throw contractError('protocol.malformed', 'stream', 'terminal-evidence.error')
+  }
   return Object.freeze({
     code,
     domain,
     operation: value.operation,
     retryability,
+    ...(commit === undefined ? {} : { commit }),
+    ...(orderedFailure === undefined ? {} : { orderedFailure }),
     platform: optionalPlatformErrorDetail(value.platform, 'terminal-evidence.error') ?? null
   })
 }
@@ -118,7 +151,7 @@ function terminalSnapshot(terminal: StreamTerminalNotice): Record<string, unknow
   if (terminal.error !== undefined && terminal.error !== null) result.error = terminal.error
   return result
 }
-function stable(value: unknown): string {
+function stable(value: unknown, marked: boolean): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value)
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw contractError('protocol.malformed', 'stream', 'terminal-evidence.number')
@@ -126,28 +159,44 @@ function stable(value: unknown): string {
   }
   if (value instanceof Uint8Array)
     return `{"$bytes":${JSON.stringify([...value].map(byte => byte.toString(16).padStart(2, '0')).join(''))}}`
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
+  if (Array.isArray(value)) return `[${value.map(entry => stable(entry, marked)).join(',')}]`
   if (!isRecord(value)) throw contractError('protocol.malformed', 'stream', 'terminal-evidence.value')
+  if (marked && isSingletonBytesRecord(value)) return `{"$bytes":[${stable(value.$bytes, marked)}]}`
   return `{${Object.keys(value)
     .sort()
-    .map(key => `${JSON.stringify(key)}:${stable(value[key])}`)
+    .map(key => `${JSON.stringify(key)}:${stable(value[key], marked)}`)
     .join(',')}}`
 }
-function reviveRecord(value: Record<string, unknown>): Record<string, unknown> {
+function containsSingletonBytesRecord(value: unknown): boolean {
+  if (value instanceof Uint8Array || value === null || typeof value !== 'object') return false
+  if (Array.isArray(value)) return value.some(containsSingletonBytesRecord)
+  if (!isRecord(value)) return false
+  if (isSingletonBytesRecord(value)) return true
+  return Object.values(value).some(containsSingletonBytesRecord)
+}
+function isSingletonBytesRecord(value: Record<string, unknown>): value is Record<'$bytes', unknown> {
+  return Object.keys(value).length === 1 && Object.hasOwn(value, '$bytes')
+}
+function reviveRecord(value: Record<string, unknown>, marked: boolean): Record<string, unknown> {
   const result: Record<string, unknown> = Object.create(null)
-  for (const [key, entry] of Object.entries(value)) result[key] = revive(entry)
+  for (const [key, entry] of Object.entries(value)) result[key] = revive(entry, marked)
   return Object.freeze(result)
 }
-function revive(value: unknown): unknown {
+function revive(value: unknown, marked: boolean): unknown {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw contractError('protocol.malformed', 'stream', 'terminal-evidence.number')
     return value
   }
-  if (Array.isArray(value)) return Object.freeze(value.map(revive))
+  if (Array.isArray(value)) return Object.freeze(value.map(entry => revive(entry, marked)))
   if (!isRecord(value)) throw contractError('protocol.malformed', 'stream', 'terminal-evidence.value')
-  if (Object.keys(value).length === 1 && typeof value.$bytes === 'string') return hex(value.$bytes)
-  return reviveRecord(value)
+  if (isSingletonBytesRecord(value)) {
+    if (typeof value.$bytes === 'string') return hex(value.$bytes)
+    if (marked && Array.isArray(value.$bytes) && value.$bytes.length === 1)
+      return Object.freeze(Object.assign(Object.create(null), { $bytes: revive(value.$bytes[0], marked) }))
+    if (marked) throw contractError('protocol.malformed', 'stream', 'terminal-evidence.bytes')
+  }
+  return reviveRecord(value, marked)
 }
 function hex(value: string): Uint8Array {
   if (!/^(?:[0-9a-f]{2})*$/u.test(value)) throw contractError('protocol.malformed', 'stream', 'terminal-evidence.bytes')

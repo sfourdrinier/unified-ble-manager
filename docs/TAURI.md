@@ -161,6 +161,10 @@ records become available as soon as the other controller releases or exits.
 Neither method accepts or exposes a ledger path, durable reference, or host
 recovery lease.
 
+The plugin emits the same [canonical payload representation](NODE.md#durable-terminal-evidence)
+as the shared TypeScript codec, including the conditional escape marker for
+ordinary metadata records that collide with byte tags.
+
 The frontend shares Electron's [connection and GATT recovery contract](ELECTRON.md#connection-and-gatt-recovery):
 invalidation is immediate, cleanup ownership survives failure, and bounded
 child cleanup cannot prevent the scoped parent-release request. Local iterator

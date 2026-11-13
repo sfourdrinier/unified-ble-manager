@@ -78,6 +78,14 @@ Reading never retires a record. Call `acknowledge` only after the exact bytes
 and digest have been durably consumed; an interrupted application may list and
 read the record again on its next start.
 
+Canonical payloads keep receipt `formatVersion: 1`. A payload containing an
+ordinary singleton `$bytes` record also carries root `encodingVersion: 2`:
+actual byte values retain their hex tag, while each ordinary singleton
+`$bytes` value is wrapped in a one-element array. The marker makes those cases
+unambiguous without reserving metadata keys. Unmarked saved payloads retain
+their legacy decoding behavior. Hydration validates and preserves optional
+error `commit` and `orderedFailure` evidence as well as platform metadata.
+
 For an evidence-bound desktop scan, the host stages the canonical terminal
 record before delivering the terminal to JavaScript. A staged record can be
 recovered after a restart even if the normal commit has not completed. If
