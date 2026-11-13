@@ -293,6 +293,18 @@ it reaches current `main` and the required gates pass, the normal tag-driven
 trusted-publisher workflow publishes it. Verify the published package using the
 post-release checks below.
 
+## Releasing 5.2.2
+
+The planned 5.2.2 patch fixes React Native single-flight drain ownership at
+promise settlement. A wake or stop queued by final delivery must start the
+next drain instead of setting a rerun flag on a loop that already ended.
+The shared Apple/Android router gains no timer or polling. This source change
+does not establish locked-device reliability or promote backend evidence labels.
+
+Qualify the frozen commit through local checks, independent review, sealed
+package checks and hosted cross-platform CI before the normal tag-driven
+trusted-publisher release. Verify publication with the post-release checks.
+
 ## Releasing 5.2.1
 
 The 5.2.1 patch reports unknown desktop characteristic security requirements

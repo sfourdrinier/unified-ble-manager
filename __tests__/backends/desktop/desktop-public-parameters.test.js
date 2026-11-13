@@ -1,3 +1,5 @@
+// __tests__/backends/desktop/desktop-public-parameters.test.js
+
 'use strict'
 
 // Public facade -> desktop provider -> real addon -> Rust dispatch/central.

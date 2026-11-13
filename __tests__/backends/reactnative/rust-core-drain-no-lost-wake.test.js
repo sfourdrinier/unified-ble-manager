@@ -176,6 +176,53 @@ describe('the deterministic owner wakes every armed arrival (arm, empty, record 
 })
 
 describe('the drain router never strands a woken record', () => {
+  test('a wake queued by the final delivery starts another drain before promise settlement', async () => {
+    const controlled = controlledSession()
+    const delivered = []
+    const router = new RustCoreDrainRouter(controlled.session, {
+      deliver: record => {
+        delivered.push(record.ordinal)
+        if (record.ordinal === 1) queueMicrotask(() => {
+          controlled.queueAnswer({ more: false, records: [valueRecord(2)], controlLost: 0 })
+          router.wake()
+        })
+      },
+      failed: error => { throw error }
+    })
+    controlled.queueAnswer({ more: false, records: [valueRecord(1)], controlLost: 0 })
+    router.start()
+    await untilTrue(() => delivered.length === 2, 'the wake between loop exit and promise settlement')
+    expect(delivered).toEqual([1, 2])
+    await flushTasks()
+    expect(controlled.calls).toHaveLength(2)
+    await stopDrained(router, controlled)
+  })
+
+  test('stop in the final-delivery microtask flushes the remaining native record', async () => {
+    const controlled = controlledSession()
+    const delivered = []
+    let stopping
+    const router = new RustCoreDrainRouter(controlled.session, {
+      deliver: record => {
+        delivered.push(record.ordinal)
+        if (record.ordinal === 1) queueMicrotask(() => {
+          controlled.queueAnswer({ more: false, records: [valueRecord(2)], controlLost: 0 })
+          stopping = router.stop()
+        })
+      },
+      failed: error => { throw error }
+    })
+    controlled.queueAnswer({ more: false, records: [valueRecord(1)], controlLost: 0 })
+    router.start()
+    await untilTrue(() => stopping !== undefined, 'stop at the final delivery')
+    await stopping
+    expect(delivered).toEqual([1, 2])
+    expect(controlled.calls).toHaveLength(2)
+    router.wake()
+    await flushTasks()
+    expect(controlled.calls).toHaveLength(2)
+  })
+
   test('a wake during an in-flight drain plus the owner per-arrival wake delivers', async () => {
     const controlled = controlledSession()
     const delivered = []
