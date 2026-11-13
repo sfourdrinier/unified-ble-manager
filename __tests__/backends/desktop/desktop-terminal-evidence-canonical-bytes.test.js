@@ -262,9 +262,12 @@ test.each(PLATFORMS)('%s public manager preserves the exact scan terminal stagin
       recipient,
       leaseId
     })
-    expect(recovered).toHaveLength(1)
-    expect(Uint8Array.from(recovered[0].canonicalBytes)).toEqual(earlier)
-    await stage.releaseTerminalEvidenceRecoveryLease(leaseId)
+    try {
+      expect(recovered).toHaveLength(1)
+      expect(Uint8Array.from(recovered[0].canonicalBytes)).toEqual(earlier)
+    } finally {
+      await stage.releaseTerminalEvidenceRecoveryLease(leaseId)
+    }
     await scan.stop()
   })
 })
