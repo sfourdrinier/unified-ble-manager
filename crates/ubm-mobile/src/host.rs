@@ -4052,17 +4052,6 @@ impl HostInner {
             .central
             .wait_unsubscribe_admission(&scope.0, ctl)
             .await?;
-        // Freeze ingress before awaiting the central's activation lookup. That
-        // lookup may wait behind an earlier global GATT operation; allowing a
-        // later callback to cross it would make the recorded drain omit an
-        // admitted prefix. The fence is transferred to the matching active
-        // disable guard below, or retained locally for an already-retired
-        // activation, so cancellation cannot release it early.
-        let ingress_fence = self.radio.fence_ingress().await?;
-        // The fence must be acquired before the per-route order lock: a
-        // previously admitted callback drains under that lock before it can
-        // reach this barrier. Re-check after taking the lock because that
-        // drain may have completed the radio release while we waited.
         let guard = recorded.order.clone().lock_owned().await;
         if recorded.radio_released.load(Ordering::SeqCst) {
             drop(guard);
@@ -4088,6 +4077,7 @@ impl HostInner {
                     "gatt.unsubscribe.recorded-activation",
                 )
             })?;
+        let ingress_fence = self.radio.fence_ingress().await?;
         let central = self.central.clone();
         let peer = scope.0.clone();
         let selector = selector.clone();

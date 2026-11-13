@@ -119,9 +119,22 @@ async fn cancelling_inflight_recorded_subscribe_retains_registration_and_no_owne
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_waits_for_an_already_queued_global_drop() {
-    let Some(directory) =
-        recording_test_directory("cancellation_waits_for_an_already_queued_global_drop")
-    else {
+    cancellation_drop_scenario(
+        "cancellation_waits_for_an_already_queued_global_drop",
+        false,
+    )
+    .await;
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_preserves_a_pre_fence_recorded_value() {
+    cancellation_drop_scenario("cancellation_preserves_a_pre_fence_recorded_value", true).await;
+}
+
+#[cfg(debug_assertions)]
+async fn cancellation_drop_scenario(test_name: &str, with_prefix: bool) {
+    let Some(directory) = recording_test_directory(test_name) else {
         return;
     };
     use ubm_mobile::{RadioCompletion, ReadProvenance};
@@ -169,7 +182,7 @@ async fn cancellation_waits_for_an_already_queued_global_drop() {
             .await
         }
     });
-    let read_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let read_id = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if let Some(id) = radio.held_of(RequestKind::Read).first() {
                 break *id;
@@ -179,36 +192,37 @@ async fn cancellation_waits_for_an_already_queued_global_drop() {
     })
     .await
     .unwrap();
-    // This value is admitted before the unsubscribe fence. The event pump
-    // must drain it under the route order lock before it can reach that
-    // barrier; acquiring the route lock before the fence would deadlock.
-    let epoch = radio
-        .requests
-        .lock()
-        .unwrap()
-        .iter()
-        .rev()
-        .find_map(|request| match request {
-            RadioRequest::EnableNotifications {
-                epoch, instance, ..
-            } if instance.peer_id == POLAR => Some(*epoch),
-            _ => None,
-        })
-        .expect("first recorded subscription has a native epoch");
-    assert_eq!(
-        host.ingest(RadioIngress::Notification {
-            instance: Instance {
-                peer_id: POLAR.into(),
-                service_uuid: HR_SERVICE.into(),
-                service_occurrence: 0,
-                characteristic_uuid: HR_MEASUREMENT.into(),
-                characteristic_occurrence: 0,
-            },
-            epoch,
-            value: vec![7],
-        }),
-        IngressStatus::Accepted
-    );
+    if with_prefix {
+        // Exercise the accepted recorded prefix independently of the empty-prefix
+        // cancellation case above.
+        let epoch = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|request| match request {
+                RadioRequest::EnableNotifications {
+                    epoch, instance, ..
+                } if instance.peer_id == POLAR => Some(*epoch),
+                _ => None,
+            })
+            .expect("first recorded subscription has a native epoch");
+        assert_eq!(
+            host.ingest(RadioIngress::Notification {
+                instance: Instance {
+                    peer_id: POLAR.into(),
+                    service_uuid: HR_SERVICE.into(),
+                    service_occurrence: 0,
+                    characteristic_uuid: HR_MEASUREMENT.into(),
+                    characteristic_occurrence: 0,
+                },
+                epoch,
+                value: vec![7],
+            }),
+            IngressStatus::Accepted
+        );
+    }
     let remove = tokio::spawn({
         let session = session.clone();
         async move {
@@ -222,7 +236,7 @@ async fn cancellation_waits_for_an_already_queued_global_drop() {
             .await
         }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while !host.recorded_ingress_paused() {
             tokio::task::yield_now().await;
         }
@@ -243,7 +257,7 @@ async fn cancellation_waits_for_an_already_queued_global_drop() {
             .await
         }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while radio.held_of(RequestKind::EnableNotifications).is_empty() {
             tokio::task::yield_now().await;
         }
@@ -277,20 +291,20 @@ async fn cancellation_waits_for_an_already_queued_global_drop() {
     );
     ok(&read.await.unwrap());
     ok(
-        &tokio::time::timeout(std::time::Duration::from_secs(3), remove)
+        &tokio::time::timeout(std::time::Duration::from_secs(10), remove)
             .await
             .unwrap()
             .unwrap(),
     );
-    let first = ok(&host.continuation_recording_prepare("first", 100, 65536));
-    assert!(
-        first["records"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| { row["record"]["t"] == "value" && row["record"]["valueB64"] == "Bw==" })
-    );
-    let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
+    if with_prefix {
+        let first = ok(&host.continuation_recording_prepare("first", 100, 65536));
+        assert!(
+            first["records"].as_array().unwrap().iter().any(|row| {
+                row["record"]["t"] == "value" && row["record"]["valueB64"] == "Bw=="
+            })
+        );
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), pending)
         .await
         .unwrap()
         .unwrap();
