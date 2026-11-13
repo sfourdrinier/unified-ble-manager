@@ -278,10 +278,11 @@ Publication uses the existing trusted publisher; never publish from a laptop.
 
 ## Releasing 5.2.2
 
-The planned 5.2.2 patch preserves ordered notification ingress and durable
-terminal evidence across supported host recovery paths. It adds bounded
-host-private evidence retention and lease fencing, including explicit
-partial-recovery status when another live controller owns retained records.
+The planned 5.2.2 release adds ordered notification collection and recording
+APIs, and preserves durable terminal evidence across supported host recovery
+paths. It adds bounded host-private evidence retention and lease fencing,
+including explicit partial-recovery status when another live controller owns
+retained records.
 Deterministic and native synthetic coverage does not establish physical-radio
 qualification. The version is prepared in source and is not a claim of
 publication.

@@ -40,7 +40,7 @@ export interface DesktopProcessHost {
    * through a renderer bridge. Reads and acknowledgement are deliberately
    * separate; acknowledgement is never implicit.
    */
-  readonly peerFailureRecovery: Readonly<{
+  readonly peerFailureRecovery?: Readonly<{
     list(): readonly DesktopDurablePeerNotificationFailureRecovery[]
   }>
   createManager(options?: DesktopProcessManagerOptions): Promise<BleManager>

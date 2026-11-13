@@ -57,6 +57,22 @@ export interface ContinuationRecordingDiagnosticMarker {
   readonly source: 'occurrence' | 'collectionSummary'
 }
 
+/** Durable runtime evidence that cannot inhabit the 5.2.1 ephemeral field. */
+export type ContinuationRecordingRuntimeDiagnostic =
+  | (ContinuationRecordingFailure & { readonly persisted: true })
+  | ContinuationRecordingDiagnosticMarker
+
+/** Additive collection detail retained outside the 5.2.1 summary shape. */
+export type ContinuationRecordingCollectionDiagnostic =
+  | ContinuationRecordingDiagnosticMarker
+  | (ContinuationRecordingFailure & {
+      readonly persisted: boolean
+      readonly persistenceFailure?: ContinuationRecordingFailure
+      readonly knownRecordedLoss?: { readonly items: number; readonly bytes?: number }
+      readonly retainedSummary?: ContinuationRecordingDiagnosticMarker
+      readonly pendingRecordedLoss?: { readonly items: number; readonly bytes?: number; readonly persisted: boolean }
+    })
+
 /** Versioned lifecycle of an ordered producer; a null generation means setup
  * had not yet established a native source. */
 export interface OrderedRecordingOwnerStatus {
@@ -79,21 +95,19 @@ export interface ContinuationRecordingStatus {
   readonly maxRecords: number
   readonly encrypted: false
   readonly orderedOwner?: OrderedRecordingOwnerStatus
-  readonly runtimeFailure:
-    | (ContinuationRecordingFailure & { readonly persisted: boolean })
-    | ContinuationRecordingDiagnosticMarker
-    | null
+  /** 5.2.1-compatible ephemeral runtime failure projection. */
+  readonly runtimeFailure: (ContinuationRecordingFailure & { readonly persisted: false }) | null
+  /** Durable or bounded runtime evidence not representable by `runtimeFailure`. */
+  readonly runtimeDiagnostic?: ContinuationRecordingRuntimeDiagnostic
   readonly collectionFailure:
     | (ContinuationRecordingFailure & {
         readonly persisted: boolean
         readonly persistenceFailure?: ContinuationRecordingFailure
         readonly knownRecordedLoss?: { readonly items: number; readonly bytes?: number }
-        readonly retainedSummary?: ContinuationRecordingDiagnosticMarker
-        /** Additional loss kept separately while the historical summary is unreadable. */
-        readonly pendingRecordedLoss?: { readonly items: number; readonly bytes?: number; readonly persisted: boolean }
       })
-    | ContinuationRecordingDiagnosticMarker
     | null
+  /** Additive bounded/durable collection detail omitted from `collectionFailure`. */
+  readonly collectionDiagnostic?: ContinuationRecordingCollectionDiagnostic
 }
 
 export interface ContinuationRecordingAccess {
@@ -186,7 +200,7 @@ export interface ContinuationRecordingController {
   status(id: string): Promise<ContinuationRecordingStatus>
   prepare(id: string, options: ContinuationRecordingPrepareOptions): Promise<ContinuationRecordingBatch>
   /** Uses the same retained cursor as prepare; decodes ordered rows only. */
-  prepareOrdered(id: string, options: ContinuationRecordingPrepareOptions): Promise<OrderedRecordingBatch>
+  prepareOrdered?(id: string, options: ContinuationRecordingPrepareOptions): Promise<OrderedRecordingBatch>
   /** Call only after the prepared records are safely handled by the consumer. */
   acknowledge(
     id: string,
@@ -195,8 +209,8 @@ export interface ContinuationRecordingController {
   /** Stops collection admission, not radio ownership. Retains all unacknowledged records. */
   stop(id: string): Promise<ContinuationRecordingStatus & { readonly radioRelease: 'not-requested' }>
   /** Requests ordered source shutdown; pending states retain ownership and may be retried. */
-  stopOrdered(id: string): Promise<OrderedRecordingHostStopResult>
-  contextOrdered(id: string): Promise<OrderedRecordingContext>
+  stopOrdered?(id: string): Promise<OrderedRecordingHostStopResult>
+  contextOrdered?(id: string): Promise<OrderedRecordingContext>
   /** Explicit logical record deletion, not file deletion, compaction or secure erase.
    * Requires a stopped recording; does not release radio ownership. */
   clear(id: string): Promise<{ readonly cleared: true; readonly records: number }>
@@ -473,21 +487,24 @@ function status(input: unknown, id: string): ContinuationRecordingStatus {
     return malformed()
   const keys = ['kind', 'detail', 'operation', 'sqliteExtendedCode', 'sqliteCode']
   let runtimeFailure: ContinuationRecordingStatus['runtimeFailure'] = null
+  let runtimeDiagnostic: ContinuationRecordingRuntimeDiagnostic | undefined
   if (value.runtimeFailure !== null) {
     const diagnostic = object(value.runtimeFailure)
     if (diagnostic.kind === 'storage.diagnostic-oversized' || diagnostic.kind === 'storage.diagnostic-unreadable')
-      runtimeFailure = diagnosticMarker(diagnostic, 'occurrence')
+      runtimeDiagnostic = diagnosticMarker(diagnostic, 'occurrence')
     else {
       exact(diagnostic, [...keys, 'persisted'])
       if (typeof diagnostic.persisted !== 'boolean') return malformed()
-      runtimeFailure = Object.freeze({ ...failure(diagnostic, 65536), persisted: diagnostic.persisted })
+      if (diagnostic.persisted) runtimeDiagnostic = Object.freeze({ ...failure(diagnostic, 65536), persisted: true })
+      else runtimeFailure = Object.freeze({ ...failure(diagnostic, 65536), persisted: false })
     }
   }
   let collectionFailure: ContinuationRecordingStatus['collectionFailure'] = null
+  let collectionDiagnostic: ContinuationRecordingCollectionDiagnostic | undefined
   if (value.collectionFailure !== null) {
     const diagnostic = object(value.collectionFailure)
     if (diagnostic.kind === 'storage.diagnostic-oversized' || diagnostic.kind === 'storage.diagnostic-unreadable') {
-      collectionFailure = diagnosticMarker(diagnostic, 'collectionSummary')
+      collectionDiagnostic = diagnosticMarker(diagnostic, 'collectionSummary')
     } else {
       exact(diagnostic, [
         ...keys,
@@ -533,7 +550,7 @@ function status(input: unknown, id: string): ContinuationRecordingStatus {
           persisted: loss.persisted
         })
       }
-      collectionFailure = Object.freeze({
+      const projected = Object.freeze({
         ...failure(diagnostic, 65536),
         persisted: diagnostic.persisted,
         ...(persistenceFailure === undefined ? {} : { persistenceFailure }),
@@ -548,9 +565,21 @@ function status(input: unknown, id: string): ContinuationRecordingStatus {
         (knownRecordedLoss !== undefined || (diagnostic.persisted && pendingRecordedLoss?.persisted !== true))
       )
         return malformed()
+      collectionFailure = Object.freeze({
+        ...failure(diagnostic, 65536),
+        persisted: diagnostic.persisted,
+        ...(persistenceFailure === undefined ? {} : { persistenceFailure }),
+        ...(knownRecordedLoss === undefined ? {} : { knownRecordedLoss })
+      })
+      if (Object.hasOwn(diagnostic, 'retainedSummary') || pendingRecordedLoss !== undefined)
+        collectionDiagnostic = projected
     }
   }
-  if (value.accepting !== (value.phase === 'recording' && collectionFailure === null)) return malformed()
+  if (
+    value.accepting !==
+    (value.phase === 'recording' && collectionFailure === null && collectionDiagnostic === undefined)
+  )
+    return malformed()
   return Object.freeze({
     recordingId: id,
     phase: value.phase,
@@ -563,7 +592,9 @@ function status(input: unknown, id: string): ContinuationRecordingStatus {
     encrypted: false,
     ...(Object.hasOwn(value, 'orderedOwner') ? { orderedOwner: orderedOwner(value.orderedOwner) } : {}),
     runtimeFailure,
-    collectionFailure
+    ...(runtimeDiagnostic === undefined ? {} : { runtimeDiagnostic }),
+    collectionFailure,
+    ...(collectionDiagnostic === undefined ? {} : { collectionDiagnostic })
   })
 }
 

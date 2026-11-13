@@ -24,6 +24,39 @@ test('5.2.1 claim preserves decoded data when ACK is uncertain', async () => {
   expect(result.disposeFailure).toContain('lost reply')
 })
 
+test('5.2.1 claim refuses an unprojected source failure before it can acknowledge unseen evidence', async () => {
+  const sourceFailure = {
+    ...claim('legacy-source-failure', 1),
+    batches: [JSON.stringify({
+      more: false,
+      controlLost: 0,
+      records: [{
+        t: 'stream-end',
+        ordinal: 1,
+        consumer: 'ubm-continuation-0',
+        reason: 'source-failed',
+        droppedItems: 0,
+        droppedBytes: 0,
+        error: {
+          code: 'platform.failure',
+          domain: 'platform',
+          operation: 'gatt.subscribe',
+          detail: null,
+          platform: null
+        }
+      }]
+    })]
+  }
+  const access = {
+    prepareClaim: jest.fn(async () => sourceFailure),
+    acknowledgeClaim: jest.fn(async () => receipt(true))
+  }
+  await expect(claimNativeContinuationBacklog(access, undefined, 'test')).rejects.toMatchObject({
+    normalized: { code: 'protocol.violation', operation: 'test.continuation.legacy-stream-end' }
+  })
+  expect(access.acknowledgeClaim).not.toHaveBeenCalled()
+})
+
 test('retained prefix requires a distinct versioned native operation before any preparation', async () => {
   const access = { prepareClaim: jest.fn(async () => claim('old', 1)), acknowledgeClaim: jest.fn() }
   await expect(claimNativeContinuationPrefixV1(access, undefined, 'test')).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })

@@ -114,7 +114,9 @@ export function createNativeContinuationController(
               rehydratePublicPromise(
                 (async () => {
                   assertDesktopOrderedReceiptVersion(central, `${SCOPE}.continuation.recording.stop-ordered`)
-                  const result = await controller.stopOrdered(id)
+                  const stopOrdered = controller.stopOrdered
+                  if (stopOrdered === undefined) throw missing()
+                  const result = await stopOrdered.call(controller, id)
                   if (
                     onOrderedFinished &&
                     result.recording.state === 'finished' &&

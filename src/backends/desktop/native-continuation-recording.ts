@@ -650,7 +650,10 @@ export function openNativeContinuationRecordings(
           rehydratePublicPromise(
             Promise.resolve().then(() => {
               assertDesktopOrderedReceiptVersion(binding, 'continuation.recording.stop-ordered')
-              return controller.stopOrdered(id)
+              const stopOrdered = controller.stopOrdered
+              if (stopOrdered === undefined)
+                throw contractError('capability.unsupported', 'restoration', 'continuation.recording.stop-ordered')
+              return stopOrdered.call(controller, id)
             })
           )
       })

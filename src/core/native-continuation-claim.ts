@@ -6,6 +6,7 @@ import {
   aggregateContinuationClaim,
   optionalContinuationClaimToken,
   parseContinuationClaimAcknowledgement,
+  projectLegacyContinuationClaim,
   type ContinuationBacklog,
   type ContinuationRetainedPrefixV1,
   type ContinuationClaimAcknowledgement
@@ -81,7 +82,10 @@ export function claimNativeContinuationPrefixV1(
   if (owner.preparing !== undefined) return owner.preparing
   const preparing = (async () => {
     const prepared = payload(await prepare.call(access, maxItems, maxBytes), scope)
-    const backlog = aggregateContinuationClaim(prepared, owner.lastOrdinal, owner.controlLost)
+    const backlog = projectLegacyContinuationClaim(
+      aggregateContinuationClaim(prepared, owner.lastOrdinal, owner.controlLost),
+      scope
+    )
     const token = optionalContinuationClaimToken(prepared)
     if (token === null) {
       if (
@@ -206,7 +210,7 @@ export async function claimNativeContinuationBacklog(
       throw contractError('protocol.malformed', 'restoration', `${scope}.continuation.claim-json`)
     }
   }
-  const decoded = aggregateContinuationClaim(prepared)
+  const decoded = projectLegacyContinuationClaim(aggregateContinuationClaim(prepared), scope)
   // The legacy API keeps its 5.2.1 result shape; ordered records belong to V1.
   const backlog: ContinuationBacklog = Object.freeze({
     selectors: decoded.selectors,

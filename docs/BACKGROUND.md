@@ -716,7 +716,10 @@ cannot persist that failure. Its `persisted` field distinguishes that situation.
 When available, `knownRecordedLoss` reports the number of known refused source
 items and, if known, their raw byte count. An absent byte count means unknown;
 older failure records may omit the aggregate entirely. An ordinary `runtimeFailure` is diagnostic history, not evidence that collection
-was stopped. Committed-process-restart tests are not power-loss qualification.
+was stopped. Its established patch-line shape carries only ephemeral failures;
+durable or bounded runtime evidence is additive `runtimeDiagnostic`. Likewise,
+`collectionDiagnostic` retains bounded collection detail while
+`collectionFailure` remains the established summary shape. Committed-process-restart tests are not power-loss qualification.
 
 Consumer registration metadata is committed before subscribing. Records retain
 the peer, session epoch, connection/database generations, and exact selector

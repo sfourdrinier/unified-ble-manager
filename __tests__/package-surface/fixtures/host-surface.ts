@@ -1,7 +1,7 @@
 // __tests__/package-surface/fixtures/host-surface.ts
 
 import { createExpoBleManager, createExpoBleManagerWithEnvironment } from 'unified-ble-manager/expo'
-import type { ExpoBleManagerEnvironment } from 'unified-ble-manager/expo'
+import type { ExpoBleManager, ExpoBleManagerEnvironment } from 'unified-ble-manager/expo'
 import { BleProvider, useAdapterState, useBle, useBleCapability } from 'unified-ble-manager/react'
 import {
   createTauriBleManager,
@@ -21,6 +21,7 @@ import type {
   NodeTerminalEvidenceRecoveryValue
 } from 'unified-ble-manager/node/corebluetooth'
 import type {
+  DesktopProcessHost,
   DesktopScanFailureRecovery,
   DesktopScanFailureRecoveryChunk,
   DesktopPeerNotificationFailureRecovery
@@ -30,12 +31,21 @@ declare const expoEnvironment: ExpoBleManagerEnvironment
 declare const tauriEnvironment: TauriBleManagerEnvironment
 declare const coreBluetoothProviderOptions: NativeCoreBluetoothProviderOptions
 
+// Existing 5.2.1 structural host implementations did not expose the new
+// opt-in ordered/recovery namespaces. They remain valid patch-line values.
+declare const legacyExpoBleManager: Omit<ExpoBleManager, 'orderedRecording' | 'orderedRecovery'>
+const compatibleExpoBleManager: ExpoBleManager = legacyExpoBleManager
+declare const legacyDesktopProcessHost: Omit<DesktopProcessHost, 'peerFailureRecovery'>
+const compatibleDesktopProcessHost: DesktopProcessHost = legacyDesktopProcessHost
+
 function consume(value: unknown): void {
   void value
 }
 
 consume(createExpoBleManager())
 consume(createExpoBleManagerWithEnvironment(expoEnvironment))
+consume(compatibleExpoBleManager)
+consume(compatibleDesktopProcessHost)
 consume(BleProvider)
 consume(useBle)
 consume(useAdapterState)

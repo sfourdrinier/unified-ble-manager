@@ -98,7 +98,12 @@ export type GattDelivery = 'notification' | 'indication' | 'unknown'
 export interface GattValueEvent {
   readonly sourceGeneration?: string
   readonly sourceOrdinal?: string
-  readonly provenance: NotificationProvenance
+  /**
+   * Added in 5.2.2. Runtime values always normalize an omitted backend value
+   * to `unknown`; optionality preserves the 5.2.1 source shape for consumers
+   * that construct or forward this public type.
+   */
+  readonly provenance?: NotificationProvenance
   readonly value: Uint8Array
   readonly delivery: GattDelivery
   readonly observedAtMonotonicMs: number
@@ -452,12 +457,12 @@ export interface GattDatabase {
   servicesByUuid(uuid: UuidInput): readonly GattService[]
   characteristic(serviceUuid: UuidInput, characteristicUuid: UuidInput, selector?: GattPathSelector): GattCharacteristic
   snapshot(): GattDatabaseSnapshot
-  reserveOrderedRecordingStart(): GattOrderedRecordingStart
-  reserveOrderedRecordingMarker(recordingId: string): GattOrderedMarkerWrite
-  reserveOrderedRecordingReclaim(
+  reserveOrderedRecordingStart?(): GattOrderedRecordingStart
+  reserveOrderedRecordingMarker?(recordingId: string): GattOrderedMarkerWrite
+  reserveOrderedRecordingReclaim?(
     handle: import('../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle
   ): GattOrderedRecordingReclaim
-  subscribeOrdered(
+  subscribeOrdered?(
     members: readonly GattOrderedMember[],
     options?: OperationOptions & { readonly stream?: StreamPolicy }
   ): Promise<GattOrderedSetup>
@@ -1381,7 +1386,7 @@ class PublicGattDatabase implements GattDatabase {
       readonly value: Uint8Array
       readonly mode: 'with-response' | 'without-response'
     } | null = null
-    let idleCancellation: import('../core/ordered-marker-wire').OrderedMarkerWriteStatus | null = null
+    let idleCancellation: GattOrderedMarkerWriteStatus | null = null
     let retired = false
     return {
       start: async (
@@ -1442,11 +1447,13 @@ class PublicGattDatabase implements GattDatabase {
           const raw = await handle.cancel()
           const result = isInternalOrderedMarkerWriteStatus(raw)
             ? publicOrderedMarkerStatus(raw)
-            : raw.state === 'idle' || raw.state === 'retired'
-              ? Object.freeze({ state: raw.state })
-              : (() => {
-                  throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-marker-status')
-                })()
+            : raw.state === 'idle'
+              ? Object.freeze({ state: 'idle' })
+              : raw.state === 'retired'
+                ? Object.freeze({ state: 'retired' })
+                : (() => {
+                    throw contractError('protocol.malformed', 'gatt', 'public-gatt.ordered-marker-status')
+                  })()
           if (bound === null && result.state === 'not-admitted') idleCancellation = result
           return result
         } catch (error) {

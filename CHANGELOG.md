@@ -8,6 +8,13 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.2.2] - 2026-11-12
 
+- Add opt-in ordered multi-characteristic notification collection, ordered
+  recording, and durable evidence recovery across the supported host routes.
+  See [the release change breakdown](docs/releases/5.2.2-change-breakdown.md).
+- Preserve 5.2.1 TypeScript consumer shapes for existing GATT, host, diagnostics,
+  continuation status, terminal-reason, and backend error-metadata contracts.
+  New diagnostic detail remains available through additive fields and recovery
+  APIs; the existing status fields keep their original types.
 - Preserve ordered notification ingress and durable terminal evidence across
   supported host recovery paths, including explicit partial-recovery status
   when another live controller still owns retained records. This release adds

@@ -59,6 +59,8 @@ export type {
   ContinuationRecordingMetadata,
   ContinuationRecordingFailure,
   ContinuationRecordingDiagnosticMarker,
+  ContinuationRecordingRuntimeDiagnostic,
+  ContinuationRecordingCollectionDiagnostic,
   ContinuationRecordingPrepareOptions
 } from './core/continuation-recording'
 export type {
@@ -278,7 +280,7 @@ export interface ExpoBleManager extends BleManager {
    * `capability.unsupported`, never an invented empty backlog.
    */
   /** Session-authorized controls for a live ordered recording owner. */
-  readonly orderedRecording: {
+  readonly orderedRecording?: {
     readonly reserveReclaim?: (
       handle: import('./backends/reactnative/react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle
     ) => import('./backends/reactnative/react-native-ordered-recovery').ReactNativeOrderedRecordingReclaimHandle
@@ -289,7 +291,7 @@ export interface ExpoBleManager extends BleManager {
     readonly stop: (id: string) => Promise<import('./core/continuation-recording').OrderedRecordingHostStopResult>
   }
   /** Explicit sensitive ownership handoff for a retained mobile ordered group. */
-  readonly orderedRecovery: {
+  readonly orderedRecovery?: {
     readonly handle: (stream: OrderedNotificationStream) => ReactNativeOrderedRecoveryHandle
     readonly reclaim: (handle: ReactNativeOrderedRecoveryHandle) => Promise<ReactNativeOrderedRecovery>
   }

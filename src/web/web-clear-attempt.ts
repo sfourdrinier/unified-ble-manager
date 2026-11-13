@@ -1,6 +1,11 @@
 import { webRecordingContractError as contractError } from './web-recording-errors'
 import { isRecordingId } from '../backend-contract/continuation-recording-bounds'
-import type { ContinuationRecordingController } from '../core/continuation-recording'
+import type {
+  ContinuationRecordingController,
+  ContinuationRecordingPrepareOptions,
+  OrderedRecordingHostStopResult
+} from '../core/continuation-recording'
+import type { OrderedRecordingBatch, OrderedRecordingContext } from '../core/ordered-recording'
 import type { WebProofAdmission, WebProofOutcome, WebProofUsage } from './web-clear-proof-ledger'
 import type { WebRecordingSupervisorState } from './web-ordered-recording-supervisor'
 
@@ -32,6 +37,9 @@ export interface WebClearAttemptReceiptV1 extends WebClearAttemptV1 {
 }
 
 export interface WebContinuationRecordingController extends ContinuationRecordingController {
+  prepareOrdered(id: string, options: ContinuationRecordingPrepareOptions): Promise<OrderedRecordingBatch>
+  stopOrdered(id: string): Promise<OrderedRecordingHostStopResult>
+  contextOrdered(id: string): Promise<OrderedRecordingContext>
   runtimeDiagnostic(id: string): Promise<WebRecordingRuntimeDiagnostic>
   admitClearAttemptV2(identity: {
     readonly recordingId: string

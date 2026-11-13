@@ -1,6 +1,6 @@
 # Durable recording of ordered notification groups
 
-Status: planned, unimplemented. This contract extends the [ordered ingress specification](2026-11-07-ordered-notification-ingress.md); it does not establish platform, process-recovery, or hardware qualification.
+Status: historical design proposal. Ordered recording APIs and implementations now exist; see [Unified Semantics](../../UNIFIED_SEMANTICS.md) and the public types for the current contract. This proposal does not establish platform, process-recovery, or hardware qualification.
 
 ## Ownership and order
 

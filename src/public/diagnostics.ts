@@ -56,7 +56,7 @@ export interface BleDiagnostics {
   resourceCounters(): BleResourceCounters
   startTrace(): { stop(): Promise<BleDiagnosticTraceDocument> }
   /** Recent host diagnostics; unlike the portable trace, this retains safe platform detail. */
-  warnings(): readonly BleDiagnosticWarning[]
+  warnings?(): readonly BleDiagnosticWarning[]
 }
 
 export function snapshotPublicTraceDocument(value: DiagnosticTraceDocument): BleDiagnosticTraceDocument {

@@ -58,10 +58,13 @@ export interface ContinuationBacklogValue {
 
 export interface ContinuationBacklogStreamEnd {
   readonly consumer: string
-  readonly reason: 'overflow' | 'invalidated' | 'closed' | 'source-failed'
+  /**
+   * The complete legacy handoff is fixed at the 5.2.1 stream-end vocabulary.
+   * Richer source failures remain owned by the native evidence/recovery route.
+   */
+  readonly reason: 'overflow' | 'invalidated' | 'closed'
   readonly droppedItems: number
   readonly droppedBytes: number
-  readonly error?: import('../../backend-contract/errors').NormalizedBleError
 }
 
 export interface ContinuationBacklog {
@@ -95,6 +98,23 @@ export interface ContinuationClaimAcknowledgement {
   readonly disposed: boolean
   readonly afterCutoffLoss: { readonly items: number; readonly bytes: number }
   readonly disposeFailure: string | null
+}
+
+/**
+ * The shared drain codec also serves versioned recovery paths, whose terminal
+ * vocabulary is intentionally richer than the 5.2.1 complete-claim result.
+ * Keep that distinction private until a caller selects the versioned route.
+ */
+interface ParsedContinuationStreamEnd {
+  readonly consumer: string
+  readonly reason: 'overflow' | 'invalidated' | 'closed' | 'source-failed'
+  readonly droppedItems: number
+  readonly droppedBytes: number
+  readonly error?: import('../../backend-contract/errors').NormalizedBleError
+}
+
+interface ParsedContinuationClaim extends Omit<ContinuationRetainedPrefixV1, 'streamEnds'> {
+  readonly streamEnds: readonly ParsedContinuationStreamEnd[]
 }
 
 function assertClaimPayload(value: unknown): asserts value is ContinuationClaimPayload {
@@ -505,7 +525,7 @@ export function aggregateContinuationClaim(
   claim: unknown,
   previousOrdinal: number | null = null,
   previousControlLost = 0
-): ContinuationRetainedPrefixV1 {
+): ParsedContinuationClaim {
   assertClaimPayload(claim)
   const declaredConsumerCount = claim.consumerCount
   const selectors = Object.freeze(
@@ -519,7 +539,7 @@ export function aggregateContinuationClaim(
     )
   )
   const values: ContinuationBacklogValue[] = []
-  const streamEnds: ContinuationBacklogStreamEnd[] = []
+  const streamEnds: ParsedContinuationStreamEnd[] = []
   const control: WireDrainRecord[] = []
   const records: WireDrainRecord[] = []
   let controlLost = previousControlLost
@@ -578,5 +598,32 @@ export function aggregateContinuationClaim(
     afterCutoffLoss: Object.freeze({ items: claim.afterCutoffLoss.items, bytes: claim.afterCutoffLoss.bytes }),
     disposed: claim.disposed,
     disposeFailure: claim.disposeFailure ?? null
+  })
+}
+
+/**
+ * The native legacy drain atomically projects unsupported terminal records
+ * into retained evidence before it yields a batch. Seeing one here therefore
+ * means a broken/native-mismatched legacy boundary: refuse before any caller
+ * can ACK and erase an error it cannot represent.
+ */
+export function projectLegacyContinuationClaim(
+  claim: ParsedContinuationClaim,
+  scope: string
+): ContinuationRetainedPrefixV1 {
+  const streamEnds: ContinuationBacklogStreamEnd[] = claim.streamEnds.map(record => {
+    if (record.reason === 'source-failed' || record.error !== undefined) {
+      throw contractError('protocol.violation', 'restoration', `${scope}.continuation.legacy-stream-end`)
+    }
+    return Object.freeze({
+      consumer: record.consumer,
+      reason: record.reason,
+      droppedItems: record.droppedItems,
+      droppedBytes: record.droppedBytes
+    })
+  })
+  return Object.freeze({
+    ...claim,
+    streamEnds: Object.freeze(streamEnds)
   })
 }

@@ -35,6 +35,8 @@ export type {
   ContinuationRecordingMetadata,
   ContinuationRecordingFailure,
   ContinuationRecordingDiagnosticMarker,
+  ContinuationRecordingRuntimeDiagnostic,
+  ContinuationRecordingCollectionDiagnostic,
   ContinuationRecordingPrepareOptions
 } from './core/continuation-recording'
 export type {

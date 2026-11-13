@@ -89,8 +89,8 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | Document                                                                                                                       | What it is                                                                                                                    | Status     |
 | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ---------- |
 | [`superpowers/specs/2026-11-07-ordered-notification-ingress.md`](superpowers/specs/2026-11-07-ordered-notification-ingress.md) | Ordered multi-characteristic ingress contract and evidence boundaries                                                         | Current    |
-| [`superpowers/specs/2026-11-08-ordered-durable-recording.md`](superpowers/specs/2026-11-08-ordered-durable-recording.md)       | Durable ordered recording design and evidence boundaries; not release-qualified                                               | Current    |
-| [`superpowers/plans/2026-11-07-ordered-notification-ingress.md`](superpowers/plans/2026-11-07-ordered-notification-ingress.md) | Cross-platform implementation and verification tracker                                                                        | Current    |
+| [`superpowers/specs/2026-11-08-ordered-durable-recording.md`](superpowers/specs/2026-11-08-ordered-durable-recording.md)       | Original durable ordered recording proposal; see `UNIFIED_SEMANTICS.md` for the current contract                              | Historical |
+| [`superpowers/plans/2026-11-07-ordered-notification-ingress.md`](superpowers/plans/2026-11-07-ordered-notification-ingress.md) | Original cross-platform implementation plan and its dated progress snapshot                                                   | Historical |
 | [`../CGM_DURABLE_INGRESS_BRIEF.md`](../CGM_DURABLE_INGRESS_BRIEF.md)                                                           | Active recorded-subscription implementation contract, CGM replay boundary and outstanding qualification; not release evidence | Current    |
 | [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md)                                                                                 | Normative behavior contract (MUST/MUST NOT) for any conforming unified BLE implementation                                     | Current    |
 | [`NATIVE_CAPABILITY_AUDIT.md`](NATIVE_CAPABILITY_AUDIT.md)                                                                     | Active native operation boundaries, chooser mechanisms and durable intake evidence limits                                     | Current    |
@@ -123,9 +123,15 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | [`GAPS.4.0.md`](GAPS.4.0.md)                                                                                           | Historical 4.0 platform/CI inventory; current support labels live in generated/PLATFORM_SUPPORT.md                 | Historical |
 | [`PERFORMANCE.md`](PERFORMANCE.md)                                                                                     | Performance and resource verification harness and its evidence limits                                              | Current    |
 | [`evidence/react-native-apple-physical-device-readiness.md`](evidence/react-native-apple-physical-device-readiness.md) | What is proven before Apple hardware exists; what a live-radio receipt adds                                        | Current    |
-| [`evidence/web-indexeddb-v5-migration-2026-11-12.md`](evidence/web-indexeddb-v5-migration-2026-11-12.md)             | Real-browser IndexedDB v2/v3/v4-to-v5 row-preservation receipt; not radio evidence                                 | Current    |
+| [`evidence/web-indexeddb-v5-migration-2026-11-12.md`](evidence/web-indexeddb-v5-migration-2026-11-12.md)               | Real-browser IndexedDB v2/v3/v4-to-v5 row-preservation receipt; not radio evidence                                 | Current    |
 | [`platforms/META_QUEST_4.1_SCOPE.md`](platforms/META_QUEST_4.1_SCOPE.md)                                               | Maintainer decision deferring Meta Quest support to 4.1                                                            | Current    |
 | [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md)                                                                           | Precompiled Rust artifact lifecycle: status, one-command refresh, and where the checks run                         | Current    |
+
+## Release candidate accounting
+
+| Document                                                                   | What it is                                                                                                                                                          | Status  |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| [`releases/5.2.2-change-breakdown.md`](releases/5.2.2-change-breakdown.md) | Exact `origin/main` to frozen-candidate composition, capability inventory, generated/artifact separation, and compatibility corrections; not qualification evidence | Current |
 
 ## Policy, security, and process
 

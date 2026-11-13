@@ -47,5 +47,14 @@ export function createSessionOrderedRecordingControls(session: ReactNativeRustCo
       return 1
     }
   )
-  return { context: controller.contextOrdered, stop: controller.stopOrdered }
+  return {
+    context: async (id: string) => {
+      const contextOrdered = controller.contextOrdered
+      return contextOrdered === undefined ? missing() : contextOrdered.call(controller, id)
+    },
+    stop: async (id: string) => {
+      const stopOrdered = controller.stopOrdered
+      return stopOrdered === undefined ? missing() : stopOrdered.call(controller, id)
+    }
+  }
 }

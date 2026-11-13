@@ -2,7 +2,7 @@
 
 import { parseOrderedRecordingFailure } from '../core/ordered-recording'
 
-import type { PortableSerializableRecord, SerializableRecord, SerializableValue } from './primitives'
+import type { SerializableRecord, SerializableValue } from './primitives'
 import { snapshotSerializableRecord, utf8ByteLength, assertSafeSerializablePrototype } from './serializable'
 
 export const BLE_ERROR_CODES = Object.freeze([
@@ -176,11 +176,14 @@ export function snapshotPlatformMetadataEntries(value: unknown, operation: strin
   return Object.freeze(result)
 }
 
+/** Backend-SDK failure detail. Metadata owns every byte before it crosses this
+ * contract; portable wire input is normalized by `optionalPlatformErrorDetail`.
+ */
 export interface PlatformErrorDetail {
   readonly domain: string
   readonly code: string
   readonly safeMessage: string
-  readonly metadata: PortableSerializableRecord
+  readonly metadata: SerializableRecord
   readonly metadataEntries?: readonly PlatformMetadataEntry[]
 }
 
