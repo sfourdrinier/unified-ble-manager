@@ -41,9 +41,10 @@ async function publicFixture(overrides = {}) {
   }
   const storage = transactionalDatabase()
   const liveOwners = createWebRecordingLiveOwners()
+  const lockManager = locks()
   const provider = createWebBluetoothProvider(boundary, {
     database: storage,
-    locks: locks(),
+    locks: lockManager,
     crypto: webcrypto,
     digest: async () => 'ab'.repeat(32),
     liveOwners,
@@ -75,10 +76,11 @@ async function publicFixture(overrides = {}) {
   let token = 0
   const controller = await createWebContinuationRecordingController({
     database: storage,
+    locks: lockManager,
     liveOwners,
     randomToken: () => `token-${++token}`
   })
-  return { boundary, storage, liveOwners, manager, connection, database, characteristic, controller }
+  return { boundary, storage, liveOwners, lockManager, manager, connection, database, characteristic, controller }
 }
 const recording = id => ({ id, maxBytes: 1048576, maxRecords: 20 })
 

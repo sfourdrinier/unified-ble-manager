@@ -31,9 +31,10 @@ async function publicFixture(overrides = {}) {
   }
   const storage = transactionalDatabase()
   const liveOwners = createWebRecordingLiveOwners()
+  const lockManager = locks()
   const provider = createWebBluetoothProvider(boundary, {
     database: storage,
-    locks: locks(),
+    locks: lockManager,
     crypto: webcrypto,
     digest: async () => 'ab'.repeat(32),
     liveOwners,
@@ -65,10 +66,11 @@ async function publicFixture(overrides = {}) {
   let token = 0
   const controller = await createWebContinuationRecordingController({
     database: storage,
+    locks: lockManager,
     liveOwners,
     randomToken: () => `token-${++token}`
   })
-  return { boundary, storage, liveOwners, manager, connection, database, characteristic, controller }
+  return { boundary, storage, liveOwners, lockManager, manager, connection, database, characteristic, controller }
 }
 async function startRecording(f, id, maxRecords = 20) {
   const start = f.database.reserveOrderedRecordingStart()
@@ -726,6 +728,7 @@ test('an absent legacy fence alone cannot prove that another context has no mark
     })
     const other = await createWebContinuationRecordingController({
       database: f.storage,
+      locks: f.lockManager,
       liveOwners: createWebRecordingLiveOwners()
     })
     await expect(other.clear('legacy-with-marker')).rejects.toMatchObject({ code: 'capability.unavailable', operation: 'web-recording.cleanup-evidence' })

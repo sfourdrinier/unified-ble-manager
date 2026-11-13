@@ -1,5 +1,6 @@
 const { createWebContinuationRecordingController } = require('../../src/web/web-continuation-recording-controller')
 const { recordingDatabase, reserveJournal } = require('./web-continuation-recording-controller-helper')
+const { admissionLocks } = require('./web-clear-admission-locks-helper')
 const { BleError } = require('../../src/public/errors')
 
 const context = {
@@ -119,6 +120,7 @@ test('rejects an unknown row protocol before preparing or acknowledging it', asy
 })
 async function setup(peer) {
   const db = recordingDatabase()
+  const locks = admissionLocks()
   const journal = await reserveJournal(db, declaration)
   let durableOwner
   if (peer !== undefined) {
@@ -133,8 +135,8 @@ async function setup(peer) {
   await journal.open()
   let token = 0
   const make = () =>
-    createWebContinuationRecordingController({ database: db, randomToken: () => `secret-token-${++token}` })
-  return { db, journal, durableOwner, controller: await make(), make }
+    createWebContinuationRecordingController({ database: db, locks, randomToken: () => `secret-token-${++token}` })
+  return { db, locks, journal, durableOwner, controller: await make(), make }
 }
 test('retains an exact ordered prefix across controllers until explicit acknowledgement', async () => {
   const { db, journal, controller, make } = await setup()
@@ -527,7 +529,7 @@ test('shared live owner forwards concurrent stops and wakes after committed read
 
 test('clear requires sealed and drained data, released cleanup and a released durable owner fence', async () => {
   const { createWebRecordingLiveOwners } = require('../../src/web/web-recording-live-owners')
-  const { db, journal, durableOwner } = await setup({ version: 1, backendId: 'web', scope: 'origin', opaqueId: 'peer' })
+  const { db, locks, journal, durableOwner } = await setup({ version: 1, backendId: 'web', scope: 'origin', opaqueId: 'peer' })
   const owners = createWebRecordingLiveOwners()
   const identity = { recordingId: 'sample', producerIncarnation: 'producer', ownerEpoch: '1' }
   let result = { recording: { version: 1, state: 'finished', error: null }, hostCleanup: { state: 'pending' } }
@@ -542,6 +544,7 @@ test('clear requires sealed and drained data, released cleanup and a released du
   owners.install({ ...identity, producerIncarnation: 'stale' }, owner)
   const controller = await createWebContinuationRecordingController({
     database: db,
+    locks,
     randomToken: () => 'token',
     liveOwners: owners
   })
@@ -583,7 +586,7 @@ test('clear requires sealed and drained data, released cleanup and a released du
   await journal.observeTerminal({ operationId: 'f'.repeat(64), deliveryId: '1', result })
   await journal.releaseReservation()
   await expect(controller.clear('sample')).rejects.toMatchObject({ code: 'capability.unavailable' })
-  const otherContext = await createWebContinuationRecordingController({ database: db, randomToken: () => 'other' })
+  const otherContext = await createWebContinuationRecordingController({ database: db, locks, randomToken: () => 'other' })
   await expect(otherContext.clear('sample')).rejects.toMatchObject({ code: 'capability.unavailable' })
   await owners.remove(identity, owner)
   await expect(controller.clear('sample')).rejects.toMatchObject({ code: 'capability.unavailable' })
@@ -637,7 +640,7 @@ test('a reader acknowledgement frees quota and wakes the retained producer only 
 
 test('a failed cleanup and an absent or stale-epoch owner never authorize clear', async () => {
   const { createWebRecordingLiveOwners } = require('../../src/web/web-recording-live-owners')
-  const { db, journal } = await setup()
+  const { db, locks, journal } = await setup()
   await journal.commit({
     id: '1',
     record: {
@@ -670,6 +673,7 @@ test('a failed cleanup and an absent or stale-epoch owner never authorize clear'
   }
   const controller = await createWebContinuationRecordingController({
     database: db,
+    locks,
     randomToken: () => 'token',
     liveOwners: owners
   })
@@ -778,7 +782,7 @@ test('ownerless stop does not report success when a sealed journal has a committ
 test('clear preserves a bound recording until peer deletion is coordinated with its incarnation', async () => {
   const { createWebRecordingLiveOwners } = require('../../src/web/web-recording-live-owners')
   const { createWebRecordingPeerIdentityStore } = require('../../src/web/web-recording-peer-identity')
-  const { db, journal } = await setup()
+  const { db, locks, journal } = await setup()
   const peers = createWebRecordingPeerIdentityStore(db)
   const first = { version: 1, backendId: 'web', scope: 'origin', opaqueId: 'first' }
   await peers.bind('sample', first)
@@ -793,7 +797,7 @@ test('clear preserves a bound recording until peer deletion is coordinated with 
   const identity = { recordingId: 'sample', producerIncarnation: 'producer', ownerEpoch: '1' }
   const result = { recording: { version: 1, state: 'finished', error: null }, hostCleanup: { state: 'released', failures: [] } }
   owners.install(identity, { supervisor: {}, stopResult: () => result, spaceAvailable: async () => {} })
-  const controller = await createWebContinuationRecordingController({ database: db, randomToken: () => 'token', liveOwners: owners })
+  const controller = await createWebContinuationRecordingController({ database: db, locks, randomToken: () => 'token', liveOwners: owners })
   const batch = await controller.prepareOrdered('sample', limits)
   await controller.acknowledge('sample', batch.token)
   await expect(controller.clear('sample')).rejects.toMatchObject({ code: 'capability.unavailable' })

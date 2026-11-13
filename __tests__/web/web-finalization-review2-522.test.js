@@ -34,9 +34,10 @@ async function publicFixture(overrides = {}) {
   }
   const storage = transactionalDatabase()
   const liveOwners = createWebRecordingLiveOwners()
+  const lockManager = locks()
   const provider = createWebBluetoothProvider(boundary, {
     database: storage,
-    locks: locks(),
+    locks: lockManager,
     crypto: webcrypto,
     digest: async () => 'ab'.repeat(32),
     liveOwners,
@@ -68,10 +69,11 @@ async function publicFixture(overrides = {}) {
   let token = 0
   const controller = await createWebContinuationRecordingController({
     database: storage,
+    locks: lockManager,
     liveOwners,
     randomToken: () => `token-${++token}`
   })
-  return { boundary, storage, liveOwners, manager, connection, database, characteristic, controller }
+  return { boundary, storage, liveOwners, lockManager, manager, connection, database, characteristic, controller }
 }
 async function startRecording(f, id, maxRecords = 20) {
   const start = f.database.reserveOrderedRecordingStart()
@@ -369,7 +371,7 @@ test.each(['held', 'absent'])('the live receipt owner reconciles an %s fence aft
         tx.onabort = reject
       })
     }
-    const other = await createWebContinuationRecordingController({ database: f.storage, liveOwners: createWebRecordingLiveOwners() })
+    const other = await createWebContinuationRecordingController({ database: f.storage, locks: f.lockManager, liveOwners: createWebRecordingLiveOwners() })
     await expect(other.clear(id)).rejects.toMatchObject({ operation: 'web-recording.cleanup-evidence' })
     resolveWrite()
     await waitFor(async () => (await marker.status()).write?.state === 'settled')

@@ -140,15 +140,19 @@ async function sealedBinding() {
   const { createWebContinuationRecordingController } = require('../../src/web/web-continuation-recording-controller')
   const db = recordingDatabase(),
     store = createWebRecordingPeerIdentityStore(db)
+  const held = new Set()
+  const locks = {
+    request(name, _options, fn) {
+      if (held.has(name)) return Promise.resolve(fn(null))
+      held.add(name)
+      return Promise.resolve(fn({})).finally(() => held.delete(name))
+    }
+  }
   const { producerIncarnation, memberEpochs, ...input } = declaration
   const bridge = createWebAuthorityRecordingJournalBridge(
     {
       database: db,
-      locks: {
-        request(_name, _options, fn) {
-          return Promise.resolve(fn({}))
-        }
-      },
+      locks,
       digest: async () => 'ab'.repeat(32)
     },
     input,
@@ -158,7 +162,7 @@ async function sealedBinding() {
   await bridge.prepare()
   await bridge.open({ memberships: () => [{ member: '0', epoch: '1' }] })
   await finish(bridge)
-  const controller = await createWebContinuationRecordingController({ database: db, randomToken: () => 'token' })
+  const controller = await createWebContinuationRecordingController({ database: db, locks, randomToken: () => 'token' })
   const batch = await controller.prepareOrdered('sample', { maxItems: 8, maxBytes: 10000 })
   await controller.acknowledge('sample', batch.token)
   return { db, store, controller }
