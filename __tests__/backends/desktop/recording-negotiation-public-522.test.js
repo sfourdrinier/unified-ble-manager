@@ -112,6 +112,8 @@ test('native v2 offer permits public start, same-host stop, and offline stop', a
         directory
       )
     expect(await offline.stopOrdered('offer-test')).toMatchObject({ recording: { state: 'finished' } })
+    expect(offline.releaseIdle).toEqual(expect.any(Function))
+    await offline.releaseIdle()
   } finally {
     if (!closed) {
       await manager.destroy()

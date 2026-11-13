@@ -10,12 +10,14 @@ const directory = process.argv[2] || mkdtempSync(join(tmpdir(), 'ubm-terminal-re
 async function run() {
   const central = await addon.UbmCentral.openSynthetic('terminal-restart', { platform: 'bluez', terminalEvidenceDirectory: directory, terminalEvidenceMaxBytes: '1024' });
   if (process.argv[3] === 'recover') {
-    const rows = await central.recoverTerminalEvidence('scan', 'trusted-recipient');
+    const recovery = { producer: 'scan', recipient: 'trusted-recipient', leaseId: 'restart-recovery-lease' };
+    const rows = await central.recoverTerminalEvidence(recovery);
     assert.equal(rows.length, 1); assert.equal(rows[0].digest, createHash('sha256').update(Buffer.from([1,2,3])).digest('hex'));
-    const committed = rows[0].ref ? rows[0] : await central.commitTerminalEvidence({ reservationId: rows[0].reservationId, canonicalBytes: rows[0].canonicalBytes, digest: rows[0].digest });
+    assert.equal(rows[0].producer, recovery.producer);
+    const committed = rows[0].ref ? rows[0] : await central.commitRecoveredTerminalEvidence({ reservationId: rows[0].reservationId, leaseId: recovery.leaseId, canonicalBytes: rows[0].canonicalBytes, digest: rows[0].digest });
     // Source teardown only abandons a reservation id. The opaque committed
     // reference is retired solely by the authenticated recovery ACK.
-    await central.acknowledgeRecoveredTerminalEvidence({ ref: committed.ref, producer: 'scan', recipient: 'trusted-recipient' }); await central.close(); return;
+    await central.acknowledgeRecoveredTerminalEvidence({ ref: committed.ref, reservationId: rows[0].reservationId, ...recovery }); await central.close(); return;
   }
   const reserved = await central.reserveTerminalEvidence({ producer: 'scan', maximumBytes: '64', formatVersion: 1, scope: { managerId: 'm', operationId: 'o', incarnation: 'i' } });
   const bytes = Buffer.from([1,2,3]);

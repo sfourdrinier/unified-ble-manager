@@ -256,13 +256,15 @@ test.each(PLATFORMS)('%s public manager preserves the exact scan terminal stagin
     })
 
     await stage.releaseTerminalEvidence(reservationId)
+    const leaseId = `conflict-lease-${prefix}`
     const recovered = await stage.recoverTerminalEvidence({
       producer: 'scan',
       recipient,
-      leaseId: `conflict-lease-${prefix}`
+      leaseId
     })
     expect(recovered).toHaveLength(1)
     expect(Uint8Array.from(recovered[0].canonicalBytes)).toEqual(earlier)
+    await stage.releaseTerminalEvidenceRecoveryLease(leaseId)
     await scan.stop()
   })
 })

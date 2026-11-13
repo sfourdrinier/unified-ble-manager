@@ -544,6 +544,23 @@ impl ContinuationRecordingStore {
         self.configure_directory_trusted(directory).await
     }
 
+    /// Releases only idle handles for this trusted store's configured
+    /// directory. Durable rows and live owners remain intact; a later call
+    /// reopens a released journal from its retained bytes.
+    #[napi(catch_unwind)]
+    pub async fn release_idle(&self) -> Result<String> {
+        let registry = self.registry.clone();
+        Ok(envelope(
+            run_blocking(move || {
+                registry
+                    .release_idle_after_host_shutdown()
+                    .map(|_| serde_json::json!({"released": true}))
+                    .map_err(recording_failure)
+            })
+            .await,
+        ))
+    }
+
     /// Rust-only trusted-host entrypoint used by native integration tests and
     /// the central-owned main-process bridge. It is intentionally not an
     /// N-API export, so a renderer cannot bypass the environment guard.

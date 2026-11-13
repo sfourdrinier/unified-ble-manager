@@ -374,6 +374,7 @@ function recordingStore(host: DesktopCoreHost, module: unknown): DesktopRustCore
   }
   return Object.freeze({
     configureDirectory: (directory: string) => invoke('configureDirectory', [directory]),
+    ...(hasFunction(store, 'releaseIdle') ? { releaseIdle: () => invoke('releaseIdle', []) } : {}),
     status: (id: string) => invoke('status', [id]),
     prepare: (id: string, maxItems: number, maxBytes: number) => invoke('prepare', [id, maxItems, maxBytes]),
     acknowledge: (id: string, token: string) => invoke('acknowledge', [id, token]),

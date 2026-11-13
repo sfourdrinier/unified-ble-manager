@@ -22,6 +22,7 @@ import type {
 } from 'unified-ble-manager/node/corebluetooth'
 import type {
   DesktopProcessHost,
+  DesktopContinuationRecordingController,
   DesktopScanFailureRecovery,
   DesktopScanFailureRecoveryChunk,
   DesktopPeerNotificationFailureRecovery
@@ -37,6 +38,8 @@ declare const legacyExpoBleManager: Omit<ExpoBleManager, 'orderedRecording' | 'o
 const compatibleExpoBleManager: ExpoBleManager = legacyExpoBleManager
 declare const legacyDesktopProcessHost: Omit<DesktopProcessHost, 'peerFailureRecovery'>
 const compatibleDesktopProcessHost: DesktopProcessHost = legacyDesktopProcessHost
+declare const legacyDesktopRecordingController: Omit<DesktopContinuationRecordingController, 'releaseIdle'>
+const compatibleDesktopRecordingController: DesktopContinuationRecordingController = legacyDesktopRecordingController
 
 function consume(value: unknown): void {
   void value
@@ -46,6 +49,7 @@ consume(createExpoBleManager())
 consume(createExpoBleManagerWithEnvironment(expoEnvironment))
 consume(compatibleExpoBleManager)
 consume(compatibleDesktopProcessHost)
+consume(compatibleDesktopRecordingController)
 consume(BleProvider)
 consume(useBle)
 consume(useAdapterState)

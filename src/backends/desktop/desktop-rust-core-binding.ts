@@ -1134,6 +1134,8 @@ export interface DesktopRustCoreGenerationController {
 export interface DesktopRustCoreRecordingStore {
   orderedReceiptVersion?(id: string): Promise<number>
   configureDirectory(directory: string): Promise<string>
+  /** Releases idle native handles without deleting retained recording bytes. */
+  releaseIdle?(): Promise<string>
   status(id: string): Promise<string>
   prepare(id: string, maxItems: number, maxBytes: number): Promise<string>
   acknowledge(id: string, token: string): Promise<string>

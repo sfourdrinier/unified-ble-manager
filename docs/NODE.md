@@ -571,6 +571,12 @@ radio. It verifies the native binding identity as usual. The journal is plaintex
 semantics. Generic declared `setup` steps can restore an application protocol
 after resubscription; UBM itself contains no Polar command recipe.
 
+An independently opened desktop recording controller may expose additive
+`releaseIdle()`. It releases eligible cached native file handles for that private
+directory without deleting durable rows. Handles with live owners or unfinished
+evidence remain retained; later recording calls reopen released journals from
+their existing bytes.
+
 Keep the owning process and central alive while collecting. OS service registration, process
 relaunch and persistence of the standing declaration remain explicit host
 integration; this API does not install a daemon, elevate privileges or promise

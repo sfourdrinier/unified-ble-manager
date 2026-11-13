@@ -321,16 +321,11 @@ async fn scan_failure_recovery_routes_use_real_v2_sidecar_and_revoke_forged_or_s
         ScanFailureOccurrence,
     };
 
+    let test = "btleplug_dispatcher::dispatcher_packet_b_tests::scan_failure_recovery_routes_use_real_v2_sidecar_and_revoke_forged_or_stale_handles";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     let harness = Harness::new().await;
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-tauri-scan-recovery-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    create_private_fixture_directory(&directory);
     let recording_id = "tauri-scan-recovery";
     let quota = JournalQuota {
         max_bytes: 1 << 20,
@@ -926,14 +921,16 @@ async fn scan_failure_recovery_routes_use_real_v2_sidecar_and_revoke_forged_or_s
         .await
         .expect_err("ordinary release revokes recovery before retained cleanup can be retried");
     assert_eq!(stale.code, BleErrorCode::OwnershipDenied);
-    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[tokio::test]
 async fn scan_failure_recovery_reclaims_alias_capacity_after_256_completed_durable_lifecycles() {
+    let test = "btleplug_dispatcher::dispatcher_packet_b_tests::scan_failure_recovery_reclaims_alias_capacity_after_256_completed_durable_lifecycles";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     let harness = Harness::new().await;
-    let directory = scan_recovery_test_directory("alias-capacity");
-    create_private_fixture_directory(&directory);
     harness
         .dispatcher
         .recordings
@@ -955,7 +952,7 @@ async fn scan_failure_recovery_reclaims_alias_capacity_after_256_completed_durab
         )
         .await;
     }
-    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[tokio::test]
@@ -6040,16 +6037,11 @@ async fn caller_release_emits_owner_release_terminal_before_retirement_and_reboo
 /// a second OS process and therefore is not physical crash-recovery proof.
 async fn fresh_dispatcher_reopens_terminal_evidence_releases_failed_reservations_and_preserves_quota(
 ) {
+    let test = "btleplug_dispatcher::dispatcher_packet_b_tests::fresh_dispatcher_reopens_terminal_evidence_releases_failed_reservations_and_preserves_quota";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     let harness = Harness::new().await;
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-tauri-terminal-rebootstrap-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).expect("fixture directory");
     let ledger = Arc::new(
         ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
             &directory.join("terminal-evidence.sqlite"),
@@ -6424,21 +6416,16 @@ async fn fresh_dispatcher_reopens_terminal_evidence_releases_failed_reservations
         .reserve(&post_rebootstrap, 512)
         .expect("failed uncommitted reservation was released and quota is reusable");
     drop(ledger);
-    std::fs::remove_dir_all(directory).expect("remove fixture directory");
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn terminal_evidence_recovery_refresh_and_release_share_the_caller_lease_fence() {
+    let test = "btleplug_dispatcher::dispatcher_packet_b_tests::terminal_evidence_recovery_refresh_and_release_share_the_caller_lease_fence";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     let harness = Harness::new().await;
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-tauri-terminal-refresh-release-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).expect("fixture directory");
     let ledger = Arc::new(
         ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
             &directory.join("terminal-evidence.sqlite"),
@@ -6548,21 +6535,16 @@ async fn terminal_evidence_recovery_refresh_and_release_share_the_caller_lease_f
         1
     );
     drop(ledger);
-    std::fs::remove_dir_all(directory).expect("remove fixture directory");
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn terminal_evidence_recovery_refresh_refuses_a_lease_retired_before_claim() {
+    let test = "btleplug_dispatcher::dispatcher_packet_b_tests::terminal_evidence_recovery_refresh_refuses_a_lease_retired_before_claim";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     let harness = Harness::new().await;
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-tauri-terminal-refresh-retired-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).expect("fixture directory");
     let ledger = Arc::new(
         ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
             &directory.join("terminal-evidence.sqlite"),
@@ -6634,7 +6616,7 @@ async fn terminal_evidence_recovery_refresh_refuses_a_lease_retired_before_claim
         1
     );
     drop(ledger);
-    std::fs::remove_dir_all(directory).expect("remove fixture directory");
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -7772,9 +7754,11 @@ async fn finding_57_an_adapter_loss_ends_every_stream_in_the_legacy_vocabulary()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scan_terminal_evidence_stage_failure_is_authenticated_and_keeps_the_scan_binding() {
+    let test = "btleplug_dispatcher::dispatcher_packet_b_tests::scan_terminal_evidence_stage_failure_is_authenticated_and_keeps_the_scan_binding";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     let harness = Harness::new().await;
-    let directory = scan_recovery_test_directory("scan-terminal-stage-failure");
-    std::fs::create_dir(&directory).expect("fixture directory");
     let ledger = Arc::new(
         ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
             &directory.join("terminal-evidence.sqlite"),
@@ -7913,14 +7897,16 @@ async fn scan_terminal_evidence_stage_failure_is_authenticated_and_keeps_the_sca
         1,
         "scan.stop after terminal delivery cannot emit owner-released"
     );
-    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scan_terminal_stage_failure_delivery_quota_is_retained_as_retryable_cleanup_debt() {
+    let test = "btleplug_dispatcher::dispatcher_packet_b_tests::scan_terminal_stage_failure_delivery_quota_is_retained_as_retryable_cleanup_debt";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     let harness = Harness::new().await;
-    let directory = scan_recovery_test_directory("scan-terminal-stage-delivery-debt");
-    std::fs::create_dir(&directory).expect("fixture directory");
     let ledger = Arc::new(
         ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
             &directory.join("terminal-evidence.sqlite"),
@@ -8038,7 +8024,7 @@ async fn scan_terminal_stage_failure_delivery_quota_is_retained_as_retryable_cle
             .await,
         "a successful retry retires only the delivery debt, not the scan binding"
     );
-    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -8281,9 +8267,11 @@ async fn lifecycle_terminal_claim_fences_a_forwarder_terminal_before_staging() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lifecycle_terminal_send_failure_is_retained_and_retried_without_stage_failure_branding() {
+    let test = "btleplug_dispatcher::dispatcher_packet_b_tests::lifecycle_terminal_send_failure_is_retained_and_retried_without_stage_failure_branding";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     let harness = Harness::new().await;
-    let directory = scan_recovery_test_directory("scan-terminal-send-retry");
-    create_private_fixture_directory(&directory);
     let ledger = Arc::new(
         ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
             &directory.join("terminal-evidence.sqlite"),
@@ -8404,7 +8392,7 @@ async fn lifecycle_terminal_send_failure_is_retained_and_retried_without_stage_f
             .await,
         "successful retry terminalizes the retained scan and prevents an owner-release duplicate"
     );
-    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 // Finding 57 — the new attachment generation reaches the renderer the way

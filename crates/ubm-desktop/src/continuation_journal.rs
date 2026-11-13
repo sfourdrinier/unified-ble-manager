@@ -794,7 +794,6 @@ fn windows_validate_held_scan_recovery_object(
     expected_directory: bool,
 ) -> Result<()> {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::GENERIC_ALL;
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
@@ -804,8 +803,8 @@ fn windows_validate_held_scan_recovery_object(
         SE_DACL_PROTECTED,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        GetFileInformationByHandle,
+        BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, GetFileInformationByHandle,
     };
     use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
@@ -922,7 +921,7 @@ fn windows_validate_held_scan_recovery_object(
     if unsafe { (*ace).Header.AceType } != ACCESS_ALLOWED_ACE_TYPE as u8
         || unsafe { (*ace).Header.AceFlags } != 0
         || usize::from(unsafe { (*ace).Header.AceSize }) < minimum_ace_size
-        || unsafe { (*ace).Mask } != GENERIC_ALL
+        || unsafe { (*ace).Mask } != FILE_ALL_ACCESS
     {
         return Err(windows_storage_error(
             "scan recovery sidecar owner ACE is not the required full-control ACE",
@@ -953,7 +952,6 @@ fn windows_validate_held_scan_recovery_directory(
 #[cfg(windows)]
 fn windows_provision_scan_recovery_object(path: &Path, directory: bool) -> Result<()> {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::GENERIC_ALL;
     use windows_sys::Win32::Security::Authorization::{
         EXPLICIT_ACCESS_W, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetSecurityInfo,
         TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
@@ -962,6 +960,7 @@ fn windows_provision_scan_recovery_object(path: &Path, directory: bool) -> Resul
         DACL_SECURITY_INFORMATION, NO_INHERITANCE, OWNER_SECURITY_INFORMATION,
         PROTECTED_DACL_SECURITY_INFORMATION,
     };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
     let sid = windows_current_user_sid()?;
     let file = if directory {
@@ -977,7 +976,7 @@ fn windows_provision_scan_recovery_object(path: &Path, directory: bool) -> Resul
         ptstrName: sid.as_psid().cast(),
     };
     let entry = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: GENERIC_ALL,
+        grfAccessPermissions: FILE_ALL_ACCESS,
         grfAccessMode: SET_ACCESS,
         grfInheritance: NO_INHERITANCE,
         Trustee: trustee,
@@ -13419,14 +13418,14 @@ mod authority_tests {
             protector
                 .provision_directory(path.parent().expect("scan fixture parent"))
                 .expect("trusted Windows scan fixture root");
-            return ContinuationJournal::open_with_scan_recovery_storage(
+            ContinuationJournal::open_with_scan_recovery_storage(
                 path,
                 recording_id,
                 &json!({}),
                 quota,
                 Some(protector),
             )
-            .expect("open trusted Windows scan fixture");
+            .expect("open trusted Windows scan fixture")
         }
 
         #[cfg(not(windows))]

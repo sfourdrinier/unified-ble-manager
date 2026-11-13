@@ -22,6 +22,8 @@ export interface DesktopLegacyRecoveryPage {
   readonly rawRecords: readonly { readonly ordinal: string; readonly body: readonly number[] }[]
 }
 export interface DesktopContinuationRecordingController extends ContinuationRecordingController {
+  /** Releases idle native handles without deleting retained recording bytes. */
+  releaseIdle?(): Promise<void>
   /** Trusted-host only exact diagnostic recovery. These calls never infer or
    * acknowledge bytes; retain the returned bytes before any lifecycle step. */
   diagnostics: DesktopContinuationDiagnosticController
@@ -210,6 +212,13 @@ export function openNativeContinuationRecordings(
         } catch (error) {
           throw nativeContinuationTransportError(error, 'ubm-desktop', operation)
         }
+      }
+      const releaseIdle = async () => {
+        const method = store.releaseIdle
+        if (typeof method !== 'function')
+          throw contractError('capability.unsupported', 'restoration', 'continuation.recording.release-idle')
+        const value = object(await call('continuation.recording.release-idle', () => method.call(store)))
+        if (Object.keys(value).join(',') !== 'released' || Reflect.get(value, 'released') !== true) return malformed()
       }
       const required = () => {
         const confirm: unknown = Reflect.get(store, 'legacyRecordingConfirmExactRetirement')
@@ -452,6 +461,9 @@ export function openNativeContinuationRecordings(
       }
       return Object.freeze({
         ...controller,
+        ...(typeof store.releaseIdle === 'function'
+          ? { releaseIdle: () => rehydratePublicPromise(releaseIdle()) }
+          : {}),
         get diagnostics() {
           return diagnostics()
         },
