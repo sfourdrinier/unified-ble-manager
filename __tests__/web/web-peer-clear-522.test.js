@@ -458,6 +458,7 @@ test('public Web start binds the selected peer, and public clear permits safe ID
     const characteristic = gatt.characteristic(boundary.serviceUuid, boundary.characteristicUuid)
     const controller = await createWebContinuationRecordingController({
       database: db,
+      locks,
       liveOwners,
       randomToken: () => 'token'
     })
