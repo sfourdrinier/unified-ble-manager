@@ -14713,6 +14713,8 @@ mod authority_tests {
                 .unwrap(),
             vec![occurrence]
         );
+        drop(spool);
+        drop(reopened);
         remove_idle_fixture_directory(&directory);
     }
 

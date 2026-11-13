@@ -5,7 +5,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { nextItem, openBackend, scanOptions } = require('../../helpers/desktop-rust-core-harness')
+const { nextItem, openBackend, realBinding, scanOptions } = require('../../helpers/desktop-rust-core-harness')
 const {
   createTestDesktopRustCoreBackendProvider,
   DESKTOP_RUST_CORE_PROFILES
@@ -107,6 +107,21 @@ async function withLedger(platform, run) {
   }
 }
 
+async function withNativeLedger(platform, run) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-canonical-'))
+  const harness = realBinding(platform)
+  const stage = await harness.binding.openSynthetic(`terminal-canonical-${platform}`, {
+    terminalEvidenceDirectory: directory,
+    terminalEvidenceMaxBytes: '8192'
+  })
+  try {
+    return await run({ stage })
+  } finally {
+    await stage.close()
+    fs.rmSync(directory, { recursive: true })
+  }
+}
+
 async function withPublicLedger(platform, run) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-public-'))
   const harness = require('../../helpers/desktop-rust-core-harness').realBinding(platform)
@@ -136,7 +151,7 @@ async function withPublicLedger(platform, run) {
 }
 
 test.each(PLATFORMS)('%s native scan source stages exactly the JS canonical terminal bytes', async platform => {
-  await withLedger(platform, async ({ stage }) => {
+  await withNativeLedger(platform, async ({ stage }) => {
     const prefix = DESKTOP_RUST_CORE_PROFILES[platform].operationPrefix
     const evidenceScope = scalarScope(prefix)
     const rawScope = scopeUtf16le('scan', evidenceScope)
@@ -179,7 +194,7 @@ test.each(PLATFORMS)('%s native scan source stages exactly the JS canonical term
 })
 
 test.each(PLATFORMS)('%s preserves unpaired UTF-16 scope units in native canonical bytes', async platform => {
-  await withLedger(platform, async ({ stage }) => {
+  await withNativeLedger(platform, async ({ stage }) => {
     const prefix = DESKTOP_RUST_CORE_PROFILES[platform].operationPrefix
     const evidenceScope = unpairedScope(prefix)
     const rawScope = scopeUtf16le('scan', evidenceScope)
