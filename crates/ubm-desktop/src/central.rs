@@ -1957,6 +1957,8 @@ struct ActiveScan {
     id: OperationId,
     /// Immutable epoch captured by the physical scan callback at ingress.
     ingress_epoch: u64,
+    /// Authoritative OS-terminal outcome retained across callback-cleanup retry.
+    os_ended_cleanup: Option<ContenderKind>,
     phase: ScanPhase,
     /// Native start has authoritatively refused while an earlier stop is
     /// still in flight. Once that stop settles, even a failed stop leaves
@@ -5790,6 +5792,57 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         self.retry_unpublished_scan_cleanup(window, &ctl.ticket)
             .await?;
+        // An OS terminal event makes the previous scan non-operational before
+        // its callback prefix is retired. Join only that terminal-owned
+        // cleanup flight with this caller's own deadline; active scans and
+        // ordinary failed cleanup still retain their normal refusal contract.
+        let terminal_cleanup =
+            self.inner
+                .scan_slot()
+                .as_ref()
+                .and_then(|active| match &active.phase {
+                    ScanPhase::Stopping { answer, stage, .. }
+                        if matches!(
+                            stage,
+                            ScanStopStage::RetireIngress | ScanStopStage::FenceIngress
+                        ) && active.os_ended_cleanup.is_some() =>
+                    {
+                        Some(answer.clone())
+                    }
+                    _ => None,
+                });
+        if let Some(mut answer) = terminal_cleanup {
+            match drive(&ctl.ticket, window, async move {
+                answer
+                    .wait_for(Option::is_some)
+                    .await
+                    .map(|value| value.clone())
+            })
+            .await
+            {
+                Wait::Done(Ok(Some(Ok(())))) => {}
+                Wait::Done(Ok(Some(Err(error)))) => return Err(error),
+                Wait::Done(Ok(None) | Err(_)) => {
+                    return Err(DesktopError::scan_stop_failed(
+                        "terminal scan cleanup ended without an answer",
+                    ));
+                }
+                Wait::Expired => {
+                    return Err(classify(
+                        timed_out("scan.start", window),
+                        OpKind::Scan,
+                        true,
+                    ));
+                }
+                Wait::Cancelled => {
+                    return Err(classify(
+                        ctl.ticket.interruption("scan.start"),
+                        OpKind::Scan,
+                        true,
+                    ));
+                }
+            }
+        }
         // Cleanup may have spent the caller's budget or raced shutdown. A
         // successful old stop is not admission for a replacement operation.
         self.precheck(&ctl, "scan.start")?;
@@ -5839,6 +5892,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             *self.inner.scan_slot() = Some(ActiveScan {
                 id: id.clone(),
                 ingress_epoch,
+                os_ended_cleanup: None,
                 phase: ScanPhase::Starting,
                 start_refused: false,
                 unpublished_cleanup: false,
@@ -6072,6 +6126,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         *slot = Some(ActiveScan {
                             id: id.clone(),
                             ingress_epoch: 0,
+                            os_ended_cleanup: None,
                             phase: ScanPhase::StopFailed(ScanStopStage::PhysicalStop),
                             start_refused: false,
                             unpublished_cleanup: true,
@@ -6449,29 +6504,49 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     }
                 }
                 {
-                    let mut core = self.inner.core.lock().await;
-                    let mut out = batch();
-                    let _ = core.note_scan_platform(
-                        scan,
-                        ubm_core::central::ScanPlatformEvent::PlatformStopped,
-                        now_ms(),
-                        &mut out,
-                    );
-                    let _ = out.drain();
-                    // `note_scan_platform` already settled the kernel
-                    // op for the terminal session; the follow-up
-                    // settle is a duplicate that only observes, then
-                    // the actual OS-stop success releases.
-                    let _ =
-                        core.settle_op(scan, ContenderKind::Success, true, 0, now_ms(), &mut out);
-                    let _ = out.drain();
-                    // R15: retain the completed ticket between
-                    // settlement and release, then release.
-                    if let Some(kind) = terminal_kind_of(&core, scan) {
-                        retain_completed_scan(&self.inner.completed_scans, scan, kind);
+                    let os_ended_contender = self
+                        .inner
+                        .scan_slot()
+                        .as_ref()
+                        .filter(|active| active.id == *scan)
+                        .and_then(|active| active.os_ended_cleanup);
+                    if let Some(contender) = os_ended_contender {
+                        // A failed retirement/fence after an OS terminal is
+                        // retried by the ordinary stop entrypoint. It must
+                        // still settle as that original terminal outcome, not
+                        // invent an ordinary successful physical stop.
+                        settle_os_ended_scan_core(&self.inner, scan, contender).await;
+                    } else {
+                        let mut core = self.inner.core.lock().await;
+                        let mut out = batch();
+                        let _ = core.note_scan_platform(
+                            scan,
+                            ubm_core::central::ScanPlatformEvent::PlatformStopped,
+                            now_ms(),
+                            &mut out,
+                        );
+                        let _ = out.drain();
+                        // `note_scan_platform` already settled the kernel
+                        // op for the terminal session; the follow-up
+                        // settle is a duplicate that only observes, then
+                        // the actual OS-stop success releases.
+                        let _ = core.settle_op(
+                            scan,
+                            ContenderKind::Success,
+                            true,
+                            0,
+                            now_ms(),
+                            &mut out,
+                        );
+                        let _ = out.drain();
+                        // R15: retain the completed ticket between
+                        // settlement and release, then release.
+                        if let Some(kind) = terminal_kind_of(&core, scan) {
+                            retain_completed_scan(&self.inner.completed_scans, scan, kind);
+                        }
+                        report_terminal_release(&mut core, scan, true, None);
+                        recycle_observations(&mut core);
                     }
-                    report_terminal_release(&mut core, scan, true, None);
-                    recycle_observations(&mut core);
                     let mut slot = self.inner.scan_slot();
                     if let Some(active) = slot.as_mut()
                         && active.id == *scan
@@ -13815,7 +13890,7 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         // when the OS never confirms a stop.
                         let id = inner.scan_slot().as_ref().map(|active| active.id.clone());
                         if let Some((id, flight)) = id
-                            .and_then(|id| claim_os_ended_scan(&inner, &id).map(|flight| (id, flight)))
+                            .and_then(|id| claim_os_ended_scan(&inner, &id, ContenderKind::Success).map(|flight| (id, flight)))
                         {
                             // A callback-ingress fence can be acknowledged by
                             // the next boundary event. Do not await it from
@@ -13856,7 +13931,7 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                             .then(|| active.id.clone())
                         });
                         if let Some((id, flight)) = id
-                            .and_then(|id| claim_os_ended_scan(&inner, &id).map(|flight| (id, flight)))
+                            .and_then(|id| claim_os_ended_scan(&inner, &id, if aborted { ContenderKind::Failure } else { ContenderKind::Success }).map(|flight| (id, flight)))
                         {
                             let contender = if aborted {
                                 ContenderKind::Failure
@@ -14694,6 +14769,28 @@ async fn settle_os_ended_scan<B: RadioBoundary>(
         complete_os_ended_stop(inner, id, flight, ScanStopStage::FenceIngress, error);
         return;
     }
+    settle_os_ended_scan_core(inner, id, contender).await;
+    // No stale owner: clear the marker when it still names this session so
+    // no scan reads owned after the source ended (a newer scan's marker
+    // stays).
+    let mut slot = inner.scan_slot();
+    if slot.as_ref().is_some_and(|active| active.id == *id) {
+        *slot = None;
+    }
+    if let Some(flight) = flight {
+        flight.complete(Ok(()));
+    }
+}
+
+/// Apply the authoritative OS-ended terminal outcome to the core. This is
+/// shared by the asynchronous callback path and a later retry of its retained
+/// ingress cleanup, so retry cannot turn an aborted terminal into a normal
+/// platform stop.
+async fn settle_os_ended_scan_core<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    id: &OperationId,
+    contender: ContenderKind,
+) {
     let mut core = inner.core.lock().await;
     let mut out = batch();
     let _ = core.note_scan_platform(
@@ -14712,17 +14809,6 @@ async fn settle_os_ended_scan<B: RadioBoundary>(
     }
     report_terminal_release(&mut core, id, true, None);
     recycle_observations(&mut core);
-    drop(core);
-    // No stale owner: clear the marker when it still names this session so
-    // no scan reads owned after the source ended (a newer scan's marker
-    // stays).
-    let mut slot = inner.scan_slot();
-    if slot.as_ref().is_some_and(|active| active.id == *id) {
-        *slot = None;
-    }
-    if let Some(flight) = flight {
-        flight.complete(Ok(()));
-    }
 }
 
 /// Claim one OS-ended scan before spawning its asynchronous callback cleanup.
@@ -14731,6 +14817,7 @@ async fn settle_os_ended_scan<B: RadioBoundary>(
 fn claim_os_ended_scan<B>(
     inner: &Arc<Inner<B>>,
     id: &OperationId,
+    contender: ContenderKind,
 ) -> Option<Option<Arc<StopFlight>>> {
     let mut slot = inner.scan_slot();
     let active = slot.as_mut().filter(|active| active.id == *id)?;
@@ -14739,13 +14826,22 @@ fn claim_os_ended_scan<B>(
         | ScanPhase::Starting
         | ScanPhase::StartCancelled
         | ScanPhase::StopFailed(ScanStopStage::PhysicalStop) => {
-            active.phase = ScanPhase::StopFailed(ScanStopStage::RetireIngress);
-            Some(None)
+            active.os_ended_cleanup = Some(contender);
+            let (answer, receiver) = watch::channel(None);
+            let flight = Arc::new(StopFlight::new(answer));
+            let _ = flight.claim_cleanup();
+            active.phase = ScanPhase::Stopping {
+                answer: receiver,
+                stage: ScanStopStage::RetireIngress,
+                flight: Arc::clone(&flight),
+            };
+            Some(Some(flight))
         }
         ScanPhase::Stopping { flight, .. } => {
             if !flight.claim_cleanup() {
                 return None;
             }
+            active.os_ended_cleanup = Some(contender);
             let flight = Arc::clone(flight);
             active.phase = ScanPhase::Stopping {
                 answer: flight.answer.subscribe(),

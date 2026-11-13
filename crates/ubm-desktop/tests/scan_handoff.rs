@@ -892,3 +892,271 @@ async fn r5_old_generation_scan_ticket_cannot_stop_a_replacement_scan() {
         .await
         .expect("replacement stop");
 }
+
+#[tokio::test]
+async fn terminal_scan_cleanup_handoff_waits_before_starting_replacement() {
+    let central = open().await;
+    central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("initial scan");
+    central.boundary().block_op(FaultOp::ScanIngressFence);
+    central
+        .boundary()
+        .push_event(RadioEvent::ScanTerminated {
+            aborted: true,
+            detail: "watcher stopped".to_owned(),
+        })
+        .expect("terminal event");
+    central
+        .boundary()
+        .wait_for_calls("fence_scan_ingress", 1)
+        .await;
+
+    let mut replacement = Box::pin(central.start_scan("owner-b", &[], OpControl::budget_ms(5000)));
+    assert!(
+        futures_util::poll!(replacement.as_mut()).is_pending(),
+        "replacement must join the held terminal cleanup"
+    );
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "start_scan")
+            .count(),
+        1,
+        "replacement must wait for the terminal callback fence"
+    );
+
+    central.boundary().unblock_op(FaultOp::ScanIngressFence);
+    let replacement = tokio::time::timeout(Duration::from_secs(5), replacement)
+        .await
+        .expect("replacement wait bounded")
+        .expect("terminal cleanup hands off to replacement");
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "start_scan")
+            .count(),
+        2
+    );
+    central
+        .stop_scan(replacement.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .expect("replacement cleanup");
+}
+
+#[tokio::test]
+async fn explicit_stop_cleanup_still_refuses_replacement() {
+    let central = open().await;
+    let session = central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("initial scan");
+    central.boundary().block_op(FaultOp::ScanIngressFence);
+    let stopping = tokio::spawn({
+        let central = central.clone();
+        let id = session.operation_id().clone();
+        async move { central.stop_scan(&id, OpControl::budget_ms(5000)).await }
+    });
+    central
+        .boundary()
+        .wait_for_calls("fence_scan_ingress", 1)
+        .await;
+    central
+        .boundary()
+        .push_event(RadioEvent::ScanTerminated {
+            aborted: true,
+            detail: "late terminal during explicit cleanup".to_owned(),
+        })
+        .expect("late terminal event");
+    tokio::task::yield_now().await;
+    assert_eq!(
+        central
+            .start_scan("owner-b", &[], OpControl::budget_ms(5000))
+            .await
+            .expect_err("explicit stop cleanup remains an admission fence")
+            .code_str(),
+        "scan.already-active"
+    );
+    central.boundary().unblock_op(FaultOp::ScanIngressFence);
+    stopping.await.expect("stop task").expect("stop");
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_replacement_waiter_does_not_cancel_terminal_cleanup() {
+    let central = open().await;
+    central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .unwrap();
+    central.boundary().block_op(FaultOp::ScanIngressFence);
+    central
+        .boundary()
+        .push_event(RadioEvent::ScanTerminated {
+            aborted: true,
+            detail: "terminal".into(),
+        })
+        .unwrap();
+    central
+        .boundary()
+        .wait_for_calls("fence_scan_ingress", 1)
+        .await;
+    let mut timed_out = Box::pin(central.start_scan("timed-out", &[], OpControl::budget_ms(25)));
+    assert!(
+        futures_util::poll!(timed_out.as_mut()).is_pending(),
+        "terminal cleanup remains attached to a budgeted replacement"
+    );
+    tokio::time::advance(Duration::from_millis(26)).await;
+    assert_eq!(
+        timed_out.await.unwrap_err().code_str(),
+        "operation.timed-out",
+        "the replacement uses its own budget"
+    );
+
+    let ctl = OpControl::budget_ms(5000);
+    let ticket = ctl.ticket.clone();
+    let mut waiting = Box::pin(central.start_scan("cancelled", &[], ctl));
+    assert!(
+        futures_util::poll!(waiting.as_mut()).is_pending(),
+        "the cancellation waiter is attached to the terminal cleanup"
+    );
+    central.cancel(&ticket).await.unwrap();
+    assert_eq!(waiting.await.unwrap_err().code_str(), "operation.aborted");
+    central.boundary().unblock_op(FaultOp::ScanIngressFence);
+    central
+        .start_scan("later", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("old cleanup survives cancelled waiter");
+    stop_owned_scan(&central).await.unwrap();
+}
+
+#[tokio::test]
+async fn terminal_cleanup_failure_is_returned_to_waiter_and_retained_for_retry() {
+    let central = open().await;
+    let mut terminals = central.scan_terminal_events();
+    let first = central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .unwrap();
+    central.boundary().block_op(FaultOp::ScanIngressRetire);
+    central
+        .boundary()
+        .fail_next(FaultOp::ScanIngressFence, "fence refused");
+    central
+        .boundary()
+        .push_event(RadioEvent::ScanTerminated {
+            aborted: true,
+            detail: "terminal".into(),
+        })
+        .unwrap();
+    central
+        .boundary()
+        .wait_for_calls("retire_scan_ingress", 1)
+        .await;
+    let mut waiting = Box::pin(central.start_scan("waiting", &[], OpControl::budget_ms(5000)));
+    assert!(
+        futures_util::poll!(waiting.as_mut()).is_pending(),
+        "replacement must join the held terminal cleanup before it fails"
+    );
+    central.boundary().unblock_op(FaultOp::ScanIngressRetire);
+    assert_eq!(waiting.await.unwrap_err().code_str(), "scan.stop-failed");
+    let terminal = tokio::time::timeout(Duration::from_secs(5), terminals.recv())
+        .await
+        .expect("the OS terminal is published")
+        .expect("terminal event");
+    assert!(
+        terminal.aborted,
+        "retry must retain the OS terminal outcome"
+    );
+    assert_eq!(terminal.operation_id, *first.operation_id());
+    assert_eq!(terminal.detail, "terminal");
+    assert_eq!(central.active_scan_id(), Some(first.operation_id().clone()));
+    assert_eq!(
+        central
+            .start_scan("blocked", &[], OpControl::budget_ms(5000))
+            .await
+            .unwrap_err()
+            .code_str(),
+        "scan.already-active"
+    );
+    central
+        .stop_scan(first.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .unwrap();
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "stop_scan")
+            .count(),
+        0,
+        "retrying OS-ended ingress cleanup must not stop an already-ended radio"
+    );
+    central
+        .start_scan("later", &[], OpControl::budget_ms(5000))
+        .await
+        .unwrap();
+    stop_owned_scan(&central).await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_terminal_cleanup_waiters_admit_only_one_replacement() {
+    let central = open().await;
+    central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .unwrap();
+    central.boundary().block_op(FaultOp::ScanIngressFence);
+    central
+        .boundary()
+        .push_event(RadioEvent::ScanTerminated {
+            aborted: true,
+            detail: "terminal".into(),
+        })
+        .unwrap();
+    central
+        .boundary()
+        .wait_for_calls("fence_scan_ingress", 1)
+        .await;
+    let mut first = Box::pin(central.start_scan("first", &[], OpControl::budget_ms(5000)));
+    let mut second = Box::pin(central.start_scan("second", &[], OpControl::budget_ms(5000)));
+    assert!(
+        futures_util::poll!(first.as_mut()).is_pending(),
+        "first replacement must join the held terminal cleanup"
+    );
+    assert!(
+        futures_util::poll!(second.as_mut()).is_pending(),
+        "second replacement must join the held terminal cleanup"
+    );
+    central.boundary().unblock_op(FaultOp::ScanIngressFence);
+    let outcomes = [first.await, second.await];
+    assert_eq!(
+        outcomes.iter().filter(|outcome| outcome.is_ok()).count(),
+        1,
+        "{outcomes:?}"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter_map(|outcome| outcome.as_ref().err())
+            .filter(|error| error.code_str() == "scan.already-active")
+            .count(),
+        1,
+        "{outcomes:?}"
+    );
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "start_scan")
+            .count(),
+        2
+    );
+    stop_owned_scan(&central).await.unwrap();
+}

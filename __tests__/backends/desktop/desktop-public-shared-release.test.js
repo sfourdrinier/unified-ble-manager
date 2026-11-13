@@ -24,6 +24,7 @@ test.each(
 )('%s public owner retains native cleanup ownership (%s)', async (platform, ordering) => {
   const harness = h.realBinding(platform)
   let reportNativeCleanup
+  let nativeCleanupError = null
   const nativeCleanup = new Promise(resolve => {
     reportNativeCleanup = resolve
   })
@@ -39,6 +40,7 @@ test.each(
               reportNativeCleanup({ outcome: 'released' })
               return value
             } catch (error) {
+              nativeCleanupError = error
               reportNativeCleanup({ outcome: 'refused' })
               throw error
             }
@@ -105,9 +107,14 @@ test.each(
         // Services Changed invalidates both logical graphs but is not itself a
         // local disconnect request.
         expect(calls('disconnect')).toHaveLength(0)
-        expect(await awaitSignal(nativeCleanup, 'native cleanup after service change')).toEqual({
-          outcome: refusedInvalidation ? 'refused' : 'released'
-        })
+        const observedNativeCleanup = await awaitSignal(nativeCleanup, 'native cleanup after service change')
+        const expectedNativeCleanup = { outcome: refusedInvalidation ? 'refused' : 'released' }
+        if (observedNativeCleanup.outcome !== expectedNativeCleanup.outcome) {
+          throw new Error(`unexpected native cleanup outcome: ${observedNativeCleanup.outcome}`, {
+            cause: nativeCleanupError
+          })
+        }
+        expect(observedNativeCleanup).toEqual(expectedNativeCleanup)
         expect(calls('unsubscribe')).toHaveLength(1)
         // Join an in-flight refusal or retry one which already settled. In
         // either ordering the exact native obligation must remain retryable.

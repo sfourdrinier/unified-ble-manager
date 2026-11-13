@@ -6,7 +6,7 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [5.2.3] - 2026-11-12
+## [5.2.3] - 2026-11-13
 
 - Add opt-in ordered multi-characteristic notification collection, ordered
   recording, and durable evidence recovery across the supported host routes.
@@ -16,6 +16,9 @@ All notable changes to `unified-ble-manager` are documented here.
   and validate version-8 acknowledgements using their historical schema.
 - Compensate a late successful scan start with a physical stop while avoiding
   a second retirement of an ingress epoch that an early stop already fenced.
+- Preserve immediate scan restart after an OS-ended terminal: the next start
+  waits for the old scan's ingress cleanup using its own budget and signal.
+  Active scans and failed cleanup retain their existing ownership protections.
 - Refuse exact legacy receipt retirement as corrupt when its required proof was
   deleted, without recreating an empty receipt table.
 - Preserve 5.2.1 TypeScript consumer shapes for existing GATT, host, diagnostics,
