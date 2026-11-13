@@ -4,6 +4,13 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.2.2] - 2026-11-12
+
+- Fix a React Native drain completion race that could strand a native record
+  when a wake arrived after the loop exited but before its promise settled.
+  Stop at the same boundary now performs its final drain. Applies to shared
+  Android and Apple delivery; physical locked-device qualification is pending.
+
 ## [5.2.1] - 2026-11-08
 
 - Report unknown desktop characteristic security requirements as `unknown`

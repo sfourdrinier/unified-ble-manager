@@ -249,6 +249,11 @@ build identity; refresh them through the canonical native consumer commands.
     raced in makes the drain answer `more: true` and wakes no one, so no
     wakeup is lost.
   - An idle session costs zero calls and zero wakes (tested).
+  - The React Native router releases single-flight ownership when its loop
+    exits, before its promise settles. A wake or stop queued by the final
+    delivery must start a new drain rather than set a rerun flag on a loop
+    that already ended. Starting a flight installs ownership before invoking
+    the native boundary, including synchronous failure.
 - **Delivery.** Data records (`adv`, `value`) reach JS one per native→JS
   task, as the legacy boundary delivered one native callback per record. A
   stream reader re-arms through several promise hops, so data records emitted

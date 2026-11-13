@@ -83,9 +83,12 @@ export class RustCoreDrainRouter {
       this.again = true
       return
     }
-    this.draining = this.run().finally(() => {
-      this.draining = null
-    })
+    this.startDrain()
+  }
+
+  private startDrain(): void {
+    // Install ownership before run can fail synchronously at the native boundary.
+    this.draining = Promise.resolve().then(() => this.run())
   }
 
   /**
@@ -99,9 +102,7 @@ export class RustCoreDrainRouter {
     this.removeWake?.()
     this.removeWake = null
     if (this.draining === null && !this.stopped) {
-      this.draining = this.run().finally(() => {
-        this.draining = null
-      })
+      this.startDrain()
     } else {
       this.again = true
     }
@@ -145,6 +146,11 @@ export class RustCoreDrainRouter {
         // can take the undelivered records.
       }
       this.sink.failed(error)
+    } finally {
+      // Release with the loop, before settling its promise. A wake/stop queued
+      // by the final delivery must see idle and start its own drain; a later
+      // promise.finally would strand its rerun flag after the loop had exited.
+      this.draining = null
     }
   }
 
