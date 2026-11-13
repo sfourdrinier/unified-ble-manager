@@ -181,7 +181,7 @@ mod group_commit_tests {
                 Some(max_records) => {
                     let directory = std::env::temp_dir()
                         .join(format!("ubm-adapter-group-{}-{id}", std::process::id()));
-                    std::fs::create_dir(&directory).unwrap();
+                    crate::continuation_journal::private_fixture_directory(&directory);
                     let path = directory.join("recording.sqlite");
                     let journal = Arc::new(
                         ContinuationJournal::open(

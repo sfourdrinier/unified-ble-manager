@@ -4110,6 +4110,8 @@ mod tests {
         fn wake(&self, _session_id: u64) {}
     }
 
+    use crate::continuation_journal::private_fixture_directory as private_directory;
+
     fn control(n: u64) -> Value {
         object(vec![("t", Value::from("lifecycle")), ("n", Value::from(n))])
     }
@@ -4132,7 +4134,7 @@ mod tests {
                     std::thread::current().id(),
                     std::time::SystemTime::now()
                 ));
-                std::fs::create_dir(&dir).unwrap();
+                private_directory(&dir);
                 let path = dir.join("journal.sqlite");
                 let quota = JournalQuota {
                     max_bytes: 1 << 20,
@@ -4234,7 +4236,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let journal = Arc::new(
             ContinuationJournal::open(
                 &dir.join("journal.sqlite"),
@@ -4478,7 +4480,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let path = dir.join("journal.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -4691,7 +4693,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        private_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -4778,7 +4780,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        private_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -4864,7 +4866,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        private_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -4961,7 +4963,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        private_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -5030,7 +5032,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        private_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -5353,7 +5355,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let path = dir.join("journal.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -5467,7 +5469,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let path = dir.join("journal.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -5657,7 +5659,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let path = dir.join("journal.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -5818,7 +5820,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let path = dir.join("journal.sqlite");
         let journal = Arc::new(
             ContinuationJournal::open(
@@ -5882,7 +5884,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let path = dir.join("journal.sqlite");
         let journal = Arc::new(
             ContinuationJournal::open(
@@ -6115,7 +6117,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let journal = Arc::new(
             ContinuationJournal::open(
                 &dir.join("journal.sqlite"),
@@ -6190,7 +6192,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let journal = Arc::new(
             ContinuationJournal::open(
                 &dir.join("journal.sqlite"),
@@ -6233,7 +6235,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let journal = Arc::new(
             ContinuationJournal::open(
                 &dir.join("journal.sqlite"),
@@ -6267,7 +6269,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir(&dir).unwrap();
+        private_directory(&dir);
         let journal = Arc::new(
             ContinuationJournal::open(
                 &dir.join("journal.sqlite"),

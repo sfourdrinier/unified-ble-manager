@@ -21556,7 +21556,7 @@ mod adapter_tests {
                 &central.inner,
                 descriptor,
                 central.boundary().enable_epochs(),
-                None,
+                Some(recovery_teardown()),
             )
             .await
         );
@@ -21960,7 +21960,7 @@ mod adapter_tests {
                 &central.inner,
                 descriptor,
                 central.boundary().enable_epochs(),
-                None,
+                Some(recovery_teardown()),
             )
             .await
         );
@@ -22059,7 +22059,7 @@ mod adapter_tests {
                 &central.inner,
                 descriptor,
                 central.boundary().enable_epochs(),
-                None,
+                Some(recovery_teardown()),
             )
             .await
         );

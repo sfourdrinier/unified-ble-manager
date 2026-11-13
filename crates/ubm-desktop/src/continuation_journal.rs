@@ -2652,6 +2652,16 @@ pub struct JournalQuota {
     pub max_records: u64,
 }
 
+#[cfg(test)]
+pub(crate) fn private_fixture_directory(path: &Path) {
+    std::fs::create_dir_all(path).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalError {
     pub kind: &'static str,
@@ -13710,7 +13720,7 @@ mod authority_tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir_all(&directory).unwrap();
+        private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -13799,7 +13809,7 @@ mod authority_tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir_all(&directory).unwrap();
+        private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -14660,7 +14670,7 @@ mod authority_tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
@@ -14804,7 +14814,7 @@ mod authority_tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
         let journal = ContinuationJournal::open(
             &path,
@@ -14892,7 +14902,7 @@ mod authority_tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        private_fixture_directory(&directory);
         let protector = Arc::new(Protector {
             provisioned: AtomicUsize::new(0),
             validated: AtomicUsize::new(0),
@@ -14975,7 +14985,7 @@ mod authority_tests {
         ));
         std::fs::create_dir(&directory).unwrap();
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
-        let failure = ContinuationJournal::open(
+        let journal = ContinuationJournal::open(
             &directory.join("recording.sqlite"),
             "insecure-scan-parent",
             &json!({}),
@@ -14984,11 +14994,14 @@ mod authority_tests {
                 max_records: 1,
             },
         )
-        .err()
-        .expect("insecure parent must be refused");
+        .unwrap();
+        let failure = journal
+            .scan_failure_cleanup_retirements()
+            .expect_err("insecure parent must be refused before scan recovery is created");
         assert_eq!(failure.kind, "storage.permission");
         assert!(!directory.join(SCAN_RECOVERY_DIRECTORY).exists());
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        drop(journal);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -15002,7 +15015,7 @@ mod authority_tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        private_fixture_directory(&directory);
         let journal = ContinuationJournal::open(
             &directory.join("recording.sqlite"),
             "tampered-scan-child",
@@ -15013,6 +15026,8 @@ mod authority_tests {
             },
         )
         .unwrap();
+        journal.scan_failure_cleanup_retirements().unwrap();
+
         let child = directory.join(SCAN_RECOVERY_DIRECTORY);
         std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o755)).unwrap();
         let failure = journal.scan_failure_cleanup_retirements().unwrap_err();
@@ -20577,13 +20592,15 @@ mod authority_tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir_all(&directory).unwrap();
+        private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
             max_records: RECEIPTS,
         };
         let journal = ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap();
+
+        journal.scan_failure_cleanup_retirements().unwrap();
 
         fn insert_receipts(journal: &ContinuationJournal, quota: JournalQuota, start: u64) {
             let mut connection = open_scan_failure_sidecar(
@@ -20661,7 +20678,7 @@ mod authority_tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir_all(&directory).unwrap();
+        private_fixture_directory(&directory);
         let path = directory.join("recording.sqlite");
         let quota = JournalQuota {
             max_bytes: 1 << 20,
