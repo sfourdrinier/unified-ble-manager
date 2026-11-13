@@ -8,24 +8,13 @@ const {
   createTestDesktopRustCoreBackendProvider,
   DESKTOP_RUST_CORE_PROFILES
 } = require('../../../src/backends/desktop/desktop-rust-core-provider')
+const { desktopRustCoreError } = require('../../../src/backends/desktop/desktop-rust-core-binding')
 const { createNodeBleManagerFromProvider } = require('../../../src/node-host-manager')
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
 const { runWithCleanup } = require('../../../src/public/error-bridge')
 const { awaitSignal } = require('../../helpers/async')
 
 jest.setTimeout(30000)
-
-function diagnosticError(error) {
-  if (!(error instanceof Error)) return { value: String(error) }
-  return {
-    name: error.name,
-    message: error.message,
-    ...(typeof error.code === 'string' ? { code: error.code } : {}),
-    ...(typeof error.domain === 'string' ? { domain: error.domain } : {}),
-    ...(typeof error.operation === 'string' ? { operation: error.operation } : {}),
-    ...(error.platform === null || typeof error.platform === 'object' ? { platform: error.platform } : {})
-  }
-}
 
 test.each(
   ['bluez', 'corebluetooth', 'winrt'].flatMap(platform => [
@@ -36,9 +25,8 @@ test.each(
 )('%s public owner retains native cleanup ownership (%s)', async (platform, ordering) => {
   const harness = h.realBinding(platform)
   let phase = 'lifecycle'
-  const diagnostic = { unsubscribes: [], manualCleanup: [] }
+  const nativeOutcomes = []
   let reportNativeCleanup
-  let nativeCleanupError = null
   const nativeCleanup = new Promise(resolve => {
     reportNativeCleanup = resolve
   })
@@ -49,20 +37,29 @@ test.each(
       get(target, property) {
         if (property === 'unsubscribe')
           return async (...args) => {
-            const call = { phase, request: args[0], stack: new Error().stack, result: null }
-            diagnostic.unsubscribes.push(call)
+            const call = { phase, request: args[0], outcome: null }
+            nativeOutcomes.push(call)
             try {
               const value = await target.unsubscribe(...args)
-              call.result = { state: 'released' }
-              reportNativeCleanup({ outcome: 'released' })
+              call.outcome = { kind: 'released' }
+              reportNativeCleanup(call)
               return value
             } catch (error) {
-              call.result = {
-                state: 'refused',
-                error: diagnosticError(error)
+              const normalized = desktopRustCoreError(error, 'desktop-public-shared-release.unsubscribe').normalized
+              const cancelled =
+                normalized.code === 'operation.aborted' &&
+                normalized.domain === 'connection' &&
+                normalized.platform?.metadata.coreOperation === 'gatt.unsubscribe'
+              const injectedRefusal =
+                normalized.code === 'gatt.subscribe-failed' &&
+                normalized.domain === 'gatt' &&
+                normalized.platform?.metadata.coreOperation === 'gatt.subscribe' &&
+                normalized.platform?.safeMessage === 'one invalidated child cleanup refusal'
+              call.outcome = {
+                kind: cancelled ? 'cancelled' : injectedRefusal ? 'injected-refusal' : 'unexpected-failure',
+                error: normalized
               }
-              nativeCleanupError = error
-              reportNativeCleanup({ outcome: 'refused' })
+              reportNativeCleanup(call)
               throw error
             }
           }
@@ -129,54 +126,77 @@ test.each(
         // local disconnect request.
         expect(calls('disconnect')).toHaveLength(0)
         const observedNativeCleanup = await awaitSignal(nativeCleanup, 'native cleanup after service change')
-        const expectedNativeCleanup = { outcome: refusedInvalidation ? 'refused' : 'released' }
-        if (observedNativeCleanup.outcome !== expectedNativeCleanup.outcome) {
-          throw new Error(`unexpected native cleanup outcome: ${observedNativeCleanup.outcome}`, {
-            cause: nativeCleanupError
-          })
-        }
-        expect(observedNativeCleanup).toEqual(expectedNativeCleanup)
+        expect(observedNativeCleanup.outcome.kind).not.toBe('unexpected-failure')
         expect(calls('unsubscribe')).toHaveLength(1)
-        // Join an in-flight refusal or retry one which already settled. In
-        // either ordering the exact native obligation must remain retryable.
-        phase = 'first-remove'
-        const childCleanup = await subscription.remove()
-        diagnostic.manualCleanup.push({ phase, result: childCleanup })
-        if (childCleanup.state === 'release-failed') {
-          expect(refusedInvalidation).toBe(true)
-          phase = 'retry-remove'
-          await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
-          diagnostic.manualCleanup.push({ phase, result: { state: 'released', failures: [] } })
-        } else {
-          expect(childCleanup).toEqual({ state: 'released', failures: [] })
+        const initialCancelled = observedNativeCleanup.outcome.kind === 'cancelled'
+        const isInjectedRefusal = error =>
+          error.code === 'gatt.subscribe-failed' &&
+          error.domain === 'gatt' &&
+          error.platform?.metadata.coreOperation === 'gatt.subscribe' &&
+          error.platform?.safeMessage === 'one invalidated child cleanup refusal'
+        const isJoinedInitialCancellation = error =>
+          initialCancelled &&
+          ((error.code === 'operation.disconnected' &&
+            error.domain === 'core' &&
+            error.operation === 'operation-coordinator.cancel-dispatched') ||
+            (error.code === observedNativeCleanup.outcome.error?.code &&
+              error.domain === observedNativeCleanup.outcome.error?.domain &&
+              error.code === 'operation.aborted' &&
+              error.domain === 'connection' &&
+              error.platform?.metadata.coreOperation === 'gatt.unsubscribe'))
+        // An explicit remove can join the cancelled lifecycle cleanup before
+        // it settles. Retry only its exact retained obligation, never assume
+        // which native dispatch consumed the injected refusal.
+        let explicitRemoves = 0
+        let childCleanup
+        do {
+          phase = explicitRemoves === 0 ? 'first-remove' : 'retry-remove'
+          childCleanup = await subscription.remove()
+          explicitRemoves += 1
+          if (childCleanup.state === 'release-failed') {
+            expect(childCleanup.failures).toHaveLength(1)
+            const failure = childCleanup.failures[0].error
+            expect(isInjectedRefusal(failure) || isJoinedInitialCancellation(failure)).toBe(true)
+            if (isInjectedRefusal(failure)) expect(refusedInvalidation).toBe(true)
+            expect(explicitRemoves).toBeLessThan(3)
+          }
+        } while (childCleanup.state === 'release-failed')
+        expect(childCleanup).toEqual({ state: 'released', failures: [] })
+        expect(explicitRemoves).toBeLessThanOrEqual(3)
+        expect(nativeOutcomes.every(call => call.outcome.kind !== 'unexpected-failure')).toBe(true)
+        expect(nativeOutcomes.filter(call => call.outcome.kind === 'cancelled')).toHaveLength(Number(initialCancelled))
+        expect(nativeOutcomes.filter(call => call.outcome.kind === 'injected-refusal')).toHaveLength(
+          Number(refusedInvalidation)
+        )
+        expect(nativeOutcomes.filter(call => call.outcome.kind === 'released')).toHaveLength(1)
+        for (const call of nativeOutcomes) {
+          expect(call.request).toMatchObject({
+            peerId: nativeOutcomes[0].request.peerId,
+            selector: nativeOutcomes[0].request.selector,
+            consumer: nativeOutcomes[0].request.consumer
+          })
         }
         // The indication invalidated B's old graph too. Releasing A retires
         // only A's lease; B recovers its graph on the still-live shared link.
+        const unsubscribesAfterChildCleanup = calls('unsubscribe').length
         phase = 'a-release'
         await expect(a.release()).resolves.toEqual({ state: 'released', failures: [] })
-        diagnostic.manualCleanup.push({ phase, result: { state: 'released', failures: [] } })
+        expect(calls('unsubscribe')).toHaveLength(unsubscribesAfterChildCleanup)
         phase = 'final-remove'
         await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
-        diagnostic.manualCleanup.push({ phase, result: { state: 'released', failures: [] } })
-        const expectedUnsubscribes = refusedInvalidation ? 2 : 1
+        expect(calls('unsubscribe')).toHaveLength(unsubscribesAfterChildCleanup)
+        const expectedUnsubscribes = 1 + Number(refusedInvalidation) + Number(initialCancelled)
         const actualUnsubscribes = calls('unsubscribe').length
         if (actualUnsubscribes !== expectedUnsubscribes) {
           throw new Error(
             `shared-release unsubscribe trace: ${JSON.stringify({
               expectedUnsubscribes,
               actualUnsubscribes,
-              diagnostic
+              nativeOutcomes
             })}`
           )
         }
         expect(calls('unsubscribe')).toHaveLength(expectedUnsubscribes)
-        if (refusedInvalidation) {
-          expect(calls('unsubscribe')[1][1][0]).toMatchObject({
-            peerId: calls('unsubscribe')[0][1][0].peerId,
-            selector: calls('unsubscribe')[0][1][0].selector,
-            consumer: calls('unsubscribe')[0][1][0].consumer
-          })
-        }
         expect(calls('disconnect')).toHaveLength(1)
         databaseB = await b.rediscoverGatt({ reason: 'service-changed' })
         expect(calls('connect')).toHaveLength(1)
