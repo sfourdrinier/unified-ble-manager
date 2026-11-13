@@ -1593,10 +1593,15 @@ async fn durable_inflight_peer_failure_recovery_survives_restart_and_refuses_nat
     assert_eq!(revoked.code, BleErrorCode::OwnershipDenied);
     // Grant revocation is synchronous; renderer retirement runs asynchronously.
     // Whichever authority observes the route first must refuse it explicitly.
-    assert!(matches!(
-        (revoked.domain, revoked.operation.as_str()),
-        ("ipc", "tauri.route-caller") | ("restoration", "tauri.peer-failure-recovery.list")
-    ));
+    assert!(
+        matches!(
+            (revoked.domain, revoked.operation.as_str()),
+            ("ipc", "tauri.route-caller")
+                | ("ipc", "tauri.execute-lease-owner")
+                | ("restoration", "tauri.peer-failure-recovery.list")
+        ),
+        "unexpected caller-release refusal: {revoked:?}"
+    );
     harness.central.shutdown().await;
     recording_fixture::complete_fixture_process(&directory);
 }
