@@ -15,6 +15,18 @@ const { awaitSignal } = require('../../helpers/async')
 
 jest.setTimeout(30000)
 
+function diagnosticError(error) {
+  if (!(error instanceof Error)) return { value: String(error) }
+  return {
+    name: error.name,
+    message: error.message,
+    ...(typeof error.code === 'string' ? { code: error.code } : {}),
+    ...(typeof error.domain === 'string' ? { domain: error.domain } : {}),
+    ...(typeof error.operation === 'string' ? { operation: error.operation } : {}),
+    ...(error.platform === null || typeof error.platform === 'object' ? { platform: error.platform } : {})
+  }
+}
+
 test.each(
   ['bluez', 'corebluetooth', 'winrt'].flatMap(platform => [
     [platform, 'release-before-terminal'],
@@ -23,6 +35,8 @@ test.each(
   ])
 )('%s public owner retains native cleanup ownership (%s)', async (platform, ordering) => {
   const harness = h.realBinding(platform)
+  let phase = 'lifecycle'
+  const diagnostic = { unsubscribes: [], manualCleanup: [] }
   let reportNativeCleanup
   let nativeCleanupError = null
   const nativeCleanup = new Promise(resolve => {
@@ -35,11 +49,18 @@ test.each(
       get(target, property) {
         if (property === 'unsubscribe')
           return async (...args) => {
+            const call = { phase, request: args[0], stack: new Error().stack, result: null }
+            diagnostic.unsubscribes.push(call)
             try {
               const value = await target.unsubscribe(...args)
+              call.result = { state: 'released' }
               reportNativeCleanup({ outcome: 'released' })
               return value
             } catch (error) {
+              call.result = {
+                state: 'refused',
+                error: diagnosticError(error)
+              }
               nativeCleanupError = error
               reportNativeCleanup({ outcome: 'refused' })
               throw error
@@ -118,18 +139,37 @@ test.each(
         expect(calls('unsubscribe')).toHaveLength(1)
         // Join an in-flight refusal or retry one which already settled. In
         // either ordering the exact native obligation must remain retryable.
+        phase = 'first-remove'
         const childCleanup = await subscription.remove()
+        diagnostic.manualCleanup.push({ phase, result: childCleanup })
         if (childCleanup.state === 'release-failed') {
           expect(refusedInvalidation).toBe(true)
+          phase = 'retry-remove'
           await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+          diagnostic.manualCleanup.push({ phase, result: { state: 'released', failures: [] } })
         } else {
           expect(childCleanup).toEqual({ state: 'released', failures: [] })
         }
         // The indication invalidated B's old graph too. Releasing A retires
         // only A's lease; B recovers its graph on the still-live shared link.
+        phase = 'a-release'
         await expect(a.release()).resolves.toEqual({ state: 'released', failures: [] })
+        diagnostic.manualCleanup.push({ phase, result: { state: 'released', failures: [] } })
+        phase = 'final-remove'
         await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
-        expect(calls('unsubscribe')).toHaveLength(refusedInvalidation ? 2 : 1)
+        diagnostic.manualCleanup.push({ phase, result: { state: 'released', failures: [] } })
+        const expectedUnsubscribes = refusedInvalidation ? 2 : 1
+        const actualUnsubscribes = calls('unsubscribe').length
+        if (actualUnsubscribes !== expectedUnsubscribes) {
+          throw new Error(
+            `shared-release unsubscribe trace: ${JSON.stringify({
+              expectedUnsubscribes,
+              actualUnsubscribes,
+              diagnostic
+            })}`
+          )
+        }
+        expect(calls('unsubscribe')).toHaveLength(expectedUnsubscribes)
         if (refusedInvalidation) {
           expect(calls('unsubscribe')[1][1][0]).toMatchObject({
             peerId: calls('unsubscribe')[0][1][0].peerId,
