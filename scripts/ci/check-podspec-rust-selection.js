@@ -154,7 +154,10 @@ function checkPodspecSelection() {
     'ios/UnifiedBleProtocolControl.mm',
     'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift',
     'ios/Owned/OwnedGraphDeferredQueue.swift',
-    'ios/Owned/OwnedOrderedNotificationIngress.swift'
+    'ios/Owned/OwnedOrderedNotificationIngress.swift',
+    'ios/Owned/AppleOrderedGroupCaptureOwner.swift',
+    'ios/Owned/UnifiedBleRustOrderedGroupBridge.swift',
+    'ios/UnifiedBleRustOrderedRadioAdapter.swift'
   ]) {
     if (!sources.includes(selected)) {
       fail(`5.x podspec source_files is missing ${selected}`)

@@ -44,6 +44,7 @@ fi
 echo "    podspec platforms and Unified Protocol owned radio: OK"
 
 OWNED_DIR="ios/Owned"
+UNIFFI_SWIFT_DIR="bindings/uniffi/generated/swift"
 
 if [[ ! -d "$OWNED_DIR" ]]; then
   echo "error: missing owned CoreBluetooth sources at $OWNED_DIR" >&2
@@ -53,6 +54,7 @@ fi
 # Product Owned radio sources. Keep this list in lockstep with the
 # explicit podspec entries so a retired Swift bridge cannot slip into tvOS CI.
 SWIFT_FILES=(
+  "$UNIFFI_SWIFT_DIR/ubm_echo.swift"
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioSupport.swift"
   "$OWNED_DIR/OwnedCoreBluetoothCentralDelegate.swift"
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioDescriptors.swift"
@@ -62,6 +64,10 @@ SWIFT_FILES=(
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioOwner.swift"
   "$OWNED_DIR/OwnedGraphDeferredQueue.swift"
   "$OWNED_DIR/OwnedOrderedNotificationIngress.swift"
+  "$OWNED_DIR/AppleOrderedGroupCaptureOwner.swift"
+  "$OWNED_DIR/UnifiedBleRustOrderedGroupBridge.swift"
+  "ios/UnifiedBleRustRadioAdapter.swift"
+  "ios/UnifiedBleRustOrderedRadioAdapter.swift"
 )
 
 for swift_file in "${SWIFT_FILES[@]}"; do
@@ -85,6 +91,8 @@ xcrun --sdk appletvsimulator swiftc \
   -sdk "$(xcrun --sdk appletvsimulator --show-sdk-path)" \
   -target arm64-apple-tvos16.4-simulator \
   -module-name UnifiedBleProtocolTvOS \
+  -Xcc "-fmodule-map-file=$(pwd)/$UNIFFI_SWIFT_DIR/ubm_echoFFI.modulemap" \
+  -I "$UNIFFI_SWIFT_DIR" \
   "${SWIFT_FILES[@]}"
 
 echo "==> tvOS library check passed"

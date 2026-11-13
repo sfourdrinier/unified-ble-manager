@@ -17,6 +17,19 @@ test('5.x podspec selects the Rust core beside the Owned radio', () => {
   expect(output).toContain('podspec-rust-selection PASS')
 })
 
+test('Apple production source selections retain the ordered radio dependencies', () => {
+  const podspec = fs.readFileSync(path.join(root, 'unified-ble-manager.podspec'), 'utf8')
+  const tvos = fs.readFileSync(path.join(root, 'scripts', 'ci', 'check-tvos-library.sh'), 'utf8')
+  for (const [source, tvosSource] of [
+    ['ios/Owned/AppleOrderedGroupCaptureOwner.swift', '$OWNED_DIR/AppleOrderedGroupCaptureOwner.swift'],
+    ['ios/Owned/UnifiedBleRustOrderedGroupBridge.swift', '$OWNED_DIR/UnifiedBleRustOrderedGroupBridge.swift'],
+    ['ios/UnifiedBleRustOrderedRadioAdapter.swift', 'ios/UnifiedBleRustOrderedRadioAdapter.swift']
+  ]) {
+    expect(podspec).toContain(`"${source}"`)
+    expect(tvos).toContain(tvosSource)
+  }
+})
+
 test.each(['prebuilt', 'source'])(
   'evaluated %s podspec keeps the FFI map private to the BlePlx pod target',
   mode => {

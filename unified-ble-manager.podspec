@@ -45,6 +45,9 @@ Pod::Spec.new do |s|
     "ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift",
     "ios/Owned/OwnedGraphDeferredQueue.swift",
     "ios/Owned/OwnedOrderedNotificationIngress.swift",
+    "ios/Owned/AppleOrderedGroupCaptureOwner.swift",
+    "ios/Owned/UnifiedBleRustOrderedGroupBridge.swift",
+    "ios/UnifiedBleRustOrderedRadioAdapter.swift",
     "native/protocol/src/**/*.cpp"
   ]
   s.source_files = base_source_files
