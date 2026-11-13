@@ -235,6 +235,7 @@ impl RecoveryHandles {
         Ok((self.lease(&lease)?, receipt))
     }
 
+    #[cfg(test)]
     fn issue_owner(&self, lease_id: &str, owner: PendingScanFailure) -> napi::Result<String> {
         let mut owners = self
             .owners
@@ -314,31 +315,6 @@ impl RecoveryHandles {
         }
         let id = self.id("head");
         heads.insert(id.clone(), (lease_id.to_owned(), head));
-        Ok(id)
-    }
-
-    fn issue_cleanup(
-        &self,
-        lease_id: &str,
-        receipt: ScanFailureCleanupRetirement,
-    ) -> napi::Result<String> {
-        let mut cleanup = self
-            .cleanup
-            .lock()
-            .map_err(|_| napi::Error::from_reason("scan recovery handle registry interrupted"))?;
-        if let Some((id, _)) = cleanup.iter().find(|(_, (existing_lease, existing))| {
-            existing_lease == lease_id && *existing == receipt
-        }) {
-            return Ok(id.clone());
-        }
-        if cleanup.len() + self.cleanup_reservations.load(Ordering::Acquire) as usize >= self.limit
-        {
-            return Err(napi::Error::from_reason(
-                "scan recovery cleanup handle capacity exhausted",
-            ));
-        }
-        let id = self.id("cleanup");
-        cleanup.insert(id.clone(), (lease_id.to_owned(), receipt));
         Ok(id)
     }
 
@@ -1134,7 +1110,7 @@ impl ScanFailureRecoveryStore {
                 .ok_or_else(|| {
                     napi::Error::from_reason("unknown or revoked scan recovery owner")
                 })?;
-            let id = handles.issue_head(&owner_lease, head.clone())?;
+            let id = handles.issue_head(&owner_lease, head)?;
             Ok(serde_json::json!({"head":scan_head_json(&id, &head)}).to_string())
         })
         .await
@@ -1374,6 +1350,10 @@ impl ScanFailureRecoveryStore {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "the retained recovery suite precedes the legacy continuation facade it exercises"
+)]
 mod scan_recovery_handle_tests {
     use super::{
         PendingScanFailure, RecoveryHandles, ScanFailureRecoveryStore, ScanRecoveryNoWake,

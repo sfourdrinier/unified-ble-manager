@@ -1050,7 +1050,7 @@ impl RadioBoundary for DispatchRadio {
         >,
     > + Send
            + '_ {
-        let descriptor = descriptor.clone();
+        let descriptor = *descriptor;
         async move {
             match self {
                 Self::Radio(radio) => {
@@ -1071,7 +1071,7 @@ impl RadioBoundary for DispatchRadio {
         &self,
         descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
     ) -> impl std::future::Future<Output = std::result::Result<(), DesktopError>> + Send + '_ {
-        let descriptor = descriptor.clone();
+        let descriptor = *descriptor;
         async move {
             match self {
                 Self::Radio(radio) => {
@@ -1093,7 +1093,7 @@ impl RadioBoundary for DispatchRadio {
         descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
     ) -> impl std::future::Future<Output = std::result::Result<String, DesktopError>> + Send + '_
     {
-        let descriptor = descriptor.clone();
+        let descriptor = *descriptor;
         async move {
             match self {
                 Self::Radio(radio) => {
@@ -1116,7 +1116,7 @@ impl RadioBoundary for DispatchRadio {
         source_ack_id: &str,
     ) -> impl std::future::Future<Output = std::result::Result<String, DesktopError>> + Send + '_
     {
-        let descriptor = descriptor.clone();
+        let descriptor = *descriptor;
         let source_ack_id = source_ack_id.to_owned();
         async move {
             match self {
@@ -1139,7 +1139,7 @@ impl RadioBoundary for DispatchRadio {
         descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
         source_ack_id: &str,
     ) -> impl std::future::Future<Output = std::result::Result<(), DesktopError>> + Send + '_ {
-        let descriptor = descriptor.clone();
+        let descriptor = *descriptor;
         let source_ack_id = source_ack_id.to_owned();
         async move {
             match self {
@@ -4232,11 +4232,6 @@ impl ScanTerminalRetention {
         pending.push_back(event);
     }
 
-    fn consume_retained(&self, event: &ScanTerminalEvent) -> bool {
-        let mut retained = self.retained.lock().unwrap_or_else(PoisonError::into_inner);
-        retained.remove(&(event.operation_id.as_str().to_owned(), event.sequence))
-    }
-
     fn take_failure(&self, event: &ScanTerminalEvent) -> Option<DispatchError> {
         self.failures
             .lock()
@@ -4327,8 +4322,17 @@ fn validate_terminal_evidence_scope_utf16le(
     let mut offset = 16_usize;
     let mut fields = Vec::with_capacity(4);
     let mut contains_unpaired = false;
-    for length_bytes in bytes[..16].chunks_exact(4) {
-        let length = u32::from_le_bytes(length_bytes.try_into().expect("u32 framing"));
+    let (length_fields, remainder) = bytes[..16].as_chunks::<4>();
+    if !remainder.is_empty() {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "terminal evidence UTF-16 scope header is malformed",
+        ));
+    }
+    for length_bytes in length_fields {
+        let length = u32::from_le_bytes(*length_bytes);
         let length = usize::try_from(length).map_err(|_| {
             DispatchError::new(
                 BleErrorCode::ArgumentInvalid.as_str(),
@@ -4364,9 +4368,18 @@ fn validate_terminal_evidence_scope_utf16le(
                     "terminal evidence UTF-16 scope payload is truncated",
                 )
             })?;
-        let units: Vec<u16> = bytes[offset..end]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes(pair.try_into().expect("u16 framing")))
+        let (unit_pairs, remainder) = bytes[offset..end].as_chunks::<2>();
+        if !remainder.is_empty() {
+            return Err(DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                operation,
+                "terminal evidence UTF-16 scope payload is malformed",
+            ));
+        }
+        let units: Vec<u16> = unit_pairs
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
             .collect();
         for (index, unit) in units.iter().copied().enumerate() {
             if (0xd800..=0xdbff).contains(&unit) {
@@ -4408,7 +4421,7 @@ fn validate_terminal_evidence_scope_utf16le(
 }
 
 fn canonical_json_string(value: &str) -> String {
-    serde_json::to_string(value).expect("serializing a Rust string cannot fail")
+    serde_json::Value::String(value.to_owned()).to_string()
 }
 
 /// JavaScript's `String.prototype.slice(0, 512)` counts UTF-16 code units,
@@ -5260,11 +5273,6 @@ impl EventWaker {
         }
     }
 
-    fn observer(waker: &Arc<Self>) -> ubm_desktop::central::CentralObserver {
-        let waker = Arc::clone(waker);
-        Arc::new(move |_signal| waker.wake())
-    }
-
     fn observer_with_scan_terminal_retention(
         waker: &Arc<Self>,
         retention: &ScanTerminalRetention,
@@ -5302,6 +5310,10 @@ impl UbmCentral {
             consumer
         )
     }
+    #[expect(
+        dead_code,
+        reason = "the retained reconciliation path preserves an already-staged scan terminal if a host delivery route is re-enabled"
+    )]
     fn commit_scan_terminal_evidence(
         &self,
         event: &ScanTerminalEvent,
@@ -5330,32 +5342,11 @@ impl UbmCentral {
                 "terminal evidence binding outlived its ledger",
             )
         })?;
-        // Keep this representation byte-for-byte aligned with
-        // `encodeTerminalEvidence`: JSON maps serialize in lexical key order,
-        // and the terminal snapshot contains only its public fields.
         let canonical = serde_json::to_vec(&serde_json::json!({
             "formatVersion": 1,
-            "scope": {
-                "managerId": binding.scope.manager_id,
-                "operationId": binding.scope.operation_id,
-                "incarnation": binding.scope.incarnation,
-            },
-            "terminal": {
-                "kind": "terminal",
-                "reason": if event.aborted { "source-failed" } else { "closed" },
-                "droppedItems": 0,
-                "droppedBytes": 0,
-                "replacedItems": 0,
-            },
-        }))
-        .map_err(|_| {
-            DispatchError::new(
-                BleErrorCode::PlatformFailure.as_str(),
-                BleErrorDomain::Platform.as_str(),
-                "dispatch.take-scan-terminal-event",
-                "terminal evidence encoding failed",
-            )
-        })?;
+            "scope": { "managerId": binding.scope.manager_id, "operationId": binding.scope.operation_id, "incarnation": binding.scope.incarnation },
+            "terminal": { "kind": "terminal", "reason": if event.aborted { "source-failed" } else { "closed" }, "droppedItems": 0, "droppedBytes": 0, "replacedItems": 0 },
+        })).map_err(|_| DispatchError::new(BleErrorCode::PlatformFailure.as_str(), BleErrorDomain::Platform.as_str(), "dispatch.take-scan-terminal-event", "terminal evidence encoding failed"))?;
         let digest: [u8; 32] = Sha256::digest(&canonical).into();
         let committed = ledger
             .commit(&binding.reservation_id, &canonical, digest)
@@ -5386,7 +5377,6 @@ impl UbmCentral {
             scope_utf16le: binding.scope.scope_utf16le.map(Buffer::from),
         }))
     }
-
     /// Fence source activation to the exact reservation that the trusted host
     /// created before it called the source entrypoint.  In particular this is
     /// deliberately an `attach`, never `reserve`: accepting a scope here must
@@ -7723,8 +7713,7 @@ impl UbmCentral {
                 }
                 .to_owned();
                 occurrence.recipients.into_iter().map(move |recipient| {
-                    let mut descriptor =
-                        peer_source_failure_descriptor_info(occurrence.descriptor.clone());
+                    let mut descriptor = peer_source_failure_descriptor_info(occurrence.descriptor);
                     descriptor.recipient_lease = Some(recipient.recipient_lease.clone());
                     DurablePeerSourceFailureRecoveryHandleInfo {
                         descriptor,
@@ -12365,13 +12354,15 @@ mod tests {
             .ordered_owner("poisoned", &central.central)
             .unwrap()
             .unwrap();
-        let slot = central
-            .ordered_recording_starts
-            .lock()
-            .unwrap()
-            .get(&handle.parse::<u64>().unwrap())
-            .cloned()
-            .unwrap();
+        let slot = {
+            central
+                .ordered_recording_starts
+                .lock()
+                .unwrap()
+                .get(&handle.parse::<u64>().unwrap())
+                .cloned()
+                .unwrap()
+        };
         assert!(Arc::ptr_eq(
             &owner,
             slot.lock().await.owner.as_ref().unwrap()
@@ -12413,14 +12404,15 @@ mod tests {
         central
             .forget_ordered_recording_session("poisoned".into())
             .unwrap();
-        let bindings = central
-            .recording_reclaim_sessions
-            .lock()
-            .unwrap_err()
-            .into_inner();
-        assert!(!bindings.iter().any(|(id, _)| id == "poisoned"));
-        assert!(bindings.contains(&("other".into(), "other-lease".into())));
-        drop(bindings);
+        {
+            let bindings = central
+                .recording_reclaim_sessions
+                .lock()
+                .unwrap_err()
+                .into_inner();
+            assert!(!bindings.iter().any(|(id, _)| id == "poisoned"));
+            assert!(bindings.contains(&("other".into(), "other-lease".into())));
+        }
         assert_eq!(central.close().await.unwrap().state, "released");
         std::fs::remove_dir_all(directory).unwrap();
     }

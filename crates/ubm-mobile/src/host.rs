@@ -670,6 +670,10 @@ impl ScanFailureTransfer {
 
 /// A failure cut stays in the same bounded ingress queue as observations.
 /// A pump turn must not cross it until its failure signal is processed.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the bounded ingress queue keeps advertisements inline to avoid a second allocation on its hot path"
+)]
 enum ScanIngressItem {
     Advertisement(CapturedAdvertisement),
     FailureCut(Arc<()>),
@@ -931,6 +935,10 @@ struct Signals {
 enum ScanFailureAdmission {
     Queued,
     Emergency,
+    #[allow(
+        dead_code,
+        reason = "the closed admission state remains part of the exhaustive lifecycle vocabulary"
+    )]
     Closed,
 }
 
@@ -1371,6 +1379,10 @@ pub(crate) struct HostInner {
     pub(crate) ordered_start_receipts:
         Mutex<HashMap<(u64, u64), crate::session::RecordingStartReceipt>>,
     pub(crate) ordered_recording_start_guard: tokio::sync::Mutex<()>,
+    #[expect(
+        clippy::type_complexity,
+        reason = "the field is the ownership map for ordered recordings; a type alias would not clarify the invariant"
+    )]
     pub(crate) ordered_recordings: Mutex<
         HashMap<(u64, String), Arc<ubm_desktop::ordered_recording::OrderedRecording<ForeignRadio>>>,
     >,
@@ -1510,6 +1522,10 @@ impl Drop for ShutdownFailures<'_> {
 
 #[derive(Default)]
 struct ShutdownCompletion {
+    #[expect(
+        clippy::type_complexity,
+        reason = "the shutdown observer is intentionally stored as its exact callback contract"
+    )]
     observer: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     receipt: Option<String>,
 }
@@ -2626,10 +2642,10 @@ impl TerminalEvidenceRecovery {
         let mut acknowledged = lock(&self.lease.acknowledged);
         if acknowledged.1.insert(entry.reservation_id.clone()) {
             acknowledged.0.push_back(entry.reservation_id.clone());
-            if acknowledged.0.len() > 256 {
-                if let Some(expired) = acknowledged.0.pop_front() {
-                    acknowledged.1.remove(&expired);
-                }
+            if acknowledged.0.len() > 256
+                && let Some(expired) = acknowledged.0.pop_front()
+            {
+                acknowledged.1.remove(&expired);
             }
         }
         Ok(())
@@ -2884,15 +2900,15 @@ fn matches_member(member: &ScanMember, snapshot: &PeerSnapshot) -> bool {
     // A platform callback may be a partial update. In particular, an
     // absent service UUID does not negate evidence from an earlier callback.
     // Deliver it to the session's evidence matcher, which owns that history.
-    let address_match = member.device_addresses.is_empty()
+
+    member.device_addresses.is_empty()
         || member.device_addresses.iter().any(|address| {
             address.eq_ignore_ascii_case(&snapshot.id)
                 || snapshot
                     .address
                     .as_deref()
                     .is_some_and(|own| own.eq_ignore_ascii_case(address))
-        });
-    address_match
+        })
 }
 
 impl HostInner {
@@ -3240,10 +3256,10 @@ impl HostInner {
             }
             Ok(())
         }).await;
-        if let Err(error) = result {
-            if let Some(record) = lock(&self.ingress_failure).as_mut() {
-                record["cleanupFailure"] = error;
-            }
+        if let Err(error) = result
+            && let Some(record) = lock(&self.ingress_failure).as_mut()
+        {
+            record["cleanupFailure"] = error;
         }
         // The pump must return before shutdown can join it. A separate task
         // owns the retry and records its result, even if another caller is
@@ -4948,7 +4964,7 @@ impl HostInner {
                     session.outbox.push_ingress_drop(IngressClass::Control);
                     continue;
                 }
-                let mut record = object(vec![
+                let record = object(vec![
                     ("t", Value::from("scan-end")),
                     ("operationId", Value::from(member.membership.as_str())),
                     ("reason", Value::from(reason)),
@@ -4973,7 +4989,7 @@ impl HostInner {
                 if retained.contains(&session_id) {
                     continue;
                 }
-                let mut record = if *lock(&session.scan_end_version) == Some(2) {
+                let record = if *lock(&session.scan_end_version) == Some(2) {
                     let mut cause = wire::error_object(error);
                     cause.insert(
                         "retryability".into(),
@@ -5788,9 +5804,10 @@ impl HostInner {
             let mut publications = lock(&self.subscription_terminal_evidence_publications);
             let reservation_ids = publications
                 .iter()
-                .filter_map(|(reservation_id, publication)| {
-                    (publication.route.session_id == session_id).then(|| reservation_id.clone())
+                .filter(|&(_reservation_id, publication)| {
+                    publication.route.session_id == session_id
                 })
+                .map(|(reservation_id, _publication)| reservation_id.clone())
                 .collect::<Vec<_>>();
             reservation_ids
                 .into_iter()
@@ -6903,6 +6920,10 @@ impl MobileHost {
         self.inner.ordered_admission_owner
     }
 
+    #[allow(
+        dead_code,
+        reason = "the versioned native ordered-owner bridge reaches this through platform-specific bindings"
+    )]
     pub(crate) fn ordered_open_coordinator(
         &self,
     ) -> Result<Option<Arc<crate::foreign::MobileOpenCoordinator>>, crate::ordered_open_slots::Error>
@@ -6910,6 +6931,10 @@ impl MobileHost {
         self.inner.radio.ordered_open_coordinator()
     }
 
+    #[allow(
+        dead_code,
+        reason = "the versioned native ordered-owner bridge reaches this through platform-specific bindings"
+    )]
     pub(crate) fn begin_ordered_owner_retirement(
         &self,
     ) -> Result<(), crate::ordered_open_slots::Error> {
@@ -7529,6 +7554,10 @@ impl MobileHost {
 
     /// Recover an active or disposed session using the authority acquired by
     /// that session before disposal. Session IDs alone are not authority.
+    #[allow(
+        dead_code,
+        reason = "the scan-failure recovery entrypoint is exposed by platform-specific bindings"
+    )]
     pub(crate) fn scan_failure_recovery(
         &self,
         id: u64,
@@ -7698,10 +7727,10 @@ impl MobileHost {
                 tokio::time::timeout(std::time::Duration::from_secs(1), updates.changed()).await.ok().and_then(Result::ok)
             }
         };
-        if answer.is_some() {
-            if let Some(receipt) = updates.borrow().clone() {
-                return receipt;
-            }
+        if answer.is_some()
+            && let Some(receipt) = updates.borrow().clone()
+        {
+            return receipt;
         }
         self.interrupted_shutdown_receipt(
             "ordered-owner",
@@ -8077,33 +8106,33 @@ impl MobileHost {
         inner.radio.close_events();
         inner.radio.abandon_pending();
         let ordered_worker = lock(&inner.ordered_pump).take();
-        if let Some(worker) = ordered_worker {
-            if let Err(error) = worker.await {
-                let error = DesktopError::new(
-                    BleErrorCode::LifecycleInvariantViolation,
-                    BleErrorDomain::Cleanup,
-                    "host.shutdown.ordered-pump",
-                )
-                .with_detail(format!("ordered pump join failed: {error}"));
-                state
-                    .worker_failures
-                    .push(crate::session::cleanup_failure("ordered-pump", &error));
-            }
+        if let Some(worker) = ordered_worker
+            && let Err(error) = worker.await
+        {
+            let error = DesktopError::new(
+                BleErrorCode::LifecycleInvariantViolation,
+                BleErrorDomain::Cleanup,
+                "host.shutdown.ordered-pump",
+            )
+            .with_detail(format!("ordered pump join failed: {error}"));
+            state
+                .worker_failures
+                .push(crate::session::cleanup_failure("ordered-pump", &error));
         }
         inner.signals.close();
         let worker = lock(&inner.pump).take();
-        if let Some(worker) = worker {
-            if let Err(error) = worker.await {
-                let error = DesktopError::new(
-                    BleErrorCode::LifecycleInvariantViolation,
-                    BleErrorDomain::Cleanup,
-                    "host.shutdown.pump",
-                )
-                .with_detail(format!("pump join failed: {error}"));
-                state
-                    .worker_failures
-                    .push(crate::session::cleanup_failure("pump", &error));
-            }
+        if let Some(worker) = worker
+            && let Err(error) = worker.await
+        {
+            let error = DesktopError::new(
+                BleErrorCode::LifecycleInvariantViolation,
+                BleErrorDomain::Cleanup,
+                "host.shutdown.pump",
+            )
+            .with_detail(format!("pump join failed: {error}"));
+            state
+                .worker_failures
+                .push(crate::session::cleanup_failure("pump", &error));
         }
         if !state.worker_failures.is_empty() {
             failures.extend(state.worker_failures.iter().cloned());
@@ -8147,38 +8176,33 @@ impl MobileHost {
             let mut retirement = coordinator.retirement.lock().await;
             if let (Some(owner), Some(identity)) =
                 (inner.ordered_retirement_owner, retirement.identity)
+                && let Some(receipt) = inner.radio.take_owner_settlement(owner, identity)
             {
-                if let Some(receipt) = inner.radio.take_owner_settlement(owner, identity) {
-                    retirement.attempt_unsettled = false;
-                    retirement.uncertain_failure = None;
-                    match receipt.state {
-                        crate::OwnerRetirementState::Quiescent => {
-                            retirement.native_quiescent = true
-                        }
-                        crate::OwnerRetirementState::FencedPending {
-                            outstanding_classes,
-                            failures: native_failures,
-                        } => {
-                            retirement.fence_confirmed = true;
-                            failures.extend(pending_owner_retirement_cleanup(
-                                inner.platform,
-                                &outstanding_classes,
-                                &native_failures,
-                            ));
-                            return crate::session::cleanup_record(failures.values.clone())
-                                .to_string();
-                        }
-                        crate::OwnerRetirementState::Rejected { reason } => {
-                            let error = DesktopError::new(
-                                BleErrorCode::LifecycleInvalidState,
-                                BleErrorDomain::Cleanup,
-                                "host.shutdown.ordered-owner",
-                            )
-                            .with_detail(format!("native owner retirement rejected: {reason:?}"));
-                            failures.push(crate::session::cleanup_failure("ordered-owner", &error));
-                            return crate::session::cleanup_record(failures.values.clone())
-                                .to_string();
-                        }
+                retirement.attempt_unsettled = false;
+                retirement.uncertain_failure = None;
+                match receipt.state {
+                    crate::OwnerRetirementState::Quiescent => retirement.native_quiescent = true,
+                    crate::OwnerRetirementState::FencedPending {
+                        outstanding_classes,
+                        failures: native_failures,
+                    } => {
+                        retirement.fence_confirmed = true;
+                        failures.extend(pending_owner_retirement_cleanup(
+                            inner.platform,
+                            &outstanding_classes,
+                            &native_failures,
+                        ));
+                        return crate::session::cleanup_record(failures.values.clone()).to_string();
+                    }
+                    crate::OwnerRetirementState::Rejected { reason } => {
+                        let error = DesktopError::new(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "host.shutdown.ordered-owner",
+                        )
+                        .with_detail(format!("native owner retirement rejected: {reason:?}"));
+                        failures.push(crate::session::cleanup_failure("ordered-owner", &error));
+                        return crate::session::cleanup_record(failures.values.clone()).to_string();
                     }
                 }
             }

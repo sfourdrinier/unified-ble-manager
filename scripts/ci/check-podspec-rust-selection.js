@@ -152,7 +152,9 @@ function checkPodspecSelection() {
   for (const selected of [
     'bindings/uniffi/generated/swift/ubm_echo.swift',
     'ios/UnifiedBleProtocolControl.mm',
-    'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'
+    'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift',
+    'ios/Owned/OwnedGraphDeferredQueue.swift',
+    'ios/Owned/OwnedOrderedNotificationIngress.swift'
   ]) {
     if (!sources.includes(selected)) {
       fail(`5.x podspec source_files is missing ${selected}`)

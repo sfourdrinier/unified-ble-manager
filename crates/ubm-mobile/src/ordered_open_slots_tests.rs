@@ -90,18 +90,17 @@ impl crate::PlatformRadio for V2BoundaryRadio {
             OrderedOpenOwnershipV2 as Ownership, OrderedOpenRequestV2 as Request, RadioCompletion,
         };
         self.requests.lock().unwrap().push(request.clone());
-        if self.outcome == 9 {
-            if let crate::RadioRequest::OrderedOpenV2(Request::Acknowledge { identity, .. }) =
+        if self.outcome == 9
+            && let crate::RadioRequest::OrderedOpenV2(Request::Acknowledge { identity, .. }) =
                 &request
-            {
-                let mut retired = TEST_DROPPED_RETIREMENT.lock().unwrap();
-                match *retired {
-                    None => {
-                        *retired = Some(identity.slot_identity());
-                        return;
-                    }
-                    Some(slot) => assert_eq!(slot, identity.slot_identity()),
+        {
+            let mut retired = TEST_DROPPED_RETIREMENT.lock().unwrap();
+            match *retired {
+                None => {
+                    *retired = Some(identity.slot_identity());
+                    return;
                 }
+                Some(slot) => assert_eq!(slot, identity.slot_identity()),
             }
         }
         if ((self.outcome == 3 || self.outcome == 7 || self.outcome == 8)
@@ -653,13 +652,12 @@ async fn v2_two_public_sessions_keep_distinct_native_groups_on_cancel() {
             .unwrap();
     }
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while hosts[0]
+        while !hosts[0]
             .ordered_open_coordinator()
             .unwrap()
             .unwrap()
             .outstanding()
-            .len()
-            != 0
+            .is_empty()
         {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -2184,7 +2182,7 @@ async fn mobile_hosts_share_owner_capacity_and_preserve_debt_across_replacement(
         owner.acquire(mobile_request(1000)),
         Err(Error::OwnerRetired)
     ));
-    assert!(matches!(
+    assert!(
         crate::MobileHost::open(
             Arc::new(HostRadio(id)),
             Arc::new(HostWake),
@@ -2195,9 +2193,9 @@ async fn mobile_hosts_share_owner_capacity_and_preserve_debt_across_replacement(
             },
             tokio::runtime::Handle::current()
         )
-        .await,
-        Err(_)
-    ));
+        .await
+        .is_err()
+    );
     assert_eq!(
         a.retire_ordered_owner_after_native_quiescence(),
         Err(Error::OwnerBusy)
@@ -3138,27 +3136,31 @@ async fn public_cancel_and_dispose_recover_after_many_lost_replies() {
             .unwrap(),
         "native retirement must also release the central claims and admission"
     );
-    let requests = radio.requests.lock().unwrap();
-    let fences = requests
-        .iter()
-        .filter(|r| {
-            matches!(
-                r,
-                crate::RadioRequest::OrderedOpenV2(crate::OrderedOpenRequestV2::Recover { .. })
-            )
-        })
-        .count();
-    let acks = requests
-        .iter()
-        .filter(|r| {
-            matches!(
-                r,
-                crate::RadioRequest::OrderedOpenV2(crate::OrderedOpenRequestV2::Acknowledge { .. })
-            )
-        })
-        .count();
+    let (fences, acks) = {
+        let requests = radio.requests.lock().unwrap();
+        let fences = requests
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r,
+                    crate::RadioRequest::OrderedOpenV2(crate::OrderedOpenRequestV2::Recover { .. })
+                )
+            })
+            .count();
+        let acks = requests
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r,
+                    crate::RadioRequest::OrderedOpenV2(
+                        crate::OrderedOpenRequestV2::Acknowledge { .. }
+                    )
+                )
+            })
+            .count();
+        (fences, acks)
+    };
     assert!(fences > 70 && acks > 70, "fences={fences}, acks={acks}");
-    drop(requests);
     let report: serde_json::Value = serde_json::from_str(&host.shutdown().await).unwrap();
     assert_eq!(report["state"], "release-failed");
 }

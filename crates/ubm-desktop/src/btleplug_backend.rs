@@ -1041,18 +1041,13 @@ pub const NOTIFICATION_BYTES: u64 = ubm_core::contracts::BACKEND_INGRESS_AGGREGA
 /// polled again after that end has been observed. Keep the source-close
 /// result separate from the stream itself so a refused close reaches the
 /// central exactly once instead of being retried forever (or silently lost).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum ScanIngressSourceClose {
+    #[default]
     Open,
     Closing,
     Closed,
     Failed(DesktopError),
-}
-
-impl Default for ScanIngressSourceClose {
-    fn default() -> Self {
-        Self::Open
-    }
 }
 
 impl ScanIngressSourceClose {
@@ -1218,6 +1213,7 @@ pub struct BtleplugRadio {
     /// WinRT `Stop` returns before its `Stopped` callback. This fence keeps
     /// that callback attached to the retiring scan, so the central cannot
     /// admit a replacement that a delayed callback could terminate.
+    #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
     winrt_scan_stop_fence: Arc<WinRtScanStopFence>,
 }
 
@@ -1327,16 +1323,16 @@ impl BtleplugRadio {
                     .with_os(&error)
                 })?
             {
-                btleplug::winrtble::adapter::StalledScanWatcher::Replaced => {
+                btleplug::platform::StalledScanWatcher::Replaced => {
                     Ok(WinRtRecovery::Stopped)
                 }
-                btleplug::winrtble::adapter::StalledScanWatcher::Aborted => {
+                btleplug::platform::StalledScanWatcher::Aborted => {
                     Ok(WinRtRecovery::Failed(
                         "the WinRT advertisement watcher entered Aborted after its Stopped callback was not delivered"
                             .to_owned(),
                     ))
                 }
-                btleplug::winrtble::adapter::StalledScanWatcher::StillStopping => {
+                btleplug::platform::StalledScanWatcher::StillStopping => {
                     Err(DesktopError::scan_start_failed(
                         "the WinRT advertisement watcher is still stopping after its callback was not delivered; retry when Windows reaches a terminal state",
                     ))
@@ -1586,13 +1582,17 @@ impl BtleplugRadio {
         #[cfg(target_os = "windows")]
         let winrt =
             crate::os::windows::WinRt::open(&adapter_label, adapter.clone(), os_events_tx.clone())?;
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
         let winrt_scan_stop_fence = Arc::new(WinRtScanStopFence::new());
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
         let scan_stopped_watch = watch_scan_stopped(
             &adapter,
             &spawn,
             os_events_tx.clone(),
             Arc::clone(&winrt_scan_stop_fence),
         );
+        #[cfg(not(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+        let scan_stopped_watch = None;
         Ok(Self {
             adapter,
             adapter_label,
@@ -1663,6 +1663,7 @@ impl BtleplugRadio {
             readiness_watchers: StdMutex::new(HashMap::new()),
             parameter_watchers: StdMutex::new(HashMap::new()),
             scan_stopped_watch,
+            #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
             winrt_scan_stop_fence,
         })
     }
@@ -2206,12 +2207,6 @@ fn desktop_source_generation(
 }
 
 impl BtleplugRadio {
-    pub(crate) fn ordered_group_registry(
-        &self,
-    ) -> Arc<StdMutex<crate::ordered_notification_groups::OrderedGroupRegistry>> {
-        Arc::clone(&self.ordered_groups)
-    }
-
     fn ordered_source_owner(
         &self,
         peer_id: &str,
@@ -2338,10 +2333,10 @@ impl BtleplugRadio {
                     .retire(owned.expect("checked source generation"));
                 continue;
             }
-            if state.source.current().is_none() {
-                if let Some(generation) = observed {
-                    state.source.adopt_observed(generation);
-                }
+            if state.source.current().is_none()
+                && let Some(generation) = observed
+            {
+                state.source.adopt_observed(generation);
             }
             break;
         }
@@ -3484,8 +3479,11 @@ async fn dispatch_prepared_target<T: NotificationTransport + Clone + 'static>(
 
 /// Exact activation claims own their native targets until confirmed retirement.
 /// A path may hold several epochs while old cleanup and a replacement overlap.
+type NotificationTargetEpoch = (InstanceKey, u64);
+type NotificationTargetEntries<T> = HashMap<NotificationTargetEpoch, Arc<NotificationTarget<T>>>;
+
 struct NotificationTargets<T> {
-    entries: StdMutex<HashMap<(InstanceKey, u64), Arc<NotificationTarget<T>>>>,
+    entries: StdMutex<NotificationTargetEntries<T>>,
 }
 
 impl<T> Default for NotificationTargets<T> {
@@ -3652,6 +3650,7 @@ async fn subscribe_and_stream_owned_selecting<T: NotificationTransport + Clone>(
         .await
 }
 
+#[cfg(test)]
 async fn subscribe_and_stream_owned_epoch<T: NotificationTransport + Clone>(
     transport: &T,
     characteristic: &Characteristic,
@@ -3702,6 +3701,7 @@ async fn release_notification_target<T: NotificationTransport + Clone + 'static>
     release_notification_target_epoch(targets, forwarders, debt, key, scope, 0).await
 }
 
+#[cfg(test)]
 async fn release_notification_target_epoch<T: NotificationTransport + Clone + 'static>(
     targets: &NotificationTargets<T>,
     forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
@@ -5764,18 +5764,18 @@ impl RadioBoundary for BtleplugRadio {
             .with_detail("ordered source peer is stale"));
         }
         let actual = owner.lease.lock().expect("ordered source lease").clone();
-        if let Some(expected) = expected {
-            if !actual.as_ref().is_some_and(|actual| {
+        if let Some(expected) = expected
+            && !actual.as_ref().is_some_and(|actual| {
                 actual.source_generation == expected.source_generation
                     && actual.native_group == expected.native_group
-            }) {
-                return Err(DesktopError::new(
-                    BleErrorCode::LifecycleInvalidState,
-                    BleErrorDomain::Cleanup,
-                    "gatt.ordered.source-release",
-                )
-                .with_detail("ordered source lease is stale"));
-            }
+            })
+        {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.source-release",
+            )
+            .with_detail("ordered source lease is stale"));
         }
         if self
             .marker_requests
@@ -6049,7 +6049,7 @@ impl RadioBoundary for BtleplugRadio {
             .lock()
             .expect("ordered notification groups")
             .set_wake(lease.collection_id, &source, wake)
-            .map_err(|e| DesktopError::subscribe_failed(&format!("ordered wake: {e:?}")))
+            .map_err(|e| DesktopError::subscribe_failed(format!("ordered wake: {e:?}")))
     }
     fn increase_ordered_byte_capacity(
         &self,
@@ -6998,25 +6998,27 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn arm_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
-        self.adapter
-            .arm_scan_ingress(ingress_epoch)
-            .await
-            .map_err(map_radio(
-                "scan.ingress.arm",
-                BleErrorCode::ScanStartFailed,
-                BleErrorDomain::Scan,
-            ))
+        #[cfg(target_os = "windows")]
+        let result = self.adapter.arm_scan_ingress(ingress_epoch);
+        #[cfg(not(target_os = "windows"))]
+        let result = self.adapter.arm_scan_ingress(ingress_epoch).await;
+        result.map_err(map_radio(
+            "scan.ingress.arm",
+            BleErrorCode::ScanStartFailed,
+            BleErrorDomain::Scan,
+        ))
     }
 
     async fn retire_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
-        self.adapter
-            .retire_scan_ingress(ingress_epoch)
-            .await
-            .map_err(map_radio(
-                "scan.ingress.retire",
-                BleErrorCode::ScanStopFailed,
-                BleErrorDomain::Cleanup,
-            ))
+        #[cfg(target_os = "windows")]
+        let result = self.adapter.retire_scan_ingress(ingress_epoch);
+        #[cfg(not(target_os = "windows"))]
+        let result = self.adapter.retire_scan_ingress(ingress_epoch).await;
+        result.map_err(map_radio(
+            "scan.ingress.retire",
+            BleErrorCode::ScanStopFailed,
+            BleErrorDomain::Cleanup,
+        ))
     }
 
     async fn fence_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
@@ -7097,40 +7099,35 @@ impl RadioBoundary for BtleplugRadio {
                 ))
                 .with_os(&error)
             })?;
-            Some(self.winrt_scan_stop_fence.requested_stop(generation))
+            self.winrt_scan_stop_fence.requested_stop(generation)
         };
-        #[cfg(not(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
-        let mut requested: Option<WinRtRequestedStop> = None;
-        if requested
-            .as_ref()
-            .is_none_or(|requested| requested.initiates_os_stop)
-        {
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+        if requested.initiates_os_stop {
             let stopped =
                 self.adapter.stop_scan().await.map_err(|error| {
                     DesktopError::scan_stop_failed(error.to_string()).with_os(&error)
                 });
             if let Err(error) = stopped {
-                if let Some(requested) = requested.take() {
-                    requested.cancel();
-                }
+                requested.cancel();
                 return Err(error);
             }
         }
+        #[cfg(not(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+        self.adapter
+            .stop_scan()
+            .await
+            .map_err(|error| DesktopError::scan_stop_failed(error.to_string()).with_os(&error))?;
         // The previous stop caller can time out after `Stop` reaches a
         // terminal watcher but before WinRT delivers `Stopped`. A retry is
         // still inside DesktopCentral's retiring scan slot, so it is the one
         // place recovery can prove the old watcher is gone and release that
         // slot without allowing a replacement to race its callback.
         #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
-        if requested
-            .as_ref()
-            .is_some_and(|requested| !requested.initiates_os_stop)
-        {
+        if !requested.initiates_os_stop {
             self.recover_stalled_winrt_scan_stop().await?;
         }
-        if let Some(requested) = requested.as_mut()
-            && let Err(detail) = requested.wait().await
-        {
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+        if let Err(detail) = requested.wait().await {
             return Err(DesktopError::scan_stop_failed(format!(
                 "the WinRT advertisement watcher stopped ({detail})"
             )));
@@ -8772,18 +8769,21 @@ static OS_EVENT_DROPS: AtomicU64 = AtomicU64::new(0);
 /// it. A failed `Stop` call cancels its reservation; a cancelled/timed-out
 /// caller deliberately does not, because its eventual callback must still be
 /// swallowed before another scan can be admitted.
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
 struct WinRtScanStopFence {
     next: AtomicU64,
     retired_through: AtomicU64,
     pending: StdMutex<Option<WinRtPendingStop>>,
 }
 
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
 struct WinRtPendingStop {
     id: u64,
     generation: u64,
     acknowledgement: tokio::sync::watch::Sender<WinRtStopAcknowledgement>,
 }
 
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WinRtStopAcknowledgement {
     Pending,
@@ -8792,6 +8792,7 @@ enum WinRtStopAcknowledgement {
     Replaced,
 }
 
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WinRtStopDisposition {
     Requested,
@@ -8799,12 +8800,14 @@ enum WinRtStopDisposition {
     Unsolicited,
 }
 
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
 #[derive(Debug)]
 enum WinRtRecovery {
     Stopped,
     Failed(String),
 }
 
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
 struct WinRtRequestedStop {
     fence: Arc<WinRtScanStopFence>,
     id: u64,
@@ -8812,6 +8815,7 @@ struct WinRtRequestedStop {
     initiates_os_stop: bool,
 }
 
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
 impl WinRtScanStopFence {
     fn new() -> Self {
         Self {
@@ -8911,6 +8915,7 @@ impl WinRtScanStopFence {
     }
 }
 
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
 impl WinRtRequestedStop {
     async fn wait(&mut self) -> Result<(), String> {
         match self
@@ -8943,61 +8948,53 @@ impl WinRtRequestedStop {
 /// (Windows, vendored patch 5), skipping the stops this radio requested.
 /// Elsewhere the OS ends a scan only by closing the event source, which the
 /// central already settles.
+#[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
 fn watch_scan_stopped(
     adapter: &Adapter,
     spawn: &tokio::runtime::Handle,
     events: mpsc::Sender<RadioEvent>,
     fence: Arc<WinRtScanStopFence>,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
-    {
-        let mut stops = match adapter.scan_stopped_events() {
-            Ok(stops) => stops,
-            Err(error) => {
-                OS_EVENT_DROPS.fetch_add(1, Ordering::Relaxed);
-                eprintln!("ubm-desktop: WinRT watcher stops cannot be observed: {error}");
-                return None;
-            }
-        };
-        Some(spawn.spawn(async move {
-            loop {
-                match stops.recv().await {
-                    Ok(stopped) => {
-                        let disposition = fence.acknowledge_stop(
-                            stopped.generation,
-                            stopped.error == 0,
-                            stopped.error_name.clone(),
-                        );
-                        match disposition {
-                            WinRtStopDisposition::Stale => continue,
-                            WinRtStopDisposition::Requested if stopped.error == 0 => continue,
-                            WinRtStopDisposition::Requested | WinRtStopDisposition::Unsolicited => {
-                            }
-                        }
-                        let event = RadioEvent::ScanTerminated {
-                            aborted: stopped.error != 0,
-                            detail: format!(
-                                "the WinRT advertisement watcher stopped ({})",
-                                stopped.error_name
-                            ),
-                        };
-                        if events.send(event).await.is_err() {
-                            return;
-                        }
+    let mut stops = match adapter.scan_stopped_events() {
+        Ok(stops) => stops,
+        Err(error) => {
+            OS_EVENT_DROPS.fetch_add(1, Ordering::Relaxed);
+            eprintln!("ubm-desktop: WinRT watcher stops cannot be observed: {error}");
+            return None;
+        }
+    };
+    Some(spawn.spawn(async move {
+        loop {
+            match stops.recv().await {
+                Ok(stopped) => {
+                    let disposition = fence.acknowledge_stop(
+                        stopped.generation,
+                        stopped.error == 0,
+                        stopped.error_name.clone(),
+                    );
+                    match disposition {
+                        WinRtStopDisposition::Stale => continue,
+                        WinRtStopDisposition::Requested if stopped.error == 0 => continue,
+                        WinRtStopDisposition::Requested | WinRtStopDisposition::Unsolicited => {}
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        OS_EVENT_DROPS.fetch_add(1, Ordering::Relaxed);
+                    let event = RadioEvent::ScanTerminated {
+                        aborted: stopped.error != 0,
+                        detail: format!(
+                            "the WinRT advertisement watcher stopped ({})",
+                            stopped.error_name
+                        ),
+                    };
+                    if events.send(event).await.is_err() {
+                        return;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    OS_EVENT_DROPS.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
-        }))
-    }
-    #[cfg(not(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
-    {
-        let _ = (adapter, spawn, events, fence);
-        None
-    }
+        }
+    }))
 }
 
 /// Windows: whether this process runs with package identity (the legacy
@@ -13038,10 +13035,11 @@ mod tests {
         // `BluetoothLEAdvertisementWatcher::Stop` has returned, but WinRT
         // has not called Stopped yet. A central must not report this stop as
         // complete and admit the next scan during that interval.
-        assert!(matches!(
-            tokio::time::timeout(std::time::Duration::from_millis(1), requested.wait()).await,
-            Err(_)
-        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(1), requested.wait())
+                .await
+                .is_err()
+        );
 
         assert_eq!(
             fence.acknowledge_stop(1, true, "Success".to_owned()),

@@ -99,6 +99,10 @@ pub struct OrderedRecordingDeclaration {
     pub max_bytes: usize,
     pub max_controls: usize,
 }
+#[expect(
+    clippy::result_large_err,
+    reason = "The persisted recording error retains source and storage cleanup evidence; boxing would change these established validation results."
+)]
 impl OrderedRecordingDeclaration {
     fn validate(&self) -> Result<(), RecordingError> {
         let mut ids = std::collections::HashSet::new();
@@ -299,6 +303,10 @@ struct RecorderReclaimAuthority<B: RadioBoundary> {
     owner: Option<Arc<crate::reclaim_reservation::ReclaimReservationOwner<B>>>,
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "The internal recovery-capability path returns the same persisted recording error used by its callers."
+)]
 fn random_recovery_capability() -> Result<String, RecordingError> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| RecordingError::EntropyUnavailable)?;
@@ -310,6 +318,10 @@ fn random_recovery_capability() -> Result<String, RecordingError> {
     Ok(capability)
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "The owner preserves complete source and durable-cleanup errors across its established internal result methods."
+)]
 impl<B: RadioBoundary> OrderedRecording<B> {
     /// Reserve an unopened collection. The caller must retain this handle even
     /// after a failed or cancelled operation, until cleanup is settled.
@@ -1701,6 +1713,10 @@ pub fn stop_receipt(result: Result<RecordingDriverStatus, RecordingError>) -> Va
 }
 
 // The source ACK is deliberately invoked only after the durable transaction.
+#[expect(
+    clippy::result_large_err,
+    reason = "The commit boundary must return the complete persisted recording error to keep acknowledgement recovery diagnosable."
+)]
 async fn commit_then_ack<F, Fut>(
     journal: &Arc<ContinuationJournal>,
     identity: &RecordingIdentity,
@@ -1714,6 +1730,10 @@ where
     commit_then_ack_version(journal, identity, delivery, 2, ack).await
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "The versioned commit boundary preserves the complete recording error for retry and receipt encoding."
+)]
 async fn commit_then_ack_version<F, Fut>(
     journal: &Arc<ContinuationJournal>,
     identity: &RecordingIdentity,
@@ -1795,6 +1815,7 @@ fn failure(value: &Failure) -> Value {
         .collect();
     json!({"code":value.code,"domain":value.domain,"operation":value.operation,"detail":value.detail,"platformDomain":value.platform_domain,"platformCode":value.platform_code,"platformMessage":value.platform_message,"platformMetadata":metadata})
 }
+#[cfg(test)]
 fn try_legacy_failure(error: &DesktopError) -> Option<Value> {
     let value = crate::ordered_notification_groups::failure_from_desktop(error);
     failure_is_readable(&value, 1).then(|| failure(&value))

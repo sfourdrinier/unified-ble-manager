@@ -174,9 +174,30 @@ pub struct TerminalEvidenceLedger {
 /// ledger object: treating a local lock as automatically recoverable would
 /// let recovery retire a terminal before its source has delivered it.
 enum ReservationAuthority {
-    Source(File),
-    Recovery { lease_id: String, file: File },
+    // These handles intentionally remain unread: holding them is the OS lock
+    // ownership that fences live source and recovery retirement.
+    Source(
+        #[expect(
+            dead_code,
+            reason = "Retains the file lock until its owner is dropped."
+        )]
+        File,
+    ),
+    Recovery {
+        lease_id: String,
+        _file: File,
+    },
 }
+
+type StagedReservationRow = (i64, String, Option<Vec<u8>>, Option<String>, Option<String>);
+type CommittedReservationRow = (
+    i64,
+    String,
+    Option<String>,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+);
 
 const LEGACY_RECOVERY_LEASE: &str = "ubm-terminal-evidence-legacy-recovery";
 
@@ -396,7 +417,7 @@ impl TerminalEvidenceLedger {
             reservation_id.to_owned(),
             ReservationAuthority::Recovery {
                 lease_id: lease_id.to_owned(),
-                file,
+                _file: file,
             },
         );
         Ok(true)
@@ -472,10 +493,10 @@ impl TerminalEvidenceLedger {
     fn retire_reservation_authority(&self, reservation_id: &str) -> Result<()> {
         let _gate = self.acquire_authority_gate()?;
         self.release_reservation_authority(reservation_id);
-        if let Err(error) = std::fs::remove_file(self.authority_path(reservation_id)) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(TerminalEvidenceError::Unresolved);
-            }
+        if let Err(error) = std::fs::remove_file(self.authority_path(reservation_id))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(TerminalEvidenceError::Unresolved);
         }
         Ok(())
     }
@@ -602,7 +623,7 @@ impl TerminalEvidenceLedger {
             return Err(TerminalEvidenceError::Missing);
         }
         match bound_recipient {
-            Some(bound) if bound != recipient => return Err(TerminalEvidenceError::Conflict),
+            Some(bound) if bound != recipient => Err(TerminalEvidenceError::Conflict),
             Some(bound) => {
                 tx.commit()?;
                 Ok(TerminalEvidenceRecipientBinding { recipient: bound })
@@ -689,7 +710,7 @@ impl TerminalEvidenceLedger {
                 .lock()
                 .map_err(|_| TerminalEvidenceError::Unresolved)?;
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let row: Option<(i64, String, Option<Vec<u8>>, Option<String>, Option<String>)> = tx.query_row(
+            let row: Option<StagedReservationRow> = tx.query_row(
                 "SELECT maximum_bytes,state,staged_bytes,staged_recipient,bound_recipient FROM terminal_evidence_reservations WHERE id=?1", [reservation_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             ).optional()?;
@@ -848,6 +869,10 @@ impl TerminalEvidenceLedger {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The private recovery primitive keeps explicit recipient, lease, bounds, and contention ownership inputs."
+    )]
     fn recoverable_page_for_lease_internal(
         &self,
         producer: &str,
@@ -1101,14 +1126,7 @@ impl TerminalEvidenceLedger {
                 .lock()
                 .map_err(|_| TerminalEvidenceError::Unresolved)?;
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let row: Option<(
-                i64,
-                String,
-                Option<String>,
-                Option<Vec<u8>>,
-                Option<Vec<u8>>,
-                Option<Vec<u8>>,
-            )> = tx.query_row(
+            let row: Option<CommittedReservationRow> = tx.query_row(
                 "SELECT maximum_bytes,state,reference,digest,bytes,staged_bytes FROM terminal_evidence_reservations WHERE id=?1", [reservation_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             ).optional()?;
@@ -1204,7 +1222,7 @@ impl TerminalEvidenceLedger {
     pub fn abandon(&self, reservation_id: &str) -> Result<TerminalEvidenceAbandonment> {
         let acquired = self.acquire_source_authority(reservation_id)?;
         let outcome = (|| {
-            let mut connection = self
+            let connection = self
                 .connection
                 .lock()
                 .map_err(|_| TerminalEvidenceError::Unresolved)?;
@@ -1362,10 +1380,10 @@ impl TerminalEvidenceLedger {
         drop(connection);
         authorities.remove(reservation_id);
         drop(authorities);
-        if let Err(error) = std::fs::remove_file(self.authority_path(reservation_id)) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(TerminalEvidenceError::Unresolved);
-            }
+        if let Err(error) = std::fs::remove_file(self.authority_path(reservation_id))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(TerminalEvidenceError::Unresolved);
         }
         let connection = self
             .connection
@@ -1379,7 +1397,7 @@ impl TerminalEvidenceLedger {
         if producer.is_empty() || recipient.is_empty() || !is_opaque_reference(reference) {
             return Err(TerminalEvidenceError::Invalid("recovery acknowledgement"));
         }
-        let mut connection = self
+        let connection = self
             .connection
             .lock()
             .map_err(|_| TerminalEvidenceError::Unresolved)?;
@@ -1482,16 +1500,18 @@ pub fn unpack_scope_utf16le(bytes: &[u8]) -> Option<Vec<Vec<u16>>> {
     }
     let mut offset = 16_usize;
     let mut fields = Vec::with_capacity(4);
-    for length_bytes in bytes[..16].chunks_exact(4) {
-        let length = usize::try_from(u32::from_le_bytes(length_bytes.try_into().ok()?)).ok()?;
+    for length_bytes in bytes[..16].as_chunks::<4>().0 {
+        let length = usize::try_from(u32::from_le_bytes(*length_bytes)).ok()?;
         let end = offset.checked_add(length.checked_mul(2)?)?;
         if end > bytes.len() {
             return None;
         }
         fields.push(
             bytes[offset..end]
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes(pair.try_into().expect("u16 framing")))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair))
                 .collect(),
         );
         offset = end;
@@ -1675,9 +1695,7 @@ mod tests {
 
     #[test]
     fn terminal_evidence_authority_child() {
-        if authority_child() {
-            return;
-        }
+        let _ = authority_child();
     }
 
     #[test]

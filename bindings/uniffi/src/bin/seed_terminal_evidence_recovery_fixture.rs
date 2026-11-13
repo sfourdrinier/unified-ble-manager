@@ -13,6 +13,7 @@ fn scope(producer: &str, operation_id: &str) -> TerminalEvidenceScope {
         manager_id: "swift-terminal-manager".to_owned(),
         operation_id: operation_id.to_owned(),
         incarnation: "1".to_owned(),
+        scope_utf16le: None,
     }
 }
 

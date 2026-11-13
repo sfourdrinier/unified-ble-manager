@@ -10,12 +10,18 @@ use std::sync::Mutex;
 use ubm_core::contracts::{
     BleErrorCode, BleErrorDomain, MAX_STREAM_BYTE_CAPACITY, MAX_STREAM_ITEM_CAPACITY,
 };
-use ubm_core::ordered_notifications::{EndReason, Failure, failure_allocation_cost};
+#[cfg(test)]
+use ubm_core::ordered_notifications::Failure;
+use ubm_core::ordered_notifications::{EndReason, failure_allocation_cost};
 
 const MAX_EMPTY_SOURCES: usize = 64;
 
 /// A bounded failed-setup receipt in source order.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the inline record preserves bounded failed-open evidence without heap indirection on the empty path"
+)]
 pub enum EmptyOrderedPoll {
     Record(OrderedIngressRecord),
     Empty,

@@ -180,12 +180,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         if state.marker_transaction.is_some() {
             return Ok(OrderedCleanupOutcome::PendingDrain);
         }
-        if {
+        let has_pending_delivery = {
             let delivery = lock_std(&state.delivery_state);
             delivery.pending.is_some()
                 || delivery.pending_discard.is_some()
                 || delivery.marker_owner.is_some()
-        } {
+        };
+        if has_pending_delivery {
             return Ok(OrderedCleanupOutcome::PendingDrain);
         }
         let window = ctl.budget.window(LIVENESS_CLEANUP);
@@ -213,6 +214,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let member_id = state.claims[index].member_id;
             let mut registry_release = false;
             let mut enable_pending = false;
+            #[expect(
+                clippy::collapsible_if,
+                reason = "the source-state check remains separate from lease extraction for edition-compatible shared cleanup code"
+            )]
             if let Some(OrderedSourceCleanup::Lease(lease)) = &source {
                 if !state.empty_sink_installed {
                     let status = self.ordered_owner_status(lease)?;
@@ -245,6 +250,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 self.rollback_ordered_claim(peer_id, &mut state.claims[index], &ctl.ticket, window)
                     .await
             };
+            #[expect(
+                clippy::collapsible_if,
+                reason = "source confirmation only runs after successful claim rollback and preserves that ordering"
+            )]
             if result.is_ok()
                 && state.source_claims_started.contains(&member_id)
                 && !state.source_claims_confirmed.contains(&member_id)
@@ -279,28 +288,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     }
                 }
             }
-            if registry_release {
-                if let Some(OrderedSourceCleanup::Lease(lease)) = &source {
-                    if result.is_ok() && enable_pending {
-                        self.update_ordered_owner(
-                            lease,
-                            OrderedSourceTransition::EnableResult {
-                                member_id,
-                                outcome: Some(false),
-                            },
-                        )?;
-                    }
+            if let (true, Some(OrderedSourceCleanup::Lease(lease))) = (registry_release, &source) {
+                if result.is_ok() && enable_pending {
                     self.update_ordered_owner(
                         lease,
-                        OrderedSourceTransition::ReleaseResult {
+                        OrderedSourceTransition::EnableResult {
                             member_id,
-                            result: result
-                                .as_ref()
-                                .map(|_| ())
-                                .map_err(|error| error.to_string()),
+                            outcome: Some(false),
                         },
                     )?;
                 }
+                self.update_ordered_owner(
+                    lease,
+                    OrderedSourceTransition::ReleaseResult {
+                        member_id,
+                        result: result
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|error| error.to_string()),
+                    },
+                )?;
             }
             match &result {
                 Ok(()) => {

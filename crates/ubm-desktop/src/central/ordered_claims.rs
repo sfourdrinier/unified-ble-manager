@@ -19,7 +19,6 @@ pub(super) enum OrderedClaimPhase {
 
 pub(super) struct OrderedClaim {
     pub(super) member_id: u64,
-    pub(super) selector: PathSelector,
     pub(super) consumer: String,
     pub(super) scope: InstanceKey,
     pub(super) path_index: usize,
@@ -48,7 +47,6 @@ pub(super) struct OrderedDeliveryState {
 /// Source cleanup is retained even if the caller stops awaiting setup.
 /// Observations remain in the bounded native collection until inspected.
 pub(super) struct OrderedBatchState {
-    pub(super) peer_id: String,
     pub(super) collection_id: u64,
     pub(super) connection_generation: Option<String>,
     pub(super) database_generation: Option<String>,
@@ -73,6 +71,10 @@ pub(super) struct OrderedBatchState {
     pub(super) renewals: HashMap<u64, super::ordered_member_renewal::MemberRenewal>,
     pub(super) reclaim_reservation:
         Option<Arc<StdMutex<crate::reclaim_reservation::ReclaimReservationState>>>,
+    #[expect(
+        clippy::type_complexity,
+        reason = "the reservation tuple keeps the coupled marker ownership values private and co-located in the batch state"
+    )]
     pub(super) marker_reservation: Option<(
         Option<u64>,
         Arc<Mutex<crate::marker_reservation::MarkerReservationState>>,
@@ -172,7 +174,6 @@ impl OrderedBatchRegistry {
         })?;
         let key = (peer_id.clone(), collection_id);
         let owner = Arc::new(Mutex::new(OrderedBatchState {
-            peer_id,
             collection_id,
             connection_generation: None,
             database_generation: None,
@@ -330,6 +331,7 @@ pub(super) fn validate_ordered_claims(
 impl<B: RadioBoundary> DesktopCentral<B> {
     /// Reserve ownership-only claims under one GATT admission. The ledger is
     /// installed before any await so cancellation retains every admitted claim.
+    #[cfg(test)]
     pub(super) async fn prepare_ordered_claims(
         &self,
         peer_id: &str,
@@ -351,6 +353,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the atomic claim admission takes the complete caller-owned source, identity, and capacity boundary explicitly"
+    )]
     pub(super) async fn prepare_ordered_claims_started(
         &self,
         peer_id: &str,
@@ -535,19 +541,19 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             if let Some(failure) = lock_std(&self.inner.notification_failures).get(&index) {
                 return Err(failure.error.clone());
             }
-            if let Some(required) = request.delivery {
-                if routes.contains_key(&scope) {
-                    let observed = lock_std(&self.inner.deliveries)
-                        .get(&scope)
-                        .copied()
-                        .unwrap_or(ObservedDelivery::Unknown);
-                    if !observed.satisfies(required) {
-                        return Err(Self::delivery_unenforced(
-                            required,
-                            observed,
-                            "a join cannot rewrite the live CCCD",
-                        ));
-                    }
+            if let Some(required) = request.delivery
+                && routes.contains_key(&scope)
+            {
+                let observed = lock_std(&self.inner.deliveries)
+                    .get(&scope)
+                    .copied()
+                    .unwrap_or(ObservedDelivery::Unknown);
+                if !observed.satisfies(required) {
+                    return Err(Self::delivery_unenforced(
+                        required,
+                        observed,
+                        "a join cannot rewrite the live CCCD",
+                    ));
                 }
             }
             let next_epoch = {
@@ -618,7 +624,6 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             // No await may separate admission from recording its cleanup owner.
             state.claims.push(OrderedClaim {
                 member_id: request.member_id,
-                selector: request.selector.clone(),
                 consumer: request.consumer.clone(),
                 scope,
                 path_index: index,

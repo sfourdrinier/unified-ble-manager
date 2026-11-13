@@ -232,9 +232,8 @@ impl State {
                 let superseded = self
                     .receipts
                     .iter()
-                    .filter_map(|(token, (mode, _))| {
-                        (*mode == ClaimMode::Legacy).then(|| token.clone())
-                    })
+                    .filter(|(_, (mode, _))| *mode == ClaimMode::Legacy)
+                    .map(|(token, _)| token.clone())
                     .collect::<Vec<_>>();
                 self.receipts
                     .retain(|_, (mode, _)| *mode != ClaimMode::Legacy);
@@ -375,6 +374,10 @@ struct LegacyStage {
 }
 
 #[doc(hidden)]
+#[expect(
+    clippy::result_unit_err,
+    reason = "The legacy projection's unit error is part of its established strict codec contract."
+)]
 pub fn project_521_record(record: &Value) -> std::result::Result<Option<Value>, ()> {
     let ordinal = record.get("ordinal").and_then(Value::as_u64).ok_or(())?;
     let select = |keys: &[&str]| -> Option<Value> {

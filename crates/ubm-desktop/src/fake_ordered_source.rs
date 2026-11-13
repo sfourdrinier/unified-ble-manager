@@ -176,6 +176,10 @@ fn error(detail: impl std::fmt::Debug) -> DesktopError {
     .with_detail(format!("{detail:?}"))
 }
 impl FakeRadio {
+    #[expect(
+        clippy::result_large_err,
+        reason = "The deterministic test-radio mirrors the production OrderedSourceIngress error contract without changing its shared failure layout."
+    )]
     pub(crate) fn fake_prepare_ordered(
         &self,
         request: OrderedSourceRequest,

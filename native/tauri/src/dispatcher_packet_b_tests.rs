@@ -1591,7 +1591,12 @@ async fn durable_inflight_peer_failure_recovery_survives_restart_and_refuses_nat
     .expect("caller teardown must not strand its renderer route")
     .expect_err("caller teardown revokes recovered handles and the grant");
     assert_eq!(revoked.code, BleErrorCode::OwnershipDenied);
-    assert_eq!(revoked.domain, "ipc");
+    // Grant revocation is synchronous; renderer retirement runs asynchronously.
+    // Whichever authority observes the route first must refuse it explicitly.
+    assert!(matches!(
+        (revoked.domain, revoked.operation),
+        ("ipc", "tauri.route-caller") | ("restoration", "tauri.peer-failure-recovery.list")
+    ));
     harness.central.shutdown().await;
     recording_fixture::complete_fixture_process(&directory);
 }

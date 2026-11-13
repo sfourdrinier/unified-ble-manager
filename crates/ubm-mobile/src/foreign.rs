@@ -231,6 +231,8 @@ struct PermitOpenReceipt {
     result: tokio::sync::watch::Receiver<Option<Result<u64, DesktopError>>>,
 }
 
+type RecordedDisables = HashMap<(Instance, u64), Arc<Mutex<Option<IngressFence>>>>;
+
 struct Shared {
     platform: Arc<dyn PlatformRadio>,
     /// Which platform answers: selects the legacy error identity (113).
@@ -286,7 +288,7 @@ struct Shared {
     /// new waiter would split the section in two.
     connect_sections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     staged_preference: Mutex<HashMap<Instance, DeliveryMode>>,
-    recorded_disables: Mutex<HashMap<(Instance, u64), Arc<Mutex<Option<IngressFence>>>>>,
+    recorded_disables: Mutex<RecordedDisables>,
     #[cfg(debug_assertions)]
     ingress_paused: std::sync::atomic::AtomicBool,
     close_failures: Mutex<Vec<RadioCloseFailure>>,
@@ -600,6 +602,10 @@ impl ForeignRadio {
         Ok(())
     }
 
+    #[allow(
+        dead_code,
+        reason = "the versioned native ordered-owner bridge calls this on supported mobile hosts"
+    )]
     pub(crate) fn begin_ordered_owner_retirement(
         &self,
     ) -> Result<(), crate::ordered_open_slots::Error> {
@@ -640,7 +646,7 @@ impl ForeignRadio {
     pub(crate) fn ordered_reclaim_graph_supported(&self) -> bool {
         #[cfg(any(test, all(feature = "synthetic-marker-harness", debug_assertions)))]
         {
-            return self.shared.marker_supported_for_test.load(Ordering::SeqCst);
+            self.shared.marker_supported_for_test.load(Ordering::SeqCst)
         }
         #[cfg(not(any(test, all(feature = "synthetic-marker-harness", debug_assertions))))]
         {
@@ -696,10 +702,10 @@ impl ForeignRadio {
             .get(&group_id)
             .is_some_and(|entry| entry.acknowledged)
         {
-            if let Some(entry) = retained.remove(&group_id) {
-                if !lock(&self.shared.ordered_cleanup_due).contains_key(&group_id) {
-                    lock(&self.shared.ordered_recovery).remove(&entry.request_id);
-                }
+            if let Some(entry) = retained.remove(&group_id)
+                && !lock(&self.shared.ordered_cleanup_due).contains_key(&group_id)
+            {
+                lock(&self.shared.ordered_recovery).remove(&entry.request_id);
             }
             true
         } else {
@@ -1484,13 +1490,12 @@ impl ForeignRadio {
                     crate::OrderedOpenRequestV2::Open { identity, .. }
                     | crate::OrderedOpenRequestV2::Recover { identity, .. },
                 ) = &attempt.request
+                    && !self.retain_v2_open_completion(identity, &completion)
                 {
-                    if !self.retain_v2_open_completion(identity, &completion) {
-                        self.shared
-                            .mismatched_completions
-                            .fetch_add(1, Ordering::Relaxed);
-                        return CompletionStatus::Mismatched;
-                    }
+                    self.shared
+                        .mismatched_completions
+                        .fetch_add(1, Ordering::Relaxed);
+                    return CompletionStatus::Mismatched;
                 }
                 if !attempt.completions.contains(&completion) {
                     attempt.completions.push(completion.clone());
@@ -1545,10 +1550,10 @@ impl ForeignRadio {
         }
         {
             let mut retained = lock(&self.shared.retained_ordered_registers);
-            if let Some(entry) = retained.by_request.get_mut(&request_id) {
-                if entry.completion.is_none() {
-                    entry.completion = Some(completion.clone());
-                }
+            if let Some(entry) = retained.by_request.get_mut(&request_id)
+                && entry.completion.is_none()
+            {
+                entry.completion = Some(completion.clone());
             }
         }
         let retained_enable = {
@@ -2781,7 +2786,7 @@ impl RadioBoundary for ForeignRadio {
     fn ordered_marker_write_supported(&self) -> bool {
         #[cfg(any(test, all(feature = "synthetic-marker-harness", debug_assertions)))]
         {
-            return self.shared.marker_supported_for_test.load(Ordering::SeqCst);
+            self.shared.marker_supported_for_test.load(Ordering::SeqCst)
         }
         #[cfg(not(any(test, all(feature = "synthetic-marker-harness", debug_assertions))))]
         {

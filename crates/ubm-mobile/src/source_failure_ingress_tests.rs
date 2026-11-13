@@ -256,7 +256,7 @@ async fn rejected_failure_stays_with_original_owner_across_session_disposal() {
             crate::RadioRequest::EnableNotifications { epoch, .. } => Some(*epoch),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap();
     assert_ne!(new_epoch, old_epoch);
     assert_eq!(

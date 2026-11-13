@@ -60,6 +60,10 @@ pub enum LossUnit {
     SourceRecords,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "ordered records retain exact failure evidence inline; boxing would change the native record representation"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
     Value {
@@ -380,6 +384,10 @@ pub enum Error {
     RecordTooLarge,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "polling returns the exact inline terminal or record retained by the source without an additional allocation"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Poll {
     Record(Record),
@@ -448,6 +456,10 @@ pub struct OrderedCollection {
 }
 
 impl OrderedCollection {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "collection identity, membership, and independent bounded capacities are validated atomically at construction"
+    )]
     pub fn new(
         peer_generation: String,
         database_generation: String,
@@ -880,6 +892,10 @@ impl OrderedCollection {
 
     /// Submit a source-owned record. Pending capacity leaves the ordinal and
     /// collection untouched; the source must retain and retry the occurrence.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "source identity and every observed value field must be admitted together without a lossy request wrapper"
+    )]
     pub fn admit_value(
         &mut self,
         source_generation: &SourceGeneration,

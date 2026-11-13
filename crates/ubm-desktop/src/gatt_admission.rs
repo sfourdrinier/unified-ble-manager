@@ -174,6 +174,13 @@ impl GattAdmissionQueue {
 
     /// Atomically invalidate outstanding admissions and reject new ones.
     /// Overlapping retirements retain independent gates until each finishes.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The all-admissions retirement helper is retained for explicit host teardown tests."
+        )
+    )]
     pub(crate) fn block_peer(
         self: &Arc<Self>,
         peer: &str,

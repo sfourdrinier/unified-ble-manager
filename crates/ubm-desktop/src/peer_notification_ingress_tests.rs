@@ -2,6 +2,10 @@
 use super::*;
 
 #[cfg(test)]
+#[allow(
+    clippy::module_inception,
+    reason = "The path-included ingress tests retain the module name needed to test private ingress state."
+)]
 mod tests {
     use super::*;
 

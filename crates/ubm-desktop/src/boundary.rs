@@ -3171,6 +3171,10 @@ impl FakeRadio {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the test-only return exposes exact request and receipt keys without creating production-facing fixture types"
+    )]
     pub(crate) fn reclaim_test_keys(&self) -> (Vec<(u64, u64)>, Vec<((u64, u64), u64)>) {
         let state = self.state.lock().expect("fake radio state");
         let mut permits: Vec<_> = state.reclaim_permits.keys().copied().collect();
@@ -4248,10 +4252,10 @@ impl RadioBoundary for FakeRadio {
             preferred,
         };
         let mut state = self.ordered.lock().expect("fake ordered source");
-        if let Some(old) = state.prepared.get(&(scope.clone(), epoch)) {
-            if old != &handle {
-                return Err(DesktopError::subscribe_failed("conflicting activation"));
-            }
+        if let Some(old) = state.prepared.get(&(scope.clone(), epoch))
+            && old != &handle
+        {
+            return Err(DesktopError::subscribe_failed("conflicting activation"));
         }
         state
             .prepared
@@ -4492,7 +4496,7 @@ impl RadioBoundary for FakeRadio {
         state
             .registry
             .set_wake(lease.collection_id, &source, wake)
-            .map_err(|e| DesktopError::subscribe_failed(&format!("ordered wake: {e:?}")))
+            .map_err(|e| DesktopError::subscribe_failed(format!("ordered wake: {e:?}")))
     }
     fn ordered_source_status(
         &self,

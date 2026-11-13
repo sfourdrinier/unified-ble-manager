@@ -3202,6 +3202,10 @@ struct Inner<B> {
     mismatch_compensations: StdMutex<Vec<Arc<MismatchCompensation>>>,
     mismatch_reservations: StdMutex<usize>,
     /// Retry obligations addressed by the original consumer admission.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the private retained-cleanup map retains the exact admission identity with its retry payload as one atomic bookkeeping value"
+    )]
     exact_retained_cleanup: StdMutex<
         HashMap<
             ubm_core::central::OperationAdmission,
@@ -3497,7 +3501,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         let _starting = admission.begin_starting().await?;
         let peer_key = self.known_peer_key(&source.peer_id).await?;
-        let mut core = self.inner.core.lock().await;
+        let core = self.inner.core.lock().await;
         if core.connection_generation(&peer_key).as_deref() != Some(owner.peer_generation.as_str())
             || core.database_generation(&peer_key).as_deref()
                 != Some(owner.database_generation.as_str())
@@ -4186,6 +4190,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     }
 
     /// Take a bridge failure independently of a terminal already delivered.
+    #[cfg(test)]
     pub(crate) fn take_mobile_ordered_bridge_failure(
         &self,
         source: &crate::ordered_notification_groups::SourceKey,
@@ -4544,7 +4549,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let restored = ledger.recover_all().await?;
         let mut restored_receipts = HashMap::with_capacity(restored.len());
         for occurrence in restored {
-            let descriptor = occurrence.descriptor.clone();
+            let descriptor = occurrence.descriptor;
             if restored_receipts
                 .insert(
                     descriptor,
@@ -4616,7 +4621,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     pub fn durable_peer_failure_recoveries(&self) -> Vec<DurablePeerFailureRecoveryOccurrence> {
         lock_std(&self.inner.peer_failure_recoveries)
             .iter()
-            .map(|(descriptor, receipt)| receipt.durable(descriptor.clone()))
+            .map(|(descriptor, receipt)| receipt.durable(*descriptor))
             .collect()
     }
 
@@ -8229,10 +8234,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             core.complete_discovery(&peer_key)
                 .map_err(DesktopError::from)?;
             if let Some(transaction) = lock_std(&self.inner.discovery_transactions).get_mut(peer_id)
+                && transaction.id == transaction_id
             {
-                if transaction.id == transaction_id {
-                    transaction.generation = Generations::of(&core, &peer_key);
-                }
+                transaction.generation = Generations::of(&core, &peer_key);
             }
             // Occurrences count per UUID in snapshot order, as before: the
             // radio's order is the discovery order (finding 96).
@@ -9882,11 +9886,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             ));
                         }
                     };
-                    if completed {
-                        if matches!(*lock_std(&owner.state), MismatchCompensationState::Released) {
-                            lock_std(&self.inner.mismatch_compensations)
-                                .retain(|receipt| !Arc::ptr_eq(receipt, &owner));
-                        }
+                    if completed
+                        && matches!(*lock_std(&owner.state), MismatchCompensationState::Released)
+                    {
+                        lock_std(&self.inner.mismatch_compensations)
+                            .retain(|receipt| !Arc::ptr_eq(receipt, &owner));
                     }
                     Err(Self::delivery_unenforced(
                         required,
@@ -10963,11 +10967,17 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 };
                 if result.is_ok() {
                     lock_std(&self.inner.exact_retained_cleanup).remove(admission);
-                } else if let Err(error) = &result {
-                    if let Some(debt) =
-                        lock_std(&self.inner.exact_retained_cleanup).get_mut(admission)
-                    {
-                        debt.5.get_or_insert_with(|| error.clone());
+                } else {
+                    #[expect(
+                        clippy::collapsible_if,
+                        reason = "the error check intentionally precedes the bookkeeping lock so successful cleanup never contends with retained-debt updates"
+                    )]
+                    if let Err(error) = &result {
+                        if let Some(debt) =
+                            lock_std(&self.inner.exact_retained_cleanup).get_mut(admission)
+                        {
+                            debt.5.get_or_insert_with(|| error.clone());
+                        }
                     }
                 }
                 return result;
@@ -11004,7 +11014,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 core.consumer_path(&peer_key, selector, consumer).is_some()
             }
         };
-        if exact.is_some() && !current_consumer {
+        if let (Some(admission), false) = (exact, current_consumer) {
             // A rediscovery can reclaim the old core hub once its buffered
             // observations are gone. Its physical activation still belongs
             // to the captured admission, not to a new same-name consumer.
@@ -11041,7 +11051,6 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             if has_others {
                 return Ok(false);
             }
-            let admission = exact.expect("exact admission was validated");
             lock_std(&self.inner.exact_retained_cleanup).insert(
                 admission.clone(),
                 (
@@ -11068,10 +11077,17 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .await;
             if result.is_ok() {
                 lock_std(&self.inner.exact_retained_cleanup).remove(admission);
-            } else if let Err(error) = &result {
-                if let Some(debt) = lock_std(&self.inner.exact_retained_cleanup).get_mut(admission)
-                {
-                    debt.5.get_or_insert_with(|| error.clone());
+            } else {
+                #[expect(
+                    clippy::collapsible_if,
+                    reason = "the error check intentionally precedes the bookkeeping lock so successful cleanup never contends with retained-debt updates"
+                )]
+                if let Err(error) = &result {
+                    if let Some(debt) =
+                        lock_std(&self.inner.exact_retained_cleanup).get_mut(admission)
+                    {
+                        debt.5.get_or_insert_with(|| error.clone());
+                    }
                 }
             }
             return result;
@@ -11292,6 +11308,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     lock_std(&self.inner.retained_cleanup_owners).remove(&cleanup_owner);
                 }
             } else if let (Some(admission), Err(error)) = (exact, &result) {
+                #[expect(
+                    clippy::collapsible_if,
+                    reason = "the error check intentionally precedes the bookkeeping lock so successful cleanup never contends with retained-debt updates"
+                )]
                 if let Some(debt) = lock_std(&self.inner.exact_retained_cleanup).get_mut(admission)
                 {
                     debt.5.get_or_insert_with(|| error.clone());
@@ -11300,15 +11320,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             return result;
         }
         if !disable_physical && !self.inner.failed_disables.lock().await.contains(&key) {
-            if let Some((index, epoch)) = self.inner.subscriptions.lock().await.get(&key).copied() {
-                if exact_owner
+            if let Some((index, epoch)) = self.inner.subscriptions.lock().await.get(&key).copied()
+                && exact_owner
                     .as_ref()
                     .is_none_or(|owner| owner.activation == (index, epoch))
-                    && let Some(owners) =
-                        lock_std(&self.inner.retained_claims).get_mut(&(index, epoch))
-                {
-                    owners.remove(consumer);
-                }
+                && let Some(owners) = lock_std(&self.inner.retained_claims).get_mut(&(index, epoch))
+            {
+                owners.remove(consumer);
             }
             // No radio work: still recycle any terminal shares (e.g. an
             // immediate-success join that released elsewhere) so the
@@ -11477,10 +11495,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             collection,
                             OpControl::budget_ms(5000),
                         ));
-                        if let Err(error) = retry.await {
-                            if let Some(owner) = inner.ordered_batches.get(&peer, collection) {
-                                owner.lock().await.fence_error.get_or_insert(error);
-                            }
+                        if let Err(error) = retry.await
+                            && let Some(owner) = inner.ordered_batches.get(&peer, collection)
+                        {
+                            owner.lock().await.fence_error.get_or_insert(error);
                         }
                     }
                 });
@@ -12266,33 +12284,32 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         };
         drop(route_transition);
-        if let Some(previous) = previous_contiguous_read {
-            if let Err(error) =
+        if let Some(previous) = previous_contiguous_read
+            && let Err(error) =
                 persist_peer_failure_recovery_recipients_serialized(&self.inner, descriptor).await
+        {
+            // The serial fence excludes another read or ACK while this
+            // snapshot is in flight.  Restore only this exact source-time
+            // lease, leaving every other recipient's durable progress
+            // untouched and making this page safely retryable.
+            #[expect(
+                clippy::collapsible_if,
+                reason = "the recovery mutation retains explicit receipt and recipient scopes so a failed durable write restores only the exact lease"
+            )]
+            if let Some(receipt) = lock_std(&self.inner.peer_failure_recoveries).get_mut(descriptor)
+                && let Some(member) = receipt.members.get_mut(&PeerFailureRecoveryRecipientKey {
+                    scope: scope.clone(),
+                    consumer: source_consumer.clone(),
+                })
             {
-                // The serial fence excludes another read or ACK while this
-                // snapshot is in flight.  Restore only this exact source-time
-                // lease, leaving every other recipient's durable progress
-                // untouched and making this page safely retryable.
-                if let Some(receipt) =
-                    lock_std(&self.inner.peer_failure_recoveries).get_mut(descriptor)
+                if member.epoch == epoch
+                    && member.recipient_lease == recipient_lease
+                    && member.contiguous_read == chunk.next_offset
                 {
-                    if let Some(member) =
-                        receipt.members.get_mut(&PeerFailureRecoveryRecipientKey {
-                            scope: scope.clone(),
-                            consumer: source_consumer.clone(),
-                        })
-                    {
-                        if member.epoch == epoch
-                            && member.recipient_lease == recipient_lease
-                            && member.contiguous_read == chunk.next_offset
-                        {
-                            member.contiguous_read = previous;
-                        }
-                    }
+                    member.contiguous_read = previous;
                 }
-                return Err(error);
             }
+            return Err(error);
         }
         Ok(chunk)
     }
@@ -12405,21 +12422,21 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             // A failed durable write never grants an in-memory ACK. Restore
             // exactly this lease so the caller can retry rather than being
             // trapped behind an acknowledgement the journal never accepted.
-            if newly_acknowledged {
-                if let Some(receipt) =
+            #[expect(
+                clippy::collapsible_if,
+                reason = "the acknowledgement rollback retains explicit receipt and recipient scopes so only the durable lease being reverted is changed"
+            )]
+            if newly_acknowledged
+                && let Some(receipt) =
                     lock_std(&self.inner.peer_failure_recoveries).get_mut(descriptor)
-                {
-                    if let Some(member) =
-                        receipt.members.get_mut(&PeerFailureRecoveryRecipientKey {
-                            scope: scope.clone(),
-                            consumer: source_consumer.clone(),
-                        })
-                    {
-                        if member.epoch == epoch && member.recipient_lease == recipient_lease {
-                            member.acknowledged = false;
-                            receipt.committing = false;
-                        }
-                    }
+                && let Some(member) = receipt.members.get_mut(&PeerFailureRecoveryRecipientKey {
+                    scope: scope.clone(),
+                    consumer: source_consumer.clone(),
+                })
+            {
+                if member.epoch == epoch && member.recipient_lease == recipient_lease {
+                    member.acknowledged = false;
+                    receipt.committing = false;
                 }
             }
             return Err(error);
@@ -12513,14 +12530,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         }
         if !already_retired {
-            if let Err(error) = self
-                .inner
+            self.inner
                 .boundary
                 .retire_peer_notification_failure_recovery_ack(descriptor, &source_ack_id)
-                .await
-            {
-                return Err(error);
-            }
+                .await?;
             let mut recoveries = lock_std(&self.inner.peer_failure_recoveries);
             let Some(receipt) = recoveries.get_mut(descriptor) else {
                 return Err(contract_error(
@@ -12532,12 +12545,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             receipt.source_ack_retired = true;
         }
         if !already_confirmed {
-            if let Err(error) = ledger.confirm_source_ack(descriptor, &source_ack_id).await {
-                // Native retirement has happened. The durable ledger owns the
-                // in-flight receipt and must report this failure for recovery;
-                // leave central's receipt intact rather than pretending release.
-                return Err(error);
-            }
+            // Native retirement has happened. The durable ledger owns the
+            // in-flight receipt and must report this failure for recovery;
+            // leave central's receipt intact rather than pretending release.
+            ledger
+                .confirm_source_ack(descriptor, &source_ack_id)
+                .await?;
             let mut recoveries = lock_std(&self.inner.peer_failure_recoveries);
             let Some(receipt) = recoveries.get_mut(descriptor) else {
                 return Err(contract_error(
@@ -12551,9 +12564,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // Confirmation proves source-side retirement, but the durable sidecar
         // still owns its quota until release succeeds. Keep the receipt for
         // an idempotent retry rather than leaking the sidecar after a crash.
-        if let Err(error) = ledger.release(descriptor).await {
-            return Err(error);
-        }
+        ledger.release(descriptor).await?;
         lock_std(&self.inner.peer_failure_recoveries).remove(descriptor);
         Ok(())
     }
@@ -12753,7 +12764,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     let offer = routes
                         .iter()
                         .find_map(|(scope, (path, epoch))| {
-                            (scope.0 == peer_id && *path == index).then(|| (scope, *epoch))
+                            (scope.0 == peer_id && *path == index).then_some((scope, *epoch))
                         })
                         .and_then(|(scope, epoch)| {
                             lock_std(&self.inner.peer_failure_recoveries)
@@ -13245,7 +13256,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // shutdown and a later shutdown re-evaluates this inventory.
         let mut peer_failure_recovery_debts = lock_std(&self.inner.peer_failure_recoveries)
             .iter()
-            .map(|(descriptor, receipt)| receipt.shutdown_debt(descriptor.clone()))
+            .map(|(descriptor, receipt)| receipt.shutdown_debt(*descriptor))
             .collect::<Vec<_>>();
         peer_failure_recovery_debts.sort_by(|left, right| {
             durable_descriptor_encode(&left.descriptor)
@@ -13600,7 +13611,7 @@ impl DesktopCentral<crate::btleplug_backend::BtleplugRadio> {
     /// The normal production open path with a trusted BlueZ LE attestation.
     /// Adapter initialization and compensation are identical to `open_btleplug`.
     pub async fn open_btleplug_with_policy(
-        mut profile: CentralProfile,
+        profile: CentralProfile,
         connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
     ) -> Result<Self, DesktopError> {
         Self::open_btleplug_with_policy_and_failure_evidence_store(profile, connection_policy, None)
@@ -14712,9 +14723,7 @@ fn claim_os_ended_scan<B>(
     id: &OperationId,
 ) -> Option<Option<Arc<StopFlight>>> {
     let mut slot = inner.scan_slot();
-    let Some(active) = slot.as_mut().filter(|active| active.id == *id) else {
-        return None;
-    };
+    let active = slot.as_mut().filter(|active| active.id == *id)?;
     match &active.phase {
         ScanPhase::Active
         | ScanPhase::Starting
@@ -15046,14 +15055,10 @@ async fn defer_link_end<B: RadioBoundary>(
 ) -> Option<tokio::sync::oneshot::Receiver<Result<(), DesktopError>>> {
     let slot = reserve_retirement(inner)?;
     let peer_key = inner.peers.lock().await.get(&peer_id).cloned();
-    let Some(peer_key) = peer_key else {
-        return None;
-    };
+    let peer_key = peer_key?;
     let core = inner.core.lock().await;
     let captured = Generations::of(&core, &peer_key);
-    let Some(generation) = captured.connection.clone() else {
-        return None;
-    };
+    let generation = captured.connection.clone()?;
     if expected_generation
         .as_ref()
         .is_some_and(|expected| expected != &generation)
@@ -15388,17 +15393,15 @@ async fn defer_gatt_watch_failure<B: RadioBoundary>(inner: &Arc<Inner<B>>, detai
             if matches!(
                 core.database_state(&peer_key),
                 Some(DatabaseState::Current | DatabaseState::Discovering)
-            ) {
-                if let Err(error) = core
-                    .services_changed(&peer_key)
-                    .and_then(|()| core.require_rediscovery(&peer_key))
-                {
-                    inner.note_compensation_failure();
-                    eprintln!(
-                        "{}: local GATT retirement failed: {error}",
-                        inner.identity.log_tag()
-                    );
-                }
+            ) && let Err(error) = core
+                .services_changed(&peer_key)
+                .and_then(|()| core.require_rediscovery(&peer_key))
+            {
+                inner.note_compensation_failure();
+                eprintln!(
+                    "{}: local GATT retirement failed: {error}",
+                    inner.identity.log_tag()
+                );
             }
             *snapshot = DiscoverySnapshot::default();
         }
@@ -15701,6 +15704,7 @@ async fn defer_services_changed<B: RadioBoundary>(
 /// the disconnect with an error (`errored`, [`RadioEvent::Lost`]); a live
 /// link, or an errored one, is lost (`LinkLost`, `Lost`). A link already
 /// terminal is a stale event for an older generation and publishes nothing.
+#[cfg(test)]
 async fn reconcile_disconnected<B: RadioBoundary>(
     inner: &Arc<Inner<B>>,
     peer_id: &str,
@@ -16251,19 +16255,6 @@ async fn stage_peer_failure_recovery<B: RadioBoundary>(
     true
 }
 
-/// Persist the complete source-time recipient cut after any monotonic read or
-/// acknowledgement update. The ledger validates the descriptor and each
-/// immutable recipient identity; central deliberately writes a whole snapshot
-/// so a restart cannot combine one member's newer cursor with another
-/// member's older acknowledgement.
-async fn persist_peer_failure_recovery_recipients<B: RadioBoundary>(
-    inner: &Arc<Inner<B>>,
-    descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
-) -> Result<(), DesktopError> {
-    let _serial = inner.peer_failure_recovery_persistence.lock().await;
-    persist_peer_failure_recovery_recipients_serialized(inner, descriptor).await
-}
-
 /// Persist while the caller already owns the recovery transition serial. This
 /// is intentionally separate from the public helper: acknowledgement needs
 /// to hold the serial from RAM mutation through the sidecar commit so a
@@ -16291,7 +16282,7 @@ async fn persist_peer_failure_recovery_recipients_serialized<B: RadioBoundary>(
                 "gatt.notification.source-failure-recovery.persist",
             )
         })?
-        .durable(descriptor.clone());
+        .durable(*descriptor);
     ledger.update_recipients(&occurrence).await
 }
 
@@ -16434,10 +16425,9 @@ fn recover_retired_ordered_source<B: RadioBoundary>(
                             OpControl::budget_ms(5000),
                         )
                         .await
+                        && let Some(owner) = owned.ordered_batches.get(&peer, collection_id)
                     {
-                        if let Some(owner) = owned.ordered_batches.get(&peer, collection_id) {
-                            owner.lock().await.fence_error.get_or_insert(error);
-                        }
+                        owner.lock().await.fence_error.get_or_insert(error);
                     }
                     return;
                 }
@@ -16461,10 +16451,9 @@ fn recover_retired_ordered_source<B: RadioBoundary>(
                                 OpControl::budget_ms(5000),
                             )
                             .await
+                            && let Some(owner) = owned.ordered_batches.get(&peer, collection_id)
                         {
-                            if let Some(owner) = owned.ordered_batches.get(&peer, collection_id) {
-                                owner.lock().await.fence_error.get_or_insert(error);
-                            }
+                            owner.lock().await.fence_error.get_or_insert(error);
                         }
                         return;
                     }
@@ -16788,6 +16777,7 @@ fn observation_refusal(cause: &DesktopError, operation: &'static str) -> Desktop
     error
 }
 
+#[cfg(test)]
 async fn gatt_observation_failed<B: RadioBoundary>(
     inner: &Arc<Inner<B>>,
     peer_id: &str,
@@ -16845,6 +16835,7 @@ async fn gatt_observation_failed<B: RadioBoundary>(
     let _ = inner.native_wake.send(());
 }
 
+#[cfg(test)]
 async fn gatt_watch_failed<B: RadioBoundary>(inner: &Arc<Inner<B>>, detail: &DesktopError) {
     inner.acquired.retire(None, None, detail.clone());
     {
@@ -16889,6 +16880,7 @@ async fn gatt_watch_failed<B: RadioBoundary>(inner: &Arc<Inner<B>>, detail: &Des
     let _ = inner.native_wake.send(());
 }
 
+#[cfg(test)]
 async fn services_changed_scoped_invalidated<B: RadioBoundary>(
     inner: &Arc<Inner<B>>,
     peer_id: &str,
@@ -16923,6 +16915,7 @@ async fn services_changed_scoped_invalidated<B: RadioBoundary>(
     snapshot.leases.clear();
 }
 
+#[cfg(test)]
 async fn services_changed_invalidated<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id: &str) {
     inner
         .gatt_admission
@@ -18169,10 +18162,8 @@ mod adapter_tests {
                 }
                 state
                     .occurrences
-                    .insert(occurrence.descriptor.clone(), occurrence.clone());
-                state
-                    .chunks
-                    .insert(occurrence.descriptor.clone(), Vec::new());
+                    .insert(occurrence.descriptor, occurrence.clone());
+                state.chunks.insert(occurrence.descriptor, Vec::new());
                 Ok(())
             })
         }
@@ -18243,7 +18234,7 @@ mod adapter_tests {
                 }
                 state
                     .occurrences
-                    .insert(occurrence.descriptor.clone(), occurrence.clone());
+                    .insert(occurrence.descriptor, occurrence.clone());
                 Ok(())
             })
         }
@@ -20178,7 +20169,8 @@ mod adapter_tests {
         let central = open().await;
         central
             .boundary()
-            .push_event(advertisement("lease-generation"));
+            .push_event(advertisement("lease-generation"))
+            .expect("synthetic event admission failed");
         wait_peer(&central, "lease-generation").await;
         let handle = central
             .connect("lease-generation", "lease", OpControl::budget_ms(5000))
@@ -20554,7 +20546,8 @@ mod adapter_tests {
         let central = open().await;
         central
             .boundary()
-            .push_event(advertisement("release-event-first"));
+            .push_event(advertisement("release-event-first"))
+            .expect("synthetic event admission failed");
         central
             .connect("release-event-first", "lease", OpControl::unbounded())
             .await
@@ -21781,7 +21774,7 @@ mod adapter_tests {
         // external ledger future; the retained receipt may settle later.
         ledger.block_updates();
         let ack_central = central.clone();
-        let ack_descriptor = descriptor.clone();
+        let ack_descriptor = descriptor;
         let ack_lease = lease.clone();
         let ack = tokio::spawn(async move {
             ack_central
@@ -25773,7 +25766,6 @@ mod adapter_tests {
             .count();
         let mut claim = OrderedClaim {
             member_id: 1,
-            selector: selector.clone(),
             consumer: "ordered".into(),
             scope,
             path_index,
@@ -26793,7 +26785,6 @@ mod adapter_tests {
             .insert("ordered".into());
         let mut claim = OrderedClaim {
             member_id: 1,
-            selector: selector.clone(),
             consumer: "ordered".into(),
             scope,
             path_index,
@@ -26877,7 +26868,6 @@ mod adapter_tests {
             .insert("ordered".into());
         let mut claim = OrderedClaim {
             member_id: 1,
-            selector: selector.clone(),
             consumer: "ordered".into(),
             scope,
             path_index,
@@ -26983,7 +26973,6 @@ mod adapter_tests {
             .insert("ordered".into());
         let mut claim = OrderedClaim {
             member_id: 1,
-            selector: selector.clone(),
             consumer: "ordered".into(),
             scope,
             path_index,
@@ -27943,6 +27932,10 @@ mod adapter_tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "this deterministic regression deliberately holds the journal writer while awaiting the recorder's durable-commit boundary"
+    )]
     async fn reclaim_refuses_real_recorder_delivery_retained_through_durable_commit() {
         use crate::continuation_journal::{JournalQuota, JournalRegistry};
         use crate::ordered_recording::{
@@ -28800,7 +28793,7 @@ mod adapter_tests {
             central.clone(),
             registry.clone(),
             "start-replay".into(),
-            quota.clone(),
+            quota,
             declaration.clone(),
         )
         .await
@@ -28809,7 +28802,7 @@ mod adapter_tests {
             central.clone(),
             registry.clone(),
             "start-replay".into(),
-            quota.clone(),
+            quota,
             declaration.clone(),
         )
         .await
@@ -28833,13 +28826,13 @@ mod adapter_tests {
                 central.clone(),
                 registry.clone(),
                 "start-replay".into(),
-                quota.clone(),
+                quota,
                 altered
             )
             .await
             .is_err()
         );
-        let mut changed_quota = quota.clone();
+        let mut changed_quota = quota;
         changed_quota.max_records += 1;
         assert!(
             OrderedRecording::prepare(
@@ -32519,7 +32512,8 @@ mod adapter_tests {
                 peer_id: "retry-loss".into(),
                 physical_generation: 17,
                 reason: 1,
-            });
+            })
+            .expect("synthetic physical-loss event admission failed");
         let source_error = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let super::NotificationPoll::SourceFailed(error) = central

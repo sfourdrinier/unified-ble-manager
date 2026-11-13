@@ -87,6 +87,7 @@ struct HostSlot {
     test_radios: HashMap<i64, Weak<JniRadio>>,
 }
 
+#[derive(Default)]
 struct TerminalEvidenceRecoveryHandles {
     epoch: u64,
     next: u64,
@@ -102,20 +103,6 @@ struct TerminalEvidenceRecoveryHandles {
 }
 
 const TERMINAL_EVIDENCE_ACKNOWLEDGEMENT_RETENTION_CAPACITY: usize = 256;
-
-impl Default for TerminalEvidenceRecoveryHandles {
-    fn default() -> Self {
-        Self {
-            epoch: 0,
-            next: 0,
-            lease_id: None,
-            lease: None,
-            entries: HashMap::new(),
-            acknowledged: HashSet::new(),
-            acknowledged_order: VecDeque::new(),
-        }
-    }
-}
 
 impl TerminalEvidenceRecoveryHandles {
     fn entry_alias(
@@ -279,7 +266,7 @@ impl ScanRecoveryHandles {
                     .iter()
                     .any(|existing: &PendingScanFailure| existing == value)
             {
-                missing.push(value.clone());
+                missing.push(*value);
             }
         }
         self.ensure_additional_room(missing.len(), "scan.failure-recovery.owners")?;
@@ -1352,6 +1339,10 @@ fn ordered_enable(
     ("orderedEnable", args)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the frozen JNI ordered-request wire is positional and must preserve its Java argument layout"
+)]
 fn ordered_request(
     rid: Arg,
     operation: &str,
@@ -6271,17 +6262,19 @@ fn scan_recovery_canonical_usize(
     usize::try_from(parsed).map_err(|_| invalid(operation, name))
 }
 
+type ScanRecoveryRawTokenFields = (
+    &'static str,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<Vec<u8>>,
+);
+
 fn scan_recovery_raw_token_object<'local>(
     env: &mut Env<'local>,
     token: ScanFailureRawToken,
 ) -> MobileResult<JObject<'local>> {
-    let (kind, value, total, count, bytes): (
-        &str,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<Vec<u8>>,
-    ) = match token {
+    let (kind, value, total, count, bytes): ScanRecoveryRawTokenFields = match token {
         ScanFailureRawToken::Null => ("null", None, None, None, None),
         ScanFailureRawToken::Bool(value) => ("bool", Some(value.to_string()), None, None, None),
         ScanFailureRawToken::I64(value) => ("i64", Some(value.to_string()), None, None, None),
@@ -6517,8 +6510,25 @@ pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeTerminalEvidence
         let lease = handles.lease.clone().ok_or_else(|| invalid("terminal-evidence-recovery.list", "unknown or revoked recovery lease"))?;
         let page = lease.list(max_items, max_bytes)?;
         let mut items = Vec::with_capacity(page.entries.len());
-        for value in page.entries { let id = handles.entry_alias(binding, &value)?;
-            let mut item = serde_json::json!({"handle":id,"producer":value.producer,"scope":{"managerId":value.scope.manager_id,"operationId":value.scope.operation_id,"incarnation":value.scope.incarnation},"state":match value.state { ubm_mobile::TerminalEvidenceRecoveryState::Staged=>"staged", ubm_mobile::TerminalEvidenceRecoveryState::Committed=>"committed"}}); if let Some(object)=item.as_object_mut() { if let Some(reference)=value.reference { object.insert("reference".into(), reference.into()); } if let Some(length)=value.byte_length { object.insert("byteLength".into(), length.to_string().into()); } if let Some(digest)=value.digest { object.insert("digest".into(), digest.iter().map(|b|format!("{b:02x}")).collect::<String>().into()); } if let Some(version)=value.format_version { object.insert("formatVersion".into(), version.into()); } } items.push(item); }
+        for value in page.entries {
+            let id = handles.entry_alias(binding, &value)?;
+            let mut item = serde_json::json!({"handle":id,"producer":value.producer,"scope":{"managerId":value.scope.manager_id,"operationId":value.scope.operation_id,"incarnation":value.scope.incarnation},"state":match value.state { ubm_mobile::TerminalEvidenceRecoveryState::Staged=>"staged", ubm_mobile::TerminalEvidenceRecoveryState::Committed=>"committed"}});
+            if let Some(object) = item.as_object_mut() {
+                if let Some(reference) = value.reference {
+                    object.insert("reference".into(), reference.into());
+                }
+                if let Some(length) = value.byte_length {
+                    object.insert("byteLength".into(), length.to_string().into());
+                }
+                if let Some(digest) = value.digest {
+                    object.insert("digest".into(), digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>().into());
+                }
+                if let Some(version) = value.format_version {
+                    object.insert("formatVersion".into(), version.into());
+                }
+            }
+            items.push(item);
+        }
         scan_recovery_response(env, serde_json::json!({"items":items,"more":page.more}))
     }).resolve_with::<ThrowMobile, _>(|| "terminal-evidence-recovery.list")
 }
@@ -6542,8 +6552,25 @@ pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeTerminalEvidence
         let lease = handles.lease.clone().ok_or_else(|| invalid("terminal-evidence-recovery.list-status", "unknown or revoked recovery lease"))?;
         let page = lease.list_with_status(max_items, max_bytes)?;
         let mut items = Vec::with_capacity(page.entries.len());
-        for value in page.entries { let id = handles.entry_alias(binding, &value)?;
-            let mut item = serde_json::json!({"handle":id,"producer":value.producer,"scope":{"managerId":value.scope.manager_id,"operationId":value.scope.operation_id,"incarnation":value.scope.incarnation},"state":match value.state { ubm_mobile::TerminalEvidenceRecoveryState::Staged=>"staged", ubm_mobile::TerminalEvidenceRecoveryState::Committed=>"committed"}}); if let Some(object)=item.as_object_mut() { if let Some(reference)=value.reference { object.insert("reference".into(), reference.into()); } if let Some(length)=value.byte_length { object.insert("byteLength".into(), length.to_string().into()); } if let Some(digest)=value.digest { object.insert("digest".into(), digest.iter().map(|b|format!("{b:02x}")).collect::<String>().into()); } if let Some(version)=value.format_version { object.insert("formatVersion".into(), version.into()); } } items.push(item); }
+        for value in page.entries {
+            let id = handles.entry_alias(binding, &value)?;
+            let mut item = serde_json::json!({"handle":id,"producer":value.producer,"scope":{"managerId":value.scope.manager_id,"operationId":value.scope.operation_id,"incarnation":value.scope.incarnation},"state":match value.state { ubm_mobile::TerminalEvidenceRecoveryState::Staged=>"staged", ubm_mobile::TerminalEvidenceRecoveryState::Committed=>"committed"}});
+            if let Some(object) = item.as_object_mut() {
+                if let Some(reference) = value.reference {
+                    object.insert("reference".into(), reference.into());
+                }
+                if let Some(length) = value.byte_length {
+                    object.insert("byteLength".into(), length.to_string().into());
+                }
+                if let Some(digest) = value.digest {
+                    object.insert("digest".into(), digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>().into());
+                }
+                if let Some(version) = value.format_version {
+                    object.insert("formatVersion".into(), version.into());
+                }
+            }
+            items.push(item);
+        }
         scan_recovery_response(env, serde_json::json!({"items":items,"more":page.more,"busyProducers":page.busy_producers}))
     }).resolve_with::<ThrowMobile, _>(|| "terminal-evidence-recovery.list-status")
 }
@@ -6650,7 +6677,7 @@ pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeScanFailureRecov
         let aliases = handles.issue_owner_batch(
             binding,
             &lease_id,
-            &owners.iter().map(|owner| owner.key.clone()).collect::<Vec<_>>(),
+            &owners.iter().map(|owner| owner.key).collect::<Vec<_>>(),
         )?;
         let mut values = Vec::new();
         for (owner, id) in owners.into_iter().zip(aliases) {
@@ -6686,7 +6713,7 @@ pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeScanFailureRecov
             None => {
                 handles.ensure_room(OP)?;
                 let id = handles.next_id(binding, "head")?;
-                handles.heads.insert(id.clone(), (lease_id, head.clone()));
+                handles.heads.insert(id.clone(), (lease_id, head));
                 id
             }
         };

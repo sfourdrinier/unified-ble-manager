@@ -60,6 +60,8 @@ SWIFT_FILES=(
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadio.swift"
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioDiscovery.swift"
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioOwner.swift"
+  "$OWNED_DIR/OwnedGraphDeferredQueue.swift"
+  "$OWNED_DIR/OwnedOrderedNotificationIngress.swift"
 )
 
 for swift_file in "${SWIFT_FILES[@]}"; do

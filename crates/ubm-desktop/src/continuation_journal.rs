@@ -649,7 +649,7 @@ impl WindowsSid {
 }
 
 #[cfg(windows)]
-fn windows_storage_error(message: &'static str) -> DesktopError {
+fn windows_storage_error(message: &'static str) -> JournalError {
     error("storage.permission", message)
 }
 
@@ -886,7 +886,7 @@ fn windows_validate_held_scan_recovery_object(
     if unsafe {
         GetAclInformation(
             dacl,
-            (&mut size).cast(),
+            core::ptr::addr_of_mut!(size).cast(),
             u32::try_from(core::mem::size_of::<ACL_SIZE_INFORMATION>()).map_err(|_| {
                 windows_storage_error("scan recovery sidecar ACL size exceeds API bounds")
             })?,
@@ -1076,6 +1076,12 @@ pub(crate) trait OrderedSupervisor: Send + Sync {
         >,
     >;
 }
+#[allow(
+    clippy::collapsible_if,
+    clippy::result_large_err,
+    clippy::type_complexity,
+    reason = "Authority recovery retains exact legacy receipt and owner representations."
+)]
 impl JournalAuthorities {
     fn maintain(&mut self, reserved: usize) {
         self.legacy_owners.retain(|_, owners| {
@@ -1130,6 +1136,12 @@ fn authorities() -> Result<MutexGuard<'static, JournalAuthorities>> {
 pub struct JournalRegistry {
     state: Mutex<RegistryState>,
 }
+#[allow(
+    clippy::collapsible_if,
+    clippy::result_large_err,
+    clippy::type_complexity,
+    reason = "Registry operations retain fixed legacy receipt and ordered-owner result shapes."
+)]
 impl JournalRegistry {
     /// Configure a private recording directory together with a trusted native
     /// protection provider for v2 scan-recovery sidecars. This API belongs to
@@ -2273,6 +2285,10 @@ fn retired_exact_result(connection: &Connection, claim: &Value, digest: &[u8]) -
     Ok(json!({"version":1,"token":receipt["token"],"retired":true}))
 }
 
+#[allow(
+    clippy::type_complexity,
+    reason = "The exact legacy receipt tuple mirrors the fixed SQLite row shape."
+)]
 fn legacy_exact_state(connection: &Connection) -> Result<Option<(Vec<u8>, Option<Value>, bool)>> {
     let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_exact_receipt')", [], |r| r.get(0))?;
     if !exists {
@@ -2929,6 +2945,20 @@ pub(crate) enum DiagnosticOwnerState {
     Reclaimed,
 }
 
+#[allow(
+    clippy::collapsible_if,
+    clippy::result_large_err,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "The durable journal implementation preserves fixed private receipt, recovery, and callback shapes; restructuring them would change its retained ownership boundaries."
+)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Diagnostic ownership records are retained for durable journal recovery tests."
+    )
+)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct DiagnosticOwner {
     pub(crate) id: DiagnosticId,
@@ -2970,6 +3000,13 @@ pub(crate) struct DiagnosticEntry {
     pub(crate) persistence_failure: Option<JournalError>,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Diagnostic slot capacity fields are retained for the durable diagnostic protocol."
+    )
+)]
 #[derive(Debug)]
 struct DiagnosticSlot {
     id: DiagnosticId,
@@ -2978,7 +3015,14 @@ struct DiagnosticSlot {
     entry: Option<DiagnosticEntry>,
 }
 
-#[derive(Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Diagnostic ledger identity fields are exercised by durable recovery tests."
+    )
+)]
+#[derive(Debug, Default)]
 struct DiagnosticLedger {
     incarnation: Option<[u8; 16]>,
     next_sequence: u64,
@@ -3363,6 +3407,10 @@ impl DiagnosticExact<'_> {
     }
 }
 
+#[allow(
+    clippy::collapsible_if,
+    reason = "Rust 2021 cannot express the guarded rollback with Clippy's let-chain suggestion."
+)]
 impl Drop for DiagnosticExact<'_> {
     fn drop(&mut self) {
         if self.open {
@@ -3373,17 +3421,13 @@ impl Drop for DiagnosticExact<'_> {
     }
 }
 
-impl Default for DiagnosticLedger {
-    fn default() -> Self {
-        Self {
-            incarnation: None,
-            next_sequence: 0,
-            charged: 0,
-            slots: Vec::new(),
-        }
-    }
-}
-
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Diagnostic permits retain ownership until the durable diagnostic path consumes them."
+    )
+)]
 #[derive(Debug)]
 pub(crate) struct DiagnosticPermit {
     ledger: Arc<Mutex<DiagnosticLedger>>,
@@ -3391,6 +3435,10 @@ pub(crate) struct DiagnosticPermit {
     consumed: bool,
 }
 
+#[allow(
+    clippy::collapsible_if,
+    reason = "Rust 2021 cannot express the lock-and-slot cleanup with Clippy's let-chain suggestion."
+)]
 impl Drop for DiagnosticPermit {
     fn drop(&mut self) {
         if self.consumed {
@@ -3410,6 +3458,13 @@ impl Drop for DiagnosticPermit {
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Diagnostic recording errors retain the permit for retry semantics."
+    )
+)]
 #[derive(Debug)]
 pub(crate) struct DiagnosticRecordError {
     pub(crate) error: JournalError,
@@ -3419,6 +3474,13 @@ pub(crate) struct DiagnosticRecordError {
     pub(crate) loss: RecordedLoss,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Diagnostic receipts are consumed by the retained retry protocol."
+    )
+)]
 #[derive(Debug)]
 pub(crate) struct DiagnosticReceipt {
     pub(crate) id: DiagnosticId,
@@ -3426,6 +3488,13 @@ pub(crate) struct DiagnosticReceipt {
     pub(crate) persistence_failure: Option<JournalError>,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Prepared diagnostics remain part of the explicit durable retry protocol."
+    )
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreparedDiagnostic {
     pub(crate) payload: String,
@@ -3447,8 +3516,10 @@ struct SharedJournal {
     reader_space: Arc<tokio::sync::Notify>,
 }
 
-fn shared_journals() -> &'static Mutex<HashMap<(u64, u64), Arc<SharedJournal>>> {
-    static SHARED: OnceLock<Mutex<HashMap<(u64, u64), Arc<SharedJournal>>>> = OnceLock::new();
+type SharedJournalMap = HashMap<(u64, u64), Arc<SharedJournal>>;
+
+fn shared_journals() -> &'static Mutex<SharedJournalMap> {
+    static SHARED: OnceLock<Mutex<SharedJournalMap>> = OnceLock::new();
     SHARED.get_or_init(Mutex::default)
 }
 
@@ -3478,18 +3549,15 @@ fn shared_journal(
             "journal ownership capacity reached; failures retained",
         ));
     }
-    if !entries.contains_key(&identity) {
-        entries.insert(
-            identity,
-            Arc::new(SharedJournal {
-                connection: Mutex::new(connection),
-                apple_failure_spool_gate: Mutex::new(()),
-                diagnostic_ledger: Arc::new(Mutex::new(DiagnosticLedger::default())),
-                failures: Mutex::new(Vec::new()),
-                reader_space: Arc::new(tokio::sync::Notify::new()),
-            }),
-        );
-    }
+    entries.entry(identity).or_insert_with(|| {
+        Arc::new(SharedJournal {
+            connection: Mutex::new(connection),
+            apple_failure_spool_gate: Mutex::new(()),
+            diagnostic_ledger: Arc::new(Mutex::new(DiagnosticLedger::default())),
+            failures: Mutex::new(Vec::new()),
+            reader_space: Arc::new(tokio::sync::Notify::new()),
+        })
+    });
     let shared = entries
         .get(&identity)
         .expect("journal just inserted")
@@ -3551,6 +3619,12 @@ pub struct ContinuationJournal {
     declaration: String,
 }
 
+#[allow(
+    clippy::collapsible_if,
+    clippy::result_large_err,
+    clippy::type_complexity,
+    reason = "The established journal API preserves durable receipt and SQLite row representations."
+)]
 impl ContinuationJournal {
     /// Opens the host-private terminal-evidence sidecar while this journal's
     /// authority lock remains held. The primary recording schema is untouched,
@@ -3620,6 +3694,13 @@ pub struct JournalPeerFailureRecoveryLedger {
     startup_recovery: Mutex<bool>,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Sidecar occurrences are retained for exact peer-failure recovery coverage."
+    )
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DurablePeerFailureSidecarOccurrence {
     pub(crate) occurrence: DurablePeerFailureRecoveryOccurrence,
@@ -4151,7 +4232,7 @@ fn open_exact_failure_sidecar_allowing_previous(
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    let mut connection = Connection::open_with_flags(path, if existed { flags } else { flags })?;
+    let mut connection = Connection::open_with_flags(path, flags)?;
     connection.busy_timeout(std::time::Duration::ZERO)?;
     connection.execute_batch(
         "PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA temp_store=MEMORY; PRAGMA cache_spill=OFF; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;",
@@ -4202,6 +4283,10 @@ fn open_exact_failure_sidecar_allowing_previous(
 }
 
 #[cfg(unix)]
+#[allow(
+    clippy::collapsible_if,
+    reason = "The protected create cleanup keeps the explicit Rust 2021 error boundary."
+)]
 fn create_private_scan_failure_sidecar(
     path: &Path,
     protector: Option<&dyn ScanRecoveryStorageProtector>,
@@ -4816,6 +4901,10 @@ fn open_apple_failure_spool(path: &Path, quota: JournalQuota) -> Result<Connecti
     Ok(connection)
 }
 
+#[allow(
+    clippy::collapsible_if,
+    reason = "The sidecar sequence admission uses explicit Rust 2021 nesting to preserve each retention check."
+)]
 impl JournalAppleNotificationFailureSpool {
     fn retirement_capability(&self, capture_ordinal: u64, identity: &[u8; 32]) -> Result<String> {
         let connection = self.connection.lock().map_err(|_| {
@@ -5784,6 +5873,10 @@ impl JournalAppleNotificationFailureSpool {
     }
 }
 
+#[allow(
+    clippy::type_complexity,
+    reason = "The private recovery row exactly mirrors its retained SQLite occurrence schema."
+)]
 impl JournalPeerFailureRecoveryLedger {
     fn connection(&self) -> Result<MutexGuard<'_, Connection>> {
         self.connection
@@ -6642,6 +6735,13 @@ impl PeerFailureRecoveryLedger for JournalPeerFailureRecoveryLedger {
 /// Durable state of the native producer acknowledgement. The occurrence stays
 /// retained through `SourceAckCommitted` until central has reconciled the
 /// producer receipt and explicitly releases it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Recovery state is retained for durable peer-failure replay coverage."
+    )
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PeerFailureRecoveryState {
     Staged,
@@ -6649,6 +6749,13 @@ pub(crate) enum PeerFailureRecoveryState {
     SourceAckCommitted,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Storage conversion is retained for peer-failure recovery replay."
+    )
+)]
 impl PeerFailureRecoveryState {
     fn from_storage(value: &str) -> Result<Self> {
         match value {
@@ -6724,6 +6831,13 @@ fn sidecar_expected_bytes(occurrence: &DurablePeerFailureRecoveryOccurrence) -> 
 /// Transactionally retained opaque central occurrence envelope plus the exact
 /// native bytes. The JSON envelope is canonicalized by central; journal never
 /// synthesizes route, lease, error, or source-ACK identities.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Peer-failure recovery envelopes are retained for the durable sidecar protocol."
+    )
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PeerFailureRecovery {
     pub(crate) occurrence: Value,
@@ -6740,6 +6854,20 @@ pub(crate) struct ScanFailureRecordingRecoveryAuthority {
     pub(crate) authority: [u8; 32],
 }
 
+#[allow(
+    clippy::collapsible_if,
+    clippy::result_large_err,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "The durable journal implementation preserves fixed private receipt, recovery, and callback shapes; restructuring them would change its retained ownership boundaries."
+)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The durable recovery API is covered by journal integration tests while this module also compiles in the library."
+    )
+)]
 impl ContinuationJournal {
     /// Select one exact raw-evidence source.  A release may have either the
     /// old sibling v1 file or the private v2 file, but never silently merges
@@ -9545,7 +9673,7 @@ impl ContinuationJournal {
                 "invalid diagnostic comparison chunk",
             ));
         }
-        let mut connection = self.connection()?;
+        let connection = self.connection()?;
         let ledger = self
             .shared
             .diagnostic_ledger
@@ -10219,15 +10347,17 @@ impl ContinuationJournal {
                 record,
             )
             .map_err(|failure| failure.at("append-ordered"));
-        if let Err(failure) = &outcome
-            && failure.kind.starts_with("storage.")
-            && failure.kind != "storage.stopped"
-            && failure.kind != "storage.identity-conflict"
-            && failure.kind != "storage.owner-conflict"
-            && failure.kind != "storage.collection-failed"
-            && let Ok(mut stored) = self.failures.runtime_failure.lock()
-        {
-            *stored = Some(failure.clone());
+        if let Err(failure) = &outcome {
+            if failure.kind.starts_with("storage.")
+                && failure.kind != "storage.stopped"
+                && failure.kind != "storage.identity-conflict"
+                && failure.kind != "storage.owner-conflict"
+                && failure.kind != "storage.collection-failed"
+            {
+                if let Ok(mut stored) = self.failures.runtime_failure.lock() {
+                    *stored = Some(failure.clone());
+                }
+            }
         }
         outcome
     }
@@ -10498,22 +10628,25 @@ impl ContinuationJournal {
                 hook();
             }
         }
-        if accounted.is_none()
-            && let Err(failure) = &outcome
-            && failure.kind.starts_with("storage.")
-            && failure.kind != "storage.stopped"
-            && failure.kind != "storage.owner-conflict"
-            && failure.kind != "storage.collection-failed"
-            && let Ok(mut stored) = self.failures.runtime_failure.lock()
-        {
-            *stored = Some(failure.clone());
+        if accounted.is_none() {
+            if let Err(failure) = &outcome {
+                if failure.kind.starts_with("storage.")
+                    && failure.kind != "storage.stopped"
+                    && failure.kind != "storage.owner-conflict"
+                    && failure.kind != "storage.collection-failed"
+                {
+                    if let Ok(mut stored) = self.failures.runtime_failure.lock() {
+                        *stored = Some(failure.clone());
+                    }
+                }
+            }
         }
         if let Some((impacts, trailing)) = accounted {
-            if let Err(failure) = &outcome
-                && failure.kind != "storage.owner-conflict"
-            {
-                let loss = impacts.iter().copied().fold(trailing, RecordedLoss::add);
-                self.mark_recorded_collection_loss_locked(Ok(&mut connection), failure, loss);
+            if let Err(failure) = &outcome {
+                if failure.kind != "storage.owner-conflict" {
+                    let loss = impacts.iter().copied().fold(trailing, RecordedLoss::add);
+                    self.mark_recorded_collection_loss_locked(Ok(&mut connection), failure, loss);
+                }
             }
         } else if terminal {
             let failure = match &outcome {
@@ -10760,11 +10893,10 @@ impl ContinuationJournal {
         match result {
             Ok(()) => {
                 *pending = RecordedLoss::default();
-                if let Some(local) = original.as_ref()
-                    && local["persisted"] == false
-                    && !same_failure(local, &report)
-                {
-                    report = local.clone();
+                if let Some(local) = original.as_ref() {
+                    if local["persisted"] == false && !same_failure(local, &report) {
+                        report = local.clone();
+                    }
                 }
             }
             Err(error) => {
@@ -12334,6 +12466,10 @@ fn unreadable_diagnostic_report(size: u64, source: &str) -> Value {
 
 const MAX_PUBLIC_INTEGER: u64 = 9_007_199_254_740_991;
 
+#[allow(
+    clippy::collapsible_if,
+    reason = "Rust 2021 cannot express this validated optional field check as Clippy's suggested let-chain."
+)]
 fn valid_failure(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
@@ -12421,10 +12557,11 @@ fn valid_summary(value: &Value) -> bool {
     let Some(persisted) = object.get("persisted").and_then(Value::as_bool) else {
         return false;
     };
-    if let Some(nested) = object.get("persistenceFailure") {
-        if persisted || !valid_failure(nested) {
-            return false;
-        }
+    if object
+        .get("persistenceFailure")
+        .is_some_and(|nested| persisted || !valid_failure(nested))
+    {
+        return false;
     }
     if let Some(loss) = object.get("knownRecordedLoss") {
         let Some(loss) = loss.as_object() else {
@@ -12723,6 +12860,13 @@ pub(crate) fn diagnostic_payload(entry: &DiagnosticEntry) -> String {
     json!({"category": match entry.category { DiagnosticCategory::Collection => "collection", DiagnosticCategory::Runtime => "runtime" }, "failure": diagnostic(&entry.failure), "loss": {"items": entry.loss.items, "bytes": entry.loss.bytes} }).to_string()
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Diagnostic persistence remains retained for exact journal replay tests."
+    )
+)]
 fn persist_diagnostic(connection: &mut Connection, entry: &DiagnosticEntry) -> Result<()> {
     let payload = diagnostic_payload(entry);
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -12884,7 +13028,7 @@ fn persist_diagnostic_tx(
             }
             let previous = summary_for_update(tx)?;
             let prior_loss = RecordedLoss::from_report(previous.as_ref());
-            let mut report = previous.unwrap_or_else(|| Value::Object(failure));
+            let mut report = previous.unwrap_or(Value::Object(failure));
             report["persisted"] = json!(true);
             report["knownRecordedLoss"] = prior_loss.add(recorded_loss).value();
             preserve_summary_before_update(tx)?;
@@ -14225,7 +14369,7 @@ mod authority_tests {
         );
         let ledger = journal.peer_failure_recovery_ledger().unwrap();
         let occurrence = peer_failure_occurrence((4 << 20) + 17);
-        let descriptor = occurrence.descriptor.clone();
+        let descriptor = occurrence.descriptor;
         ledger.begin_stage(&occurrence).await.unwrap();
         let mut offset = 0_u64;
         while offset < descriptor.encoded_length {
@@ -14315,7 +14459,7 @@ mod authority_tests {
         );
         first.recover_all().unwrap();
         let occurrence = peer_failure_occurrence(8);
-        let descriptor = occurrence.descriptor.clone();
+        let descriptor = occurrence.descriptor;
         first.begin_stage(&occurrence).await.unwrap();
         first
             .append_stage_chunk(&descriptor, 0, &[1, 2, 3, 4], false)
@@ -14373,7 +14517,7 @@ mod authority_tests {
         );
         let ledger = journal.peer_failure_recovery_ledger().unwrap();
         let occurrence = peer_failure_occurrence(8);
-        let descriptor = occurrence.descriptor.clone();
+        let descriptor = occurrence.descriptor;
         ledger.begin_stage(&occurrence).await.unwrap();
         ledger
             .append_stage_chunk(&descriptor, 0, &[1, 2, 3, 4], false)
@@ -14409,7 +14553,7 @@ mod authority_tests {
         );
         let ledger = journal.peer_failure_recovery_ledger().unwrap();
         let occurrence = peer_failure_occurrence(4);
-        let descriptor = occurrence.descriptor.clone();
+        let descriptor = occurrence.descriptor;
         ledger.begin_stage(&occurrence).await.unwrap();
         let gap = ledger
             .append_stage_chunk(&descriptor, 1, b"abc", true)
@@ -14475,7 +14619,7 @@ mod authority_tests {
         );
         let ledger = journal.peer_failure_recovery_ledger().unwrap();
         let occurrence = peer_failure_occurrence(4);
-        let descriptor = occurrence.descriptor.clone();
+        let descriptor = occurrence.descriptor;
         ledger.begin_stage(&occurrence).await.unwrap();
         ledger
             .append_stage_chunk(&descriptor, 0, b"abcd", true)
@@ -17143,7 +17287,7 @@ mod authority_tests {
         .unwrap();
         assert_eq!(journal.clear().unwrap_err().kind, "storage.busy");
         let mut different = entry.clone();
-        different.failure.detail = "different valid payload".into();
+        different.failure.detail = "different valid payload";
         assert_eq!(
             journal
                 .replay_owned_diagnostic(different.id, &diagnostic_payload(&different))
@@ -17504,7 +17648,7 @@ mod authority_tests {
         };
         let payload = diagnostic_payload(&entry);
         let mut other = entry.clone();
-        other.failure.detail = "different".into();
+        other.failure.detail = "different";
         let mismatch = diagnostic_payload(&other);
         assert!(validate_diagnostic_payload(&mismatch).is_ok());
         assert_eq!(

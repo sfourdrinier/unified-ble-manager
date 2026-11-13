@@ -33,8 +33,7 @@ async fn unrelated_retirement_waits_for_blocked_peer_prefix_and_overflow() {
     };
     ingress.register(1, route(1), 1).unwrap();
     let b = ingress.register(1, route(2), 2).unwrap();
-    let queue: Arc<Mutex<GraphGate<Box<dyn FnOnce() + Send>>>> =
-        Arc::new(Mutex::new(GraphGate::new(1, 128)));
+    let queue = Arc::new(Mutex::new(GraphGate::new(1, 128)));
     let k = key();
     queue.lock().unwrap().acquire(k.clone()).unwrap();
     queue.lock().unwrap().commit(&k).unwrap();

@@ -2,6 +2,10 @@ use std::sync::RwLock;
 
 // No WinRT registration handoff proves a gapless cut. Publish the uncertain
 // terminal before a gate can suppress observations; recovery never adopts it.
+#[allow(
+    dead_code,
+    reason = "Standalone callback-gate fixtures include this shared WinRT module without exercising its separate handoff route."
+)]
 pub(super) fn terminate_handoff(terminate: impl FnOnce(), fence: impl FnOnce()) {
     terminate();
     fence();

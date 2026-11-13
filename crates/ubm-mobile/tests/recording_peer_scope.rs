@@ -317,14 +317,27 @@ async fn mobile_recording_controller_transport() {
                 .clone()
         );
     }
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
-    assert_eq!(
-        engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
-            .await
-            .unwrap()["disposed"],
-        true
-    );
+    // Legacy claim acknowledgement can legitimately report that final
+    // disposal is still owned while the cleanup path emits its last durable
+    // records. Reclaim each resulting prefix until the protocol confirms the
+    // source is released; do not mistake the first acknowledgement for that
+    // stronger receipt.
+    let disposed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let claim = engine.prepare_claim(256, 65536).await.unwrap();
+            let receipt = engine
+                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+                .await
+                .unwrap();
+            if receipt["disposed"] == true {
+                return receipt;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("continuation cleanup did not reach a terminal disposal receipt");
+    assert_eq!(disposed["disposed"], true);
     ok(&call(&other, "session.dispose", "{}").await);
     host.shutdown().await;
     drop(restarted);

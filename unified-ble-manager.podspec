@@ -43,6 +43,8 @@ Pod::Spec.new do |s|
     "ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift",
     "ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift",
     "ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift",
+    "ios/Owned/OwnedGraphDeferredQueue.swift",
+    "ios/Owned/OwnedOrderedNotificationIngress.swift",
     "native/protocol/src/**/*.cpp"
   ]
   s.source_files = base_source_files

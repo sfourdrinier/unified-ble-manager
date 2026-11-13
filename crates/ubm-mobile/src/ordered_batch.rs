@@ -350,25 +350,24 @@ fn convert(
     // can be acknowledged. A queue byte limit alone is not a wire limit.
     let failure = match &converted {
         OrderedIngressRecord::BridgeFailure { failure } => Some(failure),
-        OrderedIngressRecord::Terminal { reason, .. } => match reason {
-            EndReason::SetupFailed(failure)
-            | EndReason::SourceFailed(failure)
-            | EndReason::HostReset(failure) => Some(failure),
-            _ => None,
-        },
+        OrderedIngressRecord::Terminal {
+            reason:
+                EndReason::SetupFailed(failure)
+                | EndReason::SourceFailed(failure)
+                | EndReason::HostReset(failure),
+            ..
+        } => Some(failure),
         _ => None,
     };
-    if let Some(failure) = failure {
-        if !crate::ordered_encoding::legacy_failure_encodable(failure) {
-            return Err(DesktopError::new(
-                BleErrorCode::ArgumentInvalid,
-                BleErrorDomain::Gatt,
-                "gatt.ordered.ingress.failure-unrepresentable",
-            )
-            .with_detail(
-                "native failure cannot be represented by the selected mobile wire revision",
-            ));
-        }
+    if let Some(failure) = failure
+        && !crate::ordered_encoding::legacy_failure_encodable(failure)
+    {
+        return Err(DesktopError::new(
+            BleErrorCode::ArgumentInvalid,
+            BleErrorDomain::Gatt,
+            "gatt.ordered.ingress.failure-unrepresentable",
+        )
+        .with_detail("native failure cannot be represented by the selected mobile wire revision"));
     }
     Ok(converted)
 }
@@ -621,6 +620,10 @@ impl OrderedBatchConsumer {
     pub(crate) fn confirm_close(&self) {
         self.close_confirmed.store(true, Ordering::SeqCst);
     }
+    #[allow(
+        dead_code,
+        reason = "the ordered source bridge reads this through platform-specific bindings"
+    )]
     pub(crate) fn source_final(&self) -> bool {
         self.source_final.load(Ordering::SeqCst)
     }

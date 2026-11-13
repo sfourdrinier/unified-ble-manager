@@ -92,6 +92,10 @@ pub(crate) struct Outstanding<F, D> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Error {
     InvalidCapacity,
+    #[allow(
+        dead_code,
+        reason = "the registry retains the duplicate-registration outcome for the platform bridge"
+    )]
     AlreadyRegistered,
     UnknownIncarnation,
     Capacity,
@@ -167,6 +171,10 @@ impl<F, D> Default for CoordinatorRegistry<F, D> {
 }
 
 impl<F, D> CoordinatorRegistry<F, D> {
+    #[allow(
+        dead_code,
+        reason = "the platform-specific ordered-open bridge owns registration"
+    )]
     pub(crate) fn register(
         &self,
         incarnation: Incarnation,
@@ -208,6 +216,10 @@ impl<F, D> CoordinatorRegistry<F, D> {
         Ok(coordinator)
     }
 
+    #[allow(
+        dead_code,
+        reason = "the platform-specific ordered-open bridge owns attachment"
+    )]
     pub(crate) fn attach(&self, incarnation: Incarnation) -> Result<Arc<Coordinator<F, D>>, Error> {
         let owners = self.owners.lock().expect("ordered open registry poisoned");
         let owner = owners.get(&incarnation).ok_or(Error::UnknownIncarnation)?;
@@ -316,6 +328,10 @@ impl<F, D> CoordinatorRegistry<F, D> {
         Ok(())
     }
 
+    #[allow(
+        dead_code,
+        reason = "the platform-specific ordered-open bridge owns owner retirement"
+    )]
     pub(crate) fn begin_retirement(
         &self,
         coordinator: &Arc<Coordinator<F, D>>,
@@ -335,6 +351,10 @@ impl<F, D> CoordinatorRegistry<F, D> {
         Ok(())
     }
 
+    #[allow(
+        dead_code,
+        reason = "the platform-specific ordered-open bridge anchors lifecycle ownership"
+    )]
     pub(crate) fn add_anchor(
         &self,
         coordinator: &Arc<Coordinator<F, D>>,
@@ -856,6 +876,10 @@ impl<F: Clone + Eq, D: Clone + Eq> Coordinator<F, D> {
 impl<F: Clone + Eq> Coordinator<F, crate::radio::OrderedOpenTerminalV2> {
     /// Remove only after the exact retained failure established no native
     /// effect and its matching native retirement was confirmed.
+    #[allow(
+        dead_code,
+        reason = "the platform-specific recovery bridge removes no-effect groups"
+    )]
     pub(crate) fn forget_no_effect_group(
         &self,
         mapping: GroupMapping,
@@ -885,22 +909,20 @@ impl<F: Clone + Eq> Coordinator<F, crate::radio::RadioCompletion> {
         use crate::radio::{
             OrderedOpenCompletionV2, OrderedOpenOutcomeV2, OrderedOpenOwnershipV2, RadioCompletion,
         };
-        self.forget_if_retired(mapping, retired, |disposition| match disposition {
-            RadioCompletion::OrderedOpenV2(OrderedOpenCompletionV2::Result(result))
-                if result.slot_identity.owner_incarnation.bytes() == retired.incarnation
-                    && result.slot_identity.slot == retired.slot
-                    && result.slot_identity.slot_generation == retired.generation
-                    && matches!(
-                        &result.outcome,
-                        OrderedOpenOutcomeV2::Failed {
-                            ownership: OrderedOpenOwnershipV2::NotCreated,
-                            ..
-                        }
-                    ) =>
-            {
-                true
-            }
-            _ => false,
+        self.forget_if_retired(mapping, retired, |disposition| {
+            matches!(disposition,
+                RadioCompletion::OrderedOpenV2(OrderedOpenCompletionV2::Result(result))
+                    if result.slot_identity.owner_incarnation.bytes() == retired.incarnation
+                        && result.slot_identity.slot == retired.slot
+                        && result.slot_identity.slot_generation == retired.generation
+                        && matches!(
+                            &result.outcome,
+                            OrderedOpenOutcomeV2::Failed {
+                                ownership: OrderedOpenOwnershipV2::NotCreated,
+                                ..
+                            }
+                        )
+            )
         })
     }
 }

@@ -37,7 +37,7 @@ pub use crate::droidplug::{
 };
 #[cfg(target_os = "windows")]
 pub use crate::winrtble::{
-    adapter::Adapter, ble::watcher::ScanStopped, manager::Manager,
+    adapter::{Adapter, StalledScanWatcher}, ble::watcher::ScanStopped, manager::Manager,
     peripheral::NotificationActivationIdentity, peripheral::NotificationActivationOwner,
     peripheral::Peripheral, peripheral::PeripheralId,
 };

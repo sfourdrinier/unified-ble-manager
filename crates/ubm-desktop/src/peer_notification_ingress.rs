@@ -56,6 +56,13 @@ impl Members {
         })
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The single-route registration helper remains covered by source-owner tests alongside batch registration."
+        )
+    )]
     pub(crate) fn register<E>(
         &self,
         target: ForwardTarget,
@@ -235,6 +242,13 @@ pub(crate) enum MappedRecord {
     },
     Fence {
         membership: Membership,
+        #[cfg_attr(
+            not(test),
+            expect(
+                dead_code,
+                reason = "Fence routing is asserted by the source-owner test route."
+            )
+        )]
         target: ForwardTarget,
     },
     Barrier {
@@ -982,6 +996,17 @@ fn rejected_record(
 
 /// One consumer drains a peer FIFO and sends its records in the same order.
 /// Every native fence becomes a central-consumption acknowledgement.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The pump preserves the established native ingress ownership boundary without introducing a second configuration object."
+)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The direct pump entrypoint remains covered by ingress ownership tests."
+    )
+)]
 pub(crate) async fn pump_group<S: GroupSource>(
     peer_id: String,
     generation: u64,
@@ -994,7 +1019,7 @@ pub(crate) async fn pump_group<S: GroupSource>(
     sender: mpsc::Sender<RadioEvent>,
     queued_bytes: Arc<AtomicU64>,
     dropped: Arc<AtomicU64>,
-    mut pause: Option<(
+    pause: Option<(
         tokio::sync::watch::Receiver<bool>,
         tokio::sync::watch::Sender<bool>,
     )>,
@@ -1021,6 +1046,14 @@ pub(crate) async fn pump_group<S: GroupSource>(
 /// The store exposes producer-backed range pages; it never copies the error
 /// payload into an unbounded event queue.  A failure head remains in the
 /// source until central staging *and* the eventual recipient ACK complete.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The recovery pump receives its explicit ownership and recovery dependencies from the existing host call shape."
+)]
+#[allow(
+    clippy::collapsible_if,
+    reason = "Rust 2021 does not support the let-chain form Clippy suggests for the retained pause and retry ownership checks."
+)]
 pub(crate) async fn pump_group_with_failure_recovery<S: GroupSource>(
     peer_id: String,
     generation: u64,
@@ -1137,67 +1170,66 @@ pub(crate) async fn pump_group_with_failure_recovery<S: GroupSource>(
         } else {
             false
         };
-        if !descriptor_recovery
-            && !already_admitted
-            && let Err(error) = admit_to_collections(&registry, &source, &record, &members)
-        {
-            if !error.retryable {
-                return Err(PumpFailure {
-                    error: error.error,
-                    rejected: rejected_record(&record),
-                });
-            }
-            let wake = registry
-                .lock()
-                .expect("ordered notification groups")
-                .pending_source_wake(&source);
-            let Some(wake) = wake else {
-                return Err(PumpFailure {
-                    error: error.error,
-                    rejected: rejected_record(&record),
-                });
-            };
-            loop {
-                if let Some((request, acknowledged)) = pause.as_mut() {
-                    if *request.borrow_and_update() {
-                        acknowledged.send_replace(true);
-                        while *request.borrow_and_update() {
-                            if request.changed().await.is_err() {
-                                return Err(pump_failure("source pause owner closed").into());
-                            }
-                        }
-                        acknowledged.send_replace(false);
-                    }
+        if !descriptor_recovery && !already_admitted {
+            if let Err(error) = admit_to_collections(&registry, &source, &record, &members) {
+                if !error.retryable {
+                    return Err(PumpFailure {
+                        error: error.error,
+                        rejected: rejected_record(&record),
+                    });
                 }
-                let notified = wake.notified();
-                let result = registry
+                let wake = registry
                     .lock()
                     .expect("ordered notification groups")
-                    .retry_pending_source(&source);
-                match result {
-                    Ok(_) => break,
-                    Err(crate::ordered_notification_groups::RegistryError::Collection(
-                        ubm_core::ordered_notifications::Error::RecordTooLarge
-                        | ubm_core::ordered_notifications::Error::PendingCapacity,
-                    )) => {
-                        if let Some((request, _)) = pause.as_mut() {
-                            tokio::select! {
-                                _ = notified => {},
-                                changed = request.changed() => if changed.is_err() {
+                    .pending_source_wake(&source);
+                let Some(wake) = wake else {
+                    return Err(PumpFailure {
+                        error: error.error,
+                        rejected: rejected_record(&record),
+                    });
+                };
+                loop {
+                    if let Some((request, acknowledged)) = pause.as_mut() {
+                        if *request.borrow_and_update() {
+                            acknowledged.send_replace(true);
+                            while *request.borrow_and_update() {
+                                if request.changed().await.is_err() {
                                     return Err(pump_failure("source pause owner closed").into());
-                                },
+                                }
                             }
-                        } else {
-                            notified.await;
+                            acknowledged.send_replace(false);
                         }
                     }
-                    Err(failure) => {
-                        return Err(PumpFailure {
-                            error: pump_failure(format!(
-                                "ordered source retry failed: {failure:?}"
-                            )),
-                            rejected: rejected_record(&record),
-                        });
+                    let notified = wake.notified();
+                    let result = registry
+                        .lock()
+                        .expect("ordered notification groups")
+                        .retry_pending_source(&source);
+                    match result {
+                        Ok(_) => break,
+                        Err(crate::ordered_notification_groups::RegistryError::Collection(
+                            ubm_core::ordered_notifications::Error::RecordTooLarge
+                            | ubm_core::ordered_notifications::Error::PendingCapacity,
+                        )) => {
+                            if let Some((request, _)) = pause.as_mut() {
+                                tokio::select! {
+                                    _ = notified => {},
+                                    changed = request.changed() => if changed.is_err() {
+                                        return Err(pump_failure("source pause owner closed").into());
+                                    },
+                                }
+                            } else {
+                                notified.await;
+                            }
+                        }
+                        Err(failure) => {
+                            return Err(PumpFailure {
+                                error: pump_failure(format!(
+                                    "ordered source retry failed: {failure:?}"
+                                )),
+                                rejected: rejected_record(&record),
+                            });
+                        }
                     }
                 }
             }
@@ -1529,10 +1561,9 @@ pub(crate) async fn pump_group_with_failure_recovery<S: GroupSource>(
 
 #[path = "peer_notification_owner.rs"]
 mod owner;
-pub(crate) use owner::{
-    Group, MemberRenewal, OpenGenerationError, OrderedSourceOwner, PeerGroupState,
-    SourceGeneration, open_group,
-};
+pub(crate) use owner::{Group, MemberRenewal, OrderedSourceOwner, PeerGroupState, open_group};
+#[cfg(test)]
+pub(crate) use owner::{OpenGenerationError, SourceGeneration};
 
 #[cfg(test)]
 #[path = "peer_notification_ingress_tests.rs"]

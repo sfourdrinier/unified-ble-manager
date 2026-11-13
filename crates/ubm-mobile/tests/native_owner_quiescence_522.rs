@@ -251,20 +251,21 @@ async fn held_execution_survives_failed_shutdown_and_exact_slot_evidence_is_retr
     radio.settled.store(true, Ordering::SeqCst);
     until("recovery route did not acknowledge the exact settled open", || radio.requests.lock().unwrap().iter().any(|r| matches!(r,
         RadioRequest::OrderedOpenV2(OrderedOpenRequestV2::Acknowledge { identity: got, .. }) if got == &identity))).await;
-    let requests = radio.requests.lock().unwrap();
-    assert!(
-        requests
-            .iter()
-            .filter_map(|r| match r {
-                RadioRequest::OrderedOpenV2(OrderedOpenRequestV2::Recover {
-                    identity: got,
-                    ..
-                }) => Some(got),
-                _ => None,
-            })
-            .all(|got| got == &identity)
-    );
-    drop(requests);
+    {
+        let requests = radio.requests.lock().unwrap();
+        assert!(
+            requests
+                .iter()
+                .filter_map(|r| match r {
+                    RadioRequest::OrderedOpenV2(OrderedOpenRequestV2::Recover {
+                        identity: got,
+                        ..
+                    }) => Some(got),
+                    _ => None,
+                })
+                .all(|got| got == &identity)
+        );
+    }
     // A slot retirement is not an owner quiescence receipt.
     let retry = parse(
         &tokio::time::timeout(Duration::from_secs(8), host.shutdown())

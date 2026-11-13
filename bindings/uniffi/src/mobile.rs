@@ -3213,6 +3213,7 @@ pub struct MobileCoreHost {
     scan_failure_recovery_configuration_authority_claimed: AtomicBool,
     terminal_recovery: Mutex<TerminalRecoveryHandles>,
 }
+#[derive(Default)]
 struct TerminalRecoveryHandles {
     next: u64,
     lease_id: Option<String>,
@@ -3225,19 +3226,6 @@ struct TerminalRecoveryHandles {
     acknowledged_order: std::collections::VecDeque<String>,
 }
 const TERMINAL_EVIDENCE_ACKNOWLEDGEMENT_RETENTION_CAPACITY: usize = 256;
-impl Default for TerminalRecoveryHandles {
-    fn default() -> Self {
-        Self {
-            next: 0,
-            lease_id: None,
-            lease: None,
-            entries: std::collections::HashMap::new(),
-            acknowledged: std::collections::HashSet::new(),
-            acknowledged_order: std::collections::VecDeque::new(),
-        }
-    }
-}
-
 impl TerminalRecoveryHandles {
     fn retain_acknowledgement(&mut self, handle: String) {
         if !self.acknowledged.insert(handle.clone()) {
@@ -4963,6 +4951,10 @@ impl MobileCoreSession {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the UniFFI public method mirrors the frozen mobile invoke wire exactly"
+    )]
     pub fn start_ordered_recording(
         &self,
         handle: String,

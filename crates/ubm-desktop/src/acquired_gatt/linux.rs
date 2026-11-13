@@ -201,9 +201,7 @@ fn receive_packet(fd: &OwnedFd, maximum: usize) -> io::Result<Packet> {
     message.msg_iov = &mut vector;
     message.msg_iovlen = 1;
     message.msg_control = std::ptr::from_mut(&mut control).cast();
-    message.msg_controllen = std::mem::size_of_val(&control)
-        .try_into()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "control buffer too large"))?;
+    message.msg_controllen = std::mem::size_of_val(&control);
     let received = unsafe {
         libc::recvmsg(
             fd.as_raw_fd(),

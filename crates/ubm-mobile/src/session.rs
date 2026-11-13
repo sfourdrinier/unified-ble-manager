@@ -267,14 +267,13 @@ struct ExactLeaseReservation<'a> {
 
 impl Drop for ExactLeaseReservation<'_> {
     fn drop(&mut self) {
-        if let Some(table) = lock(self.table).as_mut() {
-            if table
+        if let Some(table) = lock(self.table).as_mut()
+            && table
                 .records
                 .get(&self.identity)
                 .is_some_and(|entry| entry.owner.is_none())
-            {
-                table.records.remove(&self.identity);
-            }
+        {
+            table.records.remove(&self.identity);
         }
     }
 }
@@ -407,7 +406,15 @@ pub(crate) struct SessionState {
     /// Reset outcomes retain the admitted attachment and operation, including
     /// failures, until the corresponding owner can observe them.
     reset_changed: Notify,
+    #[expect(
+        clippy::type_complexity,
+        reason = "the reset lease map stores its exact cleanup ownership tuple"
+    )]
     reset_leases: Mutex<HashMap<OperationAdmission, (String, OwnedLease, Option<DesktopError>)>>,
+    #[expect(
+        clippy::type_complexity,
+        reason = "the reset subscription map stores its exact cleanup ownership tuple"
+    )]
     reset_subscriptions:
         Mutex<HashMap<OperationAdmission, (String, Subscription, Option<DesktopError>)>>,
     scan: Mutex<ScanSlot>,
@@ -626,10 +633,10 @@ struct RecordingStartGuard {
 }
 impl Drop for RecordingStartGuard {
     fn drop(&mut self) {
-        if !self.completed {
-            if let Some(entry) = lock(&self.host.ordered_start_receipts).get_mut(&self.key) {
-                entry.failed = true;
-            }
+        if !self.completed
+            && let Some(entry) = lock(&self.host.ordered_start_receipts).get_mut(&self.key)
+        {
+            entry.failed = true;
         }
     }
 }
@@ -1077,6 +1084,10 @@ fn commit_of(error: &DesktopError, dispatched: bool) -> &'static str {
 impl MobileSession {
     /// Secret authority for recovering this session's scan evidence after its
     /// disposal. Persist it before admitting a scan and protect it as a secret.
+    #[allow(
+        dead_code,
+        reason = "the platform-specific scan recovery binding obtains this authority"
+    )]
     pub(crate) fn scan_failure_recovery_authority(&self) -> Result<[u8; 32], DesktopError> {
         let admission = lock(&self.state.admission);
         if self.host.is_shut_down() || admission.closing {
@@ -2258,18 +2269,6 @@ impl MobileSession {
                 let common = ["peerId", "collectionId", "recordingId", "reclaimCapability"];
                 if action == "next" {
                     args.exact(&common, &["callerKey"])?;
-                } else if action == "reserve" {
-                    args.exact(
-                        &[
-                            "peerId",
-                            "collectionId",
-                            "recordingId",
-                            "reclaimCapability",
-                            "requestId",
-                            "callerKey",
-                        ],
-                        &[],
-                    )?;
                 } else {
                     args.exact(
                         &[
@@ -2857,6 +2856,10 @@ impl MobileSession {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the wire operation keeps its protocol fields explicit at the dispatch boundary"
+    )]
     async fn recording_reclaim(
         &self,
         action: &str,
@@ -3413,10 +3416,9 @@ impl MobileSession {
                     GroupAction::AckDiscard => {
                         if let Some(receipt) =
                             central.poll_ordered_discard_receipt(&peer, id).await?
+                            && receipt.receipt_id == identity()?
                         {
-                            if receipt.receipt_id == identity()? {
-                                ordered_discard_value(&receipt)?;
-                            }
+                            ordered_discard_value(&receipt)?;
                         }
                         central
                             .acknowledge_ordered_discard_receipt(&peer, id, identity()?)
@@ -3560,15 +3562,14 @@ impl MobileSession {
         *lock(&attempt.result) = Some(result.clone());
         attempt.changed.notify_waiters();
         let mut table = lock(&self.state.exact_leases);
-        if let Some(table) = table.as_mut() {
-            if table
+        if let Some(table) = table.as_mut()
+            && table
                 .records
                 .get(identity)
                 .is_some_and(|entry| entry.released)
-            {
-                table.receipts.push_back(identity.to_owned());
-                table.trim_receipts();
-            }
+        {
+            table.receipts.push_back(identity.to_owned());
+            table.trim_receipts();
         }
         Ok(result)
     }
@@ -5210,6 +5211,10 @@ impl MobileSession {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the wire operation keeps its protocol fields explicit at the dispatch boundary"
+    )]
     async fn subscribe(
         &self,
         peer_id: String,
@@ -6071,6 +6076,10 @@ impl MobileSession {
     /// Reserve and start a supervised ordered recording for this session's
     /// existing connection lease. The detached task retains its reservation if
     /// the caller is cancelled during open.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the recording control contract returns its rich durable failure by value"
+    )]
     pub async fn start_ordered_recording(
         &self,
         handle: String,
@@ -6103,7 +6112,7 @@ impl MobileSession {
                 }
             }
             let _leader = session.state.release_guard.lock().await;
-            let mut start_guard = RecordingStartGuard { host: Arc::clone(&session.host), key: key.clone(), completed: false };
+            let mut start_guard = RecordingStartGuard { host: Arc::clone(&session.host), key, completed: false };
             let result = async {
                 if let Some(result) = lock(&session.host.ordered_start_receipts).get(&key).and_then(|entry| entry.result.clone()) { return Ok(result); }
                 if lock(&session.state.admission).closing {
@@ -6213,6 +6222,10 @@ impl MobileSession {
 
     /// Native callback seam for the canonical shared declaration. Parsing and
     /// quota validation happen before reservation; the owned start survives the callback waiter.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the native wire entrypoint keeps every serialized protocol field explicit"
+    )]
     pub fn start_ordered_recording_wire(
         &self,
         handle: String,
@@ -6268,11 +6281,10 @@ impl MobileSession {
                     session.host.recording_registry.stop_ordered_host_receipt(&id).await
                 },
             };
-            if !context && result.as_ref().ok().and_then(|value| value.get("recording")).and_then(|value| value.get("state")).and_then(Value::as_str).is_some_and(|state| state == "finished" || state == "interrupted") {
-                if let Some(collection) = owner_collection {
+            if !context && result.as_ref().ok().and_then(|value| value.get("recording")).and_then(|value| value.get("state")).and_then(Value::as_str).is_some_and(|state| state == "finished" || state == "interrupted")
+                && let Some(collection) = owner_collection {
                     session.revoke_ordered_recording_starts(&id, collection);
                 }
-            }
             completion(ubm_desktop::continuation::envelope(result));
         });
     }
@@ -6301,6 +6313,10 @@ impl MobileSession {
     }
 
     /// Request the supervised fence, drain, durable commit and cleanup.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the recording status contract returns its rich durable failure by value"
+    )]
     pub async fn close_ordered_recording(
         &self,
         id: &str,
@@ -6489,9 +6505,8 @@ impl MobileSession {
             Arc<ubm_desktop::ordered_recording::OrderedRecording<crate::foreign::ForeignRadio>>,
         )> = lock(&host.ordered_recordings)
             .iter()
-            .filter_map(|((session, id), owner)| {
-                (*session == self.state.id).then(|| (id.clone(), Arc::clone(owner)))
-            })
+            .filter(|&((session, _id), _owner)| *session == self.state.id)
+            .map(|((_session, id), owner)| (id.clone(), Arc::clone(owner)))
             .collect();
         let mut recording_pending = false;
         for (id, owner) in recordings {
@@ -6575,14 +6590,12 @@ impl MobileSession {
             for (id, peer) in &ordered {
                 if host.ordered_owners.owns(*id, peer, self.state.id)
                     && !host.ordered_owners.completed(*id, peer, self.state.id)
-                {
-                    if let Err(error) = host
+                    && let Err(error) = host
                         .central
                         .retry_retained_ordered_batch(peer, *id, OpControl::unbounded())
                         .await
-                    {
-                        failures.push(cleanup_failure("ordered-group", &error));
-                    }
+                {
+                    failures.push(cleanup_failure("ordered-group", &error));
                 }
             }
             host.ordered_owners.detach(self.state.id);

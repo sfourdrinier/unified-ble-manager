@@ -48,7 +48,7 @@ fn decode(text: &str) -> Option<[u8; TOKEN_BYTES]> {
         return None;
     }
     let mut result = [0; TOKEN_BYTES];
-    for (index, chunk) in text.as_bytes().chunks_exact(2).enumerate() {
+    for (index, chunk) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let nibble = |b: u8| if b <= b'9' { b - b'0' } else { b - b'a' + 10 };
         result[index] = nibble(chunk[0]) << 4 | nibble(chunk[1]);
     }
@@ -147,9 +147,8 @@ impl OrderedOwners {
         lock(&self.0)
             .owners
             .iter()
-            .filter_map(|(id, o)| {
-                (o.origin == session || o.session == Some(session)).then(|| (*id, o.peer.clone()))
-            })
+            .filter(|&(_id, o)| o.origin == session || o.session == Some(session))
+            .map(|(id, o)| (*id, o.peer.clone()))
             .collect()
     }
     pub(crate) fn detach_group(&self, id: u64, peer: &str, session: u64) -> bool {

@@ -295,6 +295,10 @@ impl Group {
 
 /// Opens a source only after a complete graph is published. The pump emits the
 /// source-start event before it reads any callback accepted by the native FIFO.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The host opening boundary retains explicit source, registry, and recovery ownership inputs."
+)]
 pub(crate) async fn open_group(
     state: &mut SourceGeneration,
     peripheral: Peripheral,

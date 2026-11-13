@@ -886,20 +886,20 @@ impl OrderedGroupRegistry {
                 _ => Ok(()),
             };
             let result = validation.and_then(|()| {
-                if entry.owner.phase() == Phase::Closing {
-                    if let EndReason::SourceFailed(failure) = &pending.reason {
-                        return entry.owner.admit_failure_record(
-                            &source.generation,
-                            id,
-                            Record::FailureObservation {
-                                failure: Some(failure.clone()),
-                                source_rejection: pending.rejection,
-                                source_failure_member: pending.failure_member,
-                                rejected_loss: None,
-                                tail_uncertain: pending.tail_uncertain,
-                            },
-                        );
-                    }
+                if entry.owner.phase() == Phase::Closing
+                    && let EndReason::SourceFailed(failure) = &pending.reason
+                {
+                    return entry.owner.admit_failure_record(
+                        &source.generation,
+                        id,
+                        Record::FailureObservation {
+                            failure: Some(failure.clone()),
+                            source_rejection: pending.rejection,
+                            source_failure_member: pending.failure_member,
+                            rejected_loss: None,
+                            tail_uncertain: pending.tail_uncertain,
+                        },
+                    );
                 }
                 entry.owner.source_terminal(
                     pending.reason.clone(),

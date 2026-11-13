@@ -969,6 +969,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
 
     /// Resolve a write target and bind it to the group's captured graph. The
     /// returned exact request is reused for status and idempotent retry.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the exact marker request must atomically bind its peer, collection, token, marker, selector, payload, and delivery mode"
+    )]
     pub async fn prepare_ordered_marker_request(
         &self,
         peer_id: &str,

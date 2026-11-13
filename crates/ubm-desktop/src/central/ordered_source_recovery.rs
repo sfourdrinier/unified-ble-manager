@@ -164,7 +164,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     &ordered_source_key(lease),
                     state.data_ready.clone(),
                 )
-                .map_err(|e| DesktopError::subscribe_failed(&format!("ordered wake: {e:?}")))?;
+                .map_err(|e| DesktopError::subscribe_failed(format!("ordered wake: {e:?}")))?;
             if state.setup_error.is_none() {
                 state.setup_error = Some(DesktopError::cancelled(OP));
             }

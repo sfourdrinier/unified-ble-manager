@@ -1033,6 +1033,27 @@ impl Recovery {
     }
 }
 
+struct Window {
+    offset: u64,
+    end: u64,
+    position: u64,
+    bytes: Vec<u8>,
+}
+
+impl Window {
+    fn write(&mut self, part: &[u8]) {
+        let next = self.position + part.len() as u64;
+        let start = self.position.max(self.offset);
+        let end = next.min(self.end);
+        if start < end {
+            self.bytes.extend_from_slice(
+                &part[(start - self.position) as usize..(end - self.position) as usize],
+            );
+        }
+        self.position = next;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1318,25 +1339,5 @@ mod tests {
         }
         assert!(recovery.visited_tokens <= descriptor.encoded_length as usize);
         recovery.acknowledge(&descriptor).unwrap();
-    }
-}
-
-struct Window {
-    offset: u64,
-    end: u64,
-    position: u64,
-    bytes: Vec<u8>,
-}
-impl Window {
-    fn write(&mut self, part: &[u8]) {
-        let next = self.position + part.len() as u64;
-        let start = self.position.max(self.offset);
-        let end = next.min(self.end);
-        if start < end {
-            self.bytes.extend_from_slice(
-                &part[(start - self.position) as usize..(end - self.position) as usize],
-            );
-        }
-        self.position = next;
     }
 }

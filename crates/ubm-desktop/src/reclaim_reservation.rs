@@ -303,7 +303,7 @@ impl<B: RadioBoundary> ReclaimReservationOwner<B> {
                         && e.lease == lease
                         && e.caller_key == caller_key
                 })
-                .ok_or_else(|| denied())?;
+                .ok_or_else(denied)?;
             if !matches!(entry.status, ReclaimReservationStatus::Reserved) {
                 return Ok(());
             }
@@ -404,7 +404,7 @@ impl<B: RadioBoundary> ReclaimReservationOwner<B> {
                     && e.lease == lease
                     && e.caller_key == caller_key
             })
-            .ok_or_else(|| denied())?;
+            .ok_or_else(denied)?;
         if entry.published {
             return Ok(());
         }
@@ -456,7 +456,7 @@ impl<B: RadioBoundary> ReclaimReservationOwner<B> {
                         && e.lease == lease
                         && e.caller_key == caller_key
                 })
-                .ok_or_else(|| denied())?;
+                .ok_or_else(denied)?;
             match entry.status {
                 ReclaimReservationStatus::Reserved => {
                     entry.status = ReclaimReservationStatus::Failed(DesktopError::new(
@@ -527,7 +527,7 @@ impl<B: RadioBoundary> ReclaimReservationOwner<B> {
                         && e.lease == lease
                         && e.caller_key == caller_key
                 })
-                .ok_or_else(|| denied())?;
+                .ok_or_else(denied)?;
             match entry.status {
                 ReclaimReservationStatus::Releasing { .. }
                 | ReclaimReservationStatus::ReleaseFailed { .. }
@@ -584,7 +584,7 @@ impl<B: RadioBoundary> ReclaimReservationOwner<B> {
                     && e.lease == lease
                     && e.caller_key == caller_key
             })
-            .ok_or_else(|| denied())?;
+            .ok_or_else(denied)?;
         if !matches!(
             entry.status,
             ReclaimReservationStatus::Released { .. } | ReclaimReservationStatus::Failed(_)

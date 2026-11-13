@@ -19,6 +19,10 @@ use tokio::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "The settlement state vocabulary is retained for central integration routes compiled outside this module."
+)]
 pub enum RegistryError {
     Capacity,
     Duplicate,
@@ -31,6 +35,10 @@ pub enum RegistryError {
     Retired,
 }
 #[derive(Debug, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "Retained item ownership is exercised through the central settlement integration."
+)]
 pub struct RetainError<V> {
     pub error: RegistryError,
     pub item: V,
@@ -48,6 +56,10 @@ pub enum FirstPoll<T> {
     Stopped(Stop),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "Retired outcomes are preserved for exact native reconciliation."
+)]
 pub enum Outcome<R, E> {
     Success(R),
     Failed(E),
@@ -81,12 +93,20 @@ pub enum State<N, R, E> {
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "Wait results remain part of the retained settlement protocol."
+)]
 pub enum WaitResult<N, R, E> {
     Settled(State<N, R, E>),
     TimedOut,
     Cancelled,
 }
 
+#[allow(
+    dead_code,
+    reason = "Tail accounting fields are retained for complete delivery semantics."
+)]
 struct Tail<V> {
     drain_required: bool,
     item_limit: usize,
@@ -110,8 +130,10 @@ pub struct Settlement<C, V, N, R, E> {
     data: Mutex<SlotData<C, V, N, R, E>>,
     changed: Notify,
 }
+type SettlementSlot<C, V, N, R, E> = Arc<Settlement<C, V, N, R, E>>;
+
 struct RegistryData<A, C, V, N, R, E> {
-    slots: HashMap<A, Arc<Settlement<C, V, N, R, E>>>,
+    slots: HashMap<A, SettlementSlot<C, V, N, R, E>>,
     reserved_consumers: usize,
     reserved_items: usize,
     reserved_bytes: usize,
@@ -146,7 +168,7 @@ impl<A: Eq + Hash, C: Eq + Hash, V, N, R, E> Registry<A, C, V, N, R, E> {
         drain_required: bool,
         items: usize,
         bytes: usize,
-    ) -> Result<Arc<Settlement<C, V, N, R, E>>, RegistryError> {
+    ) -> Result<SettlementSlot<C, V, N, R, E>, RegistryError> {
         let mut data = self.data.lock().unwrap();
         if data.slots.contains_key(&activation) {
             return Err(RegistryError::Duplicate);
@@ -191,6 +213,10 @@ impl<A: Eq + Hash, C: Eq + Hash, V, N, R, E> Registry<A, C, V, N, R, E> {
         Ok(slot)
     }
     /// Reserve an additional exact consumer on an existing activation.
+    #[allow(
+        dead_code,
+        reason = "Multi-consumer settlement remains covered through central integration."
+    )]
     pub fn add_consumer(
         &self,
         activation: &A,
@@ -243,7 +269,7 @@ impl<A: Eq + Hash, C: Eq + Hash, V, N, R, E> Registry<A, C, V, N, R, E> {
         data.reserved_bytes += bytes;
         Ok(())
     }
-    pub fn get(&self, activation: &A) -> Option<Arc<Settlement<C, V, N, R, E>>> {
+    pub fn get(&self, activation: &A) -> Option<SettlementSlot<C, V, N, R, E>> {
         self.data.lock().unwrap().slots.get(activation).cloned()
     }
     /// Never evict unresolved work, unacknowledged receipts, or retained data.
@@ -275,6 +301,10 @@ impl<A: Eq + Hash, C: Eq + Hash, V, N, R, E> Registry<A, C, V, N, R, E> {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "Private settlement operations are reached through central integration rather than this standalone module target."
+)]
 impl<C: Eq + Hash, V, N: Clone, R: Clone, E: Clone> Settlement<C, V, N, R, E> {
     pub fn snapshot(&self) -> State<N, R, E> {
         self.data.lock().unwrap().state.clone()
@@ -486,10 +516,18 @@ impl<C: Eq + Hash, V, N: Clone, R: Clone, E: Clone> Settlement<C, V, N, R, E> {
         tokio::select! { biased; _ = cancelled => { self.stop_prepared(attempt, Stop::Cancelled); WaitResult::Cancelled }, _ = async { if Instant::now() < deadline { tokio::time::sleep_until(deadline).await; } } => { self.stop_prepared(attempt, Stop::Deadline); WaitResult::TimedOut }, result = self.wait() => WaitResult::Settled(result) }
     }
 }
+#[allow(
+    dead_code,
+    reason = "Delivery cleanup remains part of the exact settlement lifecycle."
+)]
 struct DeliveryGuard<'a, C: Eq + Hash, V, N, R, E> {
     slot: &'a Settlement<C, V, N, R, E>,
     consumer: &'a C,
 }
+#[allow(
+    dead_code,
+    reason = "Delivery guard construction is used by the retained settlement lifecycle."
+)]
 impl<'a, C: Eq + Hash, V, N, R, E> DeliveryGuard<'a, C, V, N, R, E> {
     fn new(slot: &'a Settlement<C, V, N, R, E>, consumer: &'a C) -> Result<Self, RegistryError> {
         let mut s = slot.data.lock().unwrap();
@@ -592,6 +630,10 @@ impl<C, V, N, R, E> Drop for TaskGuard<C, V, N, R, E> {
         self.slot.changed.notify_waiters();
     }
 }
+#[allow(
+    dead_code,
+    reason = "The settlement executor is reached through central integration routes."
+)]
 impl<C, V, N, R, E> Settlement<C, V, N, R, E>
 where
     C: Eq + Hash + Send + 'static,

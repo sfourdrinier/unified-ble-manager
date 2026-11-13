@@ -21,6 +21,10 @@ pub struct OrderedDelivery {
 
 /// Typed evidence of a consumer-side transport discard; this is not source loss.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "discard evidence stays inline so cleanup preserves the exact retained ordered record without an allocation boundary"
+)]
 pub enum OrderedDiscardEvidence {
     Value {
         member: u64,

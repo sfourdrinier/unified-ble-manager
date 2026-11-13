@@ -263,13 +263,13 @@ impl<B: RadioBoundary + 'static> MarkerReservationOwner<B> {
                     .filter(|e| e.handle == handle)
                     .is_some_and(|e| e.cancelled)
             };
-            if published && should_cancel {
-                if let Ok(current) = central
+            if published
+                && should_cancel
+                && let Ok(current) = central
                     .cancel_ordered_marker_write_by_id(&peer, collection, token, request_id)
                     .await
-                {
-                    status = current;
-                }
+            {
+                status = current;
             }
             let mut state = state.lock().await;
             if let Some(entry) = state.entry.as_mut().filter(|e| e.handle == handle) {

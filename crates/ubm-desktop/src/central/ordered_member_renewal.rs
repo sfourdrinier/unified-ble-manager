@@ -193,6 +193,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
 
 impl<B: RadioBoundary> DesktopCentral<B> {
     /// Reserve downstream capacity bound to the current exclusive consumer.
+    #[cfg(test)]
     pub(crate) async fn reserve_ordered_marker_credit(
         &self,
         peer_id: &str,

@@ -25,6 +25,10 @@ pub const HR_MEASUREMENT: &str = "00002a37-0000-1000-8000-00805f9b34fb";
 pub const CCCD: &str = "00002902-0000-1000-8000-00805f9b34fb";
 pub const POLAR: &str = "A0:9E:1A:00:00:01";
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the scripted radio test fixture intentionally mirrors production completion values without allocation"
+)]
 pub enum Reply {
     Now(RadioCompletion),
     Hold,

@@ -305,12 +305,11 @@ impl ForeignRadio {
             return Ok(None);
         };
         let mut lease = Self::retained_entry_lease(entry, peer, group_id)?;
-        if let Some(lease) = &mut lease {
-            if let Ok(host) = self.ordered_host() {
-                if let Some(mapping) = host.ordered_group(group_id) {
-                    lease.native_group = mapping.native_group_id;
-                }
-            }
+        if let Some(lease) = &mut lease
+            && let Ok(host) = self.ordered_host()
+            && let Some(mapping) = host.ordered_group(group_id)
+        {
+            lease.native_group = mapping.native_group_id;
         }
         Ok(lease)
     }
@@ -407,6 +406,10 @@ impl ForeignRadio {
         }))
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "the versioned ordered source contract returns its rich failure by value"
+    )]
     pub(super) async fn ordered_prepare_source(
         &self,
         request: OrderedSourceRequest,
@@ -622,6 +625,10 @@ impl ForeignRadio {
         }
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "the versioned ordered source contract returns its rich failure by value"
+    )]
     async fn ordered_prepare_v2(
         &self,
         request: OrderedSourceRequest,
@@ -797,20 +804,20 @@ impl ForeignRadio {
             .acknowledge_ordered_open_locked(&request.peer_id, request.collection_id)
             .await;
         if let Some(error) = original_error {
-            if lease.is_none() && acknowledged.is_ok() {
-                if coordinator
+            if lease.is_none()
+                && acknowledged.is_ok()
+                && coordinator
                     .forget_no_effect_radio_group(mapping, slot.identity)
                     .is_ok()
-                    && self.release_retained_ordered_open(request.collection_id)
-                {
-                    host.ordered_wakes.remove(mapping.native_group_id);
-                    self.forget_v2_attempts(id);
-                    recovery.armed = false;
-                    return Err(OrderedSourceFailure {
-                        error,
-                        cleanup: None,
-                    });
-                }
+                && self.release_retained_ordered_open(request.collection_id)
+            {
+                host.ordered_wakes.remove(mapping.native_group_id);
+                self.forget_v2_attempts(id);
+                recovery.armed = false;
+                return Err(OrderedSourceFailure {
+                    error,
+                    cleanup: None,
+                });
             }
             return Err(OrderedSourceFailure {
                 error,
@@ -1247,10 +1254,10 @@ impl ForeignRadio {
         self.acknowledge_ordered_open_locked(&lease.peer_id, lease.collection_id)
             .await?;
         let host = self.ordered_host()?;
-        if let Some(consumer) = host.ordered_consumer_for_lease(&lease) {
-            if consumer.unreported_failure().is_some() {
-                consumer.retry_failure_report()?;
-            }
+        if let Some(consumer) = host.ordered_consumer_for_lease(&lease)
+            && consumer.unreported_failure().is_some()
+        {
+            consumer.retry_failure_report()?;
         }
         let generation = lease.source_generation.clone();
         let removal_pending = lock(&self.shared.ordered_removal_pending)

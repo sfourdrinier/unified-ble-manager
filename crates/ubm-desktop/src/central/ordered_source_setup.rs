@@ -49,12 +49,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 ctl,
             )
             .await;
-        if let Err(error) = &result {
-            if let Some(owner) = self.inner.ordered_batches.get(peer_id, collection_id) {
-                let mut state = owner.lock().await;
-                if state.setup_error.is_none() {
-                    state.setup_error = Some(error.clone());
-                }
+        if let Err(error) = &result
+            && let Some(owner) = self.inner.ordered_batches.get(peer_id, collection_id)
+        {
+            let mut state = owner.lock().await;
+            if state.setup_error.is_none() {
+                state.setup_error = Some(error.clone());
             }
         }
         result
@@ -363,7 +363,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             state.data_ready.clone(),
                         )
                         .map_err(|e| {
-                            DesktopError::subscribe_failed(&format!("ordered wake: {e:?}"))
+                            DesktopError::subscribe_failed(format!("ordered wake: {e:?}"))
                         })?;
                     if let Err(error) = self.inner.boundary.ordered_source_installed(&lease).await {
                         state.fence_error = Some(error);
@@ -380,7 +380,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     &ordered_source_key(&lease),
                     state.data_ready.clone(),
                 )
-                .map_err(|e| DesktopError::subscribe_failed(&format!("ordered wake: {e:?}")))?;
+                .map_err(|e| DesktopError::subscribe_failed(format!("ordered wake: {e:?}")))?;
             self.inner.boundary.ordered_source_installed(&lease).await?;
             state.source_host_attached = true;
         }
@@ -452,12 +452,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let result = self
             .enable_ordered_batch_inner(peer_id, collection_id, &ctl)
             .await;
-        if let Err(error) = &result {
-            if let Some(owner) = self.inner.ordered_batches.get(peer_id, collection_id) {
-                let mut state = owner.lock().await;
-                if state.setup_error.is_none() {
-                    state.setup_error = Some(error.clone());
-                }
+        if let Err(error) = &result
+            && let Some(owner) = self.inner.ordered_batches.get(peer_id, collection_id)
+        {
+            let mut state = owner.lock().await;
+            if state.setup_error.is_none() {
+                state.setup_error = Some(error.clone());
             }
         }
         result
@@ -585,22 +585,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     .get(&claim.scope)
                     .copied()
                     .unwrap_or(ObservedDelivery::Unknown);
-                if let Some(required) = claim.delivery {
-                    if !observed.satisfies(required) {
-                        let error = Self::delivery_unenforced(
-                            required,
-                            observed,
-                            "a join cannot rewrite the live CCCD",
-                        );
-                        self.update_ordered_owner(
-                            &lease,
-                            OrderedSourceTransition::EnableResult {
-                                member_id: claim.member_id,
-                                outcome: Some(false),
-                            },
-                        )?;
-                        return Err(error);
-                    }
+                if let Some(required) = claim.delivery
+                    && !observed.satisfies(required)
+                {
+                    let error = Self::delivery_unenforced(
+                        required,
+                        observed,
+                        "a join cannot rewrite the live CCCD",
+                    );
+                    self.update_ordered_owner(
+                        &lease,
+                        OrderedSourceTransition::EnableResult {
+                            member_id: claim.member_id,
+                            outcome: Some(false),
+                        },
+                    )?;
+                    return Err(error);
                 }
                 let mut core = self.inner.core.lock().await;
                 report_terminal_release(&mut core, &claim.operation, true, None);
