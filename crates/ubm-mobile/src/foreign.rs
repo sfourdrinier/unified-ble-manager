@@ -6122,11 +6122,16 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn cancelled_companion_remains_owned_until_native_terminal_and_is_session_scoped() {
         #[derive(Default)]
-        struct HeldPicker(Mutex<Vec<RequestId>>);
+        struct HeldPicker {
+            submitted: Mutex<Vec<RequestId>>,
+            cancelled: Mutex<Vec<RequestId>>,
+        }
         impl PlatformRadio for HeldPicker {
-            fn submit(&self, _: RadioRequest) {}
+            fn submit(&self, request: RadioRequest) {
+                lock(&self.submitted).push(request.id());
+            }
             fn cancel(&self, id: RequestId) {
-                lock(&self.0).push(id);
+                lock(&self.cancelled).push(id);
             }
         }
         let picker = Arc::new(HeldPicker::default());
@@ -6145,27 +6150,32 @@ mod tests {
             std::task::Poll::Ready(())
         })
         .await;
+        let request_id = {
+            let submitted = lock(&picker.submitted);
+            assert_eq!(submitted.len(), 1);
+            submitted[0]
+        };
         drop(choice);
-        assert_eq!(*lock(&picker.0), vec![1]);
+        assert_eq!(*lock(&picker.cancelled), vec![request_id]);
         assert!(radio.release_companion_choices(8).await.is_ok());
         assert_eq!(
-            *lock(&picker.0),
-            vec![1],
+            *lock(&picker.cancelled),
+            vec![request_id],
             "unrelated session cannot cancel this UI"
         );
         assert!(radio.release_companion_choices(7).await.is_err());
         assert_eq!(
-            *lock(&picker.0),
-            vec![1, 1],
+            *lock(&picker.cancelled),
+            vec![request_id, request_id],
             "destroy retries the exact native owner"
         );
         assert_eq!(
-            radio.complete(1, RadioCompletion::Unit),
+            radio.complete(request_id, RadioCompletion::Unit),
             CompletionStatus::Late
         );
         assert!(radio.release_companion_choices(7).await.is_err());
         radio.complete(
-            1,
+            request_id,
             RadioCompletion::Failed(PlatformFailure::new(
                 crate::radio::FailureKind::Cancelled,
                 "native picker closed",

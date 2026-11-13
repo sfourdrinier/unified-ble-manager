@@ -986,12 +986,73 @@ async fn native_collection_and_replayable_claim_need_no_ui() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        executor.prepare_claim(256, 1 << 20).await.unwrap_err()["code"],
-        "protocol.incompatible"
+    let legacy_claim = executor.prepare_claim(256, 1 << 20).await.unwrap();
+    let legacy_records: Vec<Value> = legacy_claim["batches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|batch| {
+            let batch: Value = serde_json::from_str(batch.as_str().unwrap()).unwrap();
+            batch["records"].as_array().unwrap().clone()
+        })
+        .collect();
+    assert!(
+        legacy_records
+            .iter()
+            .any(|record| record["t"] == "value" && record["valueB64"] == "AEg="),
+        "{legacy_records:?}"
     );
+    assert!(
+        legacy_records
+            .iter()
+            .filter(|record| record["t"] == "value")
+            .all(|record| {
+                record.get("provenance").is_none()
+                    && record.get("sourceGeneration").is_none()
+                    && record.get("sourceOrdinal").is_none()
+            }),
+        "legacy projection must retain its original V1 shape: {legacy_records:?}"
+    );
+    assert_eq!(
+        executor
+            .acknowledge_claim(legacy_claim["claimToken"].as_str().unwrap())
+            .await
+            .unwrap()["disposed"],
+        true
+    );
+    central.shutdown().await;
+
+    // V2 owns a separate session: the legacy acknowledgement consumed its
+    // projected record, so replay must be proven from a fresh native source.
+    let (central, executor) = fixture().await;
+    let mut wake = central.native_wakes();
+
+    assert_eq!(
+        executor.execute(PEER, &declaration()).await.unwrap()["resubscribed"],
+        1
+    );
+    let epoch = central.routing_epoch(PEER).await;
+    central
+        .boundary()
+        .push_event(RadioEvent::NotificationWithProvenance {
+            peer_id: PEER.into(),
+            service_uuid: SERVICE.into(),
+            service_occurrence: 0,
+            characteristic_uuid: CHARACTERISTIC.into(),
+            characteristic_occurrence: 0,
+            value: vec![0, 72],
+            epoch,
+            provenance: ubm_core::central::NotificationProvenance::ReadOrNotification,
+            source_generation: 9,
+            source_ordinal: 43,
+        })
+        .expect("synthetic V2 event admission failed");
+    tokio::time::timeout(Duration::from_secs(2), wake.recv())
+        .await
+        .unwrap()
+        .unwrap();
     let claim = executor
-        .prepare_claim_versioned(1, 256, 1 << 20)
+        .prepare_claim_versioned(2, 256, 1 << 20)
         .await
         .unwrap();
     if let Some(path) = std::env::var_os("UBM_521_STAGED_CLAIM") {
@@ -1019,20 +1080,20 @@ async fn native_collection_and_replayable_claim_need_no_ui() {
     );
     assert_eq!(
         executor
-            .prepare_claim_versioned(1, 256, 1 << 20)
+            .prepare_claim_versioned(2, 256, 1 << 20)
             .await
             .unwrap(),
         claim
     );
     let receipt = executor
-        .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
+        .acknowledge_claim_v2(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
     assert_eq!(receipt["disposed"], true);
     assert!(!central.boundary().link_connected(PEER));
     assert_eq!(
         executor
-            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
+            .acknowledge_claim_v2(claim["claimToken"].as_str().unwrap())
             .await
             .unwrap(),
         receipt

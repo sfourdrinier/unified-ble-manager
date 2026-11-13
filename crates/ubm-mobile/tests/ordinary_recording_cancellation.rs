@@ -179,6 +179,36 @@ async fn cancellation_waits_for_an_already_queued_global_drop() {
     })
     .await
     .unwrap();
+    // This value is admitted before the unsubscribe fence. The event pump
+    // must drain it under the route order lock before it can reach that
+    // barrier; acquiring the route lock before the fence would deadlock.
+    let epoch = radio
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|request| match request {
+            RadioRequest::EnableNotifications {
+                epoch, instance, ..
+            } if instance.peer_id == POLAR => Some(*epoch),
+            _ => None,
+        })
+        .expect("first recorded subscription has a native epoch");
+    assert_eq!(
+        host.ingest(RadioIngress::Notification {
+            instance: Instance {
+                peer_id: POLAR.into(),
+                service_uuid: HR_SERVICE.into(),
+                service_occurrence: 0,
+                characteristic_uuid: HR_MEASUREMENT.into(),
+                characteristic_occurrence: 0,
+            },
+            epoch,
+            value: vec![7],
+        }),
+        IngressStatus::Accepted
+    );
     let remove = tokio::spawn({
         let session = session.clone();
         async move {
@@ -251,6 +281,14 @@ async fn cancellation_waits_for_an_already_queued_global_drop() {
             .await
             .unwrap()
             .unwrap(),
+    );
+    let first = ok(&host.continuation_recording_prepare("first", 100, 65536));
+    assert!(
+        first["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["record"]["t"] == "value" && row["record"]["valueB64"] == "Bw==" })
     );
     let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
         .await

@@ -98,7 +98,10 @@ fn recovery_discovery_keeps_prepared_and_released_owners_visible() {
     outbox.release_scan_failure_receipt(&first).unwrap();
     let owners = outbox.scan_failure_recovery_owners();
     assert_eq!(owners.len(), 1);
-    assert_eq!(owners[0].released, Some(first));
+    let mut released = first;
+    released.acknowledged = true;
+    released.contiguous_read = released.evidence.encoded_length;
+    assert_eq!(owners[0].released, Some(released));
     let receipt = outbox.confirm_scan_failure_receipt_release(&first).unwrap();
     outbox.finalize_scan_failure_release(&receipt).unwrap();
     assert!(outbox.scan_failure_recovery_owners().is_empty());
@@ -855,7 +858,10 @@ fn release_waits_for_producer_and_replays_exact_response() {
             .is_err()
     );
     outbox.finalize_scan_failure_release(&receipt).unwrap();
-    outbox.finalize_scan_failure_release(&receipt).unwrap();
+    assert!(matches!(
+        outbox.finalize_scan_failure_release(&receipt),
+        Err(ScanFailureOutboxError::NotHead)
+    ));
     assert_eq!(outbox.pending_scan_failure_owners(), 0);
     assert!(outbox.release_scan_failure_receipt(&head).is_err());
 }
@@ -947,7 +953,10 @@ fn raw_inspection_recovers_malformed_membership_and_token_in_bounded_parts() {
     );
     assert_eq!(outbox.pending_scan_failure_owners(), 1);
     outbox.finalize_scan_failure_release(&receipt).unwrap();
-    outbox.finalize_scan_failure_release(&receipt).unwrap();
+    assert!(matches!(
+        outbox.finalize_scan_failure_release(&receipt),
+        Err(ScanFailureOutboxError::NotHead)
+    ));
     assert_eq!(outbox.pending_scan_failure_owners(), 0);
     assert!(
         outbox
@@ -1271,6 +1280,9 @@ fn raw_release_blocks_identity_reuse_until_exact_cleanup() {
         .unwrap();
     outbox.finalize_scan_failure_release(&receipt).unwrap();
     outbox.commit_scan_failure(&mut b, &mut same).unwrap();
-    outbox.finalize_scan_failure_release(&receipt).unwrap();
+    assert!(matches!(
+        outbox.finalize_scan_failure_release(&receipt),
+        Err(ScanFailureOutboxError::NotHead)
+    ));
     assert_eq!(outbox.pending_scan_failure_owners(), 1);
 }

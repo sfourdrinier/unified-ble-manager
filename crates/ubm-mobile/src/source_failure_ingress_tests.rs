@@ -98,21 +98,21 @@ async fn source_failure_retries_after_pressure_then_preserves_exact_terminal() {
     // Only the caller-held receipt is retried once the source FIFO has room.
     // Acceptance transfers it into the ordered control FIFO without changing
     // its native evidence or turning queue pressure into a dropped record.
-    let mut accepted = false;
-    for _ in 0..100 {
+    let retry_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let accepted = loop {
         match host.ingest_notification_source_failure(&owner, epoch, &failure) {
-            Status::Accepted => {
-                accepted = true;
-                break;
+            Status::Accepted => break true,
+            Status::Full => {
+                assert!(
+                    tokio::time::Instant::now() < retry_deadline,
+                    "the released source FIFO must eventually accept its exact terminal"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
-            Status::Full => tokio::task::yield_now().await,
             status => panic!("retry changed source-failure ownership: {status:?}"),
         }
-    }
-    assert!(
-        accepted,
-        "the released source FIFO must eventually accept its exact terminal"
-    );
+    };
+    assert!(accepted);
     assert_eq!(failure.detail, "exact failure");
     assert_eq!(failure.native_code, Some(987));
     assert_eq!(

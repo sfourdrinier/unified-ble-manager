@@ -33,7 +33,11 @@ async fn unrelated_retirement_waits_for_blocked_peer_prefix_and_overflow() {
     };
     ingress.register(1, route(1), 1).unwrap();
     let b = ingress.register(1, route(2), 2).unwrap();
-    let queue = Arc::new(Mutex::new(GraphGate::new(1, 128)));
+    // The blocked callback remains in flight until the drain asks for its
+    // successor, so it still occupies one bounded slot. Reserve one further
+    // slot for B's accepted prefix; the third callback below then proves the
+    // overflow cut cannot overtake either accepted callback.
+    let queue = Arc::new(Mutex::new(GraphGate::new(2, 128)));
     let k = key();
     queue.lock().unwrap().acquire(k.clone()).unwrap();
     queue.lock().unwrap().commit(&k).unwrap();

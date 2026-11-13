@@ -310,6 +310,11 @@ fn journal_backed_outbox_transfers_controls_without_acknowledging_recording() {
     let directory =
         std::env::temp_dir().join(format!("ubm-legacy-evidence-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let journal = Arc::new(
         ContinuationJournal::open(
             &directory.join("recording.sqlite"),

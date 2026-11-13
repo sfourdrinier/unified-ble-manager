@@ -434,6 +434,12 @@ pub fn recording_test_directory(test_name: &str) -> Option<std::path::PathBuf> {
         std::process::id()
     ));
     std::fs::create_dir(&directory).expect("create isolated recording directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .expect("make isolated recording directory private");
+    }
     let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", test_name, "--nocapture"])
         .env(DIRECTORY, &directory)

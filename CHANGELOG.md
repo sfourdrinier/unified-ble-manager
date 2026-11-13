@@ -14,6 +14,12 @@ All notable changes to `unified-ble-manager` are documented here.
 - Repair migration of earlier Apple notification-failure spool formats: preserve
   legacy rows through the reservation rebuild, recognize SQLite rename formatting,
   and validate version-8 acknowledgements using their historical schema.
+- Fence recorded ingress before waiting for route ordering or central activation
+  during unsubscribe, retaining the accepted callback prefix through cancellation.
+- Compensate a late successful scan start with a physical stop while avoiding
+  a second retirement of an ingress epoch that an early stop already fenced.
+- Refuse exact legacy receipt retirement as corrupt when its required proof was
+  deleted, without recreating an empty receipt table.
 - Preserve 5.2.1 TypeScript consumer shapes for existing GATT, host, diagnostics,
   continuation status, terminal-reason, and backend error-metadata contracts.
   New diagnostic detail remains available through additive fields and recovery

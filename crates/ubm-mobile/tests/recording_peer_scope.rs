@@ -529,14 +529,22 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
         "sustained intake:250 ordered telemetry values+1 setup response,5 lower-rate peer values,5 security controls,1 lifecycle transition; worst delay={worst:?}; journal/native notification loss=0; retained journal rows={}",
         status["records"]
     );
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
-    assert_eq!(
-        engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
-            .await
-            .unwrap()["disposed"],
-        true
-    );
+    let disposed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let claim = engine.prepare_claim(256, 65536).await.unwrap();
+            let receipt = engine
+                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+                .await
+                .unwrap();
+            if receipt["disposed"] == true {
+                return receipt;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("continuation cleanup did not reach a terminal disposal receipt");
+    assert_eq!(disposed["disposed"], true);
     ok(&call(&other, "session.dispose", "{}").await);
     host.shutdown().await;
     drop(engine);

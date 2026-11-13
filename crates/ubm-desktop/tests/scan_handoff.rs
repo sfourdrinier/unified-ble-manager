@@ -336,8 +336,8 @@ async fn r14b_stop_wins_over_inflight_start() {
         "in-flight start loses to stop"
     );
     assert!(
-        !central.has_active_scan().await,
-        "no scan session observable after stop wins"
+        central.operational_scan_id().is_none(),
+        "no operational scan remains after stop wins"
     );
     assert!(
         !central.boundary().scan_active(),
@@ -547,8 +547,8 @@ async fn r14c_shutdown_during_start_leaves_no_scan() {
         "racing starter never activates after shutdown"
     );
     assert!(
-        !central.has_active_scan().await,
-        "no scan session observable after shutdown"
+        central.operational_scan_id().is_none(),
+        "no operational scan remains after shutdown"
     );
     assert!(
         !central.boundary().scan_active(),

@@ -1401,9 +1401,20 @@ impl JournalRegistry {
             }
         }
         let result = self.with_legacy_recording_version(id, true, |tx, version| {
+            let receipt_table_exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_exact_receipt')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !receipt_table_exists {
+                return Err(error(
+                    "storage.corrupt",
+                    "exact recovery receipt is missing",
+                ));
+            }
             ensure_legacy_exact_marker(tx)?;
             let (stored, receipt, retired) = legacy_exact_state(tx)?
-                .ok_or_else(|| error("argument.invalid", "exact recovery receipt is absent"))?;
+                .ok_or_else(|| error("storage.corrupt", "exact recovery receipt is absent"))?;
             let receipt = receipt.ok_or_else(|| {
                 error(
                     "argument.invalid",

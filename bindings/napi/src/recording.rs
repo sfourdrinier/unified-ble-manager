@@ -1395,7 +1395,7 @@ mod scan_recovery_handle_tests {
     static TEMPORARY_DIRECTORY_SERIAL: AtomicU64 = AtomicU64::new(1);
 
     fn temporary_directory(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
+        let directory = std::env::temp_dir().join(format!(
             "ubm-napi-scan-recovery-{label}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -1403,13 +1403,22 @@ mod scan_recovery_handle_tests {
                 .expect("clock")
                 .as_nanos(),
             TEMPORARY_DIRECTORY_SERIAL.fetch_add(1, Ordering::Relaxed),
-        ))
+        ));
+        std::fs::create_dir(&directory).expect("fixture directory");
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            &directory,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .expect("private fixture directory");
+        directory
     }
 
     fn create_recording_with_real_v2_recovery(
         registry: &Arc<JournalRegistry>,
         recording_id: &str,
         occurrence_serial: u64,
+        max_encoded_bytes: u64,
     ) {
         let journal = registry
             .open(
@@ -1436,11 +1445,9 @@ mod scan_recovery_handle_tests {
                 evidence: EvidenceLimits {
                     max_depth: 8,
                     max_tokens: 20,
-                    // Force preparation to refuse the otherwise valid source.
-                    // Raw recovery is intentionally available only for this
-                    // durable, unprepared fence; a successfully prepared
-                    // occurrence is consumed by the ordinary recovery path.
-                    max_encoded_bytes: 1,
+                    // One byte creates an unprepared raw-only occurrence;
+                    // normal limits exercise prepared cleanup receipts.
+                    max_encoded_bytes,
                     max_chunks: 8,
                     chunk_bytes: 64,
                 },
@@ -1481,10 +1488,15 @@ mod scan_recovery_handle_tests {
                 EvidenceToken::Null,
             ])),
         ));
-        assert!(matches!(
-            outbox.commit_scan_failure(&mut reservation, &mut source),
-            Err(ScanFailureOutboxError::Recovery(_))
-        ));
+        let committed = outbox.commit_scan_failure(&mut reservation, &mut source);
+        if max_encoded_bytes == 1 {
+            assert!(matches!(
+                committed,
+                Err(ScanFailureOutboxError::Recovery(_))
+            ));
+        } else {
+            committed.expect("prepare real scan failure");
+        }
         outbox
             .finish_scan_failure_producer(&mut reservation)
             .expect("finish durable scan failure");
@@ -1495,15 +1507,20 @@ mod scan_recovery_handle_tests {
 
     fn real_store(
         recording_ids: &[String],
+        max_encoded_bytes: u64,
     ) -> (ScanFailureRecoveryStore, Arc<JournalRegistry>, PathBuf) {
         let directory = temporary_directory("fixture");
-        std::fs::create_dir(&directory).expect("fixture directory");
         let journals = Arc::new(JournalRegistry::default());
         journals
             .configure_directory_with_scan_recovery_storage(&directory, Arc::new(TestProtector))
             .expect("trusted scan recovery storage");
         for (index, recording_id) in recording_ids.iter().enumerate() {
-            create_recording_with_real_v2_recovery(&journals, recording_id, index as u64 + 1);
+            create_recording_with_real_v2_recovery(
+                &journals,
+                recording_id,
+                index as u64 + 1,
+                max_encoded_bytes,
+            );
         }
         (
             ScanFailureRecoveryStore {
@@ -1659,7 +1676,7 @@ mod scan_recovery_handle_tests {
     #[tokio::test]
     async fn real_v2_lease_detach_releases_the_alias_and_core_lease_for_reattach() {
         let recording_id = "napi-detach-reuse".to_owned();
-        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id));
+        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id), 1);
         let attached = store
             .attach(recording_id.clone())
             .await
@@ -1683,7 +1700,7 @@ mod scan_recovery_handle_tests {
     #[tokio::test]
     async fn real_v2_lease_cannot_detach_while_an_inventory_alias_is_live() {
         let recording_id = "napi-detach-live-owner".to_owned();
-        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id));
+        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id), 1);
         let attached = store
             .attach(recording_id)
             .await
@@ -1723,7 +1740,7 @@ mod scan_recovery_handle_tests {
     #[tokio::test]
     async fn real_v2_raw_tokens_use_the_canonical_node_json_codec_and_bounds() {
         let recording_id = "napi-raw-token-codec".to_owned();
-        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id));
+        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id), 1);
         let lease = serde_json::from_str::<serde_json::Value>(
             &store.attach(recording_id).await.expect("attach"),
         )
@@ -1770,7 +1787,7 @@ mod scan_recovery_handle_tests {
     #[tokio::test]
     async fn real_v2_detach_and_inventory_serialize_without_returning_a_revoked_owner() {
         let recording_id = "napi-detach-inventory-interleave".to_owned();
-        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id));
+        let (store, _, directory) = real_store(std::slice::from_ref(&recording_id), 1);
         let store = Arc::new(store);
         let attached = store
             .attach(recording_id)
@@ -1818,7 +1835,9 @@ mod scan_recovery_handle_tests {
                     .expect("a returned owner remains usable when detach was rejected");
             }
             (Err(error), Ok(())) => assert!(
-                error.reason.contains("unknown or revoked scan recovery handle"),
+                error
+                    .reason
+                    .contains("unknown or revoked scan recovery handle"),
                 "inventory after detach must observe revocation: {}",
                 error.reason
             ),
@@ -1832,10 +1851,10 @@ mod scan_recovery_handle_tests {
 
     #[tokio::test]
     async fn real_v2_distinct_recordings_reclaim_lease_capacity_after_detach() {
-        let (store, journals, directory) = real_store(&[]);
+        let (store, journals, directory) = real_store(&[], 1);
         for index in 0..=MAX_SCAN_RECOVERY_HANDLES_PER_KIND {
             let recording_id = format!("napi-detach-capacity-{index}");
-            create_recording_with_real_v2_recovery(&journals, &recording_id, index as u64 + 1);
+            create_recording_with_real_v2_recovery(&journals, &recording_id, index as u64 + 1, 1);
             let attached = store
                 .attach(recording_id)
                 .await
@@ -1861,7 +1880,7 @@ mod scan_recovery_handle_tests {
             "napi-cleanup-batch-first".to_owned(),
             "napi-cleanup-batch-second".to_owned(),
         ];
-        let (store, _, directory) = real_store(&recording_ids);
+        let (store, _, directory) = real_store(&recording_ids, 4_096);
         let first = finalized_cleanup_receipt(&store, recording_ids[0].clone()).await;
         let second = finalized_cleanup_receipt(&store, recording_ids[1].clone()).await;
 
@@ -1904,7 +1923,7 @@ mod scan_recovery_handle_tests {
             "napi-capacity-no-core-leak-first".to_owned(),
             "napi-capacity-no-core-leak-second".to_owned(),
         ];
-        let (mut store, _, directory) = real_store(&recording_ids);
+        let (mut store, _, directory) = real_store(&recording_ids, 1);
         store.handles = Arc::new(RecoveryHandles::with_limit(1));
         for (index, recording_id) in recording_ids.iter().take(1).enumerate() {
             store

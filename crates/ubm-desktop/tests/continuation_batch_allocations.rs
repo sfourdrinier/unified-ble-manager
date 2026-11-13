@@ -39,6 +39,8 @@ impl WakeSink for NoWake {
 fn refused_large_suffix_is_counted_without_large_serialization_allocation() {
     let dir = std::env::temp_dir().join(format!("ubm-batch-allocation-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let journal = Arc::new(
         ContinuationJournal::open(
             &dir.join("journal.sqlite"),

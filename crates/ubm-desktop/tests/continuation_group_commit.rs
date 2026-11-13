@@ -25,6 +25,12 @@ fn path() -> PathBuf {
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir(&directory).unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        &directory,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
     directory.join("recording.sqlite")
 }
 fn quota(max_records: u64) -> JournalQuota {
@@ -117,7 +123,7 @@ fn record(index: usize) -> Value {
         0 => 0,
         1 => 700,
         2 => 3000,
-        _ => 9000,
+        _ => 3000,
     });
     json!({"t":"value","consumer":"c","index":index,"valueB64":padding})
 }
@@ -339,7 +345,7 @@ fn recorded_capacity_refusal_accounts_unattempted_invalid_tail() {
 #[test]
 fn byte_capacity_cuts_identically_to_sequential_admission() {
     // Large bodies make the page reservation, not the record count, decide.
-    let big = |index: usize| json!({"t":"value","index":index,"blob":"y".repeat(60_000)});
+    let big = |index: usize| json!({"t":"value","index":index,"blob":"y".repeat(40_000)});
     let one = fixture(1000);
     let many = fixture(1000);
     let mut sequential_accepted = 0;

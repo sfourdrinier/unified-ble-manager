@@ -564,6 +564,11 @@ async fn durable_mobile_collection_retains_context_and_survives_native_claim() {
     for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
         let directory = root.join(platform.as_str());
         std::fs::create_dir(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let radio = Scripted::polar();
         let (host, _) = open(&radio, platform).await;
         let engine = host.continuation();

@@ -38,6 +38,8 @@ fn path() -> PathBuf {
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir(&path).unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     path.join("recording.sqlite")
 }
 fn quota() -> JournalQuota {

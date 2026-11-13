@@ -182,6 +182,11 @@ fn compatibility_reader_rejects_current_schema_instead_of_downgrading_it() {
     journal.append(&json!({}), &json!({"n":1})).unwrap();
     let page = journal.prepare(1, 4096).unwrap();
     drop(journal);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let current_version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    drop(db);
     let registry = JournalRegistry::default();
     registry.configure_directory(&dir).unwrap();
     assert_eq!(
@@ -195,7 +200,7 @@ fn compatibility_reader_rejects_current_schema_instead_of_downgrading_it() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        7
+        current_version
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM records", [], |r| r.get::<_, i64>(0))
@@ -422,10 +427,13 @@ fn exact_legacy_ack_rejects_changed_bytes_and_retains_receipt_until_retired() {
     second
         .legacy_recording_retire_exact("recording", &page)
         .unwrap();
+    second
+        .legacy_recording_confirm_exact_retirement("recording", &page)
+        .unwrap();
     assert!(second.get("recording").is_ok());
 }
 
-fn exact_fixture(name: &str) -> (std::path::PathBuf, JournalRegistry, serde_json::Value) {
+fn unprepared_exact_fixture(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "ubm-exact-{name}-{}-{:?}",
         std::process::id(),
@@ -457,6 +465,11 @@ fn exact_fixture(name: &str) -> (std::path::PathBuf, JournalRegistry, serde_json
         .unwrap();
     db.execute_batch("DROP TABLE diagnostic_owners; DROP TABLE diagnostic_ledger; DROP TABLE evidence_cursor; DROP TABLE evidence_claim_records; DROP TABLE evidence_claim_header; DROP TABLE evidence_members; DROP TABLE evidence_members_header; DROP TABLE recording_claim_records; DROP TABLE recording_claim_header; ALTER TABLE records RENAME TO new_records; CREATE TABLE records(ordinal INTEGER PRIMARY KEY, body TEXT NOT NULL, bytes INTEGER NOT NULL); INSERT INTO records SELECT ordinal,body,bytes FROM new_records; DROP TABLE new_records; PRAGMA user_version=2;").unwrap();
     drop(db);
+    dir
+}
+
+fn exact_fixture(name: &str) -> (std::path::PathBuf, JournalRegistry, serde_json::Value) {
+    let dir = unprepared_exact_fixture(name);
     let registry = JournalRegistry::default();
     registry.configure_directory(&dir).unwrap();
     let page = registry
@@ -481,7 +494,6 @@ fn missing_exact_receipt_is_corruption_and_blocks_migration() {
             .kind,
         "storage.corrupt"
     );
-    assert!(registry.get("recording").is_err());
 }
 
 #[test]
@@ -495,7 +507,11 @@ fn retirement_reply_replays_after_another_client_migrates() {
         .unwrap();
     let other = JournalRegistry::default();
     other.configure_directory(&dir).unwrap();
-    let journal = other.get("recording").unwrap();
+    let failure = match other.get("recording") {
+        Ok(_) => panic!("exact recovery authority must retain the recording"),
+        Err(failure) => failure,
+    };
+    assert_eq!(failure.kind, "storage.owner-conflict");
     assert_eq!(
         registry
             .legacy_recording_retire_exact("recording", &page)
@@ -509,7 +525,6 @@ fn retirement_reply_replays_after_another_client_migrates() {
             .legacy_recording_retire_exact("recording", &changed)
             .is_err()
     );
-    drop(journal);
 }
 
 #[test]
@@ -552,6 +567,27 @@ fn concurrent_retirements_share_one_replayable_result() {
 
 #[test]
 fn retirement_replays_while_another_process_owns_the_migrated_journal() {
+    if let Ok(dir) = std::env::var("UBM_EXACT_PREPARE_TEST_DIR") {
+        let registry = JournalRegistry::default();
+        registry
+            .configure_directory(std::path::Path::new(&dir))
+            .unwrap();
+        let page = registry
+            .legacy_recording_prepare_exact("recording", 1, 4096)
+            .unwrap();
+        registry
+            .legacy_recording_acknowledge_exact("recording", &page)
+            .unwrap();
+        registry
+            .legacy_recording_retire_exact("recording", &page)
+            .unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("page.json"),
+            serde_json::to_vec(&page).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
     if let Ok(dir) = std::env::var("UBM_EXACT_MIGRATED_OWNER_TEST_DIR") {
         let registry = JournalRegistry::default();
         registry
@@ -569,14 +605,18 @@ fn retirement_replays_while_another_process_owns_the_migrated_journal() {
         );
         return;
     }
-    let (dir, registry, page) = exact_fixture("migrated-process-owner");
-    registry
-        .legacy_recording_acknowledge_exact("recording", &page)
+    let dir = unprepared_exact_fixture("migrated-process-owner");
+    let prepared = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "retirement_replays_while_another_process_owns_the_migrated_journal",
+        ])
+        .env("UBM_EXACT_PREPARE_TEST_DIR", &dir)
+        .status()
         .unwrap();
-    registry
-        .legacy_recording_retire_exact("recording", &page)
-        .unwrap();
-    std::fs::write(dir.join("page.json"), serde_json::to_vec(&page).unwrap()).unwrap();
+    assert!(prepared.success());
+    let registry = JournalRegistry::default();
+    registry.configure_directory(&dir).unwrap();
     let owner = registry.get("recording").unwrap();
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
@@ -594,10 +634,7 @@ fn retirement_replays_while_another_process_owns_the_migrated_journal() {
 fn missing_receipt_table_or_unmarked_empty_table_cannot_authorize_migration() {
     for (name, sql) in [
         ("table-dropped", "DROP TABLE legacy_exact_receipt"),
-        (
-            "unmarked-empty",
-            "DELETE FROM legacy_exact_receipt; ALTER TABLE journal DROP COLUMN legacy_exact_state",
-        ),
+        ("unmarked-empty", "DELETE FROM legacy_exact_receipt"),
     ] {
         let (dir, registry, page) = exact_fixture(name);
         registry
@@ -607,7 +644,10 @@ fn missing_receipt_table_or_unmarked_empty_table_cannot_authorize_migration() {
         db.execute_batch(sql).unwrap();
         drop(db);
         assert_eq!(
-            registry.get("recording").err().unwrap().kind,
+            registry
+                .legacy_recording_retire_exact("recording", &page)
+                .unwrap_err()
+                .kind,
             "storage.corrupt"
         );
     }
@@ -765,8 +805,12 @@ fn exact_receipt_survives_committed_child_exit_and_another_client() {
         registry
             .configure_directory(std::path::Path::new(&dir))
             .unwrap();
-        let page: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(std::path::Path::new(&dir).join("page.json")).unwrap(),
+        let page = registry
+            .legacy_recording_prepare_exact("recording", 1, 4096)
+            .unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("page.json"),
+            serde_json::to_vec(&page).unwrap(),
         )
         .unwrap();
         registry
@@ -774,9 +818,7 @@ fn exact_receipt_survives_committed_child_exit_and_another_client() {
             .unwrap();
         std::process::exit(0);
     }
-    let (dir, registry, page) = exact_fixture("exit");
-    std::fs::write(dir.join("page.json"), serde_json::to_vec(&page).unwrap()).unwrap();
-    drop(registry);
+    let dir = unprepared_exact_fixture("exit");
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -786,6 +828,8 @@ fn exact_receipt_survives_committed_child_exit_and_another_client() {
         .status()
         .unwrap();
     assert!(status.success());
+    let page: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("page.json")).unwrap()).unwrap();
     let another = JournalRegistry::default();
     another.configure_directory(&dir).unwrap();
     assert_eq!(

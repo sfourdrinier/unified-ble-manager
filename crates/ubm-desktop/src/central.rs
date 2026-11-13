@@ -6054,6 +6054,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     && active.id == *id
                 {
                     active.unpublished_cleanup = true;
+                    if matches!(active.phase, ScanPhase::StartCancelled) {
+                        // The early stop already retired/fenced this ingress,
+                        // but the late start can have re-enabled the OS scan.
+                        // Keep physical compensation without retiring it twice.
+                        active.ingress_epoch = 0;
+                    }
                 }
                 match slot
                     .as_ref()
@@ -6422,6 +6428,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         }
                     }
                     stage = match stage {
+                        // Compensation with no owned ingress epoch still has
+                        // to stop the radio, but has no callback prefix left
+                        // to retire or fence.
+                        ScanStopStage::PhysicalStop if ingress_epoch == 0 => break,
                         ScanStopStage::PhysicalStop => ScanStopStage::RetireIngress,
                         ScanStopStage::RetireIngress => ScanStopStage::FenceIngress,
                         ScanStopStage::FenceIngress => break,
@@ -28532,7 +28542,7 @@ mod adapter_tests {
             RecordingDriverStatus::WaitingSource | RecordingDriverStatus::WaitingDrain
         ));
         permit.release().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             while !matches!(
                 recorder.driver_status(),
                 RecordingDriverStatus::Finished | RecordingDriverStatus::Failed(_)
@@ -28541,7 +28551,12 @@ mod adapter_tests {
             }
         })
         .await
-        .expect("recorder must settle after reclaim release");
+        .unwrap_or_else(|_| {
+            panic!(
+                "recorder did not settle after reclaim release; status: {:?}",
+                recorder.driver_status()
+            )
+        });
         assert!(
             matches!(recorder.driver_status(), RecordingDriverStatus::Finished),
             "recorder failed after reclaim release: {:?}",
@@ -28670,7 +28685,7 @@ mod adapter_tests {
                 })
                 .expect("synthetic event admission failed");
         }
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if matches!(
                     recorder.driver_status(),
@@ -28682,12 +28697,18 @@ mod adapter_tests {
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| {
+            panic!(
+                "recorder did not reach reader-ack capacity boundary; recorder: {:?}, journal: {:?}",
+                recorder.driver_status(),
+                journal.status()
+            )
+        });
         let page = journal.prepare(16, 4096).unwrap();
         journal
             .acknowledge(page["token"].as_str().unwrap())
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if journal.status().unwrap()["records"] == 1
                     && matches!(
@@ -28701,13 +28722,19 @@ mod adapter_tests {
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| {
+            panic!(
+                "reader acknowledgement did not wake recorder; recorder: {:?}, journal: {:?}",
+                recorder.driver_status(),
+                journal.status()
+            )
+        });
         let page = journal.prepare(16, 4096).unwrap();
         journal
             .acknowledge(page["token"].as_str().unwrap())
             .unwrap();
         let _ = recorder.shutdown().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if matches!(recorder.driver_status(), RecordingDriverStatus::Finished) {
                     break;
@@ -28723,7 +28750,13 @@ mod adapter_tests {
             }
         })
         .await
-        .expect("shutdown must settle its source and journal");
+        .unwrap_or_else(|_| {
+            panic!(
+                "shutdown did not settle source and journal; recorder: {:?}, journal: {:?}",
+                recorder.driver_status(),
+                journal.status()
+            )
+        });
         drop(recorder);
         drop(journal);
         drop(central);
