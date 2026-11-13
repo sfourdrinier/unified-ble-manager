@@ -654,7 +654,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         this.waitForAdapter = true
         return 'retry'
       }
-      this.lastError = toBleError(contractError('connection.failed', 'connection', 'connection-supervisor.cleanup'))
+      this.lastError = toBleError(cleanup.failures[0]?.error)
       return 'terminal'
     }
     return 'retry'

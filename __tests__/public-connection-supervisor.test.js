@@ -737,6 +737,88 @@ describe('public connection supervisor', () => {
     })
   })
 
+  test('retains the first non-retryable adapter-loss cleanup error after final cleanup succeeds', async () => {
+    const loss = deferred()
+    const first = connection()
+    let lifecycleRead = 0
+    first.lifecycleEvents = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          lifecycleRead += 1
+          if (lifecycleRead === 1) {
+            return {
+              done: false,
+              value: {
+                kind: 'connection-lifecycle',
+                previous: 'connecting',
+                current: 'connected',
+                cause: 'connected',
+                connectionGeneration: 'generation-1',
+                sequence: 1
+              }
+            }
+          }
+          return loss.promise
+        },
+        return: async () => ({ done: true, value: undefined })
+      })
+    }
+    const cleanupError = new BleError('platform.failure', 'connection', 'direct-gatt.connection.disconnect', {
+      platform: {
+        domain: 'bluez',
+        code: 'org.bluez.Error.Failed',
+        safeMessage: 'native release failed',
+        metadata: { interface: 'org.bluez.Device1' }
+      },
+      retryability: 'never'
+    })
+    const cleanupFailure = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'connection',
+          error: cleanupError
+        }
+      ]
+    }
+    first.release.mockResolvedValueOnce(cleanupFailure).mockResolvedValueOnce({ state: 'released', failures: [] })
+    const ble = manager(first)
+    const supervisor = createConnectionSupervisor(ble, 'adapter-loss-preserves-cleanup-error', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0 }
+    })
+
+    supervisor.start()
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'connected'; turn += 1) await wait(1)
+    loss.resolve({
+      done: false,
+      value: {
+        kind: 'connection-lifecycle',
+        previous: 'connected',
+        current: 'lost',
+        cause: 'adapter-loss',
+        connectionGeneration: 'generation-1',
+        sequence: 2
+      }
+    })
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'stopped'; turn += 1) await wait(1)
+
+    expect(supervisor.snapshot).toMatchObject({
+      state: 'stopped',
+      lastError: {
+        code: 'platform.failure',
+        domain: 'connection',
+        operation: 'direct-gatt.connection.disconnect',
+        platform: {
+          domain: 'bluez',
+          code: 'org.bluez.Error.Failed',
+          metadata: { interface: 'org.bluez.Device1' }
+        }
+      }
+    })
+    expect(first.release).toHaveBeenCalledTimes(2)
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+  })
+
   test('releases a connected generation before reconnecting after immediate pause and resume', async () => {
     const first = connection()
     const second = connection()
