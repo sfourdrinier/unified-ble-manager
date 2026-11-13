@@ -45,6 +45,57 @@ async function digestBytes(value) {
   return digest(Array.from(value, byte => String.fromCharCode(byte)).join(''))
 }
 
+describe.each(['reserve', 'release-reservation', 'acknowledge'])('persisted quota validation: %s', operation => {
+  test.each([
+    ['string byte count', { reservedBytes: '2' }],
+    ['negative byte count', { reservedBytes: -1 }],
+    ['fractional byte count', { reservedBytes: 1.5 }],
+    ['unsafe byte count', { reservedBytes: Number.MAX_SAFE_INTEGER + 1 }],
+    ['over-capacity byte count', { reservedBytes: 5 }],
+    ['invalid capacity', { maximumBytes: 0 }],
+    ['unsupported version', { version: 2 }],
+    ['wrong state key', { key: 'other' }]
+  ])('rejects %s without changing saved evidence or quota, and permits retry', async (_name, corruption) => {
+    const database = transactionalDatabase()
+    const options = { database, locks: locks(), digest, digestBytes, maximumRetainedBytes: 4 }
+    const source = createWebTerminalEvidenceSource(options)
+    const request = {
+      producer: 'scan',
+      maximumBytes: 2,
+      formatVersion: 1,
+      scope: { managerId: 'm', operationId: 'quota-validation', incarnation: 'i' }
+    }
+    const reservation = await source.reserveTerminalEvidence(request)
+    let action
+    if (operation === 'reserve') {
+      action = () =>
+        source.reserveTerminalEvidence({
+          ...request,
+          scope: { ...request.scope, operationId: 'second' }
+        })
+    } else if (operation === 'release-reservation') {
+      action = () => reservation.release()
+    } else {
+      const canonicalBytes = new Uint8Array([3])
+      const receipt = await reservation.commit({ canonicalBytes, digest: await digestBytes(canonicalBytes) })
+      await reservation.release()
+      action = () => source.releaseTerminalEvidence(receipt.ref)
+    }
+    const validQuota = database.rows('terminalEvidenceState')[0]
+    database.mutate('terminalEvidenceState', row => Object.assign(row, corruption))
+    const savedEvidence = database.rows('terminalEvidence')
+    const savedQuota = database.rows('terminalEvidenceState')
+    await expect(action()).rejects.toThrow()
+    expect(database.rows('terminalEvidence')).toEqual(savedEvidence)
+    expect(database.rows('terminalEvidenceState')).toEqual(savedQuota)
+    database.mutate('terminalEvidenceState', row => Object.assign(row, validQuota))
+    const retry = await action()
+    if (operation === 'reserve') await retry.release()
+    await reservation.release()
+    expect(database.rows('terminalEvidenceState')).toEqual([expect.objectContaining({ reservedBytes: 0 })])
+  })
+})
+
 test('persists a preactivated reservation and exact evidence before it reports a commit', async () => {
   const database = transactionalDatabase()
   const source = createWebTerminalEvidenceSource({

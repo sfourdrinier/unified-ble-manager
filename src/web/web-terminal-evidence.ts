@@ -60,6 +60,26 @@ type StateRow = {
   readonly reservedBytes: number
 }
 
+function isPersistedStateRow(row: unknown): row is StateRow {
+  return (
+    typeof row === 'object' &&
+    row !== null &&
+    'key' in row &&
+    row.key === 'quota' &&
+    'version' in row &&
+    row.version === 1 &&
+    'maximumBytes' in row &&
+    typeof row.maximumBytes === 'number' &&
+    Number.isSafeInteger(row.maximumBytes) &&
+    row.maximumBytes > 0 &&
+    'reservedBytes' in row &&
+    typeof row.reservedBytes === 'number' &&
+    Number.isSafeInteger(row.reservedBytes) &&
+    row.reservedBytes >= 0 &&
+    row.reservedBytes <= row.maximumBytes
+  )
+}
+
 function assertRequest(request: TerminalEvidenceReservationRequest): void {
   if (request.producer !== 'scan' && request.producer !== 'subscription')
     throw contractError('argument.invalid', 'stream', 'web-terminal-evidence.producer')
@@ -288,8 +308,8 @@ export function createWebTerminalEvidenceSource(options: WebTerminalEvidenceOpti
                 }
                 const quota = tx.objectStore('terminalEvidenceState').get('quota')
                 quota.onsuccess = () => {
-                  const state = quota.result as StateRow | undefined
-                  if (state === undefined || state.reservedBytes < row.maximumBytes) {
+                  const state = quota.result
+                  if (!isPersistedStateRow(state) || state.reservedBytes < row.maximumBytes) {
                     tx.abort()
                     return
                   }
@@ -365,10 +385,11 @@ export function createWebTerminalEvidenceSource(options: WebTerminalEvidenceOpti
                   tx.abort()
                 return
               }
-              const prior = state.result as StateRow | undefined
+              const prior = state.result
               if (
                 prior !== undefined &&
-                (prior.maximumBytes !== maximumRetainedBytes ||
+                (!isPersistedStateRow(prior) ||
+                  prior.maximumBytes !== maximumRetainedBytes ||
                   prior.reservedBytes > maximumRetainedBytes - request.maximumBytes)
               ) {
                 tx.abort()
@@ -498,8 +519,8 @@ export function createWebTerminalEvidenceSource(options: WebTerminalEvidenceOpti
                     }
                     const quota = tx.objectStore('terminalEvidenceState').get('quota')
                     quota.onsuccess = () => {
-                      const state = quota.result as StateRow | undefined
-                      if (state === undefined || state.reservedBytes < request.maximumBytes) {
+                      const state = quota.result
+                      if (!isPersistedStateRow(state) || state.reservedBytes < request.maximumBytes) {
                         tx.abort()
                         return
                       }

@@ -24,6 +24,8 @@ All notable changes to `unified-ble-manager` are documented here.
   completed readers can release cached file handles without deleting saved data.
 - Preserve Web notifications admitted before a same-turn disconnect when terminal
   evidence is enabled. Explicit owner removal retains its unread-value discard behavior.
+- Validate persisted Web terminal-evidence quota rows before reservation or
+  release arithmetic; malformed rows abort without changing saved evidence.
 - Correct iOS/tvOS terminal-evidence bridge selectors and propagate Swift failures
   through the existing structured JSON error channel.
 - Compensate a late successful scan start with a physical stop while avoiding
