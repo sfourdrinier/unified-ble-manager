@@ -569,12 +569,10 @@ impl ContinuationRecordingStore {
         Ok(envelope(
             run_blocking(move || {
                 #[cfg(windows)]
-                let configured = registry.configure_directory_with_scan_recovery_storage(
-                    std::path::Path::new(&directory),
-                    Arc::new(
-                        ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
-                    ),
-                );
+                let configured = registry
+                    .configure_directory_with_current_user_scan_recovery_storage(
+                        std::path::Path::new(&directory),
+                    );
                 #[cfg(not(windows))]
                 let configured = registry.configure_directory(std::path::Path::new(&directory));
                 configured.map_err(recording_failure)

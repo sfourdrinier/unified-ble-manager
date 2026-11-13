@@ -21,6 +21,9 @@ All notable changes to `unified-ble-manager` are documented here.
   pre-existing recording and authority files, preserving their read/write access.
 - Configure current-user protected storage through the public Windows native
   continuation path, so ordinary durable recording can attach its recovery sidecar.
+- Preserve same-directory Windows recording setup on repeated and concurrent
+  calls, retaining and validating its installed storage protector. Different
+  directories and explicit protector replacement remain refused.
 - Release terminal-evidence and idle recording database handles after successful
   Node-API host shutdown, including when JavaScript retains the native wrapper.
   Saved rows and journals with live owners or unpersisted diagnostics remain retained.

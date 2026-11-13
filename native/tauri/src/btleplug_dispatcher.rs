@@ -3402,12 +3402,8 @@ impl BtleplugDispatcher {
         let terminal_evidence_maximum_bytes = self.terminal_evidence_maximum_bytes;
         let configured = ubm_desktop::continuation_journal::run_blocking_result(move || {
             #[cfg(windows)]
-            let configured = recordings.configure_directory_with_scan_recovery_storage(
-                &directory,
-                Arc::new(
-                    ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
-                ),
-            );
+            let configured =
+                recordings.configure_directory_with_current_user_scan_recovery_storage(&directory);
             #[cfg(not(windows))]
             let configured = recordings.configure_directory(&directory);
             let configured = configured.map_err(ubm_desktop::continuation::recording_failure)?;

@@ -578,12 +578,7 @@ impl NativeContinuation {
         #[cfg(windows)]
         let configured = self
             .recordings
-            .configure_directory_with_scan_recovery_storage(
-            path,
-            Arc::new(
-                crate::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
-            ),
-        );
+            .configure_directory_with_current_user_scan_recovery_storage(path);
         #[cfg(not(windows))]
         let configured = self.recordings.configure_directory(path);
         configured.map_err(recording_failure)
@@ -2505,6 +2500,57 @@ async fn invoke_with_deadline(
 #[cfg(test)]
 mod idle_recovery_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn recording_directory_configuration_reuses_current_user_protection_for_same_directory() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("fixture clock must not precede Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-repeated-recording-directory-{}-{suffix}",
+            std::process::id()
+        ));
+        let other_directory = std::env::temp_dir().join(format!(
+            "ubm-changed-recording-directory-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::create_dir_all(&other_directory).unwrap();
+
+        let continuation = NativeContinuation::new(Arc::new(Host::default()));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let first = {
+            let continuation = continuation.clone();
+            let directory = directory.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                continuation.configure_recording_directory(&directory)
+            })
+        };
+        let second = {
+            let continuation = continuation.clone();
+            let directory = directory.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                continuation.configure_recording_directory(&directory)
+            })
+        };
+        barrier.wait();
+        assert_eq!(first.join().unwrap().unwrap()["state"], "configured");
+        assert_eq!(second.join().unwrap().unwrap()["state"], "configured");
+        let refusal = continuation
+            .configure_recording_directory(&other_directory)
+            .unwrap_err();
+        assert_eq!(refusal["code"], "platform.failure");
+        assert_eq!(refusal["platform"]["code"], "storage.identity");
+
+        crate::continuation_journal::remove_idle_fixture_directory(&directory);
+        crate::continuation_journal::remove_idle_fixture_directory(&other_directory);
+    }
 
     #[test]
     fn setup_uncertainty_survives_other_peers_and_only_its_generation_change_clears_it() {

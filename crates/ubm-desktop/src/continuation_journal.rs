@@ -1215,7 +1215,24 @@ impl JournalRegistry {
         path: &Path,
         protector: Arc<dyn ScanRecoveryStorageProtector>,
     ) -> Result<Value> {
-        self.configure_directory_inner(path, Some(protector))
+        self.configure_directory_inner(path, Some(protector), false)
+    }
+
+    /// Configure the Windows current-user protector used by the native
+    /// continuation host. Repeating the same trusted directory retains and
+    /// revalidates the installed protector rather than replacing it.
+    #[cfg(windows)]
+    pub fn configure_directory_with_current_user_scan_recovery_storage(
+        &self,
+        path: &Path,
+    ) -> Result<Value> {
+        self.configure_directory_inner(
+            path,
+            Some(Arc::new(
+                WindowsCurrentUserScanRecoveryStorageProtector::new(),
+            )),
+            true,
+        )
     }
     fn retain_legacy_recovery_authority(&self, id: &str) -> Result<PathBuf> {
         let state = self
@@ -1745,13 +1762,14 @@ impl JournalRegistry {
         Ok(owners)
     }
     pub fn configure_directory(&self, path: &Path) -> Result<Value> {
-        self.configure_directory_inner(path, None)
+        self.configure_directory_inner(path, None, false)
     }
 
     fn configure_directory_inner(
         &self,
         path: &Path,
         protector: Option<Arc<dyn ScanRecoveryStorageProtector>>,
+        retain_installed_protector: bool,
     ) -> Result<Value> {
         let canonical = path.canonicalize().map_err(|_| {
             error("storage.io", "recording directory cannot be resolved").at("configure")
@@ -1763,15 +1781,56 @@ impl JournalRegistry {
             )
             .at("configure"));
         }
+        let identity = path_identity(&canonical)?;
+        if retain_installed_protector {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| error("storage.io", "recording registry interrupted"))?;
+            if state
+                .directory
+                .as_ref()
+                .is_some_and(|current| current != &canonical)
+            {
+                return Err(error(
+                    "storage.identity",
+                    "recording directory is already configured",
+                )
+                .at("configure"));
+            }
+            if state
+                .directory_identity
+                .is_some_and(|current| current != identity)
+            {
+                return Err(error(
+                    "storage.identity",
+                    "configured recording directory was replaced",
+                ));
+            }
+            if let Some(installed) = state.scan_recovery_storage.as_deref() {
+                installed.validate_directory(&canonical)?;
+            } else {
+                let protector = protector.expect("current-user protector is required");
+                protector.provision_directory(&canonical)?;
+                protector.validate_directory(&canonical)?;
+                state.scan_recovery_storage = Some(protector);
+            }
+            let scan_recovery_storage = state
+                .scan_recovery_storage
+                .as_ref()
+                .map_or_else(default_scan_recovery_storage_capability, |value| {
+                    value.capability()
+                });
+            state.directory = Some(canonical);
+            state.directory_identity = Some(identity);
+            return Ok(
+                json!({"state":"configured","encrypted":false,"scanRecoveryStorage":scan_recovery_storage}),
+            );
+        }
         if let Some(protector) = protector.as_deref() {
-            // The configured root is part of the security boundary: without
-            // it, a hostile principal could replace the protected child
-            // directory after validation. This trusted-host action happens
-            // before the registry publishes the location to any journal.
             protector.provision_directory(&canonical)?;
             protector.validate_directory(&canonical)?;
         }
-        let identity = path_identity(&canonical)?;
         let mut state = self
             .state
             .lock()
@@ -15321,6 +15380,14 @@ mod authority_tests {
         assert_eq!(protector.provisioned.load(Ordering::SeqCst), 1);
         assert!(protector.validated.load(Ordering::SeqCst) >= 2);
         drop(reopened);
+        assert_eq!(
+            registry
+                .configure_directory_with_scan_recovery_storage(&directory, protector)
+                .unwrap_err()
+                .kind,
+            "storage.identity",
+            "an explicit replacement protector must remain refused"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
