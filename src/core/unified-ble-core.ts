@@ -1672,6 +1672,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     releaseEvidence: (() => Promise<void>) | null,
     transition: string
   ): Promise<CleanupRecord> {
+    if (stop === null && releaseEvidence === null) return { state: 'released', failures: [] }
     let pendingStop = stop
     let pendingEvidenceRelease = releaseEvidence
     const retained = createRetainedCleanup('scan', transition, async () => {
