@@ -377,9 +377,12 @@ an unresolved row was ignored. `createWebTerminalEvidenceRecovery(partition)`
 provides partition-scoped `list`, bounded `read`, explicit `acknowledge`, and
 `retry` operations. A reserved row has no terminal bytes and remains visible
 until its owner explicitly retires it; recovery never fabricates a terminal or
-silently frees its quota. Recovery acknowledgement accepts only a `committed`
-row: it rejects reserved and staged rows, which remain owned by reservation
-release and durable retry respectively.
+silently frees its quota. Recovery acknowledgement acquires the row's exact
+exclusive Web Lock before retiring it. A live owner's lock refuses recovery;
+after a tab closes or crashes, acknowledgement may retire its unused `reserved`
+row and return the quota. A `staged` row contains terminal bytes and still
+rejects acknowledgement until durable retry commits it. Committed evidence
+retains its explicit acknowledgement path.
 
 `listWithStatus()` returns currently Web-Lock-available retained rows under
 `records`, plus a sorted `busyProducers` list for any producer with a row held

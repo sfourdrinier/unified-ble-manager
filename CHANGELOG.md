@@ -36,6 +36,9 @@ All notable changes to `unified-ble-manager` are documented here.
 - Use valid IndexedDB counts during Web recovery scans, and retain staged or
   committed evidence when a reattached runtime reservation is released. Only
   recovery acknowledgement retires those saved rows and their quota.
+- Reclaim an unused Web evidence reservation after its tab closes or crashes
+  through the existing recovery acknowledgement, under its exact exclusive
+  Web Lock. Live owners and staged evidence remain protected.
 - Correct iOS/tvOS terminal-evidence bridge selectors and propagate Swift failures
   through the existing structured JSON error channel.
 - Compensate a late successful scan start with a physical stop while avoiding

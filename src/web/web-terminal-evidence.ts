@@ -298,10 +298,11 @@ export function createWebTerminalEvidenceSource(options: WebTerminalEvidenceOpti
                 const row = evidence.result as Row | undefined
                 if (row === undefined) return
                 assertPersistedRow(row)
-                // A recovery acknowledgement is the sole destructive path.
-                // Reserved and staged rows are still source-owned and must
-                // remain available for the original owner or durable retry.
-                if (row.state !== 'committed') {
+                // A live source retains this same exclusive lock, so reaching
+                // this point for a reserved row proves its owner is gone. A
+                // staged row has bytes awaiting durable retry and cannot be
+                // retired by acknowledgement.
+                if (row.state === 'staged') {
                   stateRejected = true
                   tx.abort()
                   return

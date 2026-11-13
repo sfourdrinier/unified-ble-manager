@@ -84,5 +84,39 @@
   "repositoryFixture": {
     "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
     "result": "PASS real IndexedDB and Web Locks: list, reattach, release, staged retry, exact bytes and recovery ACK"
+  },
+  "orphanReservationContextLoss": {
+    "observedAt": "2026-11-13T22:25:31Z",
+    "baselineCommit": "0f3aa43a7c21aea21373012a1de64dd17641f732",
+    "sourceState": "working-tree reservation recovery correction identified by the exact source hashes below",
+    "evidenceLevel": "real-browser-storage-runtime",
+    "physicalRadio": "not-exercised",
+    "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+    "context": "two real Chrome tabs on secure localhost, sharing IndexedDB and navigator.locks",
+    "sourceHashes": {
+      "src/web/web-terminal-evidence.ts": "2961b5c1e4a5d9c4934038a87ba8c5c3971b5017347ac7cf2532a6e192174751",
+      "src/web/web-recording-database.ts": "8ff94dfe35d8baa2eee3d920cdce87e9a22050e464ea71dbf7c3e7b7efe9b338",
+      "__tests__/web/web-terminal-evidence-browser-fixture.js": "67ba32b9a0eb54a459762e0c73f41732a7e335479f75d5ab1a1b5859a90dc21d",
+      "temporaryHarness": "c77e2d90a226dc342fa772ca7af92dd2ea2f94489b3271a8d1034a298acf3380"
+    },
+    "reservation": {
+      "maximumBytes": 64,
+      "ownerQuotaAfterReserve": 64,
+      "recoveryObservedState": "reserved",
+      "recoveryQuotaWhileOwnerAlive": 64,
+      "recoveryAckWhileOwnerAlive": {
+        "code": "capability.unavailable",
+        "operation": "web-terminal-evidence.release-busy"
+      },
+      "newScopeWhileOwnerAlive": "quota-refused"
+    },
+    "contextLossRecovery": {
+      "ownerPageClosedWithoutRelease": true,
+      "recoveryAck": "released",
+      "rowsAfterAck": 0,
+      "quotaAfterAck": 0,
+      "newScopeReservationAfterAck": "succeeded"
+    },
+    "result": "PASS reserved row and quota persisted while owner lock was live; after actual owner-page close, recovery acknowledgement retired exactly that reserved row and freed quota."
   }
 }

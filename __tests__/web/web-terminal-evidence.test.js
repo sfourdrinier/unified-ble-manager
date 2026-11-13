@@ -157,9 +157,10 @@ test('persists a preactivated reservation and exact evidence before it reports a
   await expect(source.readTerminalEvidence('missing', 4)).resolves.toEqual({ kind: 'missing' })
 })
 
-test('rejects recovery acknowledgement before a terminal is committed', async () => {
+test('reclaims a crashed reserved row only after its lock is released and preserves staged recovery', async () => {
   const database = transactionalDatabase()
-  const options = { database, locks: locks(), digest, digestBytes, maximumRetainedBytes: 3 }
+  const webLocks = crashableLocks()
+  const options = { database, locks: webLocks, digest, digestBytes, maximumRetainedBytes: 3 }
   const request = {
     producer: 'subscription',
     maximumBytes: 3,
@@ -170,27 +171,47 @@ test('rejects recovery acknowledgement before a terminal is committed', async ()
   const ref = database.rows('terminalEvidence')[0].ref
 
   await expect(createWebTerminalEvidenceSource(options).releaseTerminalEvidence(ref)).rejects.toThrow(
-    'web-terminal-evidence.release-state'
+    'web-terminal-evidence.release-busy'
   )
   expect(database.rows('terminalEvidence')).toEqual([expect.objectContaining({ ref, state: 'reserved' })])
   expect(database.rows('terminalEvidenceState')).toEqual([expect.objectContaining({ reservedBytes: 3 })])
 
+  webLocks.crash()
+  const recovered = createWebTerminalEvidenceSource(options)
+  database.abortNext(new Error('injected-reserved-retirement-abort'))
+  await expect(recovered.releaseTerminalEvidence(ref)).rejects.toThrow('injected-reserved-retirement-abort')
+  expect(database.rows('terminalEvidence')).toEqual([expect.objectContaining({ ref, state: 'reserved' })])
+  expect(database.rows('terminalEvidenceState')).toEqual([expect.objectContaining({ reservedBytes: 3 })])
+  await recovered.releaseTerminalEvidence(ref)
+  expect(database.rows('terminalEvidence')).toEqual([])
+  expect(database.rows('terminalEvidenceState')).toEqual([expect.objectContaining({ reservedBytes: 0 })])
+
+  const stagedReservation = await createWebTerminalEvidenceSource(options).reserveTerminalEvidence({
+    ...request,
+    scope: { ...request.scope, operationId: 'ack-staged' }
+  })
+  const stagedRef = database.rows('terminalEvidence')[0].ref
   const bytes = new Uint8Array([3])
-  await reservation.commit({ canonicalBytes: bytes, digest: await digestBytes(bytes) })
+  await stagedReservation.commit({ canonicalBytes: bytes, digest: await digestBytes(bytes) })
   database.mutate('terminalEvidence', row => {
     row.state = 'staged'
   })
-  await expect(createWebTerminalEvidenceSource(options).releaseTerminalEvidence(ref)).rejects.toThrow(
+  await stagedReservation.release()
+  await expect(createWebTerminalEvidenceSource(options).releaseTerminalEvidence(stagedRef)).rejects.toThrow(
     'web-terminal-evidence.release-state'
   )
-  expect(database.rows('terminalEvidence')).toEqual([expect.objectContaining({ ref, state: 'staged', bytes: [3] })])
+  expect(database.rows('terminalEvidence')).toEqual([
+    expect.objectContaining({ ref: stagedRef, state: 'staged', bytes: [3] })
+  ])
+  expect(database.rows('terminalEvidenceState')).toEqual([expect.objectContaining({ reservedBytes: 3 })])
   await createWebTerminalEvidenceSource(options).retryPendingTerminalEvidence()
-  await expect(createWebTerminalEvidenceSource(options).readTerminalEvidence(ref, 3)).resolves.toMatchObject({
+  await expect(createWebTerminalEvidenceSource(options).readTerminalEvidence(stagedRef, 3)).resolves.toMatchObject({
     kind: 'committed',
     canonicalBytes: new Uint8Array([3])
   })
-  await createWebTerminalEvidenceSource(options).releaseTerminalEvidence(ref)
+  await createWebTerminalEvidenceSource(options).releaseTerminalEvidence(stagedRef)
   expect(database.rows('terminalEvidenceState')).toEqual([expect.objectContaining({ reservedBytes: 0 })])
+  void reservation
 })
 
 test('does not silently use volatile storage when exclusive Web Locks are absent', async () => {
