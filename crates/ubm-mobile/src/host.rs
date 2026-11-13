@@ -52,6 +52,9 @@ use crate::wire::{self, object, opt_text};
 pub mod ordered_batch;
 #[path = "ordered_wake.rs"]
 pub mod ordered_wake;
+#[cfg(test)]
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
 
 /// Host identity at open.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11536,20 +11539,10 @@ mod signal_tests {
 
     #[test]
     fn stopped_batch_accounting_uses_the_real_outbox_cutoff_across_bounded_groups() {
-        let directory = std::env::temp_dir().join(format!(
-            "ubm-mobile-stopped-batch-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        let test = "host::signal_tests::stopped_batch_accounting_uses_the_real_outbox_cutoff_across_bounded_groups";
+        let Some(directory) = super::recording_fixture::isolated_fixture_process(test) else {
+            return;
+        };
         let path = directory.join("recording.sqlite");
         let quota = ubm_desktop::continuation_journal::JournalQuota {
             max_bytes: 1 << 20,
@@ -11655,7 +11648,7 @@ mod signal_tests {
         );
         drop(outbox);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        super::recording_fixture::complete_fixture_process(&directory);
     }
 
     /// X-R6: a stalled pump (no pops) plus a burst stays bounded, and every

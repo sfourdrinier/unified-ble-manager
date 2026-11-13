@@ -4097,7 +4097,10 @@ impl Outbox {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
 
     use crate::continuation_journal::JournalQuota;
     use serde_json::json;
@@ -4111,6 +4114,19 @@ mod tests {
     }
 
     use crate::continuation_journal::private_fixture_directory as private_directory;
+
+    fn fixture_suffix() -> String {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+
+        format!(
+            "{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("fixture clock must not precede Unix epoch")
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )
+    }
 
     fn open_scan_fixture(
         path: &std::path::Path,
@@ -4157,10 +4173,10 @@ mod tests {
         for mode in ["registration", "control", "data"] {
             for reject_persistence in [false, true] {
                 let dir = std::env::temp_dir().join(format!(
-                    "ubm-outbox-atomic-{}-{:?}-{mode}-{reject_persistence}-{:?}",
+                    "ubm-outbox-atomic-{}-{:?}-{mode}-{reject_persistence}-{}",
                     std::process::id(),
                     std::thread::current().id(),
-                    std::time::SystemTime::now()
+                    fixture_suffix()
                 ));
                 private_directory(&dir);
                 let path = dir.join("journal.sqlite");
@@ -4426,7 +4442,7 @@ mod tests {
         );
         drop(restarted);
         drop(reopened);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]
@@ -4615,6 +4631,7 @@ mod tests {
             "the final cleanup receipt needs the recorded owner domain after its envelope is gone"
         );
         drop(reopened);
+        drop(reopened_journal);
         let cleaned_journal = Arc::new(open_scan_fixture(&path, "r", &json!({}), quota).unwrap());
         let cleaned = Outbox::new(3, Arc::new(NoWake));
         cleaned
@@ -4669,7 +4686,7 @@ mod tests {
             .push_data(json!({"t":"value", "consumer":"after-recovery", "n":"suffix"}))
             .unwrap();
         drop(retired);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     fn scan_cleanup_test_limits() -> ScanFailureLimits {
@@ -4791,7 +4808,7 @@ mod tests {
         reopened.retire_unprepared_scan_failure(&owner.key).unwrap();
         drop(reopened);
         drop(reopened_journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -4875,7 +4892,7 @@ mod tests {
         );
         drop(replacement);
         drop(reopened);
-        std::fs::remove_dir_all(directory).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -4969,7 +4986,7 @@ mod tests {
         drop(queues);
         drop(third);
         drop(third_journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -5036,7 +5053,7 @@ mod tests {
         );
         drop(replacement);
         drop(reopened);
-        std::fs::remove_dir_all(directory).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -5095,7 +5112,7 @@ mod tests {
             .attach_journal(reopened, json!({}))
             .expect_err("mixed persisted sessions must not acquire one recovery lease");
         assert_eq!(error.kind, "argument.invalid");
-        std::fs::remove_dir_all(directory).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&directory);
     }
 
     fn finalize_scan_cleanup_for_test(
@@ -5224,9 +5241,9 @@ mod tests {
         }
 
         let directory = std::env::temp_dir().join(format!(
-            "ubm-scan-cleanup-process-{}-{:?}",
+            "ubm-scan-cleanup-process-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_suffix()
         ));
         private_directory(&directory);
         let path = directory.join("recording.sqlite");
@@ -5256,7 +5273,7 @@ mod tests {
             write_cleanup_retirement_to_child(&mut child, &retirement);
             assert!(child.wait().unwrap().success());
         }
-        std::fs::remove_dir_all(directory).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -5281,9 +5298,9 @@ mod tests {
         }
 
         let root = std::env::temp_dir().join(format!(
-            "ubm-scan-cleanup-cross-recording-{}-{:?}",
+            "ubm-scan-cleanup-cross-recording-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_suffix()
         ));
         let first = root.join("first");
         let second = root.join("second");
@@ -5320,7 +5337,7 @@ mod tests {
             .unwrap();
         write_cleanup_retirement_to_child(&mut child, &first_retirement);
         assert!(child.wait().unwrap().success());
-        std::fs::remove_dir_all(root).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&root);
     }
 
     #[test]
@@ -5333,9 +5350,9 @@ mod tests {
             max_records: 1,
         };
         let directory = std::env::temp_dir().join(format!(
-            "ubm-scan-cleanup-public-reclaim-{}-{:?}",
+            "ubm-scan-cleanup-public-reclaim-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
+            fixture_suffix()
         ));
         private_directory(&directory);
         let path = directory.join("recording.sqlite");
@@ -5356,7 +5373,7 @@ mod tests {
             drop(outbox);
             drop(journal);
         }
-        std::fs::remove_dir_all(directory).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -5476,7 +5493,7 @@ mod tests {
         drop(reservation);
         drop(reopened);
         drop(reopened_journal);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]
@@ -5679,7 +5696,7 @@ mod tests {
         drop(injector);
         drop(outbox);
         drop(journal);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]
@@ -5779,7 +5796,7 @@ mod tests {
         assert_eq!(error.kind, "storage.conflict");
         drop(reopened);
         drop(reopened_journal);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]
@@ -5905,7 +5922,7 @@ mod tests {
         assert_eq!(count(), before + 1);
         drop(outbox);
         drop(journal);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]
@@ -5957,7 +5974,7 @@ mod tests {
         assert_eq!(lock(&outbox.queues).ordinal, u64::MAX - 2);
         drop(outbox);
         drop(journal);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]
@@ -6175,7 +6192,7 @@ mod tests {
         assert_eq!(records["records"][1]["reason"], "radio-failed");
         drop(outbox);
         drop(journal);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]
@@ -6256,7 +6273,7 @@ mod tests {
         assert_eq!(batch["records"][0]["record"], record);
         drop(outbox);
         drop(journal);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]
@@ -6290,7 +6307,7 @@ mod tests {
         drop(token);
         drop(outbox);
         drop(journal);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]
@@ -6336,7 +6353,7 @@ mod tests {
         );
         drop(outbox);
         drop(journal);
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::continuation_journal::remove_idle_fixture_directory(&dir);
     }
 
     #[test]

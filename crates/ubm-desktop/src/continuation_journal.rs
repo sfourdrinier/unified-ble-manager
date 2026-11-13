@@ -13415,36 +13415,37 @@ fn prepared_v1(connection: &Connection, token: &str, last: i64, more: bool) -> R
 }
 
 #[cfg(test)]
+pub(crate) fn remove_idle_fixture_directory(directory: &Path) {
+    let identities: Vec<_> = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "sqlite")
+        })
+        .map(|path| path_identity(&path).unwrap())
+        .collect();
+    for identity in identities {
+        let journal = shared_journals().lock().unwrap().get(&identity).cloned();
+        if let Some(journal) = journal {
+            assert_eq!(
+                Arc::strong_count(&journal),
+                2,
+                "fixture must not remove a live shared journal"
+            );
+            shared_journals().lock().unwrap().remove(&identity);
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(test)]
 mod authority_tests {
     use super::*;
 
     fn fixture_timestamp() -> u64 {
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn remove_idle_fixture_directory(directory: &Path) {
-        let identities: Vec<_> = std::fs::read_dir(directory)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension == "sqlite")
-            })
-            .map(|path| path_identity(&path).unwrap())
-            .collect();
-        for identity in identities {
-            let journal = shared_journals().lock().unwrap().get(&identity).cloned();
-            if let Some(journal) = journal {
-                assert_eq!(
-                    Arc::strong_count(&journal),
-                    2,
-                    "fixture must not remove a live shared journal"
-                );
-                shared_journals().lock().unwrap().remove(&identity);
-            }
-        }
-        std::fs::remove_dir_all(directory).unwrap();
     }
 
     fn open_current_v2_scan_fixture(

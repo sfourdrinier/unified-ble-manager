@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use ubm_desktop::continuation_journal::{ContinuationJournal, JournalQuota};
+use ubm_desktop::continuation_journal::{ContinuationJournal, JournalQuota, JournalRegistry};
 use ubm_desktop::continuation_outbox::{CONTROL_RECORD_CAP, IngressClass, Outbox, WakeSink};
 
 struct NoWake;
@@ -10,7 +10,7 @@ impl WakeSink for NoWake {
     fn wake(&self, _: u64) {}
 }
 static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, Arc<JournalRegistry>);
 impl Fixture {
     fn new() -> Self {
         let epoch = std::time::SystemTime::now()
@@ -26,39 +26,39 @@ impl Fixture {
         #[cfg(unix)]
         std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
-        Self(path)
+        Self::from_path(path)
+    }
+    fn from_path(path: PathBuf) -> Self {
+        let registry = Arc::new(JournalRegistry::default());
+        #[cfg(windows)]
+        registry
+            .configure_directory_with_scan_recovery_storage(
+                &path,
+                Arc::new(
+                    ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+                ),
+            )
+            .unwrap();
+        #[cfg(not(windows))]
+        registry.configure_directory(&path).unwrap();
+        Self(path, registry)
     }
     fn journal(&self, max_records: u64) -> Arc<ContinuationJournal> {
-        let quota = JournalQuota {
-            max_bytes: 16 * 1024 * 1024,
-            max_records,
-        };
-        #[cfg(windows)]
-        let protector = Arc::new(
-            ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(
-            ),
-        );
-        #[cfg(windows)]
-        ubm_desktop::continuation_journal::ScanRecoveryStorageProtector::provision_directory(
-            protector.as_ref(),
-            &self.0,
-        )
-        .unwrap();
-        #[cfg(windows)]
-        let journal = ContinuationJournal::open_with_scan_recovery_storage(
-            &self.0.join("r.sqlite"),
-            "r",
-            &json!({}),
-            quota,
-            Some(protector),
-        );
-        #[cfg(not(windows))]
-        let journal = ContinuationJournal::open(&self.0.join("r.sqlite"), "r", &json!({}), quota);
-        Arc::new(journal.unwrap())
+        self.1
+            .open(
+                "r",
+                &json!({}),
+                JournalQuota {
+                    max_bytes: 16 * 1024 * 1024,
+                    max_records,
+                },
+            )
+            .unwrap()
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        self.1.release_idle_after_host_shutdown().unwrap();
         std::fs::remove_dir_all(&self.0).expect("remove isolated journal fixture");
     }
 }
@@ -341,7 +341,7 @@ fn loss_exit_worker() {
     let Some(path) = std::env::var_os("UBM_DURABLE_LOSS_EXIT_PATH") else {
         return;
     };
-    let fixture = Fixture(PathBuf::from(path));
+    let fixture = Fixture::from_path(PathBuf::from(path));
     let journal = fixture.journal(10000);
     let outbox = attach(&journal);
     outbox.push_ingress_drop_count(IngressClass::Control, 3);

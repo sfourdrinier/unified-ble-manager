@@ -306,7 +306,7 @@ fn oversized_evidence_can_be_retried_after_explicit_quota_increase() {
 
 #[test]
 fn journal_backed_outbox_transfers_controls_without_acknowledging_recording() {
-    use ubm_desktop::continuation_journal::{ContinuationJournal, JournalQuota};
+    use ubm_desktop::continuation_journal::{JournalQuota, JournalRegistry};
     let directory =
         std::env::temp_dir().join(format!("ubm-legacy-evidence-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
@@ -315,32 +315,23 @@ fn journal_backed_outbox_transfers_controls_without_acknowledging_recording() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    let path = directory.join("recording.sqlite");
     let quota = JournalQuota {
         max_bytes: 1 << 20,
         max_records: 100,
     };
+    let registry = JournalRegistry::default();
     #[cfg(windows)]
-    let protector = Arc::new(
-        ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
-    );
-    #[cfg(windows)]
-    ubm_desktop::continuation_journal::ScanRecoveryStorageProtector::provision_directory(
-        protector.as_ref(),
-        &directory,
-    )
-    .unwrap();
-    #[cfg(windows)]
-    let journal = ContinuationJournal::open_with_scan_recovery_storage(
-        &path,
-        "recording",
-        &json!({}),
-        quota,
-        Some(protector),
-    );
+    registry
+        .configure_directory_with_scan_recovery_storage(
+            &directory,
+            Arc::new(
+                ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+            ),
+        )
+        .unwrap();
     #[cfg(not(windows))]
-    let journal = ContinuationJournal::open(&path, "recording", &json!({}), quota);
-    let journal = Arc::new(journal.unwrap());
+    registry.configure_directory(&directory).unwrap();
+    let journal = registry.open("recording", &json!({}), quota).unwrap();
     let outbox = Outbox::new(8, Arc::new(Wake));
     outbox.attach_journal(journal.clone(), json!({})).unwrap();
     outbox.register_journal_consumer("c", json!({})).unwrap();
@@ -374,5 +365,6 @@ fn journal_backed_outbox_transfers_controls_without_acknowledging_recording() {
     assert!(evidence.retire(2));
     assert_eq!(journal.prepare(10, 4096).unwrap(), page);
     drop(journal);
+    registry.release_idle_after_host_shutdown().unwrap();
     std::fs::remove_dir_all(directory).unwrap();
 }
