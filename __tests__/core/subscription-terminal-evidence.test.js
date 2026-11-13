@@ -124,6 +124,64 @@ test('compensates a reservation when enable fails before a subscription is activ
   await settle(fixture.controller, manager.destroy())
 })
 
+test('retries failed enablement evidence cleanup before admitting the next subscription', async () => {
+  let releases = 0
+  const reserve = jest.fn(async request => ({
+    maximumBytes: request.maximumBytes,
+    commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+    release: async () => {
+      releases += 1
+      if (releases === 1) throw new Error('evidence store unavailable')
+    }
+  }))
+  const { fixture, manager, database, characteristic } = await createFixture(reserve)
+  fixture.controller.queueCompletion('subscribe', {
+    delayMs: 1,
+    failure: 'platform.failure',
+    cancellable: false,
+    deadlineOrder: 'completion-first'
+  })
+
+  await expect(
+    settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
+  ).rejects.toMatchObject({ normalized: { code: 'platform.failure' } })
+  expect(releases).toBe(1)
+
+  const subscription = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
+  expect(releases).toBe(2)
+  await expect(settle(fixture.controller, subscription.remove())).resolves.toEqual({ state: 'released', failures: [] })
+  await settle(fixture.controller, manager.destroy())
+})
+
+test('destroy reports failed enablement evidence debt until its release retry succeeds', async () => {
+  let releases = 0
+  const reserve = jest.fn(async request => ({
+    maximumBytes: request.maximumBytes,
+    commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+    release: async () => {
+      releases += 1
+      if (releases <= 2) throw new Error('evidence store unavailable')
+    }
+  }))
+  const { fixture, manager, database, characteristic } = await createFixture(reserve)
+  fixture.controller.queueCompletion('subscribe', {
+    delayMs: 1,
+    failure: 'platform.failure',
+    cancellable: false,
+    deadlineOrder: 'completion-first'
+  })
+
+  await expect(
+    settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
+  ).rejects.toMatchObject({ normalized: { code: 'platform.failure' } })
+  expect(releases).toBe(1)
+  await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'release-failed' })
+  expect(releases).toBeGreaterThanOrEqual(2)
+  const releasesAfterFailedDestroy = releases
+  await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
+  expect(releases).toBe(releasesAfterFailedDestroy)
+})
+
 test('retains a failed terminal-evidence release for an explicit retry', async () => {
   let releases = 0
   const reserve = jest.fn(async request => ({

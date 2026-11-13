@@ -55,6 +55,9 @@ All notable changes to `unified-ble-manager` are documented here.
 - Retain failed pre-adoption evidence release for destruction to retry. A stale
   scan stops its physical lease before releasing evidence, and a successful
   stop is not repeated when only evidence release still needs retrying.
+- Retry evidence-only cleanup after subscription enablement fails, allowing
+  replacement admission and destruction to release the retained reservation
+  once storage recovers.
 - Preserve commit uncertainty and ordered failure details during terminal
   evidence hydration. Escape ordinary metadata records that collide with byte
   tags, using the same canonical representation in TypeScript and Tauri.

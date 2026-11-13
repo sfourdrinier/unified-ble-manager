@@ -654,7 +654,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     if (physical.ready !== null) {
       try {
         await physical.ready
-      } catch (error) {
+      } catch {
         if (physical.releasedDuringEnable) {
           return this.releaseTerminalEvidenceIfReady(physical)
         }
@@ -666,13 +666,11 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
           const cleanup = await this.unsubscribePhysical(physical, physical.backend)
           return cleanup.state === 'release-failed' ? cleanup : this.releaseTerminalEvidenceIfReady(physical)
         }
-        if (error instanceof BackendContractError) {
-          return cleanupFailure('subscription', error.normalized)
-        }
-        return cleanupFailure(
-          'subscription',
-          contractError('platform.failure', 'cleanup', 'subscription-registry.ready').normalized
-        )
+        // The enablement failure has already been reported to its original
+        // caller. A closed physical with no backend now owns only its
+        // terminal-evidence debt; retry that debt before a new subscriber can
+        // replace this physical slot.
+        return this.releaseTerminalEvidenceIfReady(physical)
       }
     }
     if (physical.backendInvalidated) {
