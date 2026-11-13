@@ -30,6 +30,9 @@ All notable changes to `unified-ble-manager` are documented here.
   evidence is enabled. Explicit owner removal retains its unread-value discard behavior.
 - Validate persisted Web terminal-evidence quota rows before reservation or
   release arithmetic; malformed rows abort without changing saved evidence.
+- Use valid IndexedDB counts during Web recovery scans, and retain staged or
+  committed evidence when a reattached runtime reservation is released. Only
+  recovery acknowledgement retires those saved rows and their quota.
 - Correct iOS/tvOS terminal-evidence bridge selectors and propagate Swift failures
   through the existing structured JSON error channel.
 - Compensate a late successful scan start with a physical stop while avoiding

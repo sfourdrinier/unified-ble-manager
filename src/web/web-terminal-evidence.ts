@@ -199,7 +199,7 @@ export function createWebTerminalEvidenceSource(options: WebTerminalEvidenceOpti
     async listTerminalEvidence(): Promise<readonly WebTerminalEvidenceRecoveryEntry[]> {
       let rows: readonly Row[] = []
       await runWebIndexedDbTransaction(options.database, ['terminalEvidence'], 'readonly', tx => {
-        const request = tx.objectStore('terminalEvidence').getAll(undefined, Number.MAX_SAFE_INTEGER)
+        const request = tx.objectStore('terminalEvidence').getAll(undefined, 0xffffffff)
         request.onsuccess = () => {
           rows = request.result as readonly Row[]
         }
@@ -210,7 +210,7 @@ export function createWebTerminalEvidenceSource(options: WebTerminalEvidenceOpti
     async retryPendingTerminalEvidence(): Promise<void> {
       let rows: readonly Row[] = []
       await runWebIndexedDbTransaction(options.database, ['terminalEvidence'], 'readonly', tx => {
-        const request = tx.objectStore('terminalEvidence').getAll(undefined, Number.MAX_SAFE_INTEGER)
+        const request = tx.objectStore('terminalEvidence').getAll(undefined, 0xffffffff)
         request.onsuccess = () => {
           rows = request.result as readonly Row[]
         }
@@ -515,6 +515,10 @@ export function createWebTerminalEvidenceSource(options: WebTerminalEvidenceOpti
                     assertPersistedRow(row)
                     if (row.maximumBytes !== request.maximumBytes || row.producer !== request.producer) {
                       tx.abort()
+                      return
+                    }
+                    if (row.state !== 'reserved') {
+                      retainedForRecovery = true
                       return
                     }
                     const quota = tx.objectStore('terminalEvidenceState').get('quota')

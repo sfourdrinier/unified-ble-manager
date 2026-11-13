@@ -1,0 +1,88 @@
+{
+  "schema": "ubm-web-terminal-evidence-browser-proof/1",
+  "observedAt": "2026-11-13T14:48:44Z",
+  "baselineCommit": "309ebf9d42174835e50dd4bea8096fe5e2a744a7",
+  "evidenceLevel": "real-browser-storage-runtime",
+  "physicalRadio": "not-exercised",
+  "bundler": "Bun 1.4.2",
+  "files": [
+    {
+      "path": "src/web/web-terminal-evidence.ts",
+      "sha256": "f050b1abfdb1e48c08fbbc54a17b4535e24918a9ed50c48a69f0df16c2d8146f"
+    },
+    {
+      "path": "__tests__/web/web-terminal-evidence.test.js",
+      "sha256": "f2f6cd00eca99d81ca88b4691e6b821a22738b33c6e59de3ce6972e8273c0fd9"
+    },
+    {
+      "path": "__tests__/web/web-terminal-evidence-browser-fixture.js",
+      "sha256": "67ba32b9a0eb54a459762e0c73f41732a7e335479f75d5ab1a1b5859a90dc21d"
+    },
+    {
+      "path": "output/playwright/ubm523-idb-proof/baseline-evidence.js",
+      "sha256": "a0f1486b534d89a1239cbe0934f3838d12663e8a1b24f84e97f695350ea8fee0"
+    },
+    {
+      "path": "output/playwright/ubm523-idb-proof/fixed-evidence.js",
+      "sha256": "00e29a06e03994fc7d44b52114d586e1fa21f336b207bf5141efc05c4f64ea26"
+    },
+    {
+      "path": "output/playwright/ubm523-idb-proof/fixture.js",
+      "sha256": "2e6d250bb2e8de1395330c85c8dcb5017f5f4b5b4b71e2134c0c3889d9e7a4d2"
+    }
+  ],
+  "baseline": {
+    "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+    "secure": true,
+    "listingError": {
+      "name": "TypeError",
+      "message": "Failed to execute 'getAll' on 'IDBObjectStore': Value is outside the 'unsigned long' value range."
+    },
+    "retryError": {
+      "name": "TypeError",
+      "message": "Failed to execute 'getAll' on 'IDBObjectStore': Value is outside the 'unsigned long' value range."
+    },
+    "receiptAfterReattachedRelease": {
+      "kind": "missing"
+    },
+    "quotaAfterReattachedRelease": {
+      "key": "quota",
+      "version": 1,
+      "maximumBytes": 128,
+      "reservedBytes": 0
+    }
+  },
+  "fixed": {
+    "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+    "secure": true,
+    "scenarios": [
+      {
+        "initialState": "committed",
+        "listed": 1,
+        "afterRelease": "committed",
+        "reservedAfterRelease": 64,
+        "afterRetry": "committed",
+        "bytes": [1, 2, 3],
+        "afterAck": "missing",
+        "reservedAfterAck": 0,
+        "listedAfterAck": 0
+      },
+      {
+        "initialState": "staged",
+        "listed": 1,
+        "afterRelease": "unresolved",
+        "reservedAfterRelease": 64,
+        "afterRetry": "committed",
+        "bytes": [1, 2, 3],
+        "afterAck": "missing",
+        "reservedAfterAck": 0,
+        "listedAfterAck": 0
+      }
+    ],
+    "status": "PASS"
+  },
+  "repositoryFixture": {
+    "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+    "result": "PASS real IndexedDB and Web Locks: list, reattach, release, staged retry, exact bytes and recovery ACK"
+  }
+}

@@ -45,6 +45,30 @@ async function digestBytes(value) {
   return digest(Array.from(value, byte => String.fromCharCode(byte)).join(''))
 }
 
+function uint32GetAllDatabase() {
+  const database = transactionalDatabase()
+  const counts = []
+  const transaction = database.transaction.bind(database)
+  database.transaction = (...args) => {
+    const tx = transaction(...args)
+    const objectStore = tx.objectStore.bind(tx)
+    tx.objectStore = name => {
+      const store = objectStore(name)
+      return {
+        ...store,
+        getAll: (range, count) => {
+          counts.push(count)
+          if (!Number.isInteger(count) || count < 0 || count > 0xffffffff)
+            throw new TypeError('IndexedDB getAll count must be an unsigned 32-bit integer')
+          return store.getAll(range, count)
+        }
+      }
+    }
+    return tx
+  }
+  return { database, counts }
+}
+
 describe.each(['reserve', 'release-reservation', 'acknowledge'])('persisted quota validation: %s', operation => {
   test.each([
     ['string byte count', { reservedBytes: '2' }],
@@ -211,6 +235,60 @@ test('replays the exact committed receipt after source recreation', async () => 
   expect(database.rows('terminalEvidenceState')).toEqual([expect.objectContaining({ reservedBytes: 4 })])
   webLocks.crash()
 })
+
+test('uses a valid IndexedDB unsigned-32-bit getAll count for listing and staged retry', async () => {
+  const { database, counts } = uint32GetAllDatabase()
+  const source = createWebTerminalEvidenceSource({
+    database,
+    locks: locks(),
+    digest,
+    digestBytes,
+    maximumRetainedBytes: 2
+  })
+
+  await expect(source.listTerminalEvidence()).resolves.toEqual([])
+  await expect(source.retryPendingTerminalEvidence()).resolves.toBeUndefined()
+  expect(counts).toEqual([0xffffffff, 0xffffffff])
+})
+
+test.each(['staged', 'committed'])(
+  'a recreated source releasing a %s row retains it until acknowledgement',
+  async state => {
+    const database = transactionalDatabase()
+    const options = { database, locks: locks(), digest, digestBytes, maximumRetainedBytes: 3 }
+    const request = {
+      producer: 'scan',
+      maximumBytes: 3,
+      formatVersion: 1,
+      scope: { managerId: 'm', operationId: `reattach-${state}`, incarnation: 'i' }
+    }
+    const original = createWebTerminalEvidenceSource(options)
+    const initial = await original.reserveTerminalEvidence(request)
+    const canonicalBytes = new Uint8Array([state === 'staged' ? 4 : 5])
+    const receipt = await initial.commit({ canonicalBytes, digest: await digestBytes(canonicalBytes) })
+    if (state === 'staged') {
+      database.mutate('terminalEvidence', row => {
+        row.state = 'staged'
+      })
+    }
+
+    const recreated = createWebTerminalEvidenceSource(options)
+    const reattached = await recreated.reserveTerminalEvidence(request)
+    await reattached.release()
+
+    expect(database.rows('terminalEvidence')).toEqual([expect.objectContaining({ ref: receipt.ref, state })])
+    expect(database.rows('terminalEvidenceState')).toEqual([expect.objectContaining({ reservedBytes: 3 })])
+    if (state === 'staged') await recreated.retryPendingTerminalEvidence()
+    await expect(recreated.readTerminalEvidence(receipt.ref, 3)).resolves.toMatchObject({
+      kind: 'committed',
+      canonicalBytes
+    })
+    await recreated.releaseTerminalEvidence(receipt.ref)
+    expect(database.rows('terminalEvidence')).toEqual([])
+    expect(database.rows('terminalEvidenceState')).toEqual([expect.objectContaining({ reservedBytes: 0 })])
+    await initial.release()
+  }
+)
 
 test('reattaches a durable reserved row after a source restart without double charging quota', async () => {
   const database = transactionalDatabase()
