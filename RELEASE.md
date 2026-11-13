@@ -276,6 +276,18 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
+## Releasing 5.2.2
+
+The planned 5.2.2 patch fixes React Native single-flight drain ownership at
+promise settlement. A wake or stop queued by final delivery must start the
+next drain instead of setting a rerun flag on a loop that already ended.
+The shared Apple/Android router gains no timer or polling. This source change
+does not establish locked-device reliability or promote backend evidence labels.
+
+Qualify the frozen commit through local checks, independent review, sealed
+package checks and hosted cross-platform CI before the normal tag-driven
+trusted-publisher release. Verify publication with the post-release checks.
+
 ## Releasing 5.2.1
 
 The planned 5.2.1 patch reports unknown desktop characteristic security
@@ -1270,7 +1282,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.2.1
+version=5.2.2
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1291,8 +1303,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.2.1` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.2.1` after
+  `unified-ble-manager@5.2.2` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.2.2` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's
