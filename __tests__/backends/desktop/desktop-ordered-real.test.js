@@ -600,7 +600,7 @@ test('replacement recorder marker rejects a changed native GATT graph before wri
   const path = require('node:path')
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-stale-marker-'))
   const { backend, stage } = await openBackend('corebluetooth')
-  const { observePeer } = require('../../helpers/desktop-rust-core-harness')
+  const { observePeer, nextEvent } = require('../../helpers/desktop-rust-core-harness')
   const host = await require('../../../src/desktop-process-host').createDesktopProcessHostFromBackend(backend, { now: () => performance.now() })
   const manager = await host.createInternalManager()
   let replacement
@@ -617,12 +617,17 @@ test('replacement recorder marker rejects a changed native GATT graph before wri
     const start = database.reserveOrderedRecordingStart()
     expect((await start.start([{memberId:'heart',characteristic}], {recording:{id:'stale-graph',maxBytes:1048576,maxRecords:8}})).kind).toBe('started')
     const handoff = start.recoveryHandle()
+    const lifecycle = backend.events()[Symbol.asyncIterator]()
+    try {
+      stage.stageGattSnapshotIdentity('peer-1', 'stale-owner', '1', '2')
+      await stage.stageServicesChanged('peer-1')
+      // Keep the original database alive until its native invalidation is
+      // delivered, before publishing or discovering the replacement graph.
+      await nextEvent(lifecycle, event => event.kind === 'database-changed')
+    } finally {
+      await lifecycle.return?.()
+    }
     await manager.destroy()
-    stage.stageGattSnapshotIdentity('peer-1', 'stale-owner', '1', '2')
-    await stage.stageServicesChanged('peer-1')
-    // The staged indication is a native event. Drain it before publishing the
-    // replacement graph so no delayed invalidation can retire generation 2.
-    await backend.settleCoreEvents()
     // Services Changed invalidates the synthetic core's current snapshot.
     // Publish the replacement graph before a new manager discovers it; the
     // recorded handoff still names generation 1 and must reject before write.

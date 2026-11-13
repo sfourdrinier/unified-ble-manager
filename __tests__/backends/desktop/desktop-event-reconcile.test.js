@@ -160,6 +160,20 @@ async function generationAdvanced(backend, generation) {
 }
 
 /**
+ * `activeScanId` is native ownership, not the provider's event-pump state:
+ * it remains populated while terminal cleanup debt is retained. Waiting for
+ * `null` therefore proves the old OS-ended scan no longer owns the radio
+ * before a successor is admitted.
+ */
+async function scanOwnershipReleased(stage) {
+  const deadline = Date.now() + 5000
+  while (stage.activeScanId() !== null && Date.now() < deadline) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  expect(stage.activeScanId()).toBeNull()
+}
+
+/**
  * Resolve every test waiting for a lag the stubbed binding just reported on
  * `method`. The lag itself is the signal: no wall-clock deadline is involved
  * in any wait below.
@@ -359,6 +373,7 @@ describe('scan-terminal lag reconciles from the core (N5)', () => {
       expect(item).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
       await lag
       expect(control.swallowed.takeScanTerminalEvent).toBeGreaterThan(0)
+      await scanOwnershipReleased(stage)
       const next = await backend.scanner.start(scanOptions(), 'client-1')
       await next.stop()
     })
