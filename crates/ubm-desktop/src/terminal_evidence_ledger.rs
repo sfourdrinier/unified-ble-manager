@@ -2218,9 +2218,17 @@ mod tests {
             ledger.attach(&scope()).unwrap().reservation_id,
             reservation.reservation_id
         );
-        ledger
-            .stage(&reservation.reservation_id, "test-owner", b"terminal")
-            .unwrap();
+        // Busy is retryable at this nonblocking boundary. Keep the contender
+        // alive while retrying only Busy; every other error still fails.
+        let mut staged = Err(TerminalEvidenceError::Busy);
+        for _ in 0..100 {
+            staged = ledger.stage(&reservation.reservation_id, "test-owner", b"terminal");
+            if !matches!(staged, Err(TerminalEvidenceError::Busy)) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        staged.unwrap();
         ledger
             .handoff_staged_to_recovery(&reservation.reservation_id)
             .unwrap();

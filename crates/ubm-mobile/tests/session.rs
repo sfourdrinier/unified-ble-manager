@@ -679,12 +679,14 @@ async fn a_lifecycle_transition_retains_every_earlier_value_across_commit_groups
         .unwrap()
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
+        let mut probe = 0;
         loop {
+            probe += 1;
             let answer = call(
                 &session,
                 "connection.rssi",
                 &json!({
-                    "peerId": POLAR, "lease": "lease-1", "operationId": "loss-probe"
+                    "peerId": POLAR, "lease": "lease-1", "operationId": format!("loss-probe-{probe}")
                 })
                 .to_string(),
             )
