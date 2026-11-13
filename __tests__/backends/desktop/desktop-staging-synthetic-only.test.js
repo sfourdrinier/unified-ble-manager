@@ -62,7 +62,7 @@ describe('N-API staging hooks are synthetic-only', () => {
   test('terminal evidence staging is a production ledger-only operation, not synthetic radio staging', () => {
     const hook = terminalEvidenceStage(source)
     expect(hook).toBeDefined()
-    expect(hook.body).toContain('self.terminal_evidence.as_ref()')
+    expect(hook.body).toContain('self.terminal_evidence()')
     expect(hook.body).toContain('.stage(&reservation_id, &recipient, canonical_bytes.as_ref())')
     expect(hook.body).not.toContain('self.central')
     expect(hook.body).not.toContain('.synthetic(')
