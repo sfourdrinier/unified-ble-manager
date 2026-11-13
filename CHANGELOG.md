@@ -46,6 +46,12 @@ All notable changes to `unified-ble-manager` are documented here.
 - Settle failed scan admission with its original startup error even when
   releasing the acquired evidence reservation also fails. The cleanup failure
   remains visible through the existing acquisition lifecycle diagnostic.
+- Reclaim the unused scan stream and its aggregate quota after every
+  pre-adoption failure, including a rejected evidence reservation before radio
+  startup. Repeated failed reservations do not accumulate retained streams.
+- Retain failed pre-adoption evidence release for destruction to retry. A stale
+  scan stops its physical lease before releasing evidence, and a successful
+  stop is not repeated when only evidence release still needs retrying.
 - Preserve commit uncertainty and ordered failure details during terminal
   evidence hydration. Escape ordinary metadata records that collide with byte
   tags, using the same canonical representation in TypeScript and Tauri.

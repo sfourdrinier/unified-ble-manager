@@ -67,17 +67,20 @@ export class TerminalEvidenceAdmission {
   }
 
   async reserve(): Promise<void> {
-    if (this.reservation !== null) return
     if (this.released) throw contractError('lifecycle.invalid-state', 'stream', 'terminal-evidence.released')
+    if (this.reservation !== null) return
     if (this.reserveInFlight === null) {
       this.reserveInFlight = (async () => {
         const reservation = await this.sink.reserve(this.request)
-        assertMaximum(reservation.maximumBytes, 'terminal-evidence.reservation-maximum')
-        if (reservation.maximumBytes < this.request.maximumBytes) {
-          await reservation.release()
-          throw contractError('capability.unsupported', 'stream', 'terminal-evidence.reservation-too-small')
-        }
         this.reservation = reservation
+        try {
+          assertMaximum(reservation.maximumBytes, 'terminal-evidence.reservation-maximum')
+          if (reservation.maximumBytes < this.request.maximumBytes)
+            throw contractError('capability.unsupported', 'stream', 'terminal-evidence.reservation-too-small')
+        } catch (error) {
+          await this.release()
+          throw error
+        }
       })()
       this.reserveInFlight
         .catch(() => undefined)
@@ -109,12 +112,16 @@ export class TerminalEvidenceAdmission {
   }
 
   async release(): Promise<void> {
-    if (this.released) return
-    const reservation = this.reservation
+    let reservation = this.reservation
+    if (reservation === null && this.reserveInFlight !== null) {
+      await this.reserveInFlight.catch(() => undefined)
+      reservation = this.reservation
+    }
     if (reservation === null) {
       this.released = true
       return
     }
+    this.released = true
     if (this.releaseInFlight === null) {
       this.releaseInFlight = reservation
         .release()

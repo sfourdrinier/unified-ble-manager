@@ -569,6 +569,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         )
       }
       const acquire = async () => {
+        let terminalEvidenceAdmission: TerminalEvidenceAdmission | null = null
         let terminalEvidence: TerminalEvidenceReservation | null = null
         let terminalEvidenceScope: {
           readonly managerId: string
@@ -601,6 +602,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
                 scope
               }
             )
+            terminalEvidenceAdmission = admission
             await admission.reserve()
             terminalEvidence = admission.takeReservation()
           }
@@ -608,7 +610,6 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
           try {
             lease = await this.startOrJoinScan({ ...options, signal: admissionAbort.signal }, terminalEvidenceScope)
           } catch (error) {
-            releaseStream()
             throw error instanceof BackendContractError
               ? error
               : contractError('scan.start-failed', 'scan', 'unified-core.scan')
@@ -620,21 +621,36 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
               cancel(closed)
             }
             this.pendingScanAcquisitions.delete(cancel)
-            await this.compensateUnadoptedLease(lease.stop.bind(lease), 'scan', 'scan-stale-admission-release')
-            await terminalEvidence?.release()
-            terminalEvidence = null
+            const evidence = terminalEvidence
+            const cleanup = await this.compensateUnadoptedScanAdmission(
+              lease.stop.bind(lease),
+              evidence === null ? null : evidence.release.bind(evidence),
+              'scan-stale-admission-release'
+            )
+            if (cleanup.state === 'released') terminalEvidence = null
             return
           }
           resolve(this.adoptScan(lease, stream, options, terminalEvidence, terminalEvidenceScope))
         } catch (error) {
+          releaseStream()
           if (!cancelled) {
             reject(error)
           }
           // The caller's admission error must settle independently of the
-          // compensating evidence release. A failed release is still allowed
-          // to reject this background acquisition so the lifecycle observer
-          // records it, but must not leave the public scan promise pending.
-          await terminalEvidence?.release()
+          // compensating evidence release. The lifecycle observer retains
+          // failed cleanup for destruction to retry without leaving the
+          // public scan promise pending.
+          const evidence = terminalEvidence
+          const admission = terminalEvidenceAdmission
+          await this.compensateUnadoptedScanAdmission(
+            null,
+            evidence !== null
+              ? evidence.release.bind(evidence)
+              : admission === null
+                ? null
+                : admission.release.bind(admission),
+            'scan-admission-terminal-evidence-release'
+          )
           if (cancelled) throw error
         } finally {
           deadlineHandle?.cancel()
@@ -1648,6 +1664,37 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     if (result.state === 'released') {
       this.lifecycleObserver.dropCleanup(retained)
     }
+  }
+
+  /** Retains pre-adoption scan cleanup until its physical lease and evidence settle in order. */
+  private async compensateUnadoptedScanAdmission(
+    stop: (() => Promise<CleanupRecord>) | null,
+    releaseEvidence: (() => Promise<void>) | null,
+    transition: string
+  ): Promise<CleanupRecord> {
+    let pendingStop = stop
+    let pendingEvidenceRelease = releaseEvidence
+    const retained = createRetainedCleanup('scan', transition, async () => {
+      if (pendingStop !== null) {
+        const physical = await pendingStop()
+        if (physical.state === 'release-failed') return physical
+        pendingStop = null
+      }
+      if (pendingEvidenceRelease === null) return { state: 'released', failures: [] }
+      const evidence = await this.lifecycleObserver.captureCleanup(
+        pendingEvidenceRelease().then(() => ({ state: 'released' as const, failures: [] })),
+        'scan',
+        `${transition}-terminal-evidence`
+      )
+      if (evidence.state === 'released') pendingEvidenceRelease = null
+      return evidence
+    })
+    this.lifecycleObserver.retainCleanup(retained)
+    const cleanup = retained.retry()
+    this.lifecycleObserver.observeCleanup(cleanup, transition)
+    const result = await this.lifecycleObserver.captureCleanup(cleanup, 'scan', transition)
+    if (result.state === 'released') this.lifecycleObserver.dropCleanup(retained)
+    return result
   }
 
   private async destroyOwnedResources(cause: ConnectionLifecycleTerminalCause): Promise<CleanupRecord> {

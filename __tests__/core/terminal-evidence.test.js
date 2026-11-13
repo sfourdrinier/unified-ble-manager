@@ -82,7 +82,33 @@ describe('TerminalEvidenceAdmission', () => {
     }, { producer: 'scan', maximumBytes: 1, formatVersion: 1, scope: { managerId: 'manager', operationId: 'scan-1', incarnation: '1' } })
     await admission.reserve()
     await expect(admission.release()).rejects.toThrow('disk offline')
-    await expect(admission.commit({ canonicalBytes: bytes(1), digest: 'sha256:x' })).resolves.toMatchObject({ ref: 'x' })
+    await expect(admission.commit({ canonicalBytes: bytes(1), digest: 'sha256:x' })).rejects.toMatchObject({
+      normalized: { code: 'lifecycle.invalid-state' }
+    })
+    await admission.release()
+    expect(attempts).toBe(2)
+  })
+
+  test('retains an undersized reservation when its immediate release fails', async () => {
+    let attempts = 0
+    const admission = new TerminalEvidenceAdmission({
+      reserve: async () => ({
+        maximumBytes: 1,
+        commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+        release: async () => {
+          attempts += 1
+          if (attempts === 1) throw new Error('evidence store unavailable')
+        }
+      })
+    }, { producer: 'scan', maximumBytes: 2, formatVersion: 1, scope: { managerId: 'manager', operationId: 'scan-undersized', incarnation: '1' } })
+
+    await expect(admission.reserve()).rejects.toThrow('evidence store unavailable')
+    expect(attempts).toBe(1)
+    await expect(admission.reserve()).rejects.toMatchObject({ normalized: { code: 'lifecycle.invalid-state' } })
+    await expect(admission.commit({ canonicalBytes: bytes(1), digest: 'sha256:dead' })).rejects.toMatchObject({
+      normalized: { code: 'lifecycle.invalid-state' }
+    })
+    expect(() => admission.takeReservation()).toThrow('terminal-evidence.reservation-required')
     await admission.release()
     expect(attempts).toBe(2)
   })
