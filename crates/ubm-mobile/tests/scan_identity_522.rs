@@ -933,6 +933,20 @@ async fn held_start_failure_scenario(native_fails: bool) {
     let started = if native_fails {
         let _ = failure(&result);
         None
+    } else if parse(&result)["ok"] == false {
+        // The scoped failure may end this logical membership before the
+        // deferred native Unit acknowledgement is observed. It is not a
+        // native refusal: the terminal below must retain the original
+        // captured source failure and the known start identity.
+        let (error, _) = failure(&result);
+        assert_eq!(error["code"], "scan.start-failed");
+        assert_eq!(error["domain"], "scan");
+        assert_eq!(error["operation"], "scan.start");
+        assert_eq!(
+            error["detail"],
+            "the host ended the scan while it was starting"
+        );
+        None
     } else {
         Some(ok(&result))
     };
@@ -951,6 +965,7 @@ async fn held_start_failure_scenario(native_fails: bool) {
         assert_eq!(records[terminal]["operationId"], started["operationId"]);
     }
     assert_eq!(records[terminal]["startOperationId"], "start");
+    assert_eq!(records[terminal]["generation"], generation.to_string());
     assert_eq!(records[terminal]["error"]["detail"], "held failure");
     assert_eq!(
         ok(&call(&session, "session.quiesce", "{}").await)["state"],

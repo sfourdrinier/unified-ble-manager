@@ -1178,7 +1178,18 @@ async fn an_os_ended_scan_is_released_and_reported() {
     assert!(terminal.aborted);
     assert_eq!(&terminal.operation_id, session.operation_id());
     assert!(terminal.detail.contains("RadioNotAvailable"));
-    assert!(!central.has_active_scan().await, "the owner is released");
+    assert_eq!(
+        central.operational_scan_id(),
+        None,
+        "the OS-ended scan is no longer operational before cleanup settles"
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while central.has_active_scan().await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the OS-ended scan cleanup releases its owner");
     // A report with no active scan ends nothing and publishes nothing.
     central
         .boundary()

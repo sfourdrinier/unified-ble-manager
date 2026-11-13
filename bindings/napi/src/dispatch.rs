@@ -14608,6 +14608,7 @@ mod tests {
         let central = UbmCentral::open_synthetic("scan-reopen-owner".to_owned(), Some(options))
             .await
             .expect("open source central");
+        let mut source_terminals = central.central.scan_terminal_events();
         let reservation = central
             .reserve_terminal_evidence(TerminalEvidenceReserveOptions {
                 producer: "scan".to_owned(),
@@ -14649,6 +14650,10 @@ mod tests {
             .stage_scan_terminated(true, "before restart".to_owned())
             .await
             .expect("terminal source publishes");
+        tokio::time::timeout(std::time::Duration::from_secs(1), source_terminals.recv())
+            .await
+            .expect("source terminal must be processed before restart")
+            .expect("source terminal receiver remains open");
         // Deliberately do not take the terminal: source publication must
         // persist it before JS receives any broadcast or pending token.
         central.close().await.expect("source process closes");
