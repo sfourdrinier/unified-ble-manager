@@ -1315,19 +1315,18 @@ export class WebBluetoothGattRuntime {
     const managedState: { current: WebManagedSubscription | null } = { current: null }
     const listener = (value: Uint8Array): void => {
       const current = managedState.current
-      if (current === null) {
+      if (
+        current === null ||
+        (current.state !== 'enabling' && current.state !== 'ready') ||
+        !database.record.valid ||
+        database.record.database !== database ||
+        orderedOnly
+      ) {
         return
       }
+      const copied = ownBytes(value, MAXIMUM_VALUE_BYTES)
       const deliver = (): void => {
-        if (
-          (current.state !== 'enabling' && current.state !== 'ready') ||
-          !database.record.valid ||
-          database.record.database !== database
-        ) {
-          return
-        }
-        if (orderedOnly) return
-        const copied = ownBytes(value, MAXIMUM_VALUE_BYTES)
+        if (current.logicalStopReason === 'owner-released') return
         const result = stream.emit(
           {
             value: copied,
@@ -1630,6 +1629,7 @@ export class WebBluetoothGattRuntime {
     if (managed.state === 'stopped' || managed.state === 'stopping' || managed.state === 'cleanup-failed') {
       return Promise.resolve(true)
     }
+    managed.logicalStopReason = reason
     managed.state = 'stopping'
     const physical = this.physicalBySubscription.get(managed)
     if (

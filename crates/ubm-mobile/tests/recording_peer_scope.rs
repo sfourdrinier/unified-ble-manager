@@ -35,10 +35,23 @@ impl WakeSink for EventWakes {
 async fn open_events(
     radio: &Arc<Scripted>,
     platform: MobilePlatform,
+    recording_directory: &std::path::Path,
 ) -> (Arc<MobileHost>, Arc<EventWakes>) {
+    #[cfg(not(windows))]
+    let _ = recording_directory;
     let wakes = Arc::new(EventWakes::default());
+    let registry = Arc::new(JournalRegistry::default());
+    #[cfg(windows)]
+    registry
+        .configure_directory_with_scan_recovery_storage(
+            recording_directory,
+            Arc::new(
+                ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+            ),
+        )
+        .unwrap();
     let host = Arc::new(
-        MobileHost::open(
+        MobileHost::open_with_recording_registry(
             radio.clone(),
             wakes.clone(),
             HostOptions {
@@ -47,6 +60,7 @@ async fn open_events(
                 adapter_label: "scripted".into(),
             },
             tokio::runtime::Handle::current(),
+            registry,
         )
         .await
         .unwrap(),
@@ -155,7 +169,7 @@ async fn mobile_recording_controller_transport() {
         _ => panic!("explicit mobile platform required"),
     };
     let (radio, ready) = setup_radio();
-    let (host, wakes) = open_events(&radio, platform).await;
+    let (host, wakes) = open_events(&radio, platform, &directory).await;
     let other = host.open_session("other-peer").unwrap();
     for (operation, id) in [
         ("connection.connect", "connect"),
@@ -256,6 +270,15 @@ async fn mobile_recording_controller_transport() {
             }
             if op == "restart" {
                 let registry = Arc::new(JournalRegistry::default());
+                #[cfg(windows)]
+                registry
+                    .configure_directory_with_scan_recovery_storage(
+                        &directory,
+                        Arc::new(
+                            ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+                        ),
+                    )
+                    .unwrap();
                 registry.configure_directory(&directory).unwrap();
                 restarted = Some(registry);
                 respond(json!({"ok":true,"value":true}));
@@ -359,7 +382,7 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     // native intake/persistence path instead of hiding either with a retry.
     let fixture_started = std::time::Instant::now();
     let (radio, ready) = setup_radio();
-    let (host, wakes) = open_events(&radio, MobilePlatform::Android).await;
+    let (host, wakes) = open_events(&radio, MobilePlatform::Android, &directory).await;
     let other = host.open_session("fairness-other").unwrap();
     for (operation, id) in [
         ("connection.connect", "connect"),

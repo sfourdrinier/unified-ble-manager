@@ -53,6 +53,7 @@ async fn fixture() -> (DesktopCentral<FakeRadio>, NativeContinuation) {
 
 async fn finish_cleanup(engine: &NativeContinuation, token: &str) {
     let mut receipt = engine.acknowledge_claim_v1(token).await.unwrap();
+    let initial_receipt = receipt.clone();
     for _ in 0..16 {
         if receipt["disposed"] == true {
             return;
@@ -71,7 +72,32 @@ async fn finish_cleanup(engine: &NativeContinuation, token: &str) {
             .await
             .unwrap();
     }
-    panic!("cleanup tail did not settle: {receipt}");
+    panic!("cleanup tail did not settle: initial {initial_receipt}; final {receipt}");
+}
+
+async fn finish_cleanup_v2(engine: &NativeContinuation, mut receipt: Value) {
+    let initial_receipt = receipt.clone();
+    for _ in 0..16 {
+        if receipt["disposed"] == true {
+            return;
+        }
+        assert!(
+            receipt["disposeFailure"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("tail")),
+            "{receipt}"
+        );
+        let claim = engine
+            .prepare_claim_versioned(2, 256, 1 << 20)
+            .await
+            .unwrap();
+        assert!(!claim["batches"].as_array().unwrap().is_empty());
+        receipt = engine
+            .acknowledge_claim_v2(claim["claimToken"].as_str().unwrap())
+            .await
+            .unwrap();
+    }
+    panic!("V2 cleanup tail did not settle: initial {initial_receipt}; final {receipt}");
 }
 
 #[tokio::test]
@@ -1089,8 +1115,6 @@ async fn native_collection_and_replayable_claim_need_no_ui() {
         .acknowledge_claim_v2(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
-    assert_eq!(receipt["disposed"], true);
-    assert!(!central.boundary().link_connected(PEER));
     assert_eq!(
         executor
             .acknowledge_claim_v2(claim["claimToken"].as_str().unwrap())
@@ -1098,6 +1122,8 @@ async fn native_collection_and_replayable_claim_need_no_ui() {
             .unwrap(),
         receipt
     );
+    finish_cleanup_v2(&executor, receipt).await;
+    assert!(!central.boundary().link_connected(PEER));
     central.shutdown().await;
 }
 #[tokio::test]
@@ -1134,13 +1160,11 @@ async fn claim_preserves_another_clients_connection_lease() {
         .prepare_claim_versioned(1, 256, 1 << 20)
         .await
         .unwrap();
-    assert_eq!(
-        executor
-            .acknowledge_claim_v1(claim["claimToken"].as_str().unwrap())
-            .await
-            .unwrap()["disposed"],
-        true
-    );
+    // Collection can retain the final accepted group while the first claim is
+    // acknowledged. Drain that explicit tail before checking the independent
+    // client's lease; `finish_cleanup` preserves its full initial receipt if
+    // that tail cannot settle.
+    finish_cleanup(&executor, claim["claimToken"].as_str().unwrap()).await;
     assert!(
         central.boundary().link_connected(PEER),
         "must not drop another client's link"

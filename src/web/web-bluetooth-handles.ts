@@ -334,6 +334,7 @@ export interface WebManagedSubscription {
   }
   readonly terminalEvidenceFence?: TerminalEvidenceFence
   state: 'enabling' | 'ready' | 'stopping' | 'cleanup-failed' | 'stopped'
+  logicalStopReason?: 'connection-lost' | 'owner-released' | 'source-failed'
   startupSettled: boolean
   cleanupFailureReported: boolean
   removeResult: Promise<CleanupRecord> | null

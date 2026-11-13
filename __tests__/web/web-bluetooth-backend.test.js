@@ -1615,6 +1615,49 @@ test('public Web subscription publishes accepted values before its durably commi
   }
 })
 
+test('public Web subscription preserves a notification accepted before same-turn disconnect', async () => {
+  const database = transactionalDatabase()
+  const fixture = await publicTerminalEvidenceFixture(database)
+  try {
+    const subscription = await fixture.characteristic.subscribe()
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    for (const listener of fixture.mock.notificationListeners) listener(new Uint8Array([42]))
+    fixture.mock.device.gatt.disconnect()
+
+    expect(await iterator.next()).toMatchObject({
+      done: false,
+      value: { kind: 'value', value: { value: new Uint8Array([42]) } }
+    })
+    expect(await iterator.next()).toMatchObject({
+      done: false,
+      value: { kind: 'terminal', reason: 'connection-lost' }
+    })
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+  } finally {
+    await fixture.connection.release()
+    await fixture.manager.destroy()
+  }
+})
+
+test('public Web subscription discards an unread notification when its owner explicitly removes it', async () => {
+  const database = transactionalDatabase()
+  const fixture = await publicTerminalEvidenceFixture(database)
+  try {
+    const subscription = await fixture.characteristic.subscribe()
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    for (const listener of fixture.mock.notificationListeners) listener(new Uint8Array([43]))
+
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(await iterator.next()).toMatchObject({
+      done: false,
+      value: { kind: 'terminal', reason: 'owner-released' }
+    })
+  } finally {
+    await fixture.connection.release()
+    await fixture.manager.destroy()
+  }
+})
+
 test('public Web terminal recovery retries a durable failure without replaying accepted notifications', async () => {
   const database = transactionalDatabase()
   const partition = createWebRecordingPartition({

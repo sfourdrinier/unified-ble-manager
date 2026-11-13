@@ -14,6 +14,13 @@ All notable changes to `unified-ble-manager` are documented here.
 - Repair migration of earlier Apple notification-failure spool formats: preserve
   legacy rows through the reservation rebuild, recognize SQLite rename formatting,
   and validate version-8 acknowledgements using their historical schema.
+- Request the Windows handle rights required to provision current-user recovery
+  storage, preserving the existing owner and protected-ACL validation.
+- Release terminal-evidence and idle recording database handles after successful
+  Node-API host shutdown, including when JavaScript retains the native wrapper.
+  Saved rows and journals with live owners or unpersisted diagnostics remain retained.
+- Preserve Web notifications admitted before a same-turn disconnect when terminal
+  evidence is enabled. Explicit owner removal retains its unread-value discard behavior.
 - Compensate a late successful scan start with a physical stop while avoiding
   a second retirement of an ingress epoch that an early stop already fenced.
 - Preserve immediate scan restart after an OS-ended terminal: the next start

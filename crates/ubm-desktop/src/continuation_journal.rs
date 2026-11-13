@@ -724,10 +724,16 @@ fn windows_current_user_sid() -> Result<WindowsSid> {
 #[cfg(windows)]
 fn windows_open_exact_scan_recovery_sidecar(path: &Path) -> Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{WRITE_DAC, WRITE_OWNER};
 
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
+        // Provisioning replaces the DACL after opening the exact final
+        // component. Generic read/write does not request the security-descriptor
+        // rights needed to install the private DACL and current-user owner.
+        .access_mode(GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER)
         // This is intentionally not a directory policy. The final component
         // itself is opened without following a reparse point before its ACL is
         // inspected.
@@ -748,10 +754,15 @@ fn windows_open_exact_scan_recovery_sidecar(path: &Path) -> Result<std::fs::File
 #[cfg(windows)]
 fn windows_open_exact_scan_recovery_directory(path: &Path) -> Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{WRITE_DAC, WRITE_OWNER};
 
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
+        // See the sidecar opener: changing this object's DACL and owner
+        // requires explicit security-descriptor rights on the held handle.
+        .access_mode(GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER)
         // BACKUP_SEMANTICS is required for a directory handle; OPEN_REPARSE_POINT
         // makes a junction/symlink fail validation rather than redirecting it.
         .custom_flags(0x0220_0000)
@@ -993,7 +1004,7 @@ fn windows_provision_scan_recovery_object(path: &Path, directory: bool) -> Resul
     } != 0
     {
         return Err(windows_storage_error(
-            "scan recovery sidecar ACL cannot be installed without elevation",
+            "scan recovery sidecar ACL cannot be installed for the current Windows user",
         ));
     }
     windows_validate_held_scan_recovery_object(&file, &sid, directory)
@@ -1143,6 +1154,48 @@ pub struct JournalRegistry {
     reason = "Registry operations retain fixed legacy receipt and ordered-owner result shapes."
 )]
 impl JournalRegistry {
+    /// Release only this host's idle journal handles after its central has
+    /// completed shutdown. Durable rows remain on disk; a journal with a live
+    /// owner, diagnostic, or unpersisted failure is deliberately retained.
+    pub fn release_idle_after_host_shutdown(&self) -> Result<()> {
+        let directory = self
+            .state
+            .lock()
+            .map_err(|_| error("storage.io", "recording registry interrupted"))?
+            .directory
+            .clone();
+        let Some(directory) = directory else {
+            return Ok(());
+        };
+        let mut owners = authorities()?;
+        let paths: Vec<_> = owners
+            .journals
+            .iter()
+            .filter(|(path, journal)| {
+                path.parent() == Some(directory.as_path())
+                    && Arc::strong_count(journal) == 1
+                    && journal.can_close()
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        let released: Vec<_> = paths
+            .into_iter()
+            .filter_map(|path| owners.journals.remove(&path))
+            .collect();
+        drop(owners);
+        let mut shared = shared_journals()
+            .lock()
+            .map_err(|_| error("storage.io", "journal ownership interrupted"))?;
+        for journal in &released {
+            if shared.get(&journal.file_identity).is_some_and(|entry| {
+                Arc::ptr_eq(entry, &journal.shared) && Arc::strong_count(entry) == 2
+            }) {
+                shared.remove(&journal.file_identity);
+            }
+        }
+        Ok(())
+    }
+
     /// Configure a private recording directory together with a trusted native
     /// protection provider for v2 scan-recovery sidecars. This API belongs to
     /// a main/native host; do not forward the provider across IPC or FFI.
@@ -13354,6 +13407,139 @@ fn prepared_v1(connection: &Connection, token: &str, last: i64, more: bool) -> R
 mod authority_tests {
     use super::*;
 
+    fn open_current_v2_scan_fixture(
+        path: &Path,
+        recording_id: &str,
+        quota: JournalQuota,
+    ) -> ContinuationJournal {
+        #[cfg(windows)]
+        {
+            let protector: Arc<dyn ScanRecoveryStorageProtector> =
+                Arc::new(WindowsCurrentUserScanRecoveryStorageProtector::new());
+            protector
+                .provision_directory(path.parent().expect("scan fixture parent"))
+                .expect("trusted Windows scan fixture root");
+            return ContinuationJournal::open_with_scan_recovery_storage(
+                path,
+                recording_id,
+                &json!({}),
+                quota,
+                Some(protector),
+            )
+            .expect("open trusted Windows scan fixture");
+        }
+
+        #[cfg(not(windows))]
+        ContinuationJournal::open(path, recording_id, &json!({}), quota).expect("open scan fixture")
+    }
+
+    #[test]
+    fn host_shutdown_releases_only_idle_registry_journals() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-registry-host-shutdown-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        ));
+        let other_directory = directory.with_extension("other");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::create_dir(&other_directory).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&directory).unwrap();
+        let other_registry = JournalRegistry::default();
+        other_registry
+            .configure_directory(&other_directory)
+            .unwrap();
+        let quota = JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 8,
+        };
+        let idle = registry.open("idle-recording", &json!({}), quota).unwrap();
+        idle.append(&json!({}), &json!({"value":"persisted"}))
+            .unwrap();
+        let idle_identity = idle.file_identity;
+        drop(idle);
+        let live = registry.open("live-recording", &json!({}), quota).unwrap();
+        live.append(&json!({}), &json!({"value":"live"})).unwrap();
+        let other = other_registry
+            .open("other-recording", &json!({}), quota)
+            .unwrap();
+        other.append(&json!({}), &json!({"value":"other"})).unwrap();
+        let other_identity = other.file_identity;
+        drop(other);
+        let canonical_directory = directory.canonicalize().unwrap();
+        let canonical_other_directory = other_directory.canonicalize().unwrap();
+
+        assert_eq!(Arc::strong_count(&live), 2);
+        assert!(
+            authorities()
+                .unwrap()
+                .journals
+                .contains_key(&canonical_directory.join("live-recording.sqlite"))
+        );
+        assert!(
+            authorities()
+                .unwrap()
+                .journals
+                .contains_key(&canonical_other_directory.join("other-recording.sqlite"))
+        );
+
+        registry.release_idle_after_host_shutdown().unwrap();
+
+        assert!(
+            !authorities()
+                .unwrap()
+                .journals
+                .contains_key(&canonical_directory.join("idle-recording.sqlite"))
+        );
+        assert!(
+            !shared_journals()
+                .lock()
+                .unwrap()
+                .contains_key(&idle_identity)
+        );
+        assert!(
+            authorities()
+                .unwrap()
+                .journals
+                .contains_key(&canonical_directory.join("live-recording.sqlite"))
+        );
+        assert_eq!(
+            live.prepare(8, 1024).unwrap()["records"][0]["record"],
+            json!({"value":"live"})
+        );
+        assert!(
+            authorities()
+                .unwrap()
+                .journals
+                .contains_key(&canonical_other_directory.join("other-recording.sqlite"))
+        );
+        assert!(
+            shared_journals()
+                .lock()
+                .unwrap()
+                .contains_key(&other_identity)
+        );
+
+        let reopened_registry = JournalRegistry::default();
+        reopened_registry.configure_directory(&directory).unwrap();
+        let reopened = reopened_registry
+            .open("idle-recording", &json!({}), quota)
+            .unwrap();
+        assert_eq!(
+            reopened.prepare(8, 1024).unwrap()["records"][0]["record"],
+            json!({"value":"persisted"})
+        );
+        drop(reopened);
+        reopened_registry
+            .release_idle_after_host_shutdown()
+            .unwrap();
+        drop(live);
+        registry.release_idle_after_host_shutdown().unwrap();
+        other_registry.release_idle_after_host_shutdown().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        std::fs::remove_dir_all(other_directory).unwrap();
+    }
+
     #[test]
     fn apple_failure_spool_reopens_idempotently_and_enforces_ordered_identity() {
         let directory = std::env::temp_dir().join(format!(
@@ -14826,7 +15012,7 @@ mod authority_tests {
                 EvidenceToken::F64Bits(u64::MAX),
             ])),
         );
-        let journal = ContinuationJournal::open(&path, "scan-sidecar", &json!({}), quota).unwrap();
+        let journal = open_current_v2_scan_fixture(&path, "scan-sidecar", quota);
         journal
             .capture_scan_failure_occurrence(&occurrence)
             .unwrap();
@@ -14879,7 +15065,7 @@ mod authority_tests {
         );
         drop(journal);
 
-        let reopened = ContinuationJournal::open(&path, "scan-sidecar", &json!({}), quota).unwrap();
+        let reopened = open_current_v2_scan_fixture(&path, "scan-sidecar", quota);
         let page = reopened
             .scan_failure_occurrence_page(identity, 0, 8)
             .unwrap();
@@ -20654,12 +20840,14 @@ mod authority_tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_scan_recovery_protector_reopens_and_rejects_a_null_dacl() {
+    fn windows_scan_recovery_protector_provisions_the_real_directory_and_sidecar_route() {
+        use std::os::windows::fs::OpenOptionsExt;
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
         use windows_sys::Win32::Security::{
             DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
         };
+        use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
 
         let directory = std::env::temp_dir().join(format!(
             "ubm-windows-scan-recovery-acl-{}-{:?}",
@@ -20667,13 +20855,22 @@ mod authority_tests {
             std::time::SystemTime::now()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("scan-failure-recovery.sqlite");
-        std::fs::File::create(&path).unwrap();
         let protector = WindowsCurrentUserScanRecoveryStorageProtector::new();
         assert_eq!(
             protector.capability(),
             "windows-current-user-protected-dacl"
         );
+        // This is the same sequence as a trusted Windows host: protect the
+        // configured root, then the dedicated recovery directory, before
+        // creating and protecting SQLite's sidecar.
+        protector.provision_directory(&directory).unwrap();
+        protector.validate_directory(&directory).unwrap();
+        let recovery_directory = directory.join(SCAN_RECOVERY_DIRECTORY);
+        std::fs::create_dir(&recovery_directory).unwrap();
+        protector.provision_directory(&recovery_directory).unwrap();
+        protector.validate_directory(&recovery_directory).unwrap();
+        let path = recovery_directory.join("scan-failure-recovery.sqlite");
+        std::fs::File::create(&path).unwrap();
         protector.provision(&path).unwrap();
         // This is a second, independent open of the final component.
         protector.validate(&path).unwrap();
@@ -20683,6 +20880,7 @@ mod authority_tests {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
+            .access_mode(WRITE_DAC)
             .open(&path)
             .unwrap();
         assert_eq!(
@@ -20722,7 +20920,7 @@ mod authority_tests {
             max_bytes: 1 << 20,
             max_records: RECEIPTS,
         };
-        let journal = ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap();
+        let journal = open_current_v2_scan_fixture(&path, "scan", quota);
 
         journal.scan_failure_cleanup_retirements().unwrap();
 
@@ -20808,7 +21006,7 @@ mod authority_tests {
             max_bytes: 1 << 20,
             max_records: 16,
         };
-        let journal = ContinuationJournal::open(&path, "scan", &json!({}), quota).unwrap();
+        let journal = open_current_v2_scan_fixture(&path, "scan", quota);
         let sidecar = journal.scan_failure_sidecar_path.clone();
         // Establish a current v2 sidecar, then emulate an unindexed v2
         // database from before this additive repair.

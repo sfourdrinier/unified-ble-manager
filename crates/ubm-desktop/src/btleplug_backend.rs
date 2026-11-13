@@ -367,6 +367,7 @@ pub async fn list_adapters_on(
 
 /// The btleplug manager on the chosen bus: the session bus only through
 /// the vendored patch (callers check [`crate::bluez_bus_supported`] first).
+#[cfg(not(target_os = "windows"))]
 async fn open_manager(bus: crate::boundary::BluezBus) -> Result<Manager, btleplug::Error> {
     match bus {
         crate::boundary::BluezBus::System => Manager::new().await,

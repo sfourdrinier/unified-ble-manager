@@ -1350,10 +1350,7 @@ impl ScanFailureRecoveryStore {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "the retained recovery suite precedes the legacy continuation facade it exercises"
-)]
+#[expect(clippy::items_after_test_module, reason = "legacy")]
 mod scan_recovery_handle_tests {
     use super::{
         PendingScanFailure, RecoveryHandles, ScanFailureRecoveryStore, ScanRecoveryNoWake,

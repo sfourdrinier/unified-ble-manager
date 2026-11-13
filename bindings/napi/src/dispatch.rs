@@ -4169,7 +4169,8 @@ struct TerminalEvidenceBinding {
 /// admits one scan, so this contains at most its still-unacknowledged terminal.
 #[derive(Default)]
 struct ScanTerminalRetention {
-    ledger: Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>,
+    ledger:
+        Arc<StdMutex<Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>>>,
     bindings: Arc<StdMutex<HashMap<String, TerminalEvidenceBinding>>>,
     pending: Arc<StdMutex<VecDeque<ScanTerminalEvent>>>,
     retained: Arc<StdMutex<HashSet<(String, u64)>>>,
@@ -4181,7 +4182,7 @@ impl ScanTerminalRetention {
         ledger: Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>,
     ) -> Self {
         Self {
-            ledger,
+            ledger: Arc::new(StdMutex::new(ledger)),
             bindings: Arc::new(StdMutex::new(HashMap::new())),
             pending: Arc::new(StdMutex::new(VecDeque::new())),
             retained: Arc::new(StdMutex::new(HashSet::new())),
@@ -4199,8 +4200,13 @@ impl ScanTerminalRetention {
         };
         drop(bindings);
         let key = (event.operation_id.as_str().to_owned(), event.sequence);
+        let ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let stage = match (
-            self.ledger.as_ref(),
+            ledger.as_ref(),
             binding.recipient.as_deref(),
             binding.scan_terminal_operation.as_deref(),
         ) {
@@ -5068,7 +5074,8 @@ pub struct UbmCentral {
     /// Host-owned durable terminal evidence. It is intentionally separate
     /// from the radio and central: source activation reserves through this
     /// owner before it admits any terminal-bearing stream.
-    terminal_evidence: Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>,
+    terminal_evidence:
+        Arc<StdMutex<Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>>>,
     /// Source bindings are established only after the preactivation attach
     /// succeeds. They remain until their terminal is durably committed.
     scan_terminal_evidence: Arc<StdMutex<HashMap<String, TerminalEvidenceBinding>>>,
@@ -5279,7 +5286,7 @@ impl EventWaker {
     ) -> ubm_desktop::central::CentralObserver {
         let waker = Arc::clone(waker);
         let retention = ScanTerminalRetention {
-            ledger: retention.ledger.clone(),
+            ledger: Arc::clone(&retention.ledger),
             bindings: Arc::clone(&retention.bindings),
             pending: Arc::clone(&retention.pending),
             retained: Arc::clone(&retention.retained),
@@ -5295,6 +5302,15 @@ impl EventWaker {
 }
 
 impl UbmCentral {
+    fn terminal_evidence(
+        &self,
+    ) -> Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>> {
+        self.terminal_evidence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn subscription_terminal_key(
         peer_id: &str,
         selector: &SelectorInput,
@@ -5334,7 +5350,7 @@ impl UbmCentral {
         let Some(binding) = binding else {
             return Ok(None);
         };
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             DispatchError::new(
                 BleErrorCode::LifecycleInvalidState.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -5416,7 +5432,7 @@ impl UbmCentral {
         let Some(scope) = scope else {
             return Ok(None);
         };
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -5456,7 +5472,7 @@ impl UbmCentral {
                 "scan terminal evidence requires a trusted terminal operation",
             )
         })?;
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             DispatchError::new(
                 BleErrorCode::LifecycleInvalidState.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -5476,7 +5492,7 @@ impl UbmCentral {
         central: DesktopCentral<DispatchRadio>,
         waker: Arc<EventWaker>,
         retention: ScanTerminalRetention,
-        terminal_evidence: Option<
+        _terminal_evidence: Option<
             Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>,
         >,
     ) -> Self {
@@ -5492,7 +5508,7 @@ impl UbmCentral {
         let scan_terminals = AsyncMutex::new(central.scan_terminal_events());
         let adapter_resets = AsyncMutex::new(central.adapter_reset_events());
         Self {
-            terminal_evidence,
+            terminal_evidence: Arc::clone(&retention.ledger),
             scan_terminal_evidence: retention.bindings,
             pending_scan_terminals: retention.pending,
             retained_scan_terminal_sequences: retention.retained,
@@ -5849,7 +5865,7 @@ impl UbmCentral {
             OP,
         )
         .map_err(to_napi)?;
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -5877,7 +5893,7 @@ impl UbmCentral {
         recipient: String,
     ) -> Result<()> {
         const OP: &str = "dispatch.terminal-evidence.bind-recipient";
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -5900,7 +5916,7 @@ impl UbmCentral {
         options: TerminalEvidenceCommitOptions,
     ) -> Result<TerminalEvidenceCommitInfo> {
         const OP: &str = "dispatch.terminal-evidence.commit";
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -5970,7 +5986,7 @@ impl UbmCentral {
     ) -> Result<TerminalEvidenceReadInfo> {
         const OP: &str = "dispatch.terminal-evidence.read";
         let maximum_bytes = parse_terminal_evidence_maximum(&maximum_bytes, OP).map_err(to_napi)?;
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -6009,7 +6025,7 @@ impl UbmCentral {
     #[napi(catch_unwind)]
     pub async fn release_terminal_evidence(&self, reservation_id: String) -> Result<()> {
         const OP: &str = "dispatch.terminal-evidence.release";
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -6033,7 +6049,7 @@ impl UbmCentral {
         options: TerminalEvidenceRecoveryAcknowledgeOptions,
     ) -> Result<()> {
         const OP: &str = "dispatch.terminal-evidence.recovery-ack";
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -6059,7 +6075,7 @@ impl UbmCentral {
         options: TerminalEvidenceRecoveredCommitOptions,
     ) -> Result<TerminalEvidenceCommitInfo> {
         const OP: &str = "dispatch.terminal-evidence.recover-commit";
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -6119,7 +6135,7 @@ impl UbmCentral {
         options: TerminalEvidenceRecoverOptions,
     ) -> Result<Vec<TerminalEvidenceRecoverableInfo>> {
         const OP: &str = "dispatch.terminal-evidence.recover";
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -6150,7 +6166,7 @@ impl UbmCentral {
         options: TerminalEvidenceRecoverOptions,
     ) -> Result<TerminalEvidenceRecoverablePageInfo> {
         const OP: &str = "dispatch.terminal-evidence.recover-status";
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -6180,7 +6196,7 @@ impl UbmCentral {
     /// Relinquish only rows claimed by one private recovery controller.
     #[napi(catch_unwind)]
     pub async fn release_terminal_evidence_recovery_lease(&self, lease_id: String) -> Result<()> {
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -6204,7 +6220,7 @@ impl UbmCentral {
         canonical_bytes: Buffer,
     ) -> Result<()> {
         const OP: &str = "dispatch.terminal-evidence.stage";
-        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+        let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
                 BleErrorDomain::Stream.as_str(),
@@ -10041,6 +10057,17 @@ impl UbmCentral {
         }
         self.continuation.engine.stop_recovery();
         let report = self.central.shutdown().await;
+        if report.is_released() {
+            self.terminal_evidence
+                .lock()
+                .map_err(|_| Error::from_reason("terminal evidence lifecycle interrupted"))?
+                .take();
+            self.continuation
+                .engine
+                .recording_registry()
+                .release_idle_after_host_shutdown()
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+        }
         if let Ok(mut function) = self.waker.function.lock() {
             function.take();
         }
@@ -11849,6 +11876,50 @@ mod tests {
         let retry = central.close().await.unwrap();
         assert_eq!(retry.state, "released");
         assert!(retry.failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn close_releases_terminal_evidence_while_the_napi_wrapper_remains_live() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-dispatch-terminal-close-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("terminal-evidence-v1.sqlite");
+        let ledger = Arc::new(
+            ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(&path, 1024)
+                .unwrap(),
+        );
+        let retention = ScanTerminalRetention::new(Some(Arc::clone(&ledger)));
+        let waker = Arc::new(EventWaker::default());
+        let mut profile = CentralProfile::desktop("terminal-close");
+        profile.observer = Some(EventWaker::observer_with_scan_terminal_retention(
+            &waker, &retention,
+        ));
+        let central = DesktopCentral::open_with(
+            DispatchRadio::Synthetic(Box::new(FakeRadio::new())),
+            profile,
+        )
+        .await
+        .unwrap();
+        let central =
+            UbmCentral::from_central(central, waker, retention, Some(Arc::clone(&ledger)));
+        let weak = Arc::downgrade(&ledger);
+        drop(ledger);
+
+        assert_eq!(central.close().await.unwrap().state, "released");
+        assert!(central.terminal_evidence().is_none());
+        assert!(weak.upgrade().is_none());
+
+        // The wrapper remains addressable after `close`, but a subsequent
+        // trusted host can reopen the durable bytes without retaining its
+        // predecessor's SQLite connection.
+        drop(
+            ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(&path, 1024)
+                .unwrap(),
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
@@ -14523,7 +14594,7 @@ mod tests {
         let pending = event.terminal_evidence.expect("retained pending evidence");
         assert_eq!(pending.reservation_id, reservation.reservation_id);
         let bytes = central
-            .terminal_evidence
+            .terminal_evidence()
             .as_ref()
             .expect("ledger")
             .staged("scan", "trusted-recipient")
@@ -14793,7 +14864,7 @@ mod tests {
             failure.stage_failure.unwrap_or_default()
         );
         let staged = central
-            .terminal_evidence
+            .terminal_evidence()
             .as_ref()
             .expect("ledger")
             .staged("scan", "trusted-recipient")
