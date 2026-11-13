@@ -131,7 +131,7 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 
 | Document                                                                   | What it is                                                                                                                                                          | Status  |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| [`releases/5.2.2-change-breakdown.md`](releases/5.2.2-change-breakdown.md) | Exact `origin/main` to frozen-candidate composition, capability inventory, generated/artifact separation, and compatibility corrections; not qualification evidence | Current |
+| [`releases/5.2.3-change-breakdown.md`](releases/5.2.3-change-breakdown.md) | Exact `origin/main` to frozen-candidate composition, capability inventory, generated/artifact separation, and compatibility corrections; not qualification evidence | Current |
 
 ## Policy, security, and process
 

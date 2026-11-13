@@ -4541,7 +4541,23 @@ fn apple_failure_spool_table_is_exact(
         return Ok(false);
     };
     let table_schema = schema.split(';').next().unwrap_or(schema);
-    if normalized_schema_sql(&actual) != normalized_schema_sql(table_schema) {
+    // SQLite quotes a table's new name when ALTER TABLE ... RENAME TO is used
+    // during an owned migration. The migration's compact DDL also omits spaces
+    // around punctuation. The identifier and punctuation formatting are
+    // normalized; every schema token and constraint remains exact.
+    let actual = normalized_schema_sql(&actual)
+        .replace(
+            &format!("CREATE TABLE \"{name}\""),
+            &format!("CREATE TABLE {name}"),
+        )
+        .replace(", ", ",")
+        .replace("( ", "(")
+        .replace(" )", ")");
+    let expected = normalized_schema_sql(table_schema)
+        .replace(", ", ",")
+        .replace("( ", "(")
+        .replace(" )", ")");
+    if actual != expected {
         return Ok(false);
     }
     let has_named_index: bool = connection.query_row(
@@ -4592,7 +4608,7 @@ fn validate_apple_failure_spool_shape(connection: &Connection, version: i64) -> 
             "acknowledgements",
             if version == 7 {
                 APPLE_FAILURE_SPOOL_ACKNOWLEDGEMENTS_V7_SCHEMA
-            } else if version == 9 {
+            } else if (8..=9).contains(&version) {
                 APPLE_FAILURE_SPOOL_ACKNOWLEDGEMENTS_V9_SCHEMA
             } else {
                 APPLE_FAILURE_SPOOL_ACKNOWLEDGEMENTS_SCHEMA
@@ -4816,7 +4832,7 @@ fn open_apple_failure_spool(path: &Path, quota: JournalQuota) -> Result<Connecti
                        PRIMARY KEY(route,epoch)\
                      ) WITHOUT ROWID;\
                      INSERT INTO reservations_v8(route,epoch,sequence,identity,occurrence,bytes)\
-                       SELECT r.route,r.epoch,r.sequence,r.identity,o.occurrence,o.bytes\
+                       SELECT r.route,r.epoch,r.sequence,r.identity,o.occurrence,o.bytes \
                        FROM reservations r JOIN occurrences o ON o.identity=r.identity;\
                      DROP TABLE reservations;\
                      ALTER TABLE reservations_v8 RENAME TO reservations;",
@@ -13797,6 +13813,103 @@ mod authority_tests {
                 APPLE_FAILURE_SPOOL_RESERVATION_SCHEMA
             )
             .unwrap()
+        );
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn apple_failure_spool_migrates_genuine_v8_acknowledgements_without_losing_rows() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-apple-failure-v8-migration-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        ));
+        private_fixture_directory(&directory);
+        let path = directory.join("recording.sqlite");
+        let quota = JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 2,
+        };
+        let journal =
+            Arc::new(ContinuationJournal::open(&path, "apple", &json!({}), quota).unwrap());
+        drop(journal);
+        let spool_path = path.with_extension("apple-notification-failure.sqlite");
+        let occurrence = AppleNotificationFailureOccurrence {
+            route: "peer|service|0|characteristic|0".into(),
+            epoch: 11,
+            sequence: 4,
+            failure: json!({"kind":"platform","detail":"v8"}),
+        };
+        let (encoded, identity) =
+            JournalAppleNotificationFailureSpool::encoded(&occurrence).unwrap();
+        let bytes = sql_integer(u64::try_from(encoded.len()).unwrap()).unwrap();
+        let db = Connection::open(&spool_path).unwrap();
+        db.execute_batch(APPLE_FAILURE_SPOOL_SCHEMA).unwrap();
+        db.execute_batch(APPLE_FAILURE_SPOOL_WATERMARK_SCHEMA)
+            .unwrap();
+        db.execute_batch(APPLE_FAILURE_SPOOL_RESERVATION_SCHEMA)
+            .unwrap();
+        db.execute_batch(APPLE_FAILURE_SPOOL_SETTINGS_V3_SCHEMA)
+            .unwrap();
+        db.execute_batch(APPLE_FAILURE_SPOOL_GLOBAL_STREAM_SCHEMA)
+            .unwrap();
+        db.execute_batch(APPLE_FAILURE_SPOOL_CAPTURE_WATERMARK_SCHEMA)
+            .unwrap();
+        db.execute_batch(APPLE_FAILURE_SPOOL_ACKNOWLEDGEMENTS_V9_SCHEMA)
+            .unwrap();
+        db.execute(
+            "INSERT INTO occurrences(identity,route,epoch,sequence,occurrence,bytes) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![&identity[..], occurrence.route, sql_integer(occurrence.epoch).unwrap(), sql_integer(occurrence.sequence).unwrap(), String::from_utf8(encoded).unwrap(), bytes],
+        ).unwrap();
+        db.execute(
+            "INSERT INTO settings(id,max_bytes,max_records) VALUES(1,?1,?2)",
+            params![
+                sql_integer(quota.max_bytes).unwrap(),
+                sql_integer(quota.max_records).unwrap()
+            ],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO capture_stream(identity) VALUES(?1)",
+            [&identity[..]],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE capture_watermark SET highest_ordinal=1 WHERE id=1",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO acknowledgements(capture_ordinal,identity,retired) VALUES(1,?1,1)",
+            [&identity[..]],
+        )
+        .unwrap();
+        db.pragma_update(None, "application_id", APPLE_FAILURE_SPOOL_APPLICATION_ID)
+            .unwrap();
+        db.pragma_update(None, "user_version", 8_i64).unwrap();
+        drop(db);
+
+        let reopened =
+            Arc::new(ContinuationJournal::open(&path, "apple", &json!({}), quota).unwrap());
+        let spool = reopened.apple_notification_failure_spool().unwrap();
+        assert_eq!(spool.page_global(0, 8).unwrap()[0].occurrence, occurrence);
+        drop(spool);
+        drop(reopened);
+        let db = Connection::open(&spool_path).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            APPLE_FAILURE_SPOOL_SCHEMA_VERSION
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT retired FROM acknowledgements WHERE capture_ordinal=1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
         );
         drop(db);
         std::fs::remove_dir_all(directory).unwrap();

@@ -86,7 +86,7 @@ mod ingress_tests {
             std::process::id(),
             NEXT_SESSION.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir(&directory).unwrap();
+        crate::continuation_journal::private_fixture_directory(&directory);
         let journal = Arc::new(
             crate::continuation_journal::ContinuationJournal::open(
                 &directory.join("recording.sqlite"),

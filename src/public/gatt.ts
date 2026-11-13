@@ -99,7 +99,7 @@ export interface GattValueEvent {
   readonly sourceGeneration?: string
   readonly sourceOrdinal?: string
   /**
-   * Added in 5.2.2. Runtime values always normalize an omitted backend value
+   * Added in 5.2.3. Runtime values always normalize an omitted backend value
    * to `unknown`; optionality preserves the 5.2.1 source shape for consumers
    * that construct or forward this public type.
    */

@@ -6,11 +6,14 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [5.2.2] - 2026-11-12
+## [5.2.3] - 2026-11-12
 
 - Add opt-in ordered multi-characteristic notification collection, ordered
   recording, and durable evidence recovery across the supported host routes.
-  See [the release change breakdown](docs/releases/5.2.2-change-breakdown.md).
+  See [the release change breakdown](docs/releases/5.2.3-change-breakdown.md).
+- Repair migration of earlier Apple notification-failure spool formats: preserve
+  legacy rows through the reservation rebuild, recognize SQLite rename formatting,
+  and validate version-8 acknowledgements using their historical schema.
 - Preserve 5.2.1 TypeScript consumer shapes for existing GATT, host, diagnostics,
   continuation status, terminal-reason, and backend error-metadata contracts.
   New diagnostic detail remains available through additive fields and recovery

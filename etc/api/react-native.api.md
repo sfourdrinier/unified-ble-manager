@@ -63,14 +63,14 @@ host/test seam; its internal options remain separate from the application API.
 - `OrderedRecordingStopReceipt :: { readonly version: 1 | 2; readonly state: "interrupted" | "finished" | "waiting-capacity" | "waiting-source" | "waiting-drain"; readonly error: null; } | { readonly version: 1 | 2; readonly state: "failed"; readonly error: OrderedRecordingStopFailure; }`
 - `REACT_NATIVE_ANDROID_BACKEND_ID :: "unified-ble:react-native-android"`
 - `REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID :: "android-default-adapter"`
-- `REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION :: "5.2.2"`
+- `REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION :: "5.2.3"`
 - `REACT_NATIVE_ANDROID_PLATFORM_ID :: "unified-ble:android-gatt"`
 - `REACT_NATIVE_APPLE_BACKEND_ID :: "unified-ble:react-native-apple"`
 - `REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID :: "apple-corebluetooth-default-adapter"`
-- `REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION :: "5.2.2"`
+- `REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION :: "5.2.3"`
 - `REACT_NATIVE_APPLE_PLATFORM_ID :: "unified-ble:apple-corebluetooth"`
 - `REACT_NATIVE_RUST_CORE_BACKEND_ID :: "unified-ble:react-native-rust-core"`
-- `REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION :: "5.2.2"`
+- `REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION :: "5.2.3"`
 - `RUST_CORE_CONTRACT_REVISION :: string`
 - `ReactNativeAndroidBackendProviderOptions :: { readonly now: () => number; readonly createOwnerId?: (() => string) | undefined; readonly rustCore?: ReactNativeRustCoreBinding | undefined; readonly androidApiLevel?: number | undefined }`
 - `ReactNativeAppleBackendProviderOptions :: { readonly now: () => number; readonly createOwnerId?: (() => string) | undefined; readonly rustCore?: ReactNativeRustCoreBinding | undefined; readonly restorationAuthority?: ReactNativeRestorationAuthority | undefined }`

@@ -5214,7 +5214,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir_all(&directory).unwrap();
+        private_directory(&directory);
         let path = directory.join("recording.sqlite");
         // Process A creates the receipt strictly through the public Outbox
         // lifecycle; it never edits the private sidecar directly.
@@ -5274,8 +5274,8 @@ mod tests {
         ));
         let first = root.join("first");
         let second = root.join("second");
-        std::fs::create_dir_all(&first).unwrap();
-        std::fs::create_dir_all(&second).unwrap();
+        private_directory(&first);
+        private_directory(&second);
         let first_path = first.join("recording.sqlite");
         let second_path = second.join("recording.sqlite");
         let first_journal =
@@ -5324,7 +5324,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
         ));
-        std::fs::create_dir_all(&directory).unwrap();
+        private_directory(&directory);
         let path = directory.join("recording.sqlite");
         for generation in 1..=RECEIPTS {
             let journal =
@@ -5399,7 +5399,15 @@ mod tests {
                 EvidenceToken::Null,
             ])),
         ));
-        let sidecar = path.with_extension("scan-failure-recovery.sqlite");
+        let sidecar = path
+            .parent()
+            .unwrap()
+            .join(".ubm-scan-recovery")
+            .join(path.file_name().unwrap())
+            .with_extension("scan-failure-recovery.sqlite");
+        // Create the private sidecar through the journal before injecting a
+        // statement failure into its real owner-envelope table.
+        assert!(journal.scan_failure_owner_envelopes().unwrap().is_empty());
         let injector = rusqlite::Connection::open(&sidecar).unwrap();
         injector.execute_batch("CREATE TRIGGER reject_owner BEFORE INSERT ON owner_envelopes BEGIN SELECT RAISE(ABORT, 'owner'); END;").unwrap();
         assert!(matches!(
@@ -5518,7 +5526,15 @@ mod tests {
                 EvidenceToken::Null,
             ])),
         ));
-        let sidecar = path.with_extension("scan-failure-recovery.sqlite");
+        let sidecar = path
+            .parent()
+            .unwrap()
+            .join(".ubm-scan-recovery")
+            .join(path.file_name().unwrap())
+            .with_extension("scan-failure-recovery.sqlite");
+        // The trigger targets the production sidecar schema, not a lazily
+        // created unrelated SQLite file.
+        assert!(journal.scan_failure_owner_envelopes().unwrap().is_empty());
         let injector = rusqlite::Connection::open(&sidecar).unwrap();
         let reject = |name: &str| {
             injector.execute_batch(&format!(
@@ -5637,10 +5653,16 @@ mod tests {
         assert_eq!(before, durable_and_ram());
         allow("reject_release");
         outbox.release_scan_failure_receipt(&second).unwrap();
-        assert_eq!(
-            outbox.scan_failure_recovery_owners()[0].released,
-            Some(second)
-        );
+        let owners = outbox.scan_failure_recovery_owners();
+        let released = owners[0]
+            .released
+            .as_ref()
+            .expect("successful release persists the second member receipt");
+        assert_eq!(released.ordinal, second.ordinal);
+        assert_eq!(released.capability, second.capability);
+        assert_eq!(released.evidence, second.evidence);
+        assert_eq!(released.contiguous_read, second.evidence.encoded_length);
+        assert!(released.acknowledged);
 
         drop(reservation);
         drop(injector);
