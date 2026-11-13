@@ -1,5 +1,6 @@
 const { attachBleBackend, createBleManager, createManagerOwnershipAuthority } = require('../../src/manager/ble-manager')
 const { DEFAULT_BLE_MANAGER_OPTIONS } = require('../../src/manager/ble-manager')
+const { contractError } = require('../../src/backend-contract/errors')
 const { capacity, deadline, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')
 const { awaitSignal } = require('../helpers/async')
@@ -105,18 +106,20 @@ function peer() {
   return opaqueId('deterministic-peer', 'peer', 'deterministic')
 }
 
-function managerOptions(fixture) {
+function managerOptions(fixture, options = {}) {
   return {
     ...DEFAULT_BLE_MANAGER_OPTIONS,
     now: () => fixture.controller.clock.now(),
     timer: {
       scheduleAt: (deadlineValue, action) => fixture.controller.clock.scheduleAt(deadlineValue, action)
-    }
+    },
+    ...options
   }
 }
 
-async function createOwningFixture() {
+async function createOwningFixture(options = {}, configureBackend = () => {}) {
   const fixture = createDeterministicTestBackend()
+  configureBackend(fixture.backend)
   const attached = await attachBleBackend(fixture.backend, compatibility())
   const manager = await createBleManager(
     {
@@ -126,7 +129,7 @@ async function createOwningFixture() {
       ownerMode: 'owning'
     },
     createManagerOwnershipAuthority(attached),
-    managerOptions(fixture)
+    managerOptions(fixture, options)
   )
   return { fixture, manager }
 }
@@ -267,6 +270,53 @@ const acquisitions = [
 ]
 
 describe('pending scan/connect acquisition ownership', () => {
+  test('failed scan admission settles while a pre-adoption evidence release failure is traced', async () => {
+    const startupFailure = contractError('scan.start-failed', 'scan', 'test.scan-start')
+    const release = jest.fn(async () => {
+      throw new Error('evidence store unavailable')
+    })
+    const { fixture, manager } = await createOwningFixture(
+      { terminalEvidence: { maximumCanonicalBytes: 512 } },
+      backend => {
+        backend.scanner.reserveTerminalEvidence = jest.fn(async request => ({
+          maximumBytes: request.maximumBytes,
+          commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+          release
+        }))
+        backend.scanner.start = jest.fn(async () => {
+          throw startupFailure
+        })
+      }
+    )
+
+    const pending = manager.scan(scanOptions())
+    const outcome = pending.then(
+      value => ({ state: 'fulfilled', value }),
+      error => ({ state: 'rejected', error })
+    )
+    let settled = false
+    void outcome.then(() => {
+      settled = true
+    })
+    for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
+      fixture.controller.clock.runUntilIdle()
+      await Promise.resolve()
+    }
+
+    expect(settled).toBe(true)
+    await expect(outcome).resolves.toMatchObject({
+      state: 'rejected',
+      error: { normalized: startupFailure.normalized }
+    })
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(Number(manager.localResourceCounters().scanConsumers)).toBe(0)
+    expect(Number(manager.localResourceCounters().activeScanControllers)).toBe(0)
+    expect(manager.traces()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ transition: 'scan-acquisition', cause: 'platform.failure' })])
+    )
+    await settle(fixture.controller, manager.destroy())
+  })
+
   test.each(acquisitions)('destroy during pending $name retains a failed late lease for retry', async acquisition => {
     const closer = createCloser(acquisition.resourceKind, acquisition.operation, 'fail-then-succeed')
     const { manager, fixture } = await createOwningFixture()

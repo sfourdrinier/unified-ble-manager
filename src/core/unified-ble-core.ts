@@ -627,12 +627,15 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
           }
           resolve(this.adoptScan(lease, stream, options, terminalEvidence, terminalEvidenceScope))
         } catch (error) {
-          await terminalEvidence?.release()
           if (!cancelled) {
             reject(error)
-          } else {
-            throw error
           }
+          // The caller's admission error must settle independently of the
+          // compensating evidence release. A failed release is still allowed
+          // to reject this background acquisition so the lifecycle observer
+          // records it, but must not leave the public scan promise pending.
+          await terminalEvidence?.release()
+          if (cancelled) throw error
         } finally {
           deadlineHandle?.cancel()
           this.pendingScanAcquisitions.delete(cancel)

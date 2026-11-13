@@ -43,6 +43,9 @@ All notable changes to `unified-ble-manager` are documented here.
 - Preserve immediate scan restart after an OS-ended terminal: the next start
   waits for the old scan's ingress cleanup using its own budget and signal.
   Active scans and failed cleanup retain their existing ownership protections.
+- Settle failed scan admission with its original startup error even when
+  releasing the acquired evidence reservation also fails. The cleanup failure
+  remains visible through the existing acquisition lifecycle diagnostic.
 - Refuse exact legacy receipt retirement as corrupt when its required proof was
   deleted, without recreating an empty receipt table.
 - Preserve 5.2.1 TypeScript consumer shapes for existing GATT, host, diagnostics,
