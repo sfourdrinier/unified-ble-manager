@@ -539,8 +539,64 @@ async fn a_value_turn_commits_one_group_across_the_routes_of_its_scope() {
 #[tokio::test]
 async fn a_lifecycle_transition_retains_every_earlier_value_across_commit_groups() {
     const HELD: u16 = 100;
+    struct HoldFirstWake {
+        armed: std::sync::atomic::AtomicBool,
+        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl ubm_mobile::WakeSink for HoldFirstWake {
+        fn wake(&self, _: u64) {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                if self
+                    .entered
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .is_err()
+                {
+                    return; // The test already exited; do not hold its worker.
+                }
+                // The test has two three-second waits. Leave cleanup margin;
+                // dropping its sender releases this worker on every exit.
+                match self
+                    .resume
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        panic!("lifecycle test did not release its held worker");
+                    }
+                }
+            }
+        }
+    }
+    let (entered, first_commit) = tokio::sync::oneshot::channel();
+    let (resume, held) = std::sync::mpsc::channel();
+    let wakes = std::sync::Arc::new(HoldFirstWake {
+        armed: std::sync::atomic::AtomicBool::new(false),
+        entered: std::sync::Mutex::new(Some(entered)),
+        resume: std::sync::Mutex::new(held),
+    });
     let radio = Scripted::polar();
-    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let host = std::sync::Arc::new(
+        ubm_mobile::MobileHost::open(
+            radio.clone(),
+            wakes.clone(),
+            ubm_mobile::HostOptions {
+                platform: MobilePlatform::Android,
+                owner: "lifecycle-test".to_owned(),
+                adapter_label: "scripted-adapter".to_owned(),
+            },
+            tokio::runtime::Handle::current(),
+        )
+        .await
+        .unwrap(),
+    );
+    radio.bind_host(&host);
     let session = host.open_session("lifecycle").expect("session");
     connect(&session, "connect-lifecycle").await;
     ok(&call(
@@ -558,6 +614,9 @@ async fn a_lifecycle_transition_retains_every_earlier_value_across_commit_groups
         .to_string(),
     )
     .await);
+    let setup = parse(&session.drain(256, 65536));
+    assert_eq!(setup["more"], false);
+    wakes.armed.store(true, Ordering::SeqCst);
     let epoch = enable_epoch(&radio);
     let sequence_bytes = |sequence: u16| sequence.to_le_bytes().to_vec();
     for sequence in 0..HELD {
@@ -568,13 +627,40 @@ async fn a_lifecycle_transition_retains_every_earlier_value_across_commit_groups
         connected: false,
         status: Some(8),
     });
+    // Hold the first value commit's worker until the core has consumed the
+    // loss. This fixes the backlog without relying on worker scheduling.
+    tokio::time::timeout(Duration::from_secs(3), first_commit)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let answer = call(
+                &session,
+                "connection.rssi",
+                &json!({
+                    "peerId": POLAR, "lease": "lease-1", "operationId": "loss-probe"
+                })
+                .to_string(),
+            )
+            .await;
+            if parse(&answer)["ok"] == false {
+                assert_eq!(failure(&answer).0["code"], "connection.stale");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(resume);
     let records = drain_until(&session, |records| {
         !of_type(records, "link").is_empty() && !of_type(records, "stream-end").is_empty()
     })
     .await;
-    // The single-threaded runtime fixes the schedule: value turns commit one
-    // group each before the transition is handled. This guards that more than
-    // one group was left for the unlimited lifecycle drain to retain.
+    // The host pump uses blocking workers, so the first commit is held above;
+    // a single-threaded test runtime alone does not fix their schedule.
+    // Keep the coverage guard: the lifecycle drain must retain multiple groups.
     let turn_groups: usize = host.scope_turns().iter().map(Vec::len).sum();
     assert!(
         HELD as usize - turn_groups * ubm_desktop::continuation_journal::APPEND_BATCH_MAX
