@@ -584,10 +584,11 @@ describe('Apple Native Protocol v2 radio boundary', () => {
       // spawn reports is still a failure, and a harness that RUNS and fails
       // still fails.
       if (execution.error !== undefined && execution.error.code === 'ETIMEDOUT') {
-        console.warn(
+        const timeoutDiagnostic =
           `Apple Native Protocol harness exceeded its ${String(420_000)}ms bound under the full Jest matrix; ` +
-            'not treated as a protocol failure. The dedicated Apple CI job executes the same harness.'
-        )
+          'not treated as a protocol failure. The dedicated Apple CI job executes the same harness.'
+        console.warn(timeoutDiagnostic)
+        expectConsoleWarn(timeoutDiagnostic)
         const appleWorkflow = fs.readFileSync(path.join(root, '.github/workflows/apple-ci.yml'), 'utf8')
         expect(appleWorkflow).toContain('run: pnpm test:native-protocol:apple')
         return
