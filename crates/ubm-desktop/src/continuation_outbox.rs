@@ -5337,7 +5337,9 @@ mod tests {
             .unwrap();
         write_cleanup_retirement_to_child(&mut child, &first_retirement);
         assert!(child.wait().unwrap().success());
-        crate::continuation_journal::remove_idle_fixture_directory(&root);
+        crate::continuation_journal::remove_idle_fixture_directory(&first);
+        crate::continuation_journal::remove_idle_fixture_directory(&second);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

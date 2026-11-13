@@ -5,6 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ubm_desktop::continuation_journal::{ContinuationJournal, JournalQuota, JournalRegistry};
 use ubm_desktop::continuation_outbox::{CONTROL_RECORD_CAP, IngressClass, Outbox, WakeSink};
 
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
+
 struct NoWake;
 impl WakeSink for NoWake {
     fn wake(&self, _: u64) {}
@@ -162,7 +165,11 @@ fn coalesced_loss_quota_failure_is_reported_and_retained() {
 
 #[test]
 fn coalesced_loss_failed_append_exposes_storage_failure() {
-    let fixture = Fixture::new();
+    let test = "coalesced_loss_failed_append_exposes_storage_failure";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
+    let fixture = Fixture::from_path(directory.clone());
     let journal = fixture.journal(10000);
     let outbox = attach(&journal);
     outbox.push_ingress_drop_count(IngressClass::Control, 3);
@@ -174,6 +181,14 @@ fn coalesced_loss_failed_append_exposes_storage_failure() {
     assert_eq!(failure.unwrap().kind, "storage.busy");
     assert_eq!(journal.status().unwrap()["accepting"], false);
     assert_eq!(loss(&journal.prepare(2048, 4194304).unwrap(), "control"), 3);
+    drop(outbox);
+    drop(journal);
+    drop(blocker);
+    // The failed append intentionally retains a diagnostic owner that must
+    // survive until process exit. The parent fixture removes the directory
+    // only after this child has released that process-owned handle.
+    std::mem::forget(fixture);
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[test]

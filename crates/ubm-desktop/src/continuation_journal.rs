@@ -13636,7 +13636,7 @@ mod authority_tests {
         drop(live);
         registry.release_idle_after_host_shutdown().unwrap();
         other_registry.release_idle_after_host_shutdown().unwrap();
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
         std::fs::remove_dir_all(other_directory).unwrap();
     }
 
@@ -13690,7 +13690,9 @@ mod authority_tests {
         );
         spool.acknowledge(&one).unwrap();
         assert!(spool.page(&one.route, one.epoch, 0, 8).unwrap().is_empty());
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(spool);
+        drop(reopened);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -13740,7 +13742,9 @@ mod authority_tests {
             ..occurrence
         };
         assert_eq!(spool.append(&reused).unwrap_err().kind, "storage.sequence");
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(spool);
+        drop(reopened);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -13835,7 +13839,9 @@ mod authority_tests {
         // Receipt 2 survived both a later ACK and the explicit retirement of
         // receipt 1; this is the recovery path after a process crash.
         spool.acknowledge_capture(2).unwrap();
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(spool);
+        drop(reopened);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -13895,7 +13901,9 @@ mod authority_tests {
                 .kind,
             "storage.identity"
         );
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(spool);
+        drop(reopened);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -13938,7 +13946,8 @@ mod authority_tests {
             .unwrap();
         assert!(retained.contains("malformed_occurrence_route"));
         drop(db);
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(reopened);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -13988,7 +13997,8 @@ mod authority_tests {
             )
         );
         drop(db);
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(reopened);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14023,7 +14033,8 @@ mod authority_tests {
         let db = Connection::open(&spool_path).unwrap();
         assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='view' AND name='unexpected_apple_view')", [], |row| row.get::<_, bool>(0)).unwrap());
         drop(db);
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(reopened);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14112,7 +14123,7 @@ mod authority_tests {
             .unwrap()
         );
         drop(db);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14209,7 +14220,7 @@ mod authority_tests {
             1
         );
         drop(db);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14278,7 +14289,7 @@ mod authority_tests {
         drop(db);
         drop(spool);
         drop(reopened);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14491,7 +14502,9 @@ mod authority_tests {
         spool.acknowledge(&b7).unwrap();
         spool.acknowledge(&a8).unwrap();
         assert!(spool.page_global(0, 8).unwrap().is_empty());
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(spool);
+        drop(reopened);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14541,7 +14554,9 @@ mod authority_tests {
             AppleNotificationFailureAppend::Committed
         );
         assert_eq!(spool.highest_sequence(&six.route, six.epoch).unwrap(), 7);
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(spool);
+        drop(journal);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14581,7 +14596,9 @@ mod authority_tests {
             ..six.clone()
         };
         assert_eq!(spool.append(&seven).unwrap_err().kind, "storage.sequence");
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(spool);
+        drop(journal);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14654,7 +14671,9 @@ mod authority_tests {
         assert_eq!(spool.page_global(0, 8).unwrap()[0].occurrence, a_next);
         spool.acknowledge_capture(3).unwrap();
         assert!(spool.page_global(0, 8).unwrap().is_empty());
-        std::fs::remove_dir_all(directory).unwrap();
+        drop(spool);
+        drop(reopened);
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -14694,7 +14713,7 @@ mod authority_tests {
                 .unwrap(),
             vec![occurrence]
         );
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     fn peer_failure_occurrence(encoded_length: u64) -> DurablePeerFailureRecoveryOccurrence {
@@ -14853,7 +14872,7 @@ mod authority_tests {
         assert!(reopened.recover(&descriptor).unwrap().is_none());
         drop(reopened);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[tokio::test]
@@ -14912,7 +14931,11 @@ mod authority_tests {
             .unwrap()
             .journals
             .remove(&directory.join("cold.sqlite"));
-        std::fs::remove_dir_all(directory).unwrap();
+        reopened_registry
+            .release_idle_after_host_shutdown()
+            .unwrap();
+        registry.release_idle_after_host_shutdown().unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[tokio::test]
@@ -14947,7 +14970,7 @@ mod authority_tests {
         assert!(ledger.recover(&descriptor).unwrap().is_some());
         drop(ledger);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[tokio::test]
@@ -15013,7 +15036,7 @@ mod authority_tests {
         ledger.release(&descriptor).await.unwrap();
         drop(ledger);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[tokio::test]
@@ -15065,7 +15088,7 @@ mod authority_tests {
         assert_eq!(error.kind, "storage.corrupt");
         drop(reopened);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -15208,7 +15231,7 @@ mod authority_tests {
             "storage.identity"
         );
         drop(reopened);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[cfg(unix)]
@@ -15259,7 +15282,7 @@ mod authority_tests {
         assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
         assert_eq!(metadata.mode() & 0o777, 0o600);
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[cfg(unix)]
@@ -20941,13 +20964,11 @@ mod authority_tests {
     #[test]
     fn windows_scan_recovery_protector_provisions_the_real_directory_and_sidecar_route() {
         use std::io::Write;
-        use std::os::windows::fs::OpenOptionsExt;
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
         use windows_sys::Win32::Security::{
             DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
         };
-        use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
 
         let directory = std::env::temp_dir().join(format!(
             "ubm-windows-scan-recovery-acl-{}-{:?}",
@@ -20996,12 +21017,7 @@ mod authority_tests {
 
         // A null DACL means full access to everyone. The validator must never
         // reinterpret that as a private default.
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .access_mode(WRITE_DAC)
-            .open(&path)
-            .unwrap();
+        let file = windows_open_exact_scan_recovery_sidecar(&path).unwrap();
         assert_eq!(
             unsafe {
                 SetSecurityInfo(
@@ -21021,7 +21037,7 @@ mod authority_tests {
             protector.validate(&path).unwrap_err().kind,
             "storage.permission"
         );
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -21109,7 +21125,7 @@ mod authority_tests {
             RECEIPTS as usize
         );
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 
     #[test]
@@ -21192,6 +21208,6 @@ mod authority_tests {
         let failure = journal.scan_failure_cleanup_retirements().unwrap_err();
         assert_eq!(failure.kind, "storage.corrupt");
         drop(journal);
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_idle_fixture_directory(&directory);
     }
 }
