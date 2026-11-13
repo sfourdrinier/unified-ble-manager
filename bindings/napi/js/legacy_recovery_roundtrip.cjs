@@ -51,7 +51,10 @@ async function main() {
   const retirements = await Promise.all([value(first.legacyRecordingRetireExact('valid', serialized)), value(second.legacyRecordingRetireExact('valid', serialized))])
   assert.deepEqual(retirements[0], retirements[1])
   const retired = retirements[0] // deliberately treat the first reply as lost
-  await value(second.status('valid')) // migration may win the retry race
+  // Exact recovery retains ownership until explicit retirement confirmation.
+  const retained = JSON.parse(await second.status('valid'))
+  assert.equal(retained.ok, false)
+  assert.equal(retained.error.platform.code, 'storage.owner-conflict')
   assert.deepEqual(await value(first.legacyRecordingRetireExact('valid', serialized)), retired)
   execFileSync(process.execPath, [__filename], { env: { ...process.env, UBM_EXACT_CHILD_DIR: dir, UBM_EXACT_CHILD_PAGE: serialized } })
   const missing = await value(first.legacyRecordingPrepareExact('missing', 1, 4096))
