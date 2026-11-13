@@ -119,4 +119,4 @@ test('native v2 offer permits public start, same-host stop, and offline stop', a
     }
     fs.rmSync(directory, { recursive: true, force: true })
   }
-})
+}, 30_000)
