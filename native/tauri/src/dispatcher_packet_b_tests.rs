@@ -11505,10 +11505,15 @@ async fn ordered_recording_dispatcher_retains_lease_across_caller_release() {
         .unwrap()
         .into_wire();
     // Publishing the replacement mapping consumes the native permit and
-    // immediately starts its asynchronous release. The mapping is committed,
-    // but cleanup is still owned, so the truthful reservation state is
-    // `releasing` rather than the obsolete intermediate `committed` state.
-    assert_eq!(committed["status"]["state"], "releasing");
+    // starts its asynchronous release. `commit` returns a post-action
+    // snapshot, so a fast host may have completed that release before the
+    // status is read. Both states truthfully retain the committed mapping;
+    // the explicit release/status sequence below still proves eventual
+    // cleanup rather than relying on scheduler timing.
+    assert!(matches!(
+        committed["status"]["state"].as_str(),
+        Some("releasing" | "released")
+    ));
     assert_eq!(committed["status"]["mappingCommitted"], true);
     harness
         .dispatcher
