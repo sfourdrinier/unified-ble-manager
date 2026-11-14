@@ -175,7 +175,7 @@ export interface DesktopRustCoreScanTerminalEvent {
   readonly stageFailure?: string | null
   readonly missed?: number | null
   /** Retained native terminal awaiting canonical JS commit and explicit ACK. */
-  readonly evidence?: {
+  readonly terminalEvidence?: {
     readonly reservationId: string
     readonly pendingToken: string
   } | null
@@ -299,7 +299,7 @@ export interface DesktopRustCoreNotificationPoll {
   readonly droppedItems?: number | null
   readonly droppedBytes?: number | null
   readonly replacedItems?: number | null
-  readonly evidence?: {
+  readonly terminalEvidence?: {
     readonly reservationId: string
     readonly pendingToken: string
   } | null
@@ -321,9 +321,12 @@ export interface DesktopRustCoreNotificationPollV2 {
     | 'closed'
     | 'peer-source-loss'
     | 'source-failure-recovery'
+    | 'source-failed'
   readonly recovery?: DesktopRustCorePeerSourceFailureRecoveryDescriptor | null
   /** Exact native producer-error diagnostic for a retained V2 recovery offer. */
   readonly recoveryError?: string | null
+  /** Exact native producer-error diagnostic for a scoped source terminal. */
+  readonly sourceFailure?: string | null
   readonly provenance?: import('../../backend-contract/gatt').NotificationProvenance | null
   readonly peerId?: string
   readonly generation?: string
@@ -334,7 +337,7 @@ export interface DesktopRustCoreNotificationPollV2 {
   readonly droppedItems?: number | null
   readonly droppedBytes?: number | null
   readonly replacedItems?: number | null
-  readonly evidence?: {
+  readonly terminalEvidence?: {
     readonly reservationId: string
     readonly pendingToken: string
   } | null
@@ -979,6 +982,8 @@ export interface DesktopRustCoreCentral {
         readonly incarnation: string
       }
       readonly terminalEvidenceScopeUtf16le?: Uint8Array
+      /** Internal operation identity used to encode staged terminal evidence. */
+      readonly terminalEvidenceOperation?: string
     } & DesktopRustCoreGattTarget
   ): Promise<{ delivery: 'notification' | 'indication' | 'unknown' }>
   /** One consumer's cumulative accounting in the core (`null` when it holds no record). */

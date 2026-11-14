@@ -50,6 +50,7 @@ import { CoreBoundedStream, type CoreStreamClaimConsumer } from './bounded-strea
 import { CoreOperationCoordinator } from './operation-coordinator'
 import { ResourceLedger } from './resource-ledger'
 import { CoreSubscription, SubscriptionRegistry } from './subscription-registry'
+import { takeTrustedTerminalEvidenceScope } from '../manager/trusted-terminal-evidence'
 import { CoreTraceRecorder, type CoreTraceResource } from './trace-recorder'
 import { CoreLifecycleObserver, createRetainedCleanup } from './core-lifecycle-observer'
 import { CoreConnection, CoreGattDatabase } from './core-gatt-handles'
@@ -536,6 +537,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       // path fails closed for every caller, not only the public manager.
       throw contractError('capability.unsupported', 'scan', 'unified-core.scan.platform-options')
     }
+    const delegatedTerminalEvidenceScope = takeTrustedTerminalEvidenceScope(options)
     const admissionEpoch = this.admissionEpoch
     const stream = new CoreBoundedStream<AdvertisementObservation<Attachment>>(
       options.delivery,
@@ -581,7 +583,9 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
           this.aggregateQuota.unregister(stream)
         }
         try {
-          if (this.options.terminalEvidence !== undefined) {
+          if (delegatedTerminalEvidenceScope !== null) {
+            terminalEvidenceScope = delegatedTerminalEvidenceScope
+          } else if (this.options.terminalEvidence !== undefined) {
             const reserve = this.backend.scanner.reserveTerminalEvidence
             if (reserve === undefined)
               throw contractError('capability.unsupported', 'scan', 'unified-core.scan.terminal-evidence')
@@ -1274,7 +1278,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
               )
             }
             if (
-              scan.terminalEvidence !== null &&
+              scan.terminalEvidenceScope !== null &&
               (item.evidence === undefined ||
                 item.evidence.producer !== 'scan' ||
                 !terminalEvidenceScopeMatches(item.evidence.scope, scan.terminalEvidenceScope)) &&

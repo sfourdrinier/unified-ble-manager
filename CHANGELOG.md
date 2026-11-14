@@ -58,6 +58,12 @@ All notable changes to `unified-ble-manager` are documented here.
 - Retry evidence-only cleanup after subscription enablement fails, allowing
   replacement admission and destruction to release the retained reservation
   once storage recovers.
+- Bind authenticated Electron renderer evidence reservations to source startup
+  through internal manager/core plumbing, preserving exact scope ownership and
+  separate source participants for distinct reservations.
+- Preserve native terminal receipts across desktop and Electron wire mapping,
+  and stage scoped N-API V2 notification source failures before delivery using
+  the existing pending-token commit/ACK path. Legacy V1 rejection is unchanged.
 - Preserve commit uncertainty and ordered failure details during terminal
   evidence hydration. Escape ordinary metadata records that collide with byte
   tags, using the same canonical representation in TypeScript and Tauri.

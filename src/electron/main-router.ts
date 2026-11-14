@@ -41,6 +41,7 @@ import {
   type SerializableValue
 } from '../backend-contract/primitives'
 import type { SubscriptionOptions } from '../backend-contract/operations'
+import type { ScanOptions } from '../backend-contract/advertisement'
 import { snapshotCapabilityDescriptors } from '../backend-contract/capabilities'
 import { serializableRecordsEqual, snapshotSerializableRecord } from '../backend-contract/serializable'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
@@ -50,6 +51,10 @@ import { decodePeerQuery, encodePeerRecord } from '../ipc/peer-directory'
 import { snapshotPeerReference } from '../public/peer-reference'
 import { IPC_ATTACHMENT_STREAM_ID, IPC_CLIENT_COMPATIBILITY_OFFER, ipcAttachmentRecordV2 } from '../ipc/protocol'
 import { BleManager, Connection, DiscoveredGattDatabase } from '../manager/ble-manager'
+import {
+  bindTrustedTerminalEvidenceScope,
+  type TrustedTerminalEvidenceScope
+} from '../manager/trusted-terminal-evidence'
 import type {
   ElectronBleIpcEvent,
   ElectronBleIpcRequest,
@@ -311,6 +316,7 @@ interface ElectronTerminalEvidenceEntry {
   readonly scope: TerminalEvidenceReservationRequest['scope'] | null
   readonly source: ElectronTerminalEvidenceSource
   readonly reservation: TerminalEvidenceReservation
+  sourceBinding: 'idle' | 'binding' | 'bound'
   ref: string | null
   digest: string | null
   byteLength: number | null
@@ -1085,7 +1091,7 @@ export class ElectronMainBleRouter {
     if (plan.queryDigest !== query.digest || plan.sourceQuery.digest !== query.digest) {
       throw contractError('protocol.violation', 'scan', 'electron-main-router.scan-plan-digest')
     }
-    const scan = await this.manager.scan({
+    const options = {
       ...(envelope.payload.platform === undefined
         ? {}
         : { platform: decodeIpcScanPlatform(envelope.payload.platform) }),
@@ -1098,9 +1104,21 @@ export class ElectronMainBleRouter {
       deadline: deadlineFromPayload(envelope.payload),
       signal: controller.signal,
       sharing: { mode: 'owner', allowSharing: false }
-    })
+    } satisfies ScanOptions<string, string>
+    const evidence = this.bindTerminalEvidenceSource(resources, envelope.payload, 'scan')
+    if (evidence !== null) bindTrustedTerminalEvidenceScope(options, evidence.scope)
+    let scan: Awaited<ReturnType<BleManager<string, import('../backend-contract').BackendIdentity<string>>['scan']>>
+    try {
+      scan = await this.manager.scan(options)
+      evidence?.commit()
+    } catch (error) {
+      evidence?.rollback()
+      throw error
+    }
     const handle = this.allocateHandle('scan')
-    this.streams.registerScan(resources, envelope.rendererLease, handle, scan)
+    this.streams.registerScan(resources, envelope.rendererLease, handle, scan, terminalEvidence =>
+      this.receiveTerminalEvidence(resources, 'scan', evidence?.scope ?? null, terminalEvidence)
+    )
     acquisitions.scans.add(handle)
     return Object.freeze({
       handle,
@@ -1992,14 +2010,30 @@ export class ElectronMainBleRouter {
   ): Promise<SerializableRecord> {
     const database = this.database(resources, envelope.payload)
     const path = this.characteristic(database, envelope.payload)
+    // The public acquired-notification contract accepts only operation and
+    // stream controls, never terminal evidence. Reject an injected scope
+    // before it can bind a renderer reservation to a source that cannot carry
+    // a terminal receipt.
+    if (acquired && envelope.payload.terminalEvidenceScope !== undefined)
+      throw contractError('argument.invalid', 'gatt', 'electron-main-router.acquire-notifications.terminal-evidence')
     const deliveryMode = requiredDeliveryMode(envelope.payload.deliveryMode)
     const options = {
       ...operationOptions(envelope.payload, controller),
       delivery: deliveryFromPayload(envelope.payload),
       ...(deliveryMode === undefined ? {} : { deliveryMode })
     } satisfies SubscriptionOptions
-    const notifications = acquired ? await database.database.acquireNotifications(path, options) : null
-    const ordinary = notifications === null ? await database.database.subscribe(path, options) : null
+    const evidence = this.bindTerminalEvidenceSource(resources, envelope.payload, 'subscription')
+    if (evidence !== null) bindTrustedTerminalEvidenceScope(options, evidence.scope)
+    let notifications
+    let ordinary
+    try {
+      notifications = acquired ? await database.database.acquireNotifications(path, options) : null
+      ordinary = notifications === null ? await database.database.subscribe(path, options) : null
+      evidence?.commit()
+    } catch (error) {
+      evidence?.rollback()
+      throw error
+    }
     const subscription =
       notifications === null ? ordinary : { values: notifications.values, remove: () => notifications.close() }
     if (subscription === null)
@@ -2010,7 +2044,9 @@ export class ElectronMainBleRouter {
       envelope.rendererLease,
       handle,
       requiredString(envelope.payload, 'databaseHandle'),
-      subscription
+      subscription,
+      terminalEvidence =>
+        this.receiveTerminalEvidence(resources, 'subscription', evidence?.scope ?? null, terminalEvidence)
     )
     acquisitions.subscriptions.add(handle)
     return Object.freeze({
@@ -3728,6 +3764,7 @@ export class ElectronMainBleRouter {
         scope: request.scope,
         source,
         reservation,
+        sourceBinding: 'idle',
         ref: null,
         digest: null,
         byteLength: null,
@@ -3767,6 +3804,11 @@ export class ElectronMainBleRouter {
     if (command === 'terminalEvidence.read') {
       if (binaryPayload !== null) throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.read')
       const ref = terminalEvidenceReference(payload, 'electron.terminal-evidence.read')
+      // A source-native terminal commits under its reservation before this
+      // renderer receives the terminal event. Claim the authenticated
+      // recovery lease before reading so the same live renderer can hydrate
+      // its evidence; the later ACK remains the only retirement path.
+      await this.hydrateTerminalEvidenceRecovery(resources)
       const entry = this.terminalEvidenceOwner(resources, ref, 'electron.terminal-evidence.read')
       if (entry.ref === null) throw contractError('ownership.denied', 'restoration', 'electron.terminal-evidence.read')
       const result = await entry.source.readTerminalEvidence(entry.ref, entry.byteLength ?? 0)
@@ -3906,6 +3948,85 @@ export class ElectronMainBleRouter {
     })
   }
 
+  private bindTerminalEvidenceSource(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    producer: 'scan' | 'subscription'
+  ): {
+    readonly scope: TrustedTerminalEvidenceScope
+    commit(): void
+    rollback(): void
+  } | null {
+    const scope = terminalEvidenceScopeFromSourcePayload(payload, `electron.${producer}.terminal-evidence-scope`)
+    if (scope === null) return null
+    const matches = new Set<ElectronTerminalEvidenceEntry>()
+    for (const entry of this.terminalEvidence.entries.values()) {
+      if (
+        entry.ownerKey === resources.ownerKey &&
+        entry.producer === producer &&
+        entry.scope !== null &&
+        sameTerminalEvidenceScope(entry.scope, scope)
+      ) {
+        matches.add(entry)
+      }
+    }
+    if (matches.size !== 1)
+      throw contractError('ownership.denied', 'restoration', `electron.${producer}.terminal-evidence-scope-owner`)
+    const entry = matches.values().next().value
+    if (entry === undefined)
+      throw contractError(
+        'lifecycle.invariant-violation',
+        'restoration',
+        `electron.${producer}.terminal-evidence-scope-owner`
+      )
+    if (entry.sourceBinding !== 'idle')
+      throw contractError(
+        'lifecycle.invalid-state',
+        'restoration',
+        `electron.${producer}.terminal-evidence-scope-bound`
+      )
+    entry.sourceBinding = 'binding'
+    return Object.freeze({
+      scope,
+      commit: () => {
+        entry.sourceBinding = 'bound'
+      },
+      rollback: () => {
+        if (entry.sourceBinding === 'binding') entry.sourceBinding = 'idle'
+      }
+    })
+  }
+
+  private receiveTerminalEvidence(
+    resources: RendererResources,
+    producer: 'scan' | 'subscription',
+    expectedScope: TrustedTerminalEvidenceScope | null,
+    evidence: import('../backend-contract/terminal-evidence').TerminalEvidenceCommit
+  ): void {
+    if (
+      expectedScope === null ||
+      evidence.producer !== producer ||
+      !sameTerminalEvidenceScope(evidence.scope, expectedScope)
+    ) {
+      throw contractError('protocol.violation', 'restoration', `electron.${producer}.terminal-evidence-receipt`)
+    }
+    const entry = [...this.terminalEvidence.entries.values()].find(
+      candidate =>
+        candidate.ownerKey === resources.ownerKey &&
+        candidate.producer === producer &&
+        candidate.scope !== null &&
+        sameTerminalEvidenceScope(candidate.scope, expectedScope)
+    )
+    if (entry === undefined || entry.sourceBinding !== 'bound' || entry.ref !== null)
+      throw contractError('protocol.violation', 'restoration', `electron.${producer}.terminal-evidence-receipt`)
+    entry.ref = evidence.ref
+    entry.digest = evidence.digest
+    entry.byteLength = evidence.byteLength
+    entry.recoverable = true
+    entry.recoveryLeaseId = resources.terminalEvidenceRecoveryLeaseId
+    this.terminalEvidence.entries.set(evidence.ref, entry)
+  }
+
   private async hydrateTerminalEvidenceRecovery(resources: RendererResources): Promise<void> {
     const backend = this.manager.attachedBackend.backend
     if (!(backend instanceof DesktopRustCoreBackend)) return
@@ -3960,6 +4081,7 @@ export class ElectronMainBleRouter {
       scope: null,
       source,
       reservation,
+      sourceBinding: 'bound',
       ref: record.reference,
       digest: record.digest,
       byteLength: record.byteLength,
@@ -4202,6 +4324,38 @@ function terminalEvidenceReservationRequest(payload: SerializableRecord): Termin
       incarnation: requiredString(scope, 'incarnation')
     })
   })
+}
+
+function terminalEvidenceScopeFromSourcePayload(
+  payload: SerializableRecord,
+  operation: string
+): TrustedTerminalEvidenceScope | null {
+  const value = payload.terminalEvidenceScope
+  if (value === undefined) return null
+  if (!isSerializableRecordValue(value) || Object.keys(value).length !== 3)
+    throw contractError('argument.invalid', 'restoration', operation)
+  const managerId = value.managerId
+  const operationId = value.operationId
+  const incarnation = value.incarnation
+  if (
+    typeof managerId !== 'string' ||
+    managerId.length === 0 ||
+    typeof operationId !== 'string' ||
+    operationId.length === 0 ||
+    typeof incarnation !== 'string' ||
+    incarnation.length === 0
+  ) {
+    throw contractError('argument.invalid', 'restoration', operation)
+  }
+  return Object.freeze({ managerId, operationId, incarnation })
+}
+
+function sameTerminalEvidenceScope(left: TrustedTerminalEvidenceScope, right: TrustedTerminalEvidenceScope): boolean {
+  return (
+    left.managerId === right.managerId &&
+    left.operationId === right.operationId &&
+    left.incarnation === right.incarnation
+  )
 }
 
 function terminalEvidenceCommitRequest(

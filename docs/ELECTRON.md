@@ -62,6 +62,14 @@ const manager = await createElectronRendererBleManager({
 })
 ```
 
+Trusted main verifies that the reservation belongs to the authenticated
+renderer and requested producer before binding it to source startup. That
+binding is internal; public scan and subscription options do not accept an
+evidence scope. The renderer retains ownership of its original reservation,
+and main forwards the same scope without reserving a second record. Distinct
+evidence scopes use separate source participants and require matching terminal
+receipts before recovery can report committed evidence.
+
 After a renderer reload or main-process recovery, inspect only the opaque
 aliases that trusted main grants to that authenticated lease:
 

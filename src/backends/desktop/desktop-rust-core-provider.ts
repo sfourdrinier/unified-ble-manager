@@ -4472,7 +4472,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         : null
     const reason = error === null ? 'closed' : 'source-failed'
     const evidence = await this.commitPendingTerminalEvidence(
-      event.evidence,
+      event.terminalEvidence,
       'scan',
       owner?.options.terminalEvidenceScope ?? null,
       Object.freeze({
@@ -7187,6 +7187,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
               ? {}
               : {
                   terminalEvidenceScope: request.terminalEvidenceScope,
+                  terminalEvidenceOperation: this.op('gatt.notification'),
                   ...(terminalEvidenceScopeBytes === undefined
                     ? {}
                     : { terminalEvidenceScopeUtf16le: terminalEvidenceScopeBytes })
@@ -7445,6 +7446,39 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         })
         continue
       }
+      if (poll.kind === 'source-failed') {
+        const sourceFailureWire =
+          typeof poll.sourceFailure === 'string' ? parseDesktopRustCoreWireError(poll.sourceFailure) : null
+        if (
+          sourceFailureWire === null ||
+          poll.terminalEvidence == null ||
+          subscription.terminalEvidenceScope === null
+        ) {
+          this.closeSubscription(
+            subscription,
+            'source-failed',
+            contractError('protocol.malformed', 'core', `${operation}.terminal-evidence-source-failure`).normalized
+          )
+          return
+        }
+        const sourceFailure = desktopRustCoreError(poll.sourceFailure, operation).normalized
+        const evidence = await this.commitPendingTerminalEvidence(
+          poll.terminalEvidence,
+          'subscription',
+          subscription.terminalEvidenceScope,
+          Object.freeze({
+            kind: 'terminal',
+            reason: 'source-failed',
+            droppedItems: resourceCount(0),
+            droppedBytes: resourceCount(0),
+            replacedItems: resourceCount(0),
+            error: sourceFailure
+          }),
+          operation
+        )
+        this.closeSubscription(subscription, 'source-failed', sourceFailure, evidence)
+        return
+      }
       if (poll.kind === 'peer-source-loss') {
         if (
           typeof poll.peerId !== 'string' ||
@@ -7476,7 +7510,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         // lost upstream: the stream ends overflow with the core's counts, as
         // a local `error` overflow does.
         const evidence = await this.commitPendingTerminalEvidence(
-          poll.evidence,
+          poll.terminalEvidence,
           'subscription',
           subscription.terminalEvidenceScope,
           Object.freeze({

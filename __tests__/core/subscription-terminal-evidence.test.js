@@ -8,6 +8,7 @@ const { createDeterministicTestBackend } = require('../../src/testing/determinis
 const { capacity, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { CoreBoundedStream } = require('../../src/core/bounded-stream')
 const { encodeTerminalEvidence } = require('../../src/core/terminal-evidence-codec')
+const { bindTrustedTerminalEvidenceScope } = require('../../src/manager/trusted-terminal-evidence')
 const { createHash } = require('node:crypto')
 
 function compatibility() {
@@ -97,6 +98,70 @@ test('releases a pre-activation subscription evidence reservation after normal u
 
   await expect(settle(fixture.controller, subscription.remove())).resolves.toEqual({ state: 'released', failures: [] })
   expect(release).toHaveBeenCalledTimes(1)
+  await settle(fixture.controller, manager.destroy())
+})
+
+test('a trusted delegated subscription scope reaches its own source without a second core reservation', async () => {
+  const reserve = jest.fn(async request => ({
+    maximumBytes: request.maximumBytes,
+    commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+    release: async () => {}
+  }))
+  const { fixture, manager, database, characteristic } = await createFixture(reserve)
+  const sourceScopes = []
+  const original = fixture.backend.gatt.subscribe
+  fixture.backend.gatt.subscribe = (path, request) => {
+    sourceScopes.push(request.terminalEvidenceScope ?? null)
+    return original(path, request)
+  }
+  const options = subscriptionOptions()
+  const scope = {
+    managerId: 'renderer-manager',
+    operationId: 'renderer-operation',
+    incarnation: 'renderer-incarnation'
+  }
+  bindTrustedTerminalEvidenceScope(options, scope)
+
+  const subscription = await settle(fixture.controller, database.subscribe(characteristic, options))
+
+  expect(reserve).not.toHaveBeenCalled()
+  expect(sourceScopes).toEqual([scope])
+  await settle(fixture.controller, subscription.remove())
+  await settle(fixture.controller, manager.destroy())
+})
+
+test('distinct trusted subscription scopes do not coalesce a source, while equal scopes still do', async () => {
+  const reserve = jest.fn(async request => ({
+    maximumBytes: request.maximumBytes,
+    commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+    release: async () => {}
+  }))
+  const { fixture, manager, database, characteristic } = await createFixture(reserve)
+  const sourceScopes = []
+  const original = fixture.backend.gatt.subscribe
+  fixture.backend.gatt.subscribe = (path, request) => {
+    sourceScopes.push(request.terminalEvidenceScope ?? null)
+    return original(path, request)
+  }
+  const firstScope = { managerId: 'renderer', operationId: 'one', incarnation: 'one' }
+  const secondScope = { managerId: 'renderer', operationId: 'two', incarnation: 'two' }
+  const firstOptions = subscriptionOptions()
+  const sameScopeOptions = subscriptionOptions()
+  const secondOptions = subscriptionOptions()
+  bindTrustedTerminalEvidenceScope(firstOptions, firstScope)
+  bindTrustedTerminalEvidenceScope(sameScopeOptions, { ...firstScope })
+  bindTrustedTerminalEvidenceScope(secondOptions, secondScope)
+
+  const first = await settle(fixture.controller, database.subscribe(characteristic, firstOptions))
+  const equal = await settle(fixture.controller, database.subscribe(characteristic, sameScopeOptions))
+  await expect(settle(fixture.controller, database.subscribe(characteristic, secondOptions))).rejects.toMatchObject({
+    normalized: { code: 'protocol.violation' }
+  })
+
+  expect(reserve).not.toHaveBeenCalled()
+  expect(sourceScopes).toEqual([firstScope, secondScope])
+  await settle(fixture.controller, equal.remove())
+  await settle(fixture.controller, first.remove())
   await settle(fixture.controller, manager.destroy())
 })
 
@@ -236,6 +301,38 @@ test('binds a recorded subscription to its exact pre-activation evidence scope',
   )
   await expect(settle(fixture.controller, subscription.remove())).resolves.toEqual({ state: 'released', failures: [] })
   expect(release).toHaveBeenCalledTimes(1)
+  await settle(fixture.controller, manager.destroy())
+})
+
+test('a delegated recorded subscription forwards its renderer reservation without reserving again', async () => {
+  const reserve = jest.fn(async request => ({
+    maximumBytes: request.maximumBytes,
+    commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+    release: async () => {}
+  }))
+  const { fixture, manager, database, characteristic } = await createFixture(reserve)
+  const subscribe = fixture.backend.gatt.subscribe.bind(fixture.backend.gatt)
+  const scopes = []
+  fixture.backend.gatt.subscribeRecorded = (path, request) => {
+    scopes.push(request.terminalEvidenceScope ?? null)
+    const dispatch = subscribe(path, request)
+    return {
+      ...dispatch,
+      completion: dispatch.completion.then(subscription => ({ ...subscription, changed: terminalSource() }))
+    }
+  }
+  const options = {
+    ...subscriptionOptions(),
+    recording: { id: 'delegated-recording', maxBytes: 1048576, maxRecords: 1 }
+  }
+  const scope = { managerId: 'renderer', operationId: 'recorded', incarnation: 'one' }
+  bindTrustedTerminalEvidenceScope(options, scope)
+
+  const subscription = await settle(fixture.controller, database.subscribeRecorded(characteristic, options))
+
+  expect(reserve).not.toHaveBeenCalled()
+  expect(scopes).toEqual([scope])
+  await settle(fixture.controller, subscription.remove())
   await settle(fixture.controller, manager.destroy())
 })
 

@@ -80,6 +80,7 @@ import {
   type OwnershipRoleTransitionCapability,
   type OwnershipTransferGrant
 } from './manager-ownership-authority'
+import { bindTrustedTerminalEvidenceScope, takeTrustedTerminalEvidenceScope } from './trusted-terminal-evidence'
 
 const constructedBleManagerOwnershipParticipants = new WeakSet<object>()
 
@@ -542,7 +543,7 @@ function toPublicLongWritePolicy(options: PortableWritePolicy): LongWritePolicy 
 }
 
 function toPublicSubscriptionOptions(options: PortableSubscriptionOptions): SubscriptionOptions {
-  return {
+  const normalized = {
     ...toPublicOperationOptions(options),
     delivery: {
       itemCapacity: capacity(options.delivery.itemCapacity),
@@ -552,6 +553,9 @@ function toPublicSubscriptionOptions(options: PortableSubscriptionOptions): Subs
     },
     deliveryMode: options.deliveryMode
   }
+  const scope = takeTrustedTerminalEvidenceScope(options)
+  if (scope !== null) bindTrustedTerminalEvidenceScope(normalized, scope)
+  return normalized
 }
 
 function attachmentMatches(
@@ -978,10 +982,11 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
   }
 
   async subscribeRecorded(path: PortableCurrentCharacteristicPath, options: PortableRecordedSubscriptionOptions) {
-    return this.database.subscribeRecorded(this.resolveCharacteristicPath(path), {
-      ...toPublicSubscriptionOptions(options),
-      recording: options.recording
-    })
+    const normalized = toPublicSubscriptionOptions(options)
+    const recorded = { ...normalized, recording: options.recording }
+    const scope = takeTrustedTerminalEvidenceScope(normalized)
+    if (scope !== null) bindTrustedTerminalEvidenceScope(recorded, scope)
+    return this.database.subscribeRecorded(this.resolveCharacteristicPath(path), recorded)
   }
 
   private resolveCharacteristicPath(path: PortableCurrentCharacteristicPath): CurrentCharacteristicPath<Attachment> {

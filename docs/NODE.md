@@ -92,6 +92,13 @@ recovered after a restart even if the normal commit has not completed. If
 staging fails, the scan reports the source failure and retains any unfinished
 cleanup; it does not claim that an unstaged record is recoverable.
 
+Evidence-bound N-API V2 subscriptions also stage ordinary source failures
+after their buffered values drain. The provider normalizes the original native
+error, commits the matching canonical bytes, and acknowledges the pending
+token before delivering the terminal. Its internal terminal operation identity
+keeps native staging and provider encoding identical. Unbound failures and the
+legacy V1 polling rejection retain their existing behavior.
+
 `list()` remains strict: if another live recovery controller holds a producer
 lane, it reports that contention instead of pretending the lane is empty. For
 an additive, non-blocking refresh use `listWithStatus()`. It returns the cold

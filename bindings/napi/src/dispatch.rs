@@ -3344,6 +3344,10 @@ pub struct SubscribeOptions {
     pub terminal_evidence_scope: Option<TerminalEvidenceScopeInput>,
     #[napi(js_name = "terminalEvidenceScopeUtf16le")]
     pub terminal_evidence_scope_utf16le: Option<Buffer>,
+    /// Private host operation identity used to stage the same canonical
+    /// source-failure terminal bytes the provider later commits.
+    #[napi(js_name = "terminalEvidenceOperation")]
+    pub terminal_evidence_operation: Option<String>,
     #[napi(js_name = "timeoutMs")]
     pub timeout_ms: Option<u32>,
     pub ticket: Option<String>,
@@ -3479,6 +3483,8 @@ pub struct PeerSourceFailureRecoveryDescriptorInfo {
 #[napi(object)]
 pub struct NotificationPollV2Info {
     pub kind: String,
+    #[napi(js_name = "sourceFailure")]
+    pub source_failure: Option<String>,
     pub value: Option<Buffer>,
     pub receipt: Option<NotificationReceiptInfo>,
     pub provenance: Option<String>,
@@ -4161,7 +4167,7 @@ struct TerminalEvidenceBinding {
     scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope,
     reservation_id: String,
     recipient: Option<String>,
-    scan_terminal_operation: Option<String>,
+    terminal_operation: Option<String>,
 }
 
 /// Synchronously retains an exact evidence-bound scan terminal before a
@@ -4208,7 +4214,7 @@ impl ScanTerminalRetention {
         let stage = match (
             ledger.as_ref(),
             binding.recipient.as_deref(),
-            binding.scan_terminal_operation.as_deref(),
+            binding.terminal_operation.as_deref(),
         ) {
             (Some(ledger), Some(recipient), Some(operation)) => {
                 let canonical = canonical_scan_terminal_bytes(&binding, &event, operation);
@@ -4292,6 +4298,119 @@ fn canonical_scan_terminal_bytes(
     });
     json.push_str(",\"replacedItems\":0}}");
     json.into_bytes()
+}
+
+fn canonical_subscription_source_failure_bytes(
+    binding: &TerminalEvidenceBinding,
+    error: &DesktopError,
+    public_operation: &str,
+) -> std::result::Result<Vec<u8>, DispatchError> {
+    let mut encoding_version_2 = false;
+    let mut terminal_error = serde_json::Map::new();
+    terminal_error.insert("code".to_owned(), serde_json::json!(error.code_str()));
+    if let Some(commit) = error.commit().and_then(|commit| match commit.as_str() {
+        "unknown" => Some("uncertain"),
+        "not-dispatched" => Some("not-dispatched"),
+        _ => None,
+    }) {
+        terminal_error.insert("commit".to_owned(), serde_json::json!(commit));
+    }
+    terminal_error.insert(
+        "domain".to_owned(),
+        serde_json::json!(error.domain().as_str()),
+    );
+    terminal_error.insert("operation".to_owned(), serde_json::json!(public_operation));
+    if let Some(platform_detail) = error.platform() {
+        let mut platform = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+            &platform_wire(platform_detail),
+        )
+        .map_err(|_| {
+            DispatchError::new(
+                BleErrorCode::PlatformFailure.as_str(),
+                BleErrorDomain::Platform.as_str(),
+                "dispatch.poll-notification",
+                "subscription terminal evidence platform encoding failed",
+            )
+        })?;
+        let message = platform
+            .remove("message")
+            .filter(|value| !value.is_null())
+            .unwrap_or_else(|| serde_json::json!(error.detail().unwrap_or("")));
+        platform.insert("safeMessage".to_owned(), message);
+        if platform_detail.metadata.len() == 1 && platform_detail.metadata.contains_key("$bytes") {
+            let metadata = platform
+                .get_mut("metadata")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| {
+                    DispatchError::new(
+                        BleErrorCode::PlatformFailure.as_str(),
+                        BleErrorDomain::Platform.as_str(),
+                        "dispatch.poll-notification",
+                        "subscription terminal evidence metadata encoding failed",
+                    )
+                })?;
+            let value = metadata.remove("$bytes").ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::PlatformFailure.as_str(),
+                    BleErrorDomain::Platform.as_str(),
+                    "dispatch.poll-notification",
+                    "subscription terminal evidence bytes marker encoding failed",
+                )
+            })?;
+            metadata.insert("$bytes".to_owned(), serde_json::Value::Array(vec![value]));
+            encoding_version_2 = true;
+        }
+        terminal_error.insert("platform".to_owned(), serde_json::Value::Object(platform));
+    } else {
+        let mut metadata = serde_json::Map::new();
+        if let Some(commit) = error.commit() {
+            metadata.insert("commit".to_owned(), serde_json::json!(commit.as_str()));
+        }
+        if error.operation() != public_operation {
+            metadata.insert(
+                "coreOperation".to_owned(),
+                serde_json::json!(error.operation()),
+            );
+        }
+        if !error.detail().unwrap_or("").is_empty() || !metadata.is_empty() {
+            terminal_error.insert(
+                "platform".to_owned(),
+                serde_json::json!({
+                    "code": "core-detail",
+                    "domain": "desktop-rust-core",
+                    "metadata": metadata,
+                    "safeMessage": error.detail().unwrap_or(""),
+                }),
+            );
+        }
+    }
+    terminal_error.insert(
+        "retryability".to_owned(),
+        serde_json::json!(error.retryability().as_str()),
+    );
+    let terminal = serde_json::json!({
+        "droppedBytes": 0,
+        "droppedItems": 0,
+        "error": serde_json::Value::Object(terminal_error),
+        "kind": "terminal",
+        "reason": "source-failed",
+        "replacedItems": 0,
+    });
+    let scope = format!(
+        "{{\"incarnation\":{},\"managerId\":{},\"operationId\":{}}}",
+        canonical_scope_json_string(binding, 3, &binding.scope.incarnation),
+        canonical_scope_json_string(binding, 1, &binding.scope.manager_id),
+        canonical_scope_json_string(binding, 2, &binding.scope.operation_id),
+    );
+    let encoding_version = if encoding_version_2 {
+        "\"encodingVersion\":2,"
+    } else {
+        ""
+    };
+    Ok(format!(
+        "{{{encoding_version}\"formatVersion\":1,\"scope\":{scope},\"terminal\":{terminal}}}"
+    )
+    .into_bytes())
 }
 
 fn canonical_scope_json_string(
@@ -4445,6 +4564,8 @@ struct PendingSubscriptionTerminal {
     dropped_items: i64,
     dropped_bytes: i64,
     replaced_items: i64,
+    source_failure: Option<String>,
+    source_error: Option<DesktopError>,
 }
 
 #[napi(object)]
@@ -5326,6 +5447,86 @@ impl UbmCentral {
             consumer
         )
     }
+
+    fn retain_subscription_source_failure(
+        &self,
+        key: &str,
+        error: &DesktopError,
+        operation: &'static str,
+    ) -> std::result::Result<Option<TerminalEvidencePendingInfo>, DispatchError> {
+        let binding = self
+            .subscription_terminal_evidence
+            .lock()
+            .map_err(|_| {
+                DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    operation,
+                    "subscription binding lock failed",
+                )
+            })?
+            .get(key)
+            .cloned();
+        let Some(binding) = binding else {
+            return Ok(None);
+        };
+        let recipient = binding.recipient.as_deref().ok_or_else(|| {
+            DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                operation,
+                "subscription source failure has no authenticated evidence recipient",
+            )
+        })?;
+        let ledger = self.terminal_evidence().ok_or_else(|| {
+            DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                operation,
+                "subscription evidence binding outlived its ledger",
+            )
+        })?;
+        let source_failure = DispatchError::from(error.clone()).wire_message();
+        let canonical = canonical_subscription_source_failure_bytes(
+            &binding,
+            error,
+            binding.terminal_operation.as_deref().ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    operation,
+                    "subscription source failure has no terminal operation",
+                )
+            })?,
+        )?;
+        ledger
+            .stage(&binding.reservation_id, recipient, &canonical)
+            .map_err(|failure| terminal_evidence_error(failure, operation))?;
+        self.pending_subscription_terminals
+            .lock()
+            .map_err(|_| {
+                DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    operation,
+                    "subscription terminal lock failed",
+                )
+            })?
+            .entry(key.to_owned())
+            .or_insert(PendingSubscriptionTerminal {
+                binding: binding.clone(),
+                reason: "source-failed".to_owned(),
+                dropped_items: 0,
+                dropped_bytes: 0,
+                replaced_items: 0,
+                source_failure: Some(source_failure),
+                source_error: Some(error.clone()),
+            });
+        Ok(Some(TerminalEvidencePendingInfo {
+            reservation_id: binding.reservation_id.clone(),
+            pending_token: format!("subscription:{}", binding.reservation_id),
+        }))
+    }
     #[expect(
         dead_code,
         reason = "the retained reconciliation path preserves an already-staged scan terminal if a host delivery route is re-enabled"
@@ -5449,13 +5650,13 @@ impl UbmCentral {
                     reservation_id: reservation.reservation_id,
                     scope: exact_scope,
                     recipient: None,
-                    scan_terminal_operation: None,
+                    terminal_operation: None,
                 })
             })
             .map_err(|error| terminal_evidence_error(error, operation))
     }
 
-    fn configure_scan_terminal_evidence(
+    fn configure_terminal_evidence(
         &self,
         binding: Option<TerminalEvidenceBinding>,
         operation: Option<&str>,
@@ -5469,7 +5670,7 @@ impl UbmCentral {
                 BleErrorCode::ArgumentInvalid.as_str(),
                 BleErrorDomain::Stream.as_str(),
                 dispatch_operation,
-                "scan terminal evidence requires a trusted terminal operation",
+                "terminal evidence requires a trusted terminal operation",
             )
         })?;
         let ledger = self.terminal_evidence().ok_or_else(|| {
@@ -5484,7 +5685,7 @@ impl UbmCentral {
             .bound_recipient(&binding.reservation_id)
             .map_err(|error| terminal_evidence_error(error, dispatch_operation))?;
         binding.recipient = Some(recipient.recipient);
-        binding.scan_terminal_operation = Some(operation.to_owned());
+        binding.terminal_operation = Some(operation.to_owned());
         Ok(Some(binding))
     }
 
@@ -7400,7 +7601,7 @@ impl UbmCentral {
             )
             .map_err(to_napi)?;
         let terminal_evidence = self
-            .configure_scan_terminal_evidence(
+            .configure_terminal_evidence(
                 terminal_evidence,
                 options.terminal_evidence_operation.as_deref(),
                 "dispatch.scan-start",
@@ -9356,6 +9557,13 @@ impl UbmCentral {
                 "dispatch.subscribe",
             )
             .map_err(to_napi)?;
+        let terminal_evidence = self
+            .configure_terminal_evidence(
+                terminal_evidence,
+                options.terminal_evidence_operation.as_deref(),
+                "dispatch.subscribe",
+            )
+            .map_err(to_napi)?;
         let selector = selector_of(&options.selector).map_err(to_napi)?;
         let delivery = delivery_mode(options.delivery_mode.as_deref()).map_err(to_napi)?;
         let preference =
@@ -9527,6 +9735,9 @@ impl UbmCentral {
             .get(&terminal_key)
             .cloned()
         {
+            if let Some(error) = pending.source_error {
+                return Err(fail(error));
+            }
             return Ok(NotificationPollInfo {
                 kind: "terminal".to_owned(),
                 value: None,
@@ -9681,6 +9892,8 @@ impl UbmCentral {
                                     .map_err(to_napi)?,
                                 replaced_items: number_wire(terminal.replaced_items(), OP)
                                     .map_err(to_napi)?,
+                                source_failure: None,
+                                source_error: None,
                             });
                         Some(TerminalEvidencePendingInfo {
                             reservation_id: binding.reservation_id.clone(),
@@ -9732,7 +9945,12 @@ impl UbmCentral {
             .cloned()
         {
             return Ok(NotificationPollV2Info {
-                kind: "terminal".to_owned(),
+                kind: if pending.source_failure.is_some() {
+                    "source-failed".to_owned()
+                } else {
+                    "terminal".to_owned()
+                },
+                source_failure: pending.source_failure,
                 value: None,
                 receipt: None,
                 provenance: None,
@@ -9761,6 +9979,7 @@ impl UbmCentral {
             .map_err(fail)?;
         let empty = |kind: &str, cause: Option<&str>| NotificationPollV2Info {
             kind: kind.to_owned(),
+            source_failure: None,
             value: None,
             receipt: None,
             provenance: None,
@@ -9831,7 +10050,19 @@ impl UbmCentral {
                 ..empty("peer-source-loss", None)
             },
             NotificationPoll::Empty => empty("empty", None),
-            NotificationPoll::SourceFailed(error) => return Err(fail(error)),
+            NotificationPoll::SourceFailed(error) => {
+                let Some(terminal_evidence) = self
+                    .retain_subscription_source_failure(&terminal_key, &error, OP)
+                    .map_err(to_napi)?
+                else {
+                    return Err(fail(error));
+                };
+                NotificationPollV2Info {
+                    source_failure: Some(DispatchError::from(error).wire_message()),
+                    terminal_evidence: Some(terminal_evidence),
+                    ..empty("source-failed", Some("source-failed"))
+                }
+            }
             NotificationPoll::SourceFailureRecovery(offer) => NotificationPollV2Info {
                 recovery_error: offer
                     .error
@@ -11641,7 +11872,7 @@ mod tests {
             },
             reservation_id: "test-reservation".into(),
             recipient: None,
-            scan_terminal_operation: None,
+            terminal_operation: None,
         };
         assert_eq!(
             canonical_scope_json_string(&binding, 1, &binding.scope.manager_id),
@@ -12945,6 +13176,7 @@ mod tests {
                 overflow_policy: None,
                 terminal_evidence_scope: None,
                 terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })
@@ -13255,6 +13487,7 @@ mod tests {
                 overflow_policy: None,
                 terminal_evidence_scope: None,
                 terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })
@@ -13497,7 +13730,14 @@ mod tests {
     }
 
     async fn connected_synthetic(owner: &str) -> UbmCentral {
-        let central = UbmCentral::open_synthetic(owner.to_owned(), None)
+        connected_synthetic_with_options(owner, None).await
+    }
+
+    async fn connected_synthetic_with_options(
+        owner: &str,
+        options: Option<SyntheticOptions>,
+    ) -> UbmCentral {
+        let central = UbmCentral::open_synthetic(owner.to_owned(), options)
             .await
             .expect("open");
         central
@@ -13612,6 +13852,7 @@ mod tests {
                     overflow_policy: None,
                     terminal_evidence_scope: None,
                     terminal_evidence_scope_utf16le: None,
+                    terminal_evidence_operation: None,
                     timeout_ms: Some(5000),
                     ticket: None,
                 })
@@ -13704,6 +13945,7 @@ mod tests {
                     overflow_policy: None,
                     terminal_evidence_scope: None,
                     terminal_evidence_scope_utf16le: None,
+                    terminal_evidence_operation: None,
                     timeout_ms: Some(5000),
                     ticket: None,
                 })
@@ -13800,6 +14042,7 @@ mod tests {
                 overflow_policy: None,
                 terminal_evidence_scope: None,
                 terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })
@@ -13860,6 +14103,284 @@ mod tests {
         );
         central.unsubscribe(options()).await.unwrap();
         assert_eq!(central.close().await.unwrap().state, "released");
+    }
+
+    #[tokio::test]
+    async fn v2_source_failure_retains_a_bound_terminal_before_it_is_exposed() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-napi-subscription-source-failure-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("test evidence directory");
+        let central = connected_synthetic_with_options(
+            "notification-source-failure-v2",
+            Some(SyntheticOptions {
+                pairing_generation: None,
+                platform: Some("bluez".to_owned()),
+                terminal_evidence_directory: Some(directory.display().to_string()),
+                terminal_evidence_max_bytes: Some("4096".to_owned()),
+            }),
+        )
+        .await;
+        central
+            .stage_services("peer-1".to_owned(), hrm_services())
+            .await
+            .expect("stage services");
+        central.discover(lease(None)).await.expect("discover");
+        let scope = TerminalEvidenceScopeInput {
+            manager_id: "manager".to_owned(),
+            operation_id: "physical-subscription".to_owned(),
+            incarnation: "1".to_owned(),
+        };
+        let reservation = central
+            .reserve_terminal_evidence(TerminalEvidenceReserveOptions {
+                producer: "subscription".to_owned(),
+                maximum_bytes: "4096".to_owned(),
+                format_version: 1,
+                scope_utf16le: None,
+                scope: TerminalEvidenceScopeInput {
+                    manager_id: scope.manager_id.clone(),
+                    operation_id: scope.operation_id.clone(),
+                    incarnation: scope.incarnation.clone(),
+                },
+            })
+            .await
+            .expect("reserve");
+        central
+            .bind_terminal_evidence_recipient(
+                reservation.reservation_id.clone(),
+                "trusted-recipient".to_owned(),
+            )
+            .await
+            .expect("bind recipient before subscription");
+        central
+            .subscribe(SubscribeOptions {
+                peer_id: "peer-1".to_owned(),
+                lease: "lease-a".to_owned(),
+                selector: selector_input(),
+                consumer: "consumer".to_owned(),
+                delivery_mode: None,
+                preferred_delivery_mode: None,
+                overflow_policy: None,
+                terminal_evidence_scope: Some(scope),
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: Some("bluez.gatt.notification".to_owned()),
+                timeout_ms: Some(5000),
+                ticket: None,
+            })
+            .await
+            .expect("subscribe");
+        central
+            .stage_notification(StageNotificationInput {
+                peer_id: "peer-1".to_owned(),
+                service_uuid: HRM_SERVICE.to_owned(),
+                service_occurrence: Some(0),
+                characteristic_uuid: HRM_MEASUREMENT.to_owned(),
+                characteristic_occurrence: Some(0),
+                epoch: None,
+                value: Buffer::from(vec![7]),
+                source_failure: Some(StagePlatformDetail {
+                    domain: "test-radio".to_owned(),
+                    code: "radio-failed".to_owned(),
+                    message: Some("source stopped".to_owned()),
+                    metadata: None,
+                }),
+            })
+            .await
+            .expect("stage source failure");
+        let options = || SubscriptionOptions {
+            peer_id: "peer-1".to_owned(),
+            selector: selector_input(),
+            consumer: "consumer".to_owned(),
+            timeout_ms: Some(5000),
+            ticket: None,
+        };
+        let source_failure = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let poll = central
+                    .poll_notification_v2(options())
+                    .await
+                    .expect("V2 poll");
+                if poll.kind == "source-failed" {
+                    break poll;
+                }
+                assert_eq!(poll.kind, "empty", "only the staged failure is expected");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("source failure becomes a V2 pending terminal");
+        assert!(source_failure
+            .source_failure
+            .expect("raw source failure")
+            .starts_with("platform.failure|gatt|gatt.notification|"));
+        let pending = source_failure
+            .terminal_evidence
+            .expect("bound V2 source failure retains terminal evidence");
+        assert_eq!(pending.reservation_id, reservation.reservation_id);
+        let bytes = central
+            .terminal_evidence()
+            .as_ref()
+            .expect("ledger")
+            .staged("subscription", "trusted-recipient")
+            .expect("stage before V2 exposes token")
+            .into_iter()
+            .find(|record| record.reservation_id == pending.reservation_id)
+            .expect("the exact reservation was staged")
+            .canonical_bytes;
+        let committed = central
+            .commit_terminal_evidence(TerminalEvidenceCommitOptions {
+                reservation_id: pending.reservation_id,
+                canonical_bytes: Buffer::from(bytes.clone()),
+                digest: terminal_digest_hex(Sha256::digest(&bytes).into()),
+            })
+            .await
+            .expect("commit the exact staged terminal");
+        assert!(
+            committed.reference.is_some(),
+            "commit durable source failure"
+        );
+        central
+            .acknowledge_terminal_evidence(TerminalEvidenceAcknowledgeOptions {
+                pending_token: pending.pending_token,
+            })
+            .expect("acknowledge retained source failure");
+        central.close().await.expect("close");
+        drop(central);
+        std::fs::remove_dir_all(directory).expect("remove evidence directory");
+    }
+
+    #[test]
+    fn subscription_source_failure_evidence_matches_provider_normalization_without_native_platform()
+    {
+        let binding = TerminalEvidenceBinding {
+            scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                producer: "subscription".to_owned(),
+                manager_id: "manager".to_owned(),
+                operation_id: "physical-subscription".to_owned(),
+                incarnation: "1".to_owned(),
+                scope_utf16le: None,
+            },
+            reservation_id: "reservation".to_owned(),
+            recipient: Some("trusted-recipient".to_owned()),
+            terminal_operation: Some("direct-gatt.gatt.notification".to_owned()),
+        };
+        let error = DesktopError::subscribe_failed("peer source control queue overflow");
+        let bytes = canonical_subscription_source_failure_bytes(
+            &binding,
+            &error,
+            binding.terminal_operation.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            "{\"formatVersion\":1,\"scope\":{\"incarnation\":\"1\",\"managerId\":\"manager\",\"operationId\":\"physical-subscription\"},\"terminal\":{\"droppedBytes\":0,\"droppedItems\":0,\"error\":{\"code\":\"gatt.subscribe-failed\",\"domain\":\"gatt\",\"operation\":\"direct-gatt.gatt.notification\",\"platform\":{\"code\":\"core-detail\",\"domain\":\"desktop-rust-core\",\"metadata\":{\"coreOperation\":\"gatt.subscribe\"},\"safeMessage\":\"peer source control queue overflow\"},\"retryability\":\"never\"},\"kind\":\"terminal\",\"reason\":\"source-failed\",\"replacedItems\":0}}"
+        );
+    }
+
+    #[test]
+    fn subscription_source_failure_evidence_marks_literal_singleton_bytes_metadata() {
+        let binding = TerminalEvidenceBinding {
+            scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                producer: "subscription".to_owned(),
+                manager_id: "manager".to_owned(),
+                operation_id: "physical-subscription".to_owned(),
+                incarnation: "1".to_owned(),
+                scope_utf16le: None,
+            },
+            reservation_id: "reservation".to_owned(),
+            recipient: Some("trusted-recipient".to_owned()),
+            terminal_operation: Some("bluez.gatt.notification".to_owned()),
+        };
+        let error = DesktopError::subscribe_failed("source stopped").with_platform(
+            PlatformDetail::new("test-radio", "radio-failed")
+                .with_message("source stopped")
+                .with_metadata("$bytes", PlatformValue::Text("00ff".to_owned())),
+        );
+        let bytes = canonical_subscription_source_failure_bytes(
+            &binding,
+            &error,
+            binding.terminal_operation.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            "{\"encodingVersion\":2,\"formatVersion\":1,\"scope\":{\"incarnation\":\"1\",\"managerId\":\"manager\",\"operationId\":\"physical-subscription\"},\"terminal\":{\"droppedBytes\":0,\"droppedItems\":0,\"error\":{\"code\":\"gatt.subscribe-failed\",\"domain\":\"gatt\",\"operation\":\"bluez.gatt.notification\",\"platform\":{\"code\":\"radio-failed\",\"domain\":\"test-radio\",\"metadata\":{\"$bytes\":[\"00ff\"]},\"safeMessage\":\"source stopped\"},\"retryability\":\"never\"},\"kind\":\"terminal\",\"reason\":\"source-failed\",\"replacedItems\":0}}"
+        );
+    }
+
+    #[test]
+    fn subscription_source_failure_evidence_preserves_singleton_bytes_metadata_scalars() {
+        let binding = TerminalEvidenceBinding {
+            scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                producer: "subscription".to_owned(),
+                manager_id: "manager".to_owned(),
+                operation_id: "physical-subscription".to_owned(),
+                incarnation: "1".to_owned(),
+                scope_utf16le: None,
+            },
+            reservation_id: "reservation".to_owned(),
+            recipient: Some("trusted-recipient".to_owned()),
+            terminal_operation: Some("bluez.gatt.notification".to_owned()),
+        };
+        for (value, expected) in [
+            (
+                PlatformValue::Text("00ff".to_owned()),
+                serde_json::json!(["00ff"]),
+            ),
+            (PlatformValue::Int(42), serde_json::json!([42])),
+            (PlatformValue::Bool(true), serde_json::json!([true])),
+        ] {
+            let error = DesktopError::subscribe_failed("source stopped").with_platform(
+                PlatformDetail::new("test-radio", "radio-failed").with_metadata("$bytes", value),
+            );
+            let bytes = canonical_subscription_source_failure_bytes(
+                &binding,
+                &error,
+                binding.terminal_operation.as_deref().unwrap(),
+            )
+            .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["encodingVersion"], 2);
+            assert_eq!(
+                value["terminal"]["error"]["platform"]["metadata"]["$bytes"],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn subscription_source_failure_evidence_leaves_ordinary_platform_metadata_unmarked() {
+        let binding = TerminalEvidenceBinding {
+            scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                producer: "subscription".to_owned(),
+                manager_id: "manager".to_owned(),
+                operation_id: "physical-subscription".to_owned(),
+                incarnation: "1".to_owned(),
+                scope_utf16le: None,
+            },
+            reservation_id: "reservation".to_owned(),
+            recipient: Some("trusted-recipient".to_owned()),
+            terminal_operation: Some("bluez.gatt.notification".to_owned()),
+        };
+        let error = DesktopError::subscribe_failed("source stopped").with_platform(
+            PlatformDetail::new("test-radio", "radio-failed")
+                .with_message("source stopped")
+                .with_metadata("status", PlatformValue::Int(42)),
+        );
+        let bytes = canonical_subscription_source_failure_bytes(
+            &binding,
+            &error,
+            binding.terminal_operation.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            "{\"formatVersion\":1,\"scope\":{\"incarnation\":\"1\",\"managerId\":\"manager\",\"operationId\":\"physical-subscription\"},\"terminal\":{\"droppedBytes\":0,\"droppedItems\":0,\"error\":{\"code\":\"gatt.subscribe-failed\",\"domain\":\"gatt\",\"operation\":\"bluez.gatt.notification\",\"platform\":{\"code\":\"radio-failed\",\"domain\":\"test-radio\",\"metadata\":{\"status\":42},\"safeMessage\":\"source stopped\"},\"retryability\":\"never\"},\"kind\":\"terminal\",\"reason\":\"source-failed\",\"replacedItems\":0}}"
+        );
     }
 
     #[test]
@@ -14149,6 +14670,7 @@ mod tests {
                 overflow_policy: None,
                 terminal_evidence_scope: None,
                 terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })

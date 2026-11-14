@@ -30,6 +30,10 @@ import { CoreOperationCoordinator, type CoreOperationDispatch, type CoreOperatio
 import { ResourceLedger } from './resource-ledger'
 import { CoreTraceRecorder } from './trace-recorder'
 import {
+  takeTrustedTerminalEvidenceScope,
+  type TrustedTerminalEvidenceScope
+} from '../manager/trusted-terminal-evidence'
+import {
   characteristicPathKey,
   characteristicPathsEqual,
   connectionPathsEqual,
@@ -190,7 +194,9 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     options: SubscriptionOptions,
     queueKey: string
   ): Promise<CoreSubscription<Attachment, Identity>> {
-    return this.subscribeOwned(path, options, queueKey, null)
+    this.assertCurrent(path)
+    this.assertAdmission(options)
+    return this.subscribeOwned(path, options, queueKey, null, takeTrustedTerminalEvidenceScope(options))
   }
 
   async subscribeRecorded(
@@ -215,8 +221,16 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     if (this.runtime.backend.gatt.subscribeRecorded === undefined) {
       throw contractError('capability.unsupported', 'gatt', 'subscription-registry.recorded')
     }
+    this.assertCurrent(path)
+    this.assertAdmission(options)
     const key = `recorded:${this.nextSubscription}`
-    const subscription = await this.subscribeOwned(path, options, queueKey, options.recording)
+    const subscription = await this.subscribeOwned(
+      path,
+      options,
+      queueKey,
+      options.recording,
+      takeTrustedTerminalEvidenceScope(options)
+    )
     const changed = this.physicalByPath.get(key)?.backend?.changed
     if (changed === undefined) {
       await subscription.remove()
@@ -236,13 +250,16 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     path: CurrentCharacteristicPath<Attachment>,
     options: SubscriptionOptions,
     queueKey: string,
-    recording: RecordedSubscriptionOptions['recording'] | null
+    recording: RecordedSubscriptionOptions['recording'] | null,
+    delegatedTerminalEvidenceScope: TrustedTerminalEvidenceScope | null
   ): Promise<CoreSubscription<Attachment, Identity>> {
     this.assertCurrent(path)
     this.assertAdmission(options)
     const incarnation = String(this.nextSubscription)
     const key =
-      recording === null ? physicalSubscriptionKey(path, options.deliveryMode) : `recorded:${this.nextSubscription}`
+      recording === null
+        ? physicalSubscriptionKey(path, options.deliveryMode, delegatedTerminalEvidenceScope)
+        : `recorded:${this.nextSubscription}`
     const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
     if (this.runtime.terminalEvidence !== undefined && this.runtime.backend.gatt.readTerminalEvidence !== undefined) {
       stream.setTerminalEvidenceHydrator(notice =>
@@ -270,7 +287,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
           )
         }
         this.closeConsumer(subscription, 'owner-released')
-        return this.subscribe(path, options, queueKey)
+        return this.subscribeOwned(path, options, queueKey, recording, delegatedTerminalEvidenceScope)
       }
       existing.consumers.add(subscription)
       // Native CCCD enablement may yield a value before the shared enable promise settles.
@@ -323,7 +340,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       lateSubscriptionPending: false,
       pump: null,
       terminalEvidence: null,
-      terminalEvidenceScope: null,
+      terminalEvidenceScope: delegatedTerminalEvidenceScope,
       terminalEvidenceReaders: new Set(),
       terminalEvidenceReleaseInFlight: null,
       terminalEvidenceReleaseFailure: null
@@ -473,7 +490,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     physical: PhysicalSubscription<Attachment, Identity>,
     options: SubscriptionOptions
   ): Promise<void> {
-    if (this.runtime.terminalEvidence !== undefined) {
+    if (physical.terminalEvidenceScope === null && this.runtime.terminalEvidence !== undefined) {
       const reserve = this.runtime.backend.gatt.reserveTerminalEvidence
       if (reserve === undefined)
         throw contractError('capability.unsupported', 'gatt', 'subscription-registry.terminal-evidence')
@@ -863,7 +880,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     if (item.kind !== 'value') {
       if (item.kind === 'terminal') {
         if (
-          physical.terminalEvidence !== null &&
+          physical.terminalEvidenceScope !== null &&
           (item.evidence === undefined ||
             item.evidence.producer !== 'subscription' ||
             !sameTerminalEvidenceScope(item.evidence.scope, physical.terminalEvidenceScope))
@@ -1125,7 +1142,8 @@ function exactPathKey<Attachment extends string>(path: CurrentCharacteristicPath
 
 function physicalSubscriptionKey<Attachment extends string>(
   path: CurrentCharacteristicPath<Attachment>,
-  deliveryMode: SubscriptionOptions['deliveryMode']
+  deliveryMode: SubscriptionOptions['deliveryMode'],
+  terminalEvidenceScope: TrustedTerminalEvidenceScope | null
 ): string {
   // A hard requirement must not share the preference or automatic entry.
   // Identical require-* values still share one physical enable. A hard
@@ -1139,7 +1157,11 @@ function physicalSubscriptionKey<Attachment extends string>(
         : deliveryMode === 'prefer-indication'
           ? 'indication'
           : 'automatic'
-  return `${exactPathKey(path)}|${physicalMode}`
+  return `${exactPathKey(path)}|${physicalMode}|${JSON.stringify(
+    terminalEvidenceScope === null
+      ? null
+      : [terminalEvidenceScope.managerId, terminalEvidenceScope.operationId, terminalEvidenceScope.incarnation]
+  )}`
 }
 
 function matchesDatabasePath<Attachment extends string>(

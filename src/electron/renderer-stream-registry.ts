@@ -13,6 +13,7 @@ import {
 import { byteLimit, ownBytes, type SerializableRecord } from '../backend-contract/primitives'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import type { StreamItem } from '../backend-contract/streams'
+import type { TerminalEvidenceCommit } from '../backend-contract/terminal-evidence'
 import type { HostNeutralBackendIdentity } from '../backend-contract/identity'
 import type { RendererLeaseIdentity } from '../backend-contract/electron'
 import type { ScanSession, Subscription } from '../manager/ble-manager'
@@ -88,7 +89,8 @@ export class ElectronRendererStreamRegistry {
     resources: RendererStreamResources,
     rendererLease: RendererLeaseIdentity,
     handle: string,
-    scan: ScanSession<string>
+    scan: ScanSession<string>,
+    receiveTerminalEvidence?: (evidence: TerminalEvidenceCommit) => void
   ): ManagedScan {
     const resource: ManagedScan = {
       scan,
@@ -104,7 +106,8 @@ export class ElectronRendererStreamRegistry {
       scan.observations,
       reason => this.terminalizeScan(resources, rendererLease, handle, resource, reason),
       () => this.completeTerminalScan(resources, rendererLease, handle, resource),
-      () => resource.cleanupRequested
+      () => resource.cleanupRequested,
+      receiveTerminalEvidence
     )
     return resource
   }
@@ -114,7 +117,8 @@ export class ElectronRendererStreamRegistry {
     rendererLease: RendererLeaseIdentity,
     handle: string,
     databaseHandle: string,
-    subscription: Pick<Subscription<string, HostNeutralBackendIdentity<string>>, 'values' | 'remove'>
+    subscription: Pick<Subscription<string, HostNeutralBackendIdentity<string>>, 'values' | 'remove'>,
+    receiveTerminalEvidence?: (evidence: TerminalEvidenceCommit) => void
   ): ManagedSubscription {
     const resource: ManagedSubscription = {
       databaseHandle,
@@ -131,7 +135,8 @@ export class ElectronRendererStreamRegistry {
       subscription.values,
       reason => this.terminalizeSubscription(resources, rendererLease, handle, resource, reason),
       () => this.completeTerminalSubscription(resources, rendererLease, handle, resource),
-      () => resource.cleanupRequested
+      () => resource.cleanupRequested,
+      receiveTerminalEvidence
     )
     return resource
   }
@@ -202,12 +207,14 @@ export class ElectronRendererStreamRegistry {
     stream: AsyncIterable<StreamItem<Value>>,
     terminalize: (reason: 'ipc-message-too-large' | 'source-failed') => Promise<void>,
     completeTerminal: () => Promise<void>,
-    cleanupRequested: () => boolean
+    cleanupRequested: () => boolean,
+    receiveTerminalEvidence: ((evidence: TerminalEvidenceCommit) => void) | undefined
   ): Promise<void> {
     let nextSequence = 1
     const now = this.options.now ?? (() => globalThis.performance?.now() ?? Date.now())
     try {
       for await (const item of stream) {
+        if (item.kind === 'terminal' && item.evidence !== undefined) receiveTerminalEvidence?.(item.evidence)
         const itemRecord = streamItemRecord(item, now, () => nextSequence++)
         const event = this.options.createEvent(rendererLease, streamId, itemRecord)
         if (
@@ -464,6 +471,19 @@ function streamItemRecord<Value>(
     droppedBytes: Number(item.droppedBytes),
     replacedItems: Number(item.replacedItems),
     ...(item.error === undefined || item.error === null ? {} : { error: serializeNormalizedError(item.error) }),
+    ...(item.evidence === undefined
+      ? {}
+      : {
+          evidence: Object.freeze({
+            ref: item.evidence.ref,
+            byteLength: item.evidence.byteLength,
+            digest: item.evidence.digest,
+            formatVersion: item.evidence.formatVersion,
+            durability: item.evidence.durability,
+            producer: item.evidence.producer,
+            scope: Object.freeze({ ...item.evidence.scope })
+          })
+        }),
     ...(isTrustedTerminalEvidenceStageFailure(item) ? { terminalEvidenceStageFailed: true } : {})
   })
 }
