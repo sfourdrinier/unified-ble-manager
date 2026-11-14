@@ -20,7 +20,7 @@ import org.mockito.Mockito.mockingDetails
  */
 internal class GattRadioTimer(val dueAt: Long, val delayMs: Long, val action: () -> Unit)
 
-internal class GattRadioFixture {
+internal class GattRadioFixture(peerLifecycleCapacity: Int = 64) {
   val peer = "A0:9E:1A:00:00:01"
   val context: Context = mock(Context::class.java)
   val manager: BluetoothManager = mock(BluetoothManager::class.java)
@@ -57,7 +57,8 @@ internal class GattRadioFixture {
         timers.add(GattRadioTimer(now + delayMs, delayMs, action))
         true
       }
-    }
+    },
+    peerLifecycleCapacity = peerLifecycleCapacity
   )
 
   fun gatt(): BluetoothGatt {

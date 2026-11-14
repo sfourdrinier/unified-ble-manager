@@ -27,7 +27,7 @@ pub mod bleuuid;
 use crate::Result;
 use async_trait::async_trait;
 use bitflags::bitflags;
-use futures::stream::Stream;
+use futures::stream::{Stream, StreamExt};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "serde")]
@@ -102,6 +102,20 @@ pub struct ValueNotification {
     pub value: Vec<u8>,
     /// A native value callback failed. The bytes are not a successful empty
     /// notification; the exact attribute owner must terminalize its source.
+    /// `ubm-native` errors `notification-fault-quota`,
+    /// `notification-broadcast-overflow`, and
+    /// `notification-overflow-evidence-omitted` are peer-wide rather than
+    /// specific to the route carried by this record. The last code reports
+    /// bounded receiver evidence saturation: `omittedCount` is a saturating
+    /// count of omitted overflow diagnostics and `tailUncertain` is `true`.
+    /// It does not preserve their individual routes or error details.
+    /// Individually retained overflow errors carry the original error's
+    /// domain, code and message in `originalDomain`, `originalCode` and
+    /// `originalMessage`; `originalMetadataStart` and `originalMetadataCount`
+    /// delimit its ordered metadata entries within this error's metadata,
+    /// including duplicate keys and keys also used by the wrapper.
+    /// A `notification-fault-quota` with `sequenceExhausted=true` is a
+    /// permanent legacy broadcast terminal, retained across graph clears.
     pub source_failure: Option<crate::PlatformError>,
     /// UBM patch (UBM_PATCHES.md #10): notifications of this peripheral
     /// that this stream's receiver missed immediately before this one,
@@ -109,6 +123,15 @@ pub struct ValueNotification {
     /// (tokio `RecvError::Lagged`). Their characteristics are unknown.
     /// Upstream dropped the lag silently.
     pub lost_before: u64,
+}
+
+/// A peer-wide notification stream record. Lag refers to overwritten broadcast
+/// records, whose characteristics and individual ordering are unknown. Retained
+/// terminal records may subsequently be replayed even if included in the count.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NotificationEvent {
+    Value(ValueNotification),
+    Lagged { skipped_records: u64 },
 }
 
 bitflags! {
@@ -544,6 +567,16 @@ pub trait Peripheral: Send + Sync + Clone + Debug {
     /// is made.
     async fn notifications(&self) -> Result<Pin<Box<dyn Stream<Item = ValueNotification> + Send>>>;
 
+    /// Returns peer-wide ordered notifications and any observed broadcast gaps.
+    /// Platforms without a broadcast lag signal yield only value events.
+    async fn notification_events(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = NotificationEvent> + Send>>> {
+        Ok(Box::pin(
+            self.notifications().await?.map(NotificationEvent::Value),
+        ))
+    }
+
     /// Write some data to the descriptor. Returns an error if the write couldn't be sent or (in
     /// the case of a write-with-response) if the device returns an error.
     async fn write_descriptor(&self, descriptor: &Descriptor, data: &[u8]) -> Result<()>;
@@ -664,7 +697,37 @@ pub enum CentralState {
     derive(Serialize, Deserialize),
     serde(crate = "serde_cr")
 )]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceUncertaintyPlatform {
+    /// Platform error domain, retained as an owned value so every host can
+    /// surface the same portable event without borrowing a native error.
+    pub domain: String,
+    pub code: String,
+    pub message: String,
+    pub metadata: HashMap<String, String>,
+}
+
+impl From<crate::PlatformError> for SourceUncertaintyPlatform {
+    fn from(error: crate::PlatformError) -> Self {
+        Self {
+            domain: error.domain.to_owned(),
+            code: error.code,
+            message: error.message,
+            metadata: error
+                .metadata
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+        }
+    }
+}
+
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_cr")
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CentralEvent {
     DeviceDiscovered(PeripheralId),
     DeviceUpdated(PeripheralId),
@@ -672,6 +735,22 @@ pub enum CentralEvent {
     DeviceDisconnected(PeripheralId),
     /// Only emitted on the corebluetooth subsystem
     DeviceServicesModified(PeripheralId),
+    /// The native source cannot establish the current graph or callback tail.
+    /// This does not assert a physical disconnect or a service-change event.
+    DeviceSourceUncertain {
+        id: PeripheralId,
+        /// Exact accepted native graph before invalidation, when one existed.
+        graph: Option<(String, u64, u64)>,
+        /// The native callback's platform detail, when the platform supplied
+        /// one. This is observation detail, never an attribution to a newer
+        /// UUID-reused peer owner.
+        platform: Option<SourceUncertaintyPlatform>,
+    },
+    /// A successful discovery replaced this exact previously accepted graph.
+    DeviceGraphRetired {
+        id: PeripheralId,
+        graph: (String, u64, u64),
+    },
     /// Emitted when a Manufacturer Data advertisement has been received from a device
     ManufacturerDataAdvertisement {
         id: PeripheralId,
@@ -708,6 +787,22 @@ pub enum CentralEvent {
     Advertisement {
         id: PeripheralId,
         report: AdvertisementReport,
+    },
+    /// One advertisement captured under the owning callback-ingress epoch.
+    /// Consumers must preserve this immutable stamp instead of associating it
+    /// with a later scan at dequeue time. CoreBluetooth cannot assert an RF
+    /// scan generation because its callbacks carry no scan identity.
+    AdvertisementScoped {
+        id: PeripheralId,
+        report: AdvertisementReport,
+        ingress_epoch: u64,
+    },
+    /// Ordered internal scan-ingress marker. The desktop bridge acknowledges
+    /// it only after every earlier scoped advertisement has traversed its
+    /// event-stream handoff.
+    ScanIngressFence {
+        ingress_epoch: u64,
+        fence_id: u64,
     },
     /// UBM patch (UBM_PATCHES.md #17): a sighting whose data the OS could
     /// not be asked for (BlueZ `Device1` properties unreadable); reported

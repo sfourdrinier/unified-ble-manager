@@ -403,3 +403,38 @@ async fn releases_after_a_loss_answer_released_as_legacy_did() {
         assert_eq!(record["state"], "released", "{record}");
     }
 }
+
+#[tokio::test]
+async fn negotiated_scan_end_reports_adapter_power_loss() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("scan-v2-loss").unwrap();
+    session.negotiate_scan_end_version("[1,2]").unwrap();
+    let scan = ok(&call(
+        &session,
+        "scan.start",
+        &json!({"serviceUuids":[],"duplicatePolicy":"all","operationId":"scan-start"}).to_string(),
+    )
+    .await);
+    let generation = radio
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|r| match r {
+            ubm_mobile::RadioRequest::StartScan { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    host.ingest(off());
+    let records = drain_until(&session, |records| !of_type(records, "scan-end").is_empty()).await;
+    let terminal = of_type(&records, "scan-end")[0];
+    assert_eq!(terminal["operationId"], scan["operationId"]);
+    assert_eq!(terminal["startOperationId"], "scan-start");
+    assert_eq!(terminal["version"], 2);
+    assert_eq!(terminal["source"], "adapter");
+    assert_eq!(terminal["generation"], generation.to_string());
+    assert_eq!(terminal["error"]["code"], "adapter.powered-off");
+    ok(&call(&session, "session.dispose", "{}").await);
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
+}

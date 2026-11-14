@@ -51,6 +51,7 @@ async function openLaggingBackend(platform) {
     lagWaiters: new Map(),
     lagTaken: new Set(),
     eventReadHolds: new Map(),
+    lifecycleOverrides: [],
     wakeWaiters: []
   }
   const original = harness.binding.openSynthetic
@@ -60,6 +61,9 @@ async function openLaggingBackend(platform) {
       get(target, property) {
         const value = Reflect.get(target, property)
         if (typeof value !== 'function') return value
+        if (property === 'takeLifecycleEvent' && control.lifecycleOverrides.length > 0) {
+          return async () => control.lifecycleOverrides.shift()
+        }
         if (property === 'setEventWaker') {
           return wake =>
             Reflect.apply(value, target, [
@@ -72,7 +76,7 @@ async function openLaggingBackend(platform) {
               }
             ])
         }
-        if (property === 'pollNotification') {
+        if (property === 'pollNotification' || property === 'pollNotificationV2') {
           return async (...args) => {
             // Held: the poll has not come round yet, so the core keeps the
             // values queued until the hold is released.
@@ -147,6 +151,14 @@ async function withLaggingBackend(platform, run) {
   }
 }
 
+async function generationAdvanced(backend, generation) {
+  const deadline = Date.now() + 5000
+  while (backend.identity.attachment.backendGeneration === generation && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  expect(backend.identity.attachment.backendGeneration).not.toBe(generation)
+}
+
 /**
  * Resolve every test waiting for a lag the stubbed binding just reported on
  * `method`. The lag itself is the signal: no wall-clock deadline is involved
@@ -180,8 +192,6 @@ function awaitLag(control, method) {
 
 /**
  * A promise for the next event-waker call the stubbed binding observes.
- * Subscribe BEFORE the trigger and await after it: the wake itself orders
- * the test, not a wall-clock poll.
  */
 function nextWake(control) {
   return new Promise(resolve => {
@@ -478,14 +488,19 @@ describe('values the core still holds reach the stream before its lifecycle term
   })
 })
 
-describe('the addon wakes the provider instead of waiting for the next poll (LEGACY-AUDIT-4 R2)', () => {
-  test.each(PLATFORMS)('%s: a notification and a link loss each wake the provider', async platform => {
+describe('the addon reports wake callbacks while its provider drains work (LEGACY-AUDIT-4 R2)', () => {
+  test.each(PLATFORMS)('%s: observes a wake while a notification and a link loss are delivered', async platform => {
     await withLaggingBackend(platform, async ({ backend, stage, control }) => {
       const events = backend.events()[Symbol.asyncIterator]()
       const { database, measurement } = await connectAndDiscover(backend, stage)
       const subscription = await database.subscribe(measurement.path, subscribeOptions())
       const values = subscription.values[Symbol.asyncIterator]()
-      const beforeValue = control.wakes
+      // Drain setup work, then hold the notification poll. The value cannot
+      // be delivered by its periodic backstop before the observed wake.
+      await backend.settleCoreEvents()
+      control.holdPolls = true
+      const beforeBurst = control.wakes
+      const notificationWake = nextWake(control)
       await stage.stageNotification({
         peerId: 'peer-1',
         serviceUuid: HRM_SERVICE,
@@ -494,13 +509,71 @@ describe('the addon wakes the provider instead of waiting for the next poll (LEG
         characteristicOccurrence: 0,
         value: Buffer.from([0x2a])
       })
-      expect([...(await nextValue(values, 5000)).value]).toEqual([0x2a])
-      expect(control.wakes).toBeGreaterThan(beforeValue)
-      const beforeLoss = control.wakes
+      await notificationWake
+      let delivered = false
+      const notification = nextValue(values, 5000).then(value => {
+        delivered = true
+        return value
+      })
+      await Promise.resolve()
+      expect(delivered).toBe(false)
+      control.holdPolls = false
+      expect([...((await notification).value)]).toEqual([0x2a])
       await stage.stageLinkLoss('peer-1')
       await nextEvent(events, event => event.kind === 'connection-lost', 5000)
-      expect(control.wakes).toBeGreaterThan(beforeLoss)
+      // EventWaker intentionally coalesces while one JS callback is pending.
+      // This records the observable batch invariant; focused individual
+      // report tests elsewhere cover their direct wake paths.
+      expect(control.wakes).toBeGreaterThan(beforeBurst)
       expect(stage.eventWakeFailures()).toBe(0)
+    })
+  })
+})
+
+// The lifecycle broadcast and notification poll are separate native queues.
+// The provider may observe both lifecycle facts before the held poll resumes,
+// but it must not turn that observation order into the terminal reason: the
+// core retains the first invalidation recorded for the consumer.
+describe('notification terminal cause remains native-authoritative across lifecycle queue order', () => {
+  test.each(PLATFORMS)('%s: service change before reset remains service-changed', async platform => {
+    await withLaggingBackend(platform, async ({ backend, stage, control }) => {
+      const events = backend.events()[Symbol.asyncIterator]()
+      const { database, measurement } = await connectAndDiscover(backend, stage)
+      const subscription = await database.subscribe(measurement.path, subscribeOptions())
+      const values = subscription.values[Symbol.asyncIterator]()
+      const generation = backend.identity.attachment.backendGeneration
+      control.holdPolls = true
+
+      await stage.stageServicesChanged('peer-1')
+      await nextEvent(events, event => event.kind === 'database-changed', 5000)
+      await stage.stageAdapterReset('removed')
+      await generationAdvanced(backend, generation)
+
+      control.holdPolls = false
+      expect(await nextItem(values, 5000)).toMatchObject({ kind: 'terminal', reason: 'service-changed' })
+    })
+  })
+
+  test.each(PLATFORMS)('%s: a queued stale service event cannot override reset', async platform => {
+    await withLaggingBackend(platform, async ({ backend, stage, control }) => {
+      const events = backend.events()[Symbol.asyncIterator]()
+      const { database, measurement } = await connectAndDiscover(backend, stage)
+      const subscription = await database.subscribe(measurement.path, subscribeOptions())
+      const values = subscription.values[Symbol.asyncIterator]()
+      const generation = backend.identity.attachment.backendGeneration
+      control.holdPolls = true
+
+      // This exact wire-valid lifecycle record models a service event
+      // accepted by its independent queue before the reset's notification
+      // terminal reaches JavaScript. It is deliberately injected through the
+      // same `takeLifecycleEvent` boundary, not by changing provider state.
+      control.lifecycleOverrides.push({ kind: 'services-changed', peerId: 'peer-1' })
+      await nextEvent(events, event => event.kind === 'database-changed', 5000)
+      await stage.stageAdapterReset('removed')
+      await generationAdvanced(backend, generation)
+
+      control.holdPolls = false
+      expect(await nextItem(values, 5000)).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
     })
   })
 })

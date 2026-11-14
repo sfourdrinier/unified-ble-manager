@@ -229,16 +229,23 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
         opaqueId('client', 'client', 'test')
       )
       const iterator = scan.observations[Symbol.asyncIterator]()
-      const items = Promise.all(name === null ? [iterator.next()] : [iterator.next(), iterator.next()])
+      // Error overflow keeps the already admitted FIFO value, then reports its
+      // terminal. The legacy iterator never rewrites that accepted value.
+      const items = Promise.all([iterator.next(), iterator.next()])
       await scan.stop()
       const values = (await items).map(item => item.value)
-      expect(values[0]).toMatchObject({
-        kind: name === null ? 'terminal' : 'overflow',
-        droppedItems: dropped,
-        replacedItems: replaced
-      })
-      if (name !== null) expect(values[1]).toMatchObject({ kind: 'value', value: { localName: { value: name } } })
-      else expect(values[0].reason).toBe('overflow')
+      if (name !== null) {
+        expect(values[0]).toMatchObject({ kind: 'overflow', droppedItems: dropped, replacedItems: replaced })
+        expect(values[1]).toMatchObject({ kind: 'value', value: { localName: { value: name } } })
+      } else {
+        expect(values[0]).toMatchObject({ kind: 'value', value: { localName: { value: 'first' } } })
+        expect(values[1]).toMatchObject({
+          kind: 'terminal',
+          reason: 'overflow',
+          droppedItems: dropped,
+          replacedItems: replaced
+        })
+      }
     } finally {
       await backend.destroy()
     }
@@ -271,7 +278,47 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     }
   })
 
-  test('native ingress loss during provisional admission reaches the same consumer accounting', async () => {
+  test('error-policy advertisement ingress loss ends the legacy stream as overflow and releases the native scan', async () => {
+    const { native, backend } = await openBackend()
+    const scan = await backend.scanner.start(
+      scanOptions({
+        delivery: { itemCapacity: 8, byteCapacity: 4096, reservedControlCapacity: 1, overflowPolicy: 'error' }
+      }),
+      opaqueId('client', 'client', 'test')
+    )
+    native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'advertisement', count: 2 })
+    await settle(80)
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    // Source-loss provenance is retained for the explicit loss-aware view;
+    // the stable three-arm iterator fails closed as overflow.
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0
+    })
+    expect(native.opsInvoked('scan.stop')).toHaveLength(1)
+    await backend.destroy()
+  })
+
+  test('advertisement ingress loss retains its accepted prefix and excludes later advertisements', async () => {
+    const { native, backend } = await openBackend()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+    const session = [...native.sessions.values()][0]
+    native.emitAdvertisement(DEFAULT_PEER, { localName: 'accepted-before-loss' })
+    native.push(session, { t: 'ingress-drop', class: 'advertisement', count: 1 })
+    native.emitAdvertisement(DEFAULT_PEER, { localName: 'excluded-after-loss' })
+    await settle(80)
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'value',
+      value: { localName: { value: 'accepted-before-loss' } }
+    })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
+    await backend.destroy()
+  })
+
+  test('native ingress loss during provisional admission closes the legacy stream before later values', async () => {
     const { native, backend } = await openBackend()
     const invoke = native.invoke.bind(native)
     jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
@@ -286,11 +333,14 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     try {
       const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
       const iterator = scan.observations[Symbol.asyncIterator]()
-      const items = Promise.all([iterator.next(), iterator.next()])
+      const first = iterator.next()
       await scan.stop()
-      const values = (await items).map(item => item.value)
-      expect(values[0]).toMatchObject({ kind: 'overflow', droppedItems: 3 })
-      expect(values[1]).toMatchObject({ kind: 'value', value: { localName: { value: 'kept' } } })
+      expect((await first).value).toMatchObject({
+        kind: 'terminal',
+        reason: 'overflow',
+        droppedItems: 0,
+        droppedBytes: 0
+      })
     } finally {
       await backend.destroy()
     }
@@ -427,6 +477,266 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     expect([...native.sessions.values()][0].scans.size).toBe(1)
     expect(await backend.destroy()).toEqual({ state: 'released', failures: [] })
     expect([...native.sessions.values()][0].scans.size).toBe(0)
+  })
+
+  test('native notification loss closes active and provisional legacy subscribers as overflow', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const first = await backend.gatt.subscribe(path, { operation: operation(backend), options: subscribeOptions() })
+      .completion
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'gatt.subscribe') {
+        native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'notification', count: 3 })
+        await settle(80)
+      }
+      return result
+    })
+    const second = await backend.gatt.subscribe(path, { operation: operation(backend), options: subscribeOptions() })
+      .completion
+    expect((await first.notifications[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow'
+    })
+    expect((await second.notifications[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow'
+    })
+    await backend.gatt.unsubscribe(first, operation(backend)).completion
+    await backend.gatt.unsubscribe(second, operation(backend)).completion
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('provisional error-policy ingress loss terminates and releases the subscription after admission', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'gatt.subscribe') {
+        native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'notification', count: 2 })
+        await settle(80)
+      }
+      return result
+    })
+    const options = subscribeOptions({
+      delivery: { itemCapacity: 8, byteCapacity: 4096, reservedControlCapacity: 1, overflowPolicy: 'error' }
+    })
+    const subscription = await backend.gatt.subscribe(path, { operation: operation(backend), options }).completion
+    await settle(80)
+    const iterator = subscription.notifications[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow', droppedItems: 0 })
+    expect(native.opsInvoked('gatt.unsubscribe')).toHaveLength(1)
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('error-policy ingress loss terminates and releases the native subscription', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const options = subscribeOptions({
+      delivery: { itemCapacity: 8, byteCapacity: 4096, reservedControlCapacity: 1, overflowPolicy: 'error' }
+    })
+    const subscription = await backend.gatt.subscribe(path, { operation: operation(backend), options }).completion
+    native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'notification', count: 2 })
+    await settle(80)
+    const iterator = subscription.notifications[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0
+    })
+    expect(native.opsInvoked('gatt.unsubscribe')).toHaveLength(1)
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('forwards a subscription terminal-evidence scope through both native subscribe verbs', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const terminalEvidenceScope = {
+      managerId: 'manager-evidence',
+      operationId: 'operation-evidence',
+      incarnation: '1'
+    }
+    const subscription = await backend.gatt.subscribe(path, {
+      operation: operation(backend),
+      options: subscribeOptions(),
+      terminalEvidenceScope
+    }).completion
+    const recorded = await backend.gatt.subscribeRecorded(path, {
+      operation: operation(backend),
+      options: subscribeOptions({ recording: { id: 'recording-evidence', maxBytes: 8, maxRecords: 1 } }),
+      terminalEvidenceScope
+    }).completion
+    expect(native.opsInvoked('gatt.subscribe')[0].terminalEvidenceScope).toEqual(terminalEvidenceScope)
+    expect(native.opsInvoked('gatt.subscribe-recorded')[0].terminalEvidenceScope).toEqual(terminalEvidenceScope)
+    await backend.gatt.unsubscribe(subscription, operation(backend)).completion
+    await backend.gatt.unsubscribe(recorded, operation(backend)).completion
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('forwards committed subscription evidence through db-changed invalidation to the service-changed terminal', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const subscription = await backend.gatt.subscribe(path, {
+      operation: operation(backend),
+      options: subscribeOptions()
+    }).completion
+    const session = [...native.sessions.values()][0]
+    const consumer = [...session.consumers.keys()][0]
+    const nativeLease = [...session.leases.values()][0]
+    const evidence = {
+      producer: 'subscription',
+      kind: 'committed',
+      ref: 'native-stream-end-evidence',
+      byteLength: 19,
+      digest: 'a'.repeat(64),
+      formatVersion: 1,
+      durability: 'committed',
+      scope: { managerId: 'native-manager', operationId: 'native-operation', incarnation: '1' }
+    }
+    native.push(session, {
+      t: 'db-changed',
+      peerId: DEFAULT_PEER,
+      connectionGeneration: nativeLease.generation,
+      databaseGeneration: nativeLease.databaseGeneration
+    })
+    native.push(session, {
+      t: 'stream-end',
+      consumer,
+      reason: 'invalidated',
+      droppedItems: 0,
+      droppedBytes: 0,
+      evidence
+    })
+    await settle(80)
+    expect((await subscription.notifications[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'service-changed',
+      evidence
+    })
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('forwards source-failed stream-end error and committed subscription evidence together', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const terminalEvidenceScope = {
+      managerId: 'native-manager',
+      operationId: 'native-operation',
+      incarnation: '1'
+    }
+    const subscription = await backend.gatt.subscribe(path, {
+      operation: operation(backend),
+      options: subscribeOptions(),
+      terminalEvidenceScope
+    }).completion
+    const session = [...native.sessions.values()][0]
+    const consumer = [...session.consumers.keys()][0]
+    const evidence = {
+      producer: 'subscription',
+      kind: 'committed',
+      ref: 'source-failed-evidence',
+      byteLength: 23,
+      digest: 'b'.repeat(64),
+      formatVersion: 1,
+      durability: 'committed',
+      scope: terminalEvidenceScope
+    }
+    native.push(session, {
+      t: 'stream-end',
+      consumer,
+      reason: 'source-failed',
+      droppedItems: 0,
+      droppedBytes: 0,
+      error: {
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'gatt.subscribe',
+        detail: null,
+        platform: { domain: 'android', code: 'cccd-failed', message: 'Radio failure', metadata: { status: 133 } }
+      },
+      evidence
+    })
+    await settle(80)
+    expect((await subscription.notifications[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: { code: 'platform.failure' },
+      evidence
+    })
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('fails a scoped subscription terminal that omits its committed evidence receipt', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const subscription = await backend.gatt.subscribe(path, {
+      operation: operation(backend),
+      options: subscribeOptions(),
+      terminalEvidenceScope: { managerId: 'manager-a', operationId: 'operation-a', incarnation: '1' }
+    }).completion
+    const session = [...native.sessions.values()][0]
+    const consumer = [...session.consumers.keys()][0]
+    native.push(session, {
+      t: 'stream-end',
+      consumer,
+      reason: 'invalidated',
+      droppedItems: 0,
+      droppedBytes: 0
+    })
+    await settle(80)
+    expect((await subscription.notifications[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: { code: 'protocol.violation', operation: 'react-native-rust-core.subscription.terminal-evidence-missing' }
+    })
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('fails a scoped subscription terminal whose receipt belongs to another scope', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const subscription = await backend.gatt.subscribe(path, {
+      operation: operation(backend),
+      options: subscribeOptions(),
+      terminalEvidenceScope: { managerId: 'manager-a', operationId: 'operation-a', incarnation: '1' }
+    }).completion
+    const session = [...native.sessions.values()][0]
+    const consumer = [...session.consumers.keys()][0]
+    native.push(session, {
+      t: 'stream-end',
+      consumer,
+      reason: 'source-failed',
+      droppedItems: 0,
+      droppedBytes: 0,
+      evidence: {
+        producer: 'subscription',
+        kind: 'committed',
+        ref: 'cross-scope-evidence',
+        byteLength: 21,
+        digest: 'c'.repeat(64),
+        formatVersion: 1,
+        durability: 'committed',
+        scope: { managerId: 'manager-a', operationId: 'another-operation', incarnation: '1' }
+      }
+    })
+    await settle(80)
+    expect((await subscription.notifications[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: { code: 'protocol.violation', operation: 'react-native-rust-core.subscription.terminal-evidence-missing' }
+    })
+    await lease.release()
+    await backend.destroy()
   })
 
   test('connect/discover/read/write/subscribe/unsubscribe/dispose execute the owner with one lease', async () => {

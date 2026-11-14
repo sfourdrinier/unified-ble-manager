@@ -163,6 +163,15 @@ export interface IpcOperationIdFactory<Attachment extends string> {
 }
 type AttachmentFromBoundScope<Scope extends string> = Scope extends `${infer Attachment}:${string}` ? Attachment : never
 export type Scalar = boolean | number | string | null
+/** Serializable data at a public boundary; byte ownership is established by snapshotting. */
+export type PortableSerializableValue =
+  | Scalar
+  | Uint8Array
+  | readonly PortableSerializableValue[]
+  | PortableSerializableRecord
+export interface PortableSerializableRecord {
+  readonly [key: string]: PortableSerializableValue
+}
 export type SerializableValue = Scalar | OwnedBytes | readonly SerializableValue[] | SerializableRecord
 export interface SerializableRecord {
   readonly [key: string]: SerializableValue

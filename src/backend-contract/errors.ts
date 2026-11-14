@@ -1,7 +1,9 @@
 // src/backend-contract/errors.ts
 
+import { parseOrderedRecordingFailure } from '../core/ordered-recording'
+
 import type { SerializableRecord, SerializableValue } from './primitives'
-import { snapshotSerializableRecord } from './serializable'
+import { snapshotSerializableRecord, utf8ByteLength, assertSafeSerializablePrototype } from './serializable'
 
 export const BLE_ERROR_CODES = Object.freeze([
   'protocol.incompatible',
@@ -89,18 +91,108 @@ export const BLE_ERROR_DOMAINS = Object.freeze([
   'platform'
 ] as const)
 export type BleErrorDomain = (typeof BLE_ERROR_DOMAINS)[number]
+/** A lossless ordered platform value. Integer strings use canonical signed i64 decimal. */
+export type PlatformMetadataValue =
+  | { readonly kind: 'text' | 'int'; readonly value: string }
+  | { readonly kind: 'bool'; readonly value: boolean }
+export interface PlatformMetadataEntry {
+  readonly key: string
+  readonly value: PlatformMetadataValue
+}
+
+// Bound allocation and encoded size independently; shared with all TypeScript boundaries.
+export const MAX_PLATFORM_METADATA_ENTRIES = 1024
+export const MAX_PLATFORM_METADATA_TEXT_BYTES = 65536
+export const MAX_PLATFORM_METADATA_ENTRIES_BYTES = 1048576
+
+/** Bound the complete encoded failure container, including its surrounding fields. */
+export function assertPlatformFailureEnvelopeBound(value: unknown, operation: string): void {
+  let encoded: string | undefined
+  try {
+    encoded = JSON.stringify(value)
+  } catch {
+    throw contractError('protocol.malformed', 'boundary', operation)
+  }
+  if (encoded === undefined) throw contractError('protocol.malformed', 'boundary', operation)
+  if (
+    encoded.length > MAX_PLATFORM_METADATA_ENTRIES_BYTES ||
+    utf8ByteLength(encoded) > MAX_PLATFORM_METADATA_ENTRIES_BYTES
+  )
+    throw contractError('bytes.too-large', 'boundary', operation)
+}
+
+/** Validate and own the producer's sequence; never derive it from the compatibility map. */
+export function snapshotPlatformMetadataEntries(value: unknown, operation: string): readonly PlatformMetadataEntry[] {
+  const bad = (): never => {
+    throw contractError('protocol.malformed', 'boundary', operation)
+  }
+  if (!Array.isArray(value) || value.length > MAX_PLATFORM_METADATA_ENTRIES) return bad()
+  let bytes = 2
+  const result: PlatformMetadataEntry[] = []
+  for (const input of value) {
+    if (typeof input !== 'object' || input === null || Array.isArray(input)) return bad()
+    assertSafeSerializablePrototype(input, 'boundary', operation)
+    if (Object.keys(input).length !== 2 || !Object.hasOwn(input, 'key') || !Object.hasOwn(input, 'value')) return bad()
+    const key: unknown = Reflect.get(input, 'key')
+    const tagged: unknown = Reflect.get(input, 'value')
+    if (
+      typeof key !== 'string' ||
+      key.length > MAX_PLATFORM_METADATA_TEXT_BYTES ||
+      utf8ByteLength(key) > MAX_PLATFORM_METADATA_TEXT_BYTES ||
+      typeof tagged !== 'object' ||
+      tagged === null ||
+      Array.isArray(tagged)
+    )
+      return bad()
+    assertSafeSerializablePrototype(tagged, 'boundary', operation)
+    if (Object.keys(tagged).length !== 2 || !Object.hasOwn(tagged, 'kind') || !Object.hasOwn(tagged, 'value'))
+      return bad()
+    const kind: unknown = Reflect.get(tagged, 'kind')
+    const data: unknown = Reflect.get(tagged, 'value')
+    let owned: PlatformMetadataValue
+    if (kind === 'bool' && typeof data === 'boolean') owned = Object.freeze({ kind, value: data })
+    else if (
+      kind === 'text' &&
+      typeof data === 'string' &&
+      data.length <= MAX_PLATFORM_METADATA_TEXT_BYTES &&
+      utf8ByteLength(data) <= MAX_PLATFORM_METADATA_TEXT_BYTES
+    )
+      owned = Object.freeze({ kind, value: data })
+    else if (
+      kind === 'int' &&
+      typeof data === 'string' &&
+      data.length <= 20 &&
+      /^(0|-?[1-9][0-9]*)$/.test(data) &&
+      BigInt(data) >= -9223372036854775808n &&
+      BigInt(data) <= 9223372036854775807n
+    )
+      owned = Object.freeze({ kind, value: data })
+    else return bad()
+    const entry = Object.freeze({ key, value: owned })
+    bytes += utf8ByteLength(JSON.stringify(entry)) + (result.length === 0 ? 0 : 1)
+    if (bytes > MAX_PLATFORM_METADATA_ENTRIES_BYTES) return bad()
+    result.push(entry)
+  }
+  return Object.freeze(result)
+}
+
+/** Backend-SDK failure detail. Metadata owns every byte before it crosses this
+ * contract; portable wire input is normalized by `optionalPlatformErrorDetail`.
+ */
 export interface PlatformErrorDetail {
   readonly domain: string
   readonly code: string
   readonly safeMessage: string
   readonly metadata: SerializableRecord
+  readonly metadataEntries?: readonly PlatformMetadataEntry[]
 }
 
 /** Validated data-only lifecycle detail; omission never invents a native cause. */
 export function optionalPlatformErrorDetail(value: unknown, operation: string): PlatformErrorDetail | undefined {
   if (value === undefined || value === null) return undefined
+  assertPlatformFailureEnvelopeBound(value, operation)
   if (
-    !isPlatformRecord(value) ||
+    !isPlatformObject(value) ||
     typeof value.domain !== 'string' ||
     value.domain.length === 0 ||
     typeof value.code !== 'string' ||
@@ -114,8 +206,15 @@ export function optionalPlatformErrorDetail(value: unknown, operation: string): 
     domain: value.domain,
     code: value.code,
     safeMessage: value.safeMessage,
-    metadata: snapshotSerializableRecord(value.metadata).value
+    metadata: snapshotSerializableRecord(value.metadata).value,
+    ...(Object.hasOwn(value, 'metadataEntries')
+      ? { metadataEntries: snapshotPlatformMetadataEntries(value.metadataEntries, operation) }
+      : {})
   })
+}
+
+function isPlatformObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Uint8Array)
 }
 
 function isPlatformRecord(value: unknown): value is SerializableRecord {
@@ -145,7 +244,14 @@ export function serializePlatformErrorDetail(platform: PlatformErrorDetail): Ser
     domain: platform.domain,
     code: platform.code,
     safeMessage: platform.safeMessage,
-    metadata: platform.metadata
+    metadata: platform.metadata,
+    ...(platform.metadataEntries === undefined
+      ? {}
+      : {
+          metadataEntries: snapshotPlatformMetadataEntries(platform.metadataEntries, 'serialize.platform').map(
+            entry => ({ key: entry.key, value: { kind: entry.value.kind, value: entry.value.value } })
+          )
+        })
   }).value
 }
 /**
@@ -170,6 +276,8 @@ export type BleCommitUncertainty = 'not-dispatched' | 'uncertain'
 export const BLE_COMMIT_UNCERTAINTIES: readonly BleCommitUncertainty[] = Object.freeze(['not-dispatched', 'uncertain'])
 
 export interface NormalizedBleError {
+  /** Exact native ordered v2 failure, when its metadata revision was negotiated. */
+  readonly orderedFailure?: import('../core/ordered-recording').OrderedRecordingFailure
   readonly code: BleErrorCode
   readonly domain: BleErrorDomain
   readonly operation: string
@@ -191,6 +299,43 @@ export interface CleanupRecord {
   readonly failures: readonly CleanupFailure[]
 }
 
+/** Validate, own, and preserve the exact negotiated ordered failure evidence. */
+export function snapshotOrderedFailure(
+  error: Pick<NormalizedBleError, 'code' | 'domain' | 'operation' | 'orderedFailure'>
+): import('../core/ordered-recording').OrderedRecordingFailure | undefined {
+  if (error.orderedFailure === undefined) return undefined
+  const failure = parseOrderedRecordingFailure(error.orderedFailure, 2)
+  if (failure.code !== error.code || failure.domain !== error.domain || failure.operation !== error.operation)
+    throw contractError('protocol.malformed', 'boundary', 'ordered.failure.identity')
+  return failure
+}
+
+function orderedFailureWireValue(value: unknown): SerializableValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (Array.isArray(value)) return Object.freeze(value.map(orderedFailureWireValue))
+  if (typeof value === 'object' && value !== null) {
+    const result: Record<string, SerializableValue> = Object.create(null)
+    for (const [key, entry] of Object.entries(value)) result[key] = orderedFailureWireValue(entry)
+    return Object.freeze(result)
+  }
+  throw contractError('protocol.malformed', 'boundary', 'ordered.failure.serialize')
+}
+
+/** Encode restricted metadata keys as bounded JSON while keeping the exact failure. */
+export function orderedFailureWireFields(input: unknown): SerializableRecord {
+  const failure = parseOrderedRecordingFailure(input, 2)
+  const wire = orderedFailureWireValue(failure)
+  function hasRestrictedKey(value: SerializableValue): boolean {
+    if (value === null || typeof value !== 'object' || value instanceof Uint8Array) return false
+    if (Array.isArray(value)) return value.some(hasRestrictedKey)
+    return Object.entries(value).some(
+      ([key, entry]) => key === '__proto__' || key === 'constructor' || key === 'prototype' || hasRestrictedKey(entry)
+    )
+  }
+  return hasRestrictedKey(wire) ? { orderedFailureJson: JSON.stringify(wire) } : { orderedFailure: wire }
+}
+
 /** Converts a normalized error to the data-only shape used by host boundaries. */
 export function serializeNormalizedError(error: NormalizedBleError): SerializableRecord {
   return Object.freeze({
@@ -199,15 +344,8 @@ export function serializeNormalizedError(error: NormalizedBleError): Serializabl
     operation: error.operation,
     retryability: error.retryability,
     ...(error.commit === undefined ? {} : { commit: error.commit }),
-    platform:
-      error.platform === null
-        ? null
-        : Object.freeze({
-            domain: error.platform.domain,
-            code: error.platform.code,
-            safeMessage: error.platform.safeMessage,
-            metadata: error.platform.metadata
-          })
+    ...(error.orderedFailure === undefined ? {} : orderedFailureWireFields(snapshotOrderedFailure(error))),
+    platform: error.platform === null ? null : serializePlatformErrorDetail(error.platform)
   })
 }
 

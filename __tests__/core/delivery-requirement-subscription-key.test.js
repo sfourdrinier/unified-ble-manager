@@ -1,6 +1,6 @@
 'use strict'
 
-const { capacity, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
+const { capacity, opaqueId, resourceCount, version, versionRange } = require('../../src/backend-contract/primitives')
 const {
   attachBleBackend,
   BleManager,
@@ -133,3 +133,44 @@ test('require-indication does not join a prefer-indication physical enable', asy
   expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(0)
   await driveVirtualClock(fixture.controller.clock, manager.destroy(), 'destroy')
 })
+
+test.each(['remove', 'destroy'])(
+  'subscription %s releases source-loss payload before quota is unregistered',
+  async action => {
+    const { fixture, manager } = await openManager()
+    const { database, path } = await dualPropertyCharacteristic(fixture, manager)
+    const options = {
+      ...subscribeOptions('require-notification'),
+      delivery: { ...delivery(), overflowPolicy: 'error' }
+    }
+    const subscription = await driveVirtualClock(
+      fixture.controller.clock,
+      database.subscribe(path, options),
+      'subscribe'
+    )
+    const stream = subscription.values
+    stream.emit({ value: new Uint8Array([1, 2, 3]), delivery: 'notification' }, 3)
+    stream.observeSourceLoss({
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'notification-ingress',
+      lostRecords: resourceCount(1)
+    })
+    expect(stream.sourceLossNotices()).toMatchObject([{ kind: 'source-loss', lostRecords: 1 }])
+    expect(stream.retainedPayloadBytes()).toBe(3)
+    expect(Number(manager.localResourceCounters().retainedByteBuffers)).toBe(3)
+    await driveVirtualClock(
+      fixture.controller.clock,
+      action === 'remove' ? subscription.remove() : manager.destroy(),
+      action
+    )
+    expect(stream.retainedPayloadBytes()).toBe(0)
+    expect(Number(manager.localResourceCounters().retainedByteBuffers)).toBe(0)
+    const iterator = stream[Symbol.asyncIterator]()
+    // Source loss is retained on the explicit provenance projection. The
+    // stable iterator exposes its normal terminal after cleanup.
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal' })
+    expect((await iterator.next()).done).toBe(true)
+    if (action === 'remove') await driveVirtualClock(fixture.controller.clock, manager.destroy(), 'destroy')
+  }
+)

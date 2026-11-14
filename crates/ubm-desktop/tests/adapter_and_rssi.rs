@@ -28,7 +28,10 @@ async fn connected(peer_id: &str) -> DesktopCentral<FakeRadio> {
     let central = DesktopCentral::open(FakeRadio::new(), "parity-host")
         .await
         .expect("open");
-    central.boundary().push_event(advertisement(peer_id));
+    central
+        .boundary()
+        .push_event(advertisement(peer_id))
+        .expect("synthetic event admission failed");
     central
         .connect(peer_id, "lease-a", OpControl::budget_ms(5000))
         .await
@@ -119,7 +122,8 @@ async fn adapter_state_reads_the_radio_and_changes_are_published() {
     let mut events = central.adapter_events();
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+        .expect("synthetic event admission failed");
     let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
         .await
         .expect("adapter event arrives")

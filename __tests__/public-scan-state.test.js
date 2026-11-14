@@ -51,4 +51,28 @@ describe('bindScanSourceTerminal', () => {
       value: { kind: 'terminal', reason: 'source-failed', error }
     })
   })
+
+  test('preserves a durable terminal receipt while observing the terminal', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const receipt = {
+      producer: 'scan',
+      kind: 'committed',
+      ref: 'terminal-evidence-1',
+      byteLength: 64,
+      digest: 'a'.repeat(64),
+      formatVersion: 1,
+      durability: 'committed',
+      scope: { managerId: 'manager-1', operationId: 'operation-1', incarnation: '1' }
+    }
+    bindScanSourceTerminal(source, () => undefined)
+    source.finishWithReason('source-failed', nativeScanError(), receipt)
+
+    const iterator = source[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed', evidence: receipt }
+    })
+  })
 })

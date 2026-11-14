@@ -1,4 +1,9 @@
 // src/backends/desktop/desktop-rust-core-provider.ts
+import { isCanonicalIngressOrdinal } from '../../core/ordered-notification-contract'
+import { createHash } from 'node:crypto'
+import { encodeTerminalEvidence } from '../../core/terminal-evidence-codec'
+import { markTerminalEvidenceStageFailure } from '../../core/terminal-evidence-stage-failure'
+import { terminalEvidenceScopeUtf16le } from '../../core/terminal-evidence-scope-utf16'
 //
 // The one desktop provider over the shared Rust core (PR210-02): BlueZ,
 // CoreBluetooth and WinRT hosts all execute `DesktopCentral` (btleplug plus
@@ -26,7 +31,24 @@
 // until they are deleted.
 
 import { BackendContractError, contractError } from '../../backend-contract/errors'
+import { snapshotSerializableRecord } from '../../backend-contract/serializable'
 import { admitBluezConnectionPolicy, type BluezConnectionPolicy } from './bluez-connection-policy'
+import { DesktopOrderedStream, parseOrderedStatus } from './desktop-ordered-group'
+import { desktopMarkerReservations } from './desktop-ordered-marker'
+import {
+  createOrderedRecordingReclaimReservations,
+  type OrderedRecordingRecoveryHandle,
+  type OrderedRecordingReclaimReceipt
+} from '../../core/ordered-recording-reclaim'
+import { parseOrderedRecordingStartResult } from '../../core/ordered-recording-start'
+import { assertDesktopOrderedReceiptVersion } from './ordered-recording-version'
+import {
+  isRecordingId,
+  MIN_RECORDING_BYTES,
+  MAX_RECORDING_BYTES,
+  MIN_RECORDING_RECORDS,
+  MAX_RECORDING_RECORDS
+} from '../../backend-contract/continuation-recording-bounds'
 import {
   createNativeContinuationController,
   createNativeContinuationControlAccess
@@ -37,6 +59,13 @@ import {
   DesktopProcessHostInitializationError
 } from '../../desktop-process-initialization'
 import type { CleanupRecord, NormalizedBleError, PlatformErrorDetail } from '../../backend-contract/errors'
+import type {
+  TerminalEvidenceAppendResult,
+  TerminalEvidenceCommit,
+  TerminalEvidenceRecord,
+  TerminalEvidenceReservation,
+  TerminalEvidenceReservationRequest
+} from '../../backend-contract/terminal-evidence'
 import type {
   BackendAttachment,
   BackendAttachmentRequest,
@@ -106,7 +135,8 @@ import {
 import {
   createGattCharacteristicProperties,
   serviceAccessRestriction,
-  isNotificationReceipt
+  isNotificationReceipt,
+  isNotificationProvenance
 } from '../../backend-contract/gatt'
 import type {
   CharacteristicPath,
@@ -207,6 +237,7 @@ import {
   cleanupRecordFromCloseReport,
   decodeDesktopRustCoreCapabilityStates,
   desktopRustCoreError,
+  parseDesktopRustCoreWireError,
   desktopRustCoreOperation,
   throwDesktopRustCoreError,
   type DesktopRustCoreAdapterAuthorization,
@@ -221,6 +252,7 @@ import {
   type DesktopRustCoreCharacteristicAccess,
   type DesktopRustCoreControl,
   type DesktopRustCoreLifecycleEvent,
+  type DesktopRustCoreSourceUncertaintyEvent,
   parseDesktopRustCoreLifecyclePlatform,
   parseDesktopRustCoreReleaseReport,
   type DesktopRustCorePairOutcome,
@@ -233,11 +265,64 @@ import {
   type DesktopRustCoreSecurityState,
   type DesktopRustCoreSelector,
   type DesktopRustCoreConnectionParametersEvent,
+  type DesktopRustCoreDurablePeerSourceFailureRecoveryHandle,
+  type DesktopRustCorePeerSourceFailureRecoveryChunk,
+  type DesktopRustCorePeerSourceFailureRecoveryDescriptor,
+  type DesktopRustCoreWireError,
   type DesktopRustCoreWriteReadinessEvent
 } from './desktop-rust-core-binding'
 import { createDesktopPeerDirectory } from './desktop-peer-directory'
 
 export const DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION = UNIFIED_BLE_IMPLEMENTATION_VERSION
+
+/**
+ * Explicit, opt-in access to a source failure retained by the desktop core.
+ * No method acknowledges implicitly: callers must read the complete raw
+ * sequence then call `acknowledge` themselves.
+ */
+export interface DesktopPeerNotificationFailureRecovery {
+  /** Wait for the source-time offer currently blocking this subscription. */
+  next(): Promise<DesktopPeerNotificationFailureRecoveryOffer>
+  /** Read one exact raw evidence page for the offered recipient. */
+  read(offset: string): Promise<DesktopRustCorePeerSourceFailureRecoveryChunk>
+  /** Advance this recipient only after its complete contiguous read. */
+  acknowledge(): Promise<void>
+}
+
+/**
+ * One live retained-failure offer. `error` is the native producer's exact
+ * structured error envelope, not a diagnostic rendering of the descriptor.
+ */
+export interface DesktopPeerNotificationFailureRecoveryOffer {
+  readonly descriptor: DesktopRustCorePeerSourceFailureRecoveryDescriptor
+  readonly error: DesktopRustCoreWireError
+}
+
+/**
+ * Recovery which outlived the process that observed its source route. The
+ * original peer, selector, consumer and lease remain provenance/authority;
+ * this does not create a new subscription or claim a fresh route epoch.
+ */
+export interface DesktopDurablePeerNotificationFailureRecovery {
+  readonly provenance: Readonly<{
+    readonly peerId: string
+    readonly selector: DesktopRustCoreSelector
+    readonly consumer: string
+    readonly recipientLease: string
+    readonly contiguousRead: string
+    readonly acknowledged: boolean
+    readonly producerAck: 'not-started' | 'in-flight' | 'committed'
+  }>
+  readonly descriptor: DesktopRustCorePeerSourceFailureRecoveryDescriptor
+  /** Reads durable staged bytes. An unresolved native owner never becomes a fresh live route. */
+  read(offset: string): Promise<DesktopRustCorePeerSourceFailureRecoveryChunk>
+  /**
+   * Records this recipient's completion. If the original native owner cannot
+   * be reconciled after restart, rejects with the typed restoration outcome
+   * while preserving the durable bytes and receipt.
+   */
+  acknowledge(): Promise<void>
+}
 
 /** Frozen per-platform facts of the one desktop Rust provider. */
 export interface DesktopRustCoreProfile {
@@ -385,6 +470,27 @@ export interface DesktopRustCoreProviderOptions {
    * the core restores it afterwards.
    */
   readonly pairingGeneration?: DesktopRustCoreGenerationController
+  /**
+   * Existing, host-authorized continuation recording which owns durable
+   * peer-source failure evidence. This is a trusted Node/Electron-main/Tauri
+   * configuration value, never a renderer path or an implicit journal.
+   */
+  readonly peerFailureRecoveryRecordingId?: string
+  /**
+   * Trusted host-selected private directory and byte budget for exact native
+   * source-failure evidence. This is admitted before radio open and is
+   * deliberately unavailable to renderers.
+   */
+  readonly failureEvidenceStore?: Readonly<{
+    readonly directory: string
+    /** Decimal positive byte budget so JavaScript never rounds a native integer. */
+    readonly maxBytes: string
+  }>
+  /** Trusted host-selected source-terminal evidence ledger, opened before radio activation. */
+  readonly terminalEvidenceStore?: Readonly<{
+    readonly directory: string
+    readonly maxBytes: string
+  }>
 }
 
 /**
@@ -496,6 +602,33 @@ function createDesktopRustCoreBackendProviderWithTestOptions(
   if (options.owner.length === 0) {
     throw contractError('argument.invalid', 'core', desktopRustCoreOperation(profile.operationPrefix, 'owner'))
   }
+  if (options.peerFailureRecoveryRecordingId !== undefined && !isRecordingId(options.peerFailureRecoveryRecordingId)) {
+    throw contractError(
+      'argument.invalid',
+      'restoration',
+      desktopRustCoreOperation(profile.operationPrefix, 'peer-failure-recovery-recording')
+    )
+  }
+  const failureEvidenceStore = options.failureEvidenceStore
+  if (failureEvidenceStore !== undefined) {
+    if (failureEvidenceStore.directory.length === 0 || !/^[1-9][0-9]*$/.test(failureEvidenceStore.maxBytes)) {
+      throw contractError(
+        'argument.invalid',
+        'restoration',
+        desktopRustCoreOperation(profile.operationPrefix, 'failure-evidence-store')
+      )
+    }
+  }
+  const terminalEvidenceStore = options.terminalEvidenceStore
+  if (terminalEvidenceStore !== undefined) {
+    if (terminalEvidenceStore.directory.length === 0 || !/^[1-9][0-9]*$/.test(terminalEvidenceStore.maxBytes)) {
+      throw contractError(
+        'argument.invalid',
+        'restoration',
+        desktopRustCoreOperation(profile.operationPrefix, 'terminal-evidence-store')
+      )
+    }
+  }
   assertDesktopRustCorePlatform(options.platform, options.hostPlatform)
   const radio = options.radio ?? 'production'
   const hostKind = options.hostKind ?? 'node'
@@ -539,6 +672,9 @@ function createDesktopRustCoreBackendProviderWithTestOptions(
     bluezBus: options.bluezBus ?? 'system',
     connectionPolicy,
     pairingGeneration: options.pairingGeneration ?? null,
+    peerFailureRecoveryRecordingId: options.peerFailureRecoveryRecordingId ?? null,
+    failureEvidenceStore: options.failureEvidenceStore ?? null,
+    terminalEvidenceStore: options.terminalEvidenceStore ?? null,
     firstStateTimeoutMs: options.firstStateTimeoutMs ?? ADAPTER_INITIALIZATION_TIMEOUT_MS
   })
   const list = async (): Promise<readonly ListedAdapter[]> => {
@@ -586,6 +722,9 @@ interface BackendOpenContext {
   readonly bluezBus: DesktopRustCoreBluezBus
   readonly connectionPolicy: BluezConnectionPolicy | undefined
   readonly pairingGeneration: DesktopRustCoreGenerationController | null
+  readonly peerFailureRecoveryRecordingId: string | null
+  readonly failureEvidenceStore: Readonly<{ readonly directory: string; readonly maxBytes: string }> | null
+  readonly terminalEvidenceStore: Readonly<{ readonly directory: string; readonly maxBytes: string }> | null
   readonly firstStateTimeoutMs: number
 }
 
@@ -859,7 +998,13 @@ async function openRustCoreBackend(
       context.radio === 'synthetic'
         ? await context.binding.openSynthetic(coreOwner, {
             platform: profile.platform,
-            ...(context.pairingGeneration === null ? {} : { pairingGeneration: true })
+            ...(context.pairingGeneration === null ? {} : { pairingGeneration: true }),
+            ...(context.terminalEvidenceStore === null
+              ? {}
+              : {
+                  terminalEvidenceDirectory: context.terminalEvidenceStore.directory,
+                  terminalEvidenceMaxBytes: context.terminalEvidenceStore.maxBytes
+                })
           })
         : await context.binding.openProduction({
             owner: coreOwner,
@@ -867,7 +1012,19 @@ async function openRustCoreBackend(
             adapterId: adapter.label,
             ...(profile.platform === 'bluez' ? { bluezBus: context.bluezBus } : {}),
             ...(context.connectionPolicy === undefined ? {} : { connectionPolicy: context.connectionPolicy }),
-            ...(context.pairingGeneration === null ? {} : { pairingGeneration: true })
+            ...(context.pairingGeneration === null ? {} : { pairingGeneration: true }),
+            ...(context.failureEvidenceStore === null
+              ? {}
+              : {
+                  failureEvidenceDirectory: context.failureEvidenceStore.directory,
+                  failureEvidenceMaxBytes: context.failureEvidenceStore.maxBytes
+                }),
+            ...(context.terminalEvidenceStore === null
+              ? {}
+              : {
+                  terminalEvidenceDirectory: context.terminalEvidenceStore.directory,
+                  terminalEvidenceMaxBytes: context.terminalEvidenceStore.maxBytes
+                })
           })
   } catch (error) {
     throwDesktopRustCoreError(error, desktopRustCoreOperation(profile.operationPrefix, 'rust-core-open'))
@@ -877,6 +1034,7 @@ async function openRustCoreBackend(
     backend = new DesktopRustCoreBackend({
       profile,
       owner: coreOwner,
+      terminalEvidenceRecipient: context.owner,
       central,
       now: context.now,
       radio: context.radio,
@@ -891,11 +1049,23 @@ async function openRustCoreBackend(
         desktopRustCoreOperation(profile.operationPrefix, 'capability-states.instance')
       ),
       pairingGeneration: context.pairingGeneration,
+      terminalEvidenceConfigured: context.terminalEvidenceStore !== null,
       firstStateTimeoutMs: context.firstStateTimeoutMs,
       // Legacy listings opened no backend: a listing probe takes no instance number.
       backendInstance:
         purpose === 'listing' ? `${profile.platform}-backend-listing` : allocateLegacyInstance(profile.platform)
     })
+    if (context.peerFailureRecoveryRecordingId !== null) {
+      const attach = central.attachPeerFailureRecoveryRecording
+      if (attach === undefined) {
+        throw contractError(
+          'capability.unsupported',
+          'restoration',
+          desktopRustCoreOperation(profile.operationPrefix, 'peer-failure-ledger')
+        )
+      }
+      await attach.call(central, context.peerFailureRecoveryRecordingId)
+    }
     await backend.open()
     return backend
   } catch (error) {
@@ -915,6 +1085,8 @@ async function openRustCoreBackend(
 interface DesktopRustCoreBackendConstruction {
   readonly profile: DesktopRustCoreProfile
   readonly owner: string
+  /** Stable trusted host identity for direct-Node terminal recovery across backend sessions. */
+  readonly terminalEvidenceRecipient: string
   readonly central: DesktopRustCoreCentral
   readonly now: () => number
   readonly radio: DesktopRustCoreRadio
@@ -924,6 +1096,8 @@ interface DesktopRustCoreBackendConstruction {
   /** The core's capability registration for this profile's OS (from the loaded binary). */
   readonly coreStates: readonly DesktopRustCoreCapabilityState[]
   readonly pairingGeneration: DesktopRustCoreGenerationController | null
+  /** The trusted host explicitly configured the native terminal-evidence ledger. */
+  readonly terminalEvidenceConfigured: boolean
   readonly firstStateTimeoutMs: number
   /** The legacy backend instance (`{host}-backend-{n}`); a listing probe takes none. */
   readonly backendInstance: string
@@ -967,6 +1141,8 @@ interface StoredCoreDatabase {
   readonly base: DatabasePath<string, string, string>
   readonly services: readonly StoredCoreService[]
   readonly connectionId: string
+  readonly nativeConnectionGeneration: string | null
+  readonly nativeDatabaseGeneration: string | null
 }
 
 interface ConnectionRecord {
@@ -997,22 +1173,21 @@ interface SubscriptionRecord {
   readonly delivery: 'notification' | 'indication' | 'unknown'
   /** The consumer's overflow policy, applied in the core too (finding 131). */
   readonly overflowPolicy: OverflowPolicy
+  readonly terminalEvidenceScope: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  } | null
   closed: boolean
   /** Items the core dropped or lost upstream that this stream already reported. */
   surfacedLoss: number
   /** The wake sequence at the last read of the core counters. */
   countersCheckedAt: number
   emptyPolls: number
-  /**
-   * The terminal a lifecycle event decided (link lost, database changed,
-   * adapter lost). The stream ends with it only after the values the core
-   * still holds for this consumer are delivered (LEGACY-AUDIT-4 R2).
-   */
-  pendingTerminal: SubscriptionLifecycleTerminal | null
+  /** A V2 retained source failure. The pump pauses until explicit ACK. */
+  recovery: DesktopPeerNotificationFailureRecoveryOffer | null
+  readonly recoveryWaiters: Set<() => void>
 }
-
-/** A notification stream end a lifecycle event decides. */
-type SubscriptionLifecycleTerminal = 'connection-lost' | 'service-changed' | 'source-failed'
 
 interface ParameterWatch {
   readonly record: ConnectionRecord
@@ -1094,10 +1269,57 @@ const PROPERTY_INDICATE = 0x10
  * plan and fan-out, the delivery property check, and event mapping.
  */
 export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
+  private processOwnedRecording = false
+  private readonly orderedRecorderSessions = new Map<
+    string,
+    {
+      databaseId: string
+      readonly startHandle: string
+      readonly peerId: string
+      active: boolean
+      finished: boolean
+      receiptRetired: boolean
+      recovery: string | null
+      handoff: OrderedRecordingRecoveryHandle | null
+    }
+  >()
+  private readonly orderedRecoveryHandles = new WeakMap<
+    OrderedRecordingRecoveryHandle,
+    { readonly recordingId: string; readonly startHandle: string; busy: boolean }
+  >()
+  /** Called by the trusted process host before it publishes any child manager. */
+  enableProcessOwnedRecording(): void {
+    this.processOwnedRecording = true
+  }
+  private readonly orderedFinishedObservers = new Set<
+    (id: string, result: import('../../core/continuation-recording').OrderedRecordingHostStopResult) => Promise<void>
+  >()
+  /** Trusted process host can reclaim session receipts only after authoritative cleanup. */
+  observeOrderedRecordingFinished(
+    observer: (
+      id: string,
+      result: import('../../core/continuation-recording').OrderedRecordingHostStopResult
+    ) => Promise<void>
+  ): () => void {
+    this.orderedFinishedObservers.add(observer)
+    return () => {
+      this.orderedFinishedObservers.delete(observer)
+    }
+  }
   /** Trusted process-host seam. Shares this backend's native owner, never opens another central. */
   nativeContinuationController() {
     this.assertAlive('desktop-process-host.continuation')
-    return createNativeContinuationController(this.central)
+    return createNativeContinuationController(this.central, async (id, result) => {
+      for (const observer of this.orderedFinishedObservers) await observer(id, result)
+      this.central.forgetOrderedRecordingSession?.call(this.central, id)
+      const session = this.orderedRecorderSessions.get(id)
+      if (session) {
+        session.active = false
+        session.finished = true
+        session.recovery = null
+        if (session.receiptRetired) this.orderedRecorderSessions.delete(id)
+      }
+    })
   }
   /** Trusted bridge operations; claim preparation never acknowledges its payload. */
   nativeContinuationControlAccess() {
@@ -1119,6 +1341,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
 
   private readonly profile: DesktopRustCoreProfile
   private readonly owner: string
+  private readonly terminalEvidenceRecipient: string
   private readonly central: DesktopRustCoreCentral
   private readonly now: () => number
   private readonly radio: DesktopRustCoreRadio
@@ -1154,6 +1377,17 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private readonly databases = new Map<string, StoredCoreDatabase>()
   private readonly occurrenceNumerals = new Map<string, number>()
   private readonly ticketsByCorrelation = new Map<string, string>()
+  private readonly terminalReservationIds = new Map<string, string>()
+  /** Trusted recovery-owner claims captured at staging/recovery, never IPC input. */
+  private readonly terminalEvidenceAcknowledgements = new Map<
+    string,
+    {
+      readonly producer: 'scan' | 'subscription'
+      readonly recipient: string
+      readonly reservationId?: string
+      readonly leaseId?: string
+    }
+  >()
   private readonly adapterTransitions = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
   private readonly securityWatches = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
   private readonly securityObservedWatches = new WeakSet<CoreBoundedStream<PeerSecurityEvent>>()
@@ -1171,6 +1405,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   /** One stream per `events()` caller (each manager on this backend), as the 4.x backends fanned out. */
   private readonly eventStreams = new Set<OwnedCoreBoundedStream<BackendEvent<string>>>()
   private scanGroup: ScanGroup | null = null
+  /** The provider is the sole reader of the core-wide scan ingress queue. */
+  private scanPumpRunning: Promise<void> | null = null
   private nextOrdinalValue = 1
   private nextEventOrdinalValue = 1
   /** Highest adapter-state event sequence applied from the core. */
@@ -1193,16 +1429,19 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   /** A wake arrived while a drain turn ran: run another when it ends. */
   private drainRequested = false
   private destroyResult: Promise<CleanupRecord> | null = null
+  private readonly terminalEvidenceConfigured: boolean
 
   constructor(construction: DesktopRustCoreBackendConstruction) {
     const { profile, owner } = construction
     this.profile = profile
     this.owner = owner
+    this.terminalEvidenceRecipient = construction.terminalEvidenceRecipient
     this.central = construction.central
     this.now = construction.now
     this.radio = construction.radio
     this.hostKind = construction.hostKind
     this.bindingDiagnostics = construction.bindingDiagnostics
+    this.terminalEvidenceConfigured = construction.terminalEvidenceConfigured
     this.firstStateTimeoutMs = construction.firstStateTimeoutMs
     this.backendInstance = construction.backendInstance
     this.adapterState = construction.adapter.state
@@ -1250,6 +1489,15 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     })
     this.scanner = Object.freeze({
       plan: (query: NormalizedScanQuery) => diagnosticServiceUuidScanPlan(this.planScan(query)),
+      ...(this.hasTerminalEvidenceSurface()
+        ? {
+            reserveTerminalEvidence: (request: TerminalEvidenceReservationRequest) =>
+              this.reserveTerminalEvidence(request),
+            readTerminalEvidence: (reference: string, maximumBytes: number) =>
+              this.readTerminalEvidence(reference, maximumBytes),
+            releaseTerminalEvidence: (reference: string) => this.releaseTerminalEvidence(reference)
+          }
+        : {}),
       start: (options: OwnerScanOptions<string, string>, clientId: ClientId<string, string>) =>
         this.startScan(options, clientId),
       join: (
@@ -1327,6 +1575,15 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         : {})
     })
     this.gatt = Object.freeze({
+      ...(this.hasTerminalEvidenceSurface()
+        ? {
+            reserveTerminalEvidence: (request: TerminalEvidenceReservationRequest) =>
+              this.reserveTerminalEvidence(request),
+            readTerminalEvidence: (reference: string, maximumBytes: number) =>
+              this.readTerminalEvidence(reference, maximumBytes),
+            releaseTerminalEvidence: (reference: string) => this.releaseTerminalEvidence(reference)
+          }
+        : {}),
       discover: (connection: BackendConnection<string, string>, options: PublicOperationOptions) =>
         this.discover(connection, options),
       read: (
@@ -1978,6 +2235,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         if (lifecycle.kind === 'lagged') await this.reconcileLinks('lifecycle', lifecycle.missed ?? null)
         else this.applyLifecycleEvent(lifecycle)
       }
+      if (typeof this.central.takeSourceUncertaintyEvent === 'function') {
+        for (;;) {
+          if (this.destroyed || this.coreEventsClosed) return
+          const event = await this.central.takeSourceUncertaintyEvent()
+          if (event === null || event === undefined) break
+          this.applySourceUncertaintyEvent(event)
+        }
+      }
       for (;;) {
         if (this.destroyed || this.coreEventsClosed) return
         const security = await this.central.takeSecurityEvent()
@@ -2005,8 +2270,9 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         if (this.destroyed || this.coreEventsClosed) return
         const terminal = await this.central.takeScanTerminalEvent()
         if (terminal === null || terminal === undefined) break
-        if (terminal.kind === 'lagged') this.reconcileScan(terminal.missed ?? null)
-        else this.applyScanTerminal(terminal)
+        if (terminal.kind === 'stage-failed') this.failScanTerminalEvidenceStage(terminal)
+        else if (terminal.kind === 'lagged') this.reconcileScan(terminal.missed ?? null)
+        else await this.applyScanTerminal(terminal)
       }
       for (;;) {
         if (this.destroyed || this.coreEventsClosed) return
@@ -2102,15 +2368,19 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * core's previous-state invariant and ends the whole manager
    * `backend-failure` instead of ending this link `adapter-loss`.
    */
-  private applyAdapterLostLink(record: ConnectionRecord): void {
+  private applyAdapterLostLink(record: ConnectionRecord, hostReset = false, platform?: PlatformErrorDetail): void {
     if (record.state !== 'connected' && record.state !== 'disconnecting') return
     record.state = 'lost'
     for (const subscriptionId of record.subscriptions) {
       const subscription = this.subscriptions.get(subscriptionId)
       if (subscription === undefined) continue
-      this.endSubscriptionAfterDrain(subscription, 'source-failed')
       this.subscriptions.delete(subscriptionId)
     }
+    // A lifecycle event proves the link is gone but not which terminal
+    // invalidation reached an individual consumer first. The native poll
+    // owns that answer (adapter reset, link end, or an earlier service
+    // change), so wake it without preempting its terminal.
+    this.wakePumps()
     record.subscriptions.clear()
     for (const databaseId of record.databases) this.databases.delete(databaseId)
     record.databases.clear()
@@ -2122,7 +2392,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       if (watch.record !== record) continue
       this.closeParameterWatch(watch, 'connection-lost')
     }
-    if (ADAPTER_LOSS_SEQUENCE[this.profile.platform].connectionStateChanged) {
+    if (hostReset || ADAPTER_LOSS_SEQUENCE[this.profile.platform].connectionStateChanged) {
       this.emitEvent({
         kind: 'connection-state-changed',
         attachment: this.attachment,
@@ -2131,7 +2401,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         connection: record.path,
         previous: 'connected',
         current: 'lost',
-        reason: 'adapter'
+        reason: hostReset ? 'backend-restart' : 'adapter',
+        ...(platform === undefined ? {} : { platform })
       })
     }
   }
@@ -2155,7 +2426,21 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     const released = new Set(event.releasedLinks ?? [])
     for (const record of this.connectionsById.values()) {
-      if (released.has(record.nativePeerId)) this.applyAdapterLostLink(record)
+      if (released.has(record.nativePeerId)) {
+        const hostReset = event.cause === 'source-observation-overflow'
+        this.applyAdapterLostLink(
+          record,
+          hostReset,
+          hostReset
+            ? {
+                domain: 'ubm',
+                code: 'source-observation-overflow',
+                safeMessage: 'Host observation capacity exceeded',
+                metadata: {}
+              }
+            : undefined
+        )
+      }
     }
     const group = this.scanGroup
     // The core ends every scan it owns on a reset; its aborted scan
@@ -2179,7 +2464,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const causalAdapterSequence = event.adapterSequence
     const adapterEventPending =
       typeof causalAdapterSequence === 'number' && causalAdapterSequence > this.adapterStateSequence
-    this.advanceGeneration(ADAPTER_LOSS_SEQUENCE[this.profile.platform].backendRestarted, adapterEventPending)
+    this.advanceGeneration(
+      event.cause === 'source-observation-overflow' || ADAPTER_LOSS_SEQUENCE[this.profile.platform].backendRestarted,
+      adapterEventPending
+    )
     if (adapterEventPending && event.power !== null && event.power !== undefined) {
       // `advanceGeneration` has already minted the new generation, so an
       // equal causal power still must publish that generation exactly once.
@@ -2357,13 +2645,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     const records = this.connectionFor(event)
     if (records.length === 0) return
-    if (event.kind === 'adapter-lost') {
-      for (const record of records) this.applyAdapterLostLink(record)
+    if (event.kind === 'adapter-lost' || event.kind === 'host-reset') {
+      const platform = parseDesktopRustCoreLifecyclePlatform(event.platform)
+      for (const record of records) this.applyAdapterLostLink(record, event.kind === 'host-reset', platform)
       return
     }
     if (event.kind === 'services-changed') {
       for (const record of records) {
-        this.invalidateConnectionState(record, 'service-changed')
         for (const databaseId of [...record.databases]) {
           const database = this.databases.get(databaseId)
           this.databases.delete(databaseId)
@@ -2378,6 +2666,11 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
           })
         }
       }
+      // A lifecycle notification only establishes that a database changed.
+      // The native notification poll retains the first terminal cause for
+      // each consumer (service change versus adjacent adapter reset), so it
+      // alone decides this stream's terminal reason.
+      this.wakePumps()
       return
     }
     const requested = event.kind === 'released' && event.requested === true
@@ -2399,14 +2692,48 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         ...(platform === undefined ? {} : { platform })
       })
     }
+    this.wakePumps()
+  }
+
+  /**
+   * Surface a native callback which had no accepted graph as an ownerless
+   * diagnostic. It must never be converted into a lifecycle event, because
+   * the identifier may have been reused by a newer connection.
+   */
+  private applySourceUncertaintyEvent(event: DesktopRustCoreSourceUncertaintyEvent): void {
+    if (event.kind === 'closed') return
+    if (event.kind === 'lagged') {
+      this.noteDiagnostic('gatt.source-uncertain-lagged', 'ownerless native source diagnostics were lagged', {
+        missed: event.missed ?? 0
+      })
+      return
+    }
+    if (event.kind !== 'source-uncertain') {
+      throw contractError('protocol.malformed', 'boundary', this.op('source-uncertainty.kind'))
+    }
+    if (typeof event.peerId !== 'string' || typeof event.code !== 'string' || typeof event.operation !== 'string') {
+      throw contractError('protocol.malformed', 'boundary', this.op('source-uncertainty.event'))
+    }
+    const platform = parseDesktopRustCoreLifecyclePlatform(event.platform)
+    this.noteDiagnostic('gatt.source-uncertain', 'native source could not be associated with an accepted graph', {
+      peerId: event.peerId,
+      code: event.code,
+      operation: event.operation,
+      ...(typeof event.detail === 'string' ? { detail: event.detail } : {}),
+      ...(platform === undefined
+        ? {}
+        : {
+            platform: Object.freeze({
+              domain: platform.domain,
+              code: platform.code,
+              message: platform.safeMessage,
+              metadata: snapshotSerializableRecord(platform.metadata).value
+            })
+          })
+    })
   }
 
   private invalidateConnectionState(record: ConnectionRecord, reason: 'connection-lost' | 'service-changed'): void {
-    for (const subscriptionId of [...record.subscriptions]) {
-      const subscription = this.subscriptions.get(subscriptionId)
-      if (subscription === undefined) continue
-      this.endSubscriptionAfterDrain(subscription, reason)
-    }
     if (reason === 'connection-lost') {
       for (const databaseId of record.databases) this.databases.delete(databaseId)
       record.databases.clear()
@@ -2518,6 +2845,474 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     return trustedServiceUuidFilter(options, query => this.planScan(query), operation)
   }
 
+  private hasTerminalEvidenceSurface(): boolean {
+    return (
+      this.central.reserveTerminalEvidence !== undefined &&
+      this.central.bindTerminalEvidenceRecipient !== undefined &&
+      this.central.commitTerminalEvidence !== undefined &&
+      this.central.readTerminalEvidence !== undefined &&
+      this.central.releaseTerminalEvidence !== undefined &&
+      this.central.stageTerminalEvidence !== undefined &&
+      this.central.acknowledgeRecoveredTerminalEvidence !== undefined
+    )
+  }
+
+  /** Whether recovery may contain host-authorized durable records. */
+  hasTerminalEvidenceRecovery(): boolean {
+    return this.terminalEvidenceConfigured
+  }
+
+  /**
+   * This native ledger reservation is deliberately made before source
+   * activation. A source receives only the exact opaque scope, not a path or
+   * a JavaScript fallback store.
+   */
+  private async reserveTerminalEvidence(
+    request: TerminalEvidenceReservationRequest
+  ): Promise<TerminalEvidenceReservation> {
+    const reserve = this.central.reserveTerminalEvidence
+    const commit = this.central.commitTerminalEvidence
+    const release = this.central.releaseTerminalEvidence
+    const stage = this.central.stageTerminalEvidence
+    const bind = this.central.bindTerminalEvidenceRecipient
+    if (
+      reserve === undefined ||
+      commit === undefined ||
+      release === undefined ||
+      stage === undefined ||
+      bind === undefined
+    ) {
+      throw contractError('capability.unsupported', 'stream', this.op('terminal-evidence.reserve'))
+    }
+    let reserved
+    try {
+      reserved = await reserve.call(this.central, {
+        producer: request.producer,
+        maximumBytes: String(request.maximumBytes),
+        formatVersion: request.formatVersion,
+        scope: request.scope,
+        scopeUtf16le: terminalEvidenceScopeUtf16le(request.producer, request.scope)
+      })
+    } catch (error) {
+      throwDesktopRustCoreError(error, this.op('terminal-evidence.reserve'))
+    }
+    if (
+      typeof reserved.reservationId !== 'string' ||
+      reserved.reservationId.length === 0 ||
+      reserved.maximumBytes !== String(request.maximumBytes)
+    ) {
+      throw contractError('protocol.malformed', 'core', this.op('terminal-evidence.reserve'))
+    }
+    const reservationKey = `${request.producer}\u0000${request.scope.managerId}\u0000${request.scope.operationId}\u0000${request.scope.incarnation}`
+    this.terminalReservationIds.set(reservationKey, reserved.reservationId)
+    if (this.hostKind !== 'desktop-native') {
+      try {
+        await bind.call(this.central, reserved.reservationId, this.terminalEvidenceRecipient)
+      } catch (error) {
+        this.terminalReservationIds.delete(reservationKey)
+        try {
+          await release.call(this.central, reserved.reservationId)
+        } catch (releaseError) {
+          throw new AggregateError(
+            [error, releaseError],
+            'terminal-evidence recipient binding and reservation release both failed'
+          )
+        }
+        throwDesktopRustCoreError(error, this.op('terminal-evidence.bind-recipient'))
+      }
+      this.terminalEvidenceAcknowledgements.set(
+        reserved.reservationId,
+        Object.freeze({ producer: request.producer, recipient: this.terminalEvidenceRecipient })
+      )
+    }
+    let committed = false
+    let released = false
+    return Object.freeze({
+      maximumBytes: request.maximumBytes,
+      commit: async (record: TerminalEvidenceRecord): Promise<TerminalEvidenceAppendResult> => {
+        if (committed || released) {
+          throw contractError('lifecycle.invalid-state', 'stream', this.op('terminal-evidence.commit'))
+        }
+        // Electron supplies its authenticated renderer owner before this
+        // point. Direct Node callers have no renderer bridge, so bind their
+        // durable record to this trusted host owner before committing it;
+        // otherwise a committed row could never satisfy recovery ACK claims.
+        const recoveryClaims = this.terminalEvidenceAcknowledgements.get(reserved.reservationId)
+        if (recoveryClaims === undefined)
+          throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.commit'))
+        // Binding is distinct from durable bytes: commit still stages its
+        // canonical record, and native rejects divergent re-staging.
+        await stage.call(this.central, reserved.reservationId, recoveryClaims.recipient, record.canonicalBytes)
+        const result = await commit.call(this.central, {
+          reservationId: reserved.reservationId,
+          canonicalBytes: Uint8Array.from(record.canonicalBytes),
+          digest: record.digest
+        })
+        if (result.kind === 'refused') {
+          if (
+            result.reason !== 'quota-exhausted' &&
+            result.reason !== 'storage-unavailable' &&
+            result.reason !== 'capability-unsupported'
+          ) {
+            throw contractError('protocol.malformed', 'core', this.op('terminal-evidence.commit'))
+          }
+          return Object.freeze({ kind: 'refused', reason: result.reason })
+        }
+        if (
+          result.kind !== 'committed' ||
+          typeof result.ref !== 'string' ||
+          result.ref.length === 0 ||
+          result.byteLength !== String(record.canonicalBytes.byteLength) ||
+          result.digest !== record.digest ||
+          result.formatVersion !== 1 ||
+          result.durability !== 'committed'
+        ) {
+          throw contractError('protocol.malformed', 'core', this.op('terminal-evidence.commit'))
+        }
+        committed = true
+        this.terminalEvidenceAcknowledgements.set(result.ref, recoveryClaims)
+        return Object.freeze({
+          producer: request.producer,
+          ref: result.ref,
+          byteLength: record.canonicalBytes.byteLength,
+          digest: record.digest,
+          formatVersion: 1,
+          durability: 'committed',
+          scope: request.scope
+        })
+      },
+      release: async (): Promise<void> => {
+        if (released) return
+        await release.call(this.central, reserved.reservationId)
+        this.terminalReservationIds.delete(reservationKey)
+        released = true
+      }
+    })
+  }
+
+  /** Trusted Electron-main bridge; recipient is derived from authenticated IPC identity. */
+  async stageTerminalEvidenceForRecovery(
+    producer: 'scan' | 'subscription',
+    scope: TerminalEvidenceReservationRequest['scope'] | null,
+    recipient: string,
+    canonicalBytes: Uint8Array
+  ): Promise<void> {
+    const stage = this.central.stageTerminalEvidence
+    if (stage === undefined)
+      throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.stage'))
+    if (scope === null)
+      throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.stage'))
+    const key = `${producer}\u0000${scope.managerId}\u0000${scope.operationId}\u0000${scope.incarnation}`
+    const reservationId = this.terminalReservationIds.get(key)
+    if (reservationId === undefined)
+      throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.stage'))
+    await stage.call(this.central, reservationId, recipient, canonicalBytes)
+    this.terminalEvidenceAcknowledgements.set(reservationId, Object.freeze({ producer, recipient }))
+  }
+
+  /** Trusted Electron-main bridge; the renderer never supplies `recipient`. */
+  async bindTerminalEvidenceRecipientForRecovery(
+    producer: 'scan' | 'subscription',
+    scope: TerminalEvidenceReservationRequest['scope'] | null,
+    recipient: string
+  ): Promise<void> {
+    const bind = this.central.bindTerminalEvidenceRecipient
+    if (bind === undefined)
+      throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.bind-recipient'))
+    if (scope === null)
+      throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.bind-recipient'))
+    const key = `${producer}\u0000${scope.managerId}\u0000${scope.operationId}\u0000${scope.incarnation}`
+    const reservationId = this.terminalReservationIds.get(key)
+    if (reservationId === undefined)
+      throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.bind-recipient'))
+    await bind.call(this.central, reservationId, recipient)
+    this.terminalEvidenceAcknowledgements.set(reservationId, Object.freeze({ producer, recipient }))
+  }
+
+  /** Trusted Electron-main bridge for durable ledger restart recovery. */
+  async recoverTerminalEvidenceForRecipient(
+    recipient: string,
+    leaseId: string
+  ): Promise<
+    readonly {
+      readonly reservationId: string
+      readonly producer: 'scan' | 'subscription'
+      readonly byteLength: number
+      readonly digest: string
+      readonly reference: string
+    }[]
+  > {
+    const recover = this.central.recoverTerminalEvidence
+    if (recover === undefined)
+      throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.recover'))
+    const commit = this.central.commitRecoveredTerminalEvidence
+    if (commit === undefined)
+      throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.recover-commit'))
+    try {
+      const groups = await Promise.all(
+        (['scan', 'subscription'] as const).map(producer =>
+          recover.call(this.central, { producer, recipient, leaseId })
+        )
+      )
+      const recovered = []
+      for (const record of groups.flat()) {
+        if (
+          (record.state !== 'staged' && record.state !== 'committed') ||
+          record.digest === undefined ||
+          record.formatVersion !== 1 ||
+          !/^[0-9a-f]{64}$/.test(record.digest)
+        )
+          throw contractError('protocol.malformed', 'restoration', this.op('terminal-evidence.recover'))
+        const committed =
+          record.state === 'committed'
+            ? { ref: record.ref, byteLength: record.byteLength }
+            : await commit.call(this.central, {
+                reservationId: record.reservationId,
+                leaseId,
+                canonicalBytes: record.canonicalBytes,
+                digest: record.digest
+              })
+        if (
+          ('kind' in committed && committed.kind !== 'committed') ||
+          committed.ref === undefined ||
+          committed.byteLength === undefined ||
+          !/^[1-9][0-9]*$/.test(committed.byteLength)
+        )
+          throw contractError('platform.failure', 'restoration', this.op('terminal-evidence.recover-commit'))
+        this.terminalEvidenceAcknowledgements.set(
+          committed.ref,
+          Object.freeze({ producer: record.producer, recipient, reservationId: record.reservationId, leaseId })
+        )
+        recovered.push(
+          Object.freeze({
+            reservationId: record.reservationId,
+            producer: record.producer,
+            byteLength: Number(committed.byteLength),
+            digest: record.digest,
+            reference: committed.ref
+          })
+        )
+      }
+      return Object.freeze(recovered)
+    } catch (error) {
+      await this.releaseRecoveryLeaseAfterFailure(leaseId, error)
+      throw error
+    }
+  }
+
+  /**
+   * Recovers evidence owned by this trusted Node host. The recipient is a
+   * construction-time host identity, never application input.
+   */
+  recoverTerminalEvidenceForHost(leaseId: string) {
+    return this.recoverTerminalEvidenceForRecipient(this.terminalEvidenceRecipient, leaseId)
+  }
+
+  /** Refresh a trusted recipient's recovery state without hiding a contended producer lane. */
+  async recoverTerminalEvidenceForRecipientWithStatus(
+    recipient: string,
+    leaseId: string
+  ): Promise<
+    Readonly<{
+      records: readonly {
+        readonly reservationId: string
+        readonly producer: 'scan' | 'subscription'
+        readonly byteLength: number
+        readonly digest: string
+        readonly reference: string
+      }[]
+      busyProducers: readonly ('scan' | 'subscription')[]
+    }>
+  > {
+    const recover = this.central.recoverTerminalEvidenceWithStatus
+    if (recover === undefined)
+      throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.recover-status'))
+    try {
+      const groups = await Promise.all(
+        (['scan', 'subscription'] as const).map(async producer => ({
+          producer,
+          page: await recover.call(this.central, { producer, recipient, leaseId })
+        }))
+      )
+      const records = [] as {
+        reservationId: string
+        producer: 'scan' | 'subscription'
+        byteLength: number
+        digest: string
+        reference: string
+      }[]
+      const busyProducers: ('scan' | 'subscription')[] = []
+      for (const { producer, page } of groups) {
+        if (typeof page.busy !== 'boolean')
+          throw contractError('protocol.malformed', 'restoration', this.op('terminal-evidence.recover-status'))
+        if (page.busy) busyProducers.push(producer)
+        for (const record of page.entries) {
+          if (
+            (record.state !== 'staged' && record.state !== 'committed') ||
+            record.digest === undefined ||
+            record.formatVersion !== 1 ||
+            !/^[0-9a-f]{64}$/.test(record.digest)
+          )
+            throw contractError('protocol.malformed', 'restoration', this.op('terminal-evidence.recover-status'))
+          const commit = this.central.commitRecoveredTerminalEvidence
+          if (commit === undefined)
+            throw contractError(
+              'capability.unsupported',
+              'restoration',
+              this.op('terminal-evidence.recover-status-commit')
+            )
+          const committed =
+            record.state === 'committed'
+              ? { ref: record.ref, byteLength: record.byteLength }
+              : await commit.call(this.central, {
+                  reservationId: record.reservationId,
+                  leaseId,
+                  canonicalBytes: record.canonicalBytes,
+                  digest: record.digest
+                })
+          if (
+            ('kind' in committed && committed.kind !== 'committed') ||
+            committed.ref === undefined ||
+            committed.byteLength === undefined ||
+            !/^[1-9][0-9]*$/.test(committed.byteLength)
+          )
+            throw contractError('platform.failure', 'restoration', this.op('terminal-evidence.recover-status-commit'))
+          this.terminalEvidenceAcknowledgements.set(
+            committed.ref,
+            Object.freeze({ producer: record.producer, recipient, reservationId: record.reservationId, leaseId })
+          )
+          records.push(
+            Object.freeze({
+              reservationId: record.reservationId,
+              producer: record.producer,
+              byteLength: Number(committed.byteLength),
+              digest: record.digest,
+              reference: committed.ref
+            })
+          )
+        }
+      }
+      return Object.freeze({ records: Object.freeze(records), busyProducers: Object.freeze(busyProducers) })
+    } catch (error) {
+      await this.releaseRecoveryLeaseAfterFailure(leaseId, error)
+      throw error
+    }
+  }
+
+  /** Refresh recovery state for this construction-time Node host. */
+  recoverTerminalEvidenceForHostWithStatus(leaseId: string) {
+    return this.recoverTerminalEvidenceForRecipientWithStatus(this.terminalEvidenceRecipient, leaseId)
+  }
+
+  /** Relinquish only rows selected by this host-private recovery controller. */
+  async releaseTerminalEvidenceRecoveryLease(leaseId: string): Promise<void> {
+    const release = this.central.releaseTerminalEvidenceRecoveryLease
+    if (release === undefined)
+      throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.recover-release'))
+    await release.call(this.central, leaseId)
+    for (const [reference, claims] of this.terminalEvidenceAcknowledgements) {
+      if (claims.leaseId === leaseId) this.terminalEvidenceAcknowledgements.delete(reference)
+    }
+  }
+
+  /** Failed selection must not strand rows or acknowledgement authority. */
+  private async releaseRecoveryLeaseAfterFailure(leaseId: string, cause: unknown): Promise<void> {
+    try {
+      await this.releaseTerminalEvidenceRecoveryLease(leaseId)
+    } catch (releaseFailure) {
+      throw new AggregateError(
+        [cause, releaseFailure],
+        'terminal evidence recovery failed and its lease could not be released'
+      )
+    }
+  }
+
+  /** Internal desktop-host recovery read; public entrypoints use opaque handles. */
+  readRecoveredTerminalEvidence(reference: string, maximumBytes: number) {
+    return this.readTerminalEvidence(reference, maximumBytes)
+  }
+
+  /** Internal desktop-host recovery acknowledgement; claims come only from recovery. */
+  acknowledgeRecoveredTerminalEvidence(reference: string): Promise<void> {
+    return this.releaseTerminalEvidence(reference)
+  }
+
+  private async readTerminalEvidence(reference: string, maximumBytes: number) {
+    const read = this.central.readTerminalEvidence
+    if (read === undefined || !Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
+      throw contractError('argument.invalid', 'stream', this.op('terminal-evidence.read'))
+    }
+    const result = await read.call(this.central, reference, String(maximumBytes))
+    if (result.kind === 'missing' || result.kind === 'unresolved') return Object.freeze({ kind: result.kind })
+    if (result.kind !== 'committed' || result.canonicalBytes === undefined || typeof result.digest !== 'string') {
+      throw contractError('protocol.malformed', 'core', this.op('terminal-evidence.read'))
+    }
+    const canonicalBytes = Uint8Array.from(result.canonicalBytes)
+    if (canonicalBytes.byteLength > maximumBytes) {
+      throw contractError('protocol.malformed', 'core', this.op('terminal-evidence.read'))
+    }
+    return Object.freeze({ kind: 'committed' as const, canonicalBytes, digest: result.digest })
+  }
+
+  private async releaseTerminalEvidence(reference: string): Promise<void> {
+    const acknowledge = this.central.acknowledgeRecoveredTerminalEvidence
+    if (acknowledge === undefined)
+      throw contractError('capability.unsupported', 'stream', this.op('terminal-evidence.recovery-ack'))
+    const claims = this.terminalEvidenceAcknowledgements.get(reference)
+    if (claims === undefined || claims.reservationId === undefined || claims.leaseId === undefined)
+      throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.recovery-ack'))
+    await acknowledge.call(this.central, {
+      ref: reference,
+      ...claims,
+      reservationId: claims.reservationId,
+      leaseId: claims.leaseId
+    })
+    this.terminalEvidenceAcknowledgements.delete(reference)
+  }
+
+  private async commitPendingTerminalEvidence(
+    pending: { readonly reservationId: string; readonly pendingToken: string } | null | undefined,
+    producer: 'scan' | 'subscription',
+    scope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string } | null,
+    terminal: import('../../backend-contract/streams').StreamTerminalNotice,
+    operation: string
+  ): Promise<TerminalEvidenceCommit | undefined> {
+    if (pending == null) return undefined
+    if (scope === null || typeof pending.reservationId !== 'string' || typeof pending.pendingToken !== 'string')
+      throw contractError('protocol.malformed', 'core', `${operation}.terminal-evidence-pending`)
+    const key = `${producer}\u0000${scope.managerId}\u0000${scope.operationId}\u0000${scope.incarnation}`
+    if (this.terminalReservationIds.get(key) !== pending.reservationId)
+      throw contractError('protocol.violation', 'stream', `${operation}.terminal-evidence-reservation`)
+    const commit = this.central.commitTerminalEvidence
+    const acknowledge = this.central.acknowledgeTerminalEvidence
+    if (commit === undefined || acknowledge === undefined)
+      throw contractError('capability.unsupported', 'stream', `${operation}.terminal-evidence-ack`)
+    const canonicalBytes = encodeTerminalEvidence(terminal, scope)
+    const digest = createHash('sha256').update(canonicalBytes).digest('hex')
+    const result = await commit.call(this.central, { reservationId: pending.reservationId, canonicalBytes, digest })
+    if (result.kind === 'refused') return undefined
+    if (
+      result.kind !== 'committed' ||
+      result.ref === undefined ||
+      result.byteLength !== String(canonicalBytes.byteLength) ||
+      result.digest !== digest ||
+      result.formatVersion !== 1 ||
+      result.durability !== 'committed'
+    )
+      throw contractError('protocol.malformed', 'core', `${operation}.terminal-evidence-commit`)
+    await acknowledge.call(this.central, { pendingToken: pending.pendingToken })
+    this.terminalReservationIds.delete(key)
+    return Object.freeze({
+      producer,
+      ref: result.ref,
+      byteLength: canonicalBytes.byteLength,
+      digest,
+      formatVersion: 1,
+      durability: 'committed',
+      scope
+    })
+  }
+
   private async startScan(
     options: OwnerScanOptions<string, string>,
     _clientId: ClientId<string, string>
@@ -2543,11 +3338,24 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     const ordinal = this.nextOrdinal()
     const correlation = String(this.mintedCorrelation())
+    const terminalEvidenceScopeBytes =
+      options.terminalEvidenceScope === undefined
+        ? undefined
+        : terminalEvidenceScopeUtf16le('scan', options.terminalEvidenceScope)
     const started = await this.withTicket(correlation, options.signal, operation, ticket =>
       this.central.startScan({
         owner: `${this.owner}/scan-${ordinal}`,
         serviceUuids: nativeFilter.serviceUuids.map(uuid => String(uuid)),
         duplicatePolicy: options.duplicatePolicy,
+        ...(options.terminalEvidenceScope === undefined
+          ? {}
+          : {
+              terminalEvidenceScope: options.terminalEvidenceScope,
+              ...(terminalEvidenceScopeBytes === undefined
+                ? {}
+                : { terminalEvidenceScopeUtf16le: terminalEvidenceScopeBytes }),
+              terminalEvidenceOperation: this.op('scan.terminated')
+            }),
         ...(options.platform?.kind === 'winrt'
           ? {
               winrtScanningMode: options.platform.mode,
@@ -2582,7 +3390,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     this.scanGroup = group
     const consumer = this.addScanConsumer(group, ownerLeaseId, options, options.filter)
-    this.pumpScanObservations(group).catch(error => this.failScanSource(group, 'scan-pump-failed', error))
+    this.ensureScanPump()
     return this.scanLease(group, consumer)
   }
 
@@ -2668,7 +3476,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     consumer.removeAbort()
     if (consumer.leaseId !== group.ownerLeaseId) {
       group.consumers.delete(String(consumer.leaseId))
-      consumer.stream.closeWithReason('owner-released')
+      if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
       return Object.freeze({ state: 'released', failures: Object.freeze([]) })
     }
     if (group.stopResult === null) {
@@ -2696,40 +3504,72 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     group.state = 'stopped'
     for (const current of group.consumers.values()) {
       current.removeAbort()
-      current.stream.closeWithReason('owner-released')
+      if (!current.stream.isTerminal()) current.stream.finishWithReason('owner-released')
     }
     group.consumers.clear()
     if (this.scanGroup === group) this.scanGroup = null
     return Object.freeze({ state: 'released', failures: Object.freeze([]) })
   }
 
-  private async pumpScanObservations(group: ScanGroup): Promise<void> {
-    while (!this.destroyed && this.scanGroup === group) {
+  /** Start the one provider-owned reader of the core's process-wide scan queue. */
+  private ensureScanPump(): void {
+    if (this.destroyed || this.scanPumpRunning !== null || this.scanGroup === null) return
+    const pump = this.pumpScanObservations()
+    this.scanPumpRunning = pump
+    pump
+      .catch(error => {
+        this.noteBackgroundFailure('scan-pump-failed', error)
+        this.noteDiagnostic('scan-pump-failed', 'the provider scan pump failed outside a scan take')
+      })
+      .finally(() => {
+        this.scanPumpRunning = null
+        // A stop can make the prior turn retire while a new scan starts. The
+        // successor must still get the sole reader rather than waiting for a
+        // future start that may never happen.
+        this.ensureScanPump()
+      })
+  }
+
+  private noteForeignScanObservation(group: ScanGroup, scanOperationId: string): void {
+    group.foreignRefused += 1
+    this.noteDiagnostic('scan-observation-foreign', 'an observation queued for another scan was refused', {
+      scanOperationId: String(scanOperationId).slice(0, 128),
+      refused: group.foreignRefused
+    })
+  }
+
+  private async pumpScanObservations(): Promise<void> {
+    while (!this.destroyed) {
+      const groupAtTake = this.scanGroup
+      if (groupAtTake === null) return
       const polledAt = this.wakeSequence
       let taken: DesktopRustCoreScanObservation | null
       try {
         taken = await this.central.takeScanObservation()
       } catch (error) {
-        await this.failScanSource(group, 'scan-take-failed', error)
-        return
+        await this.failScanSource(groupAtTake, 'scan-pump-failed', error)
+        continue
       }
       if (taken === null || taken === undefined) {
         await this.pumpWait(polledAt)
         continue
       }
+      const group = this.scanGroup
+      if (group === null || group.state !== 'active') continue
       // 4.x reported advertisements only while a scan was active: a
       // sighting the core queued for another scan is never attributed to
       // this one (LEGACY-AUDIT-5 S2). It is refused loudly, not delivered.
       if (taken.scanOperationId !== group.coreOperationId) {
-        group.foreignRefused += 1
-        this.noteDiagnostic('scan-observation-foreign', 'an observation queued for another scan was refused', {
-          scanOperationId: String(taken.scanOperationId).slice(0, 128),
-          refused: group.foreignRefused
-        })
+        this.noteForeignScanObservation(group, taken.scanOperationId)
         continue
       }
       const next = taken.advertisement
-      await this.ensureAddressType(next)
+      try {
+        await this.ensureAddressType(next)
+      } catch (error) {
+        await this.failScanSource(group, 'scan-pump-failed', error)
+        continue
+      }
       let observation: AdvertisementObservation<string>
       try {
         observation = this.mapObservation(next, group.scanSessionId, taken.ageMs)
@@ -2738,7 +3578,15 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         this.countMalformedObservation(group)
         continue
       }
-      this.deliverObservation(group, observation, next.peerId)
+      // Address resolution may await. Never emit an old scan's observation
+      // into a group that stopped or was replaced while that work ran.
+      const current = this.scanGroup
+      if (current === null || current.state !== 'active') continue
+      if (taken.scanOperationId !== current.coreOperationId) {
+        this.noteForeignScanObservation(current, taken.scanOperationId)
+        continue
+      }
+      this.deliverObservation(current, observation, next.peerId)
     }
   }
 
@@ -2748,8 +3596,17 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * no stream stays open on a pump that will never deliver again.
    */
   private async failScanSource(group: ScanGroup, code: string, error: unknown): Promise<void> {
-    if (this.destroyed || this.scanGroup !== group) return
+    if (this.destroyed) return
     this.noteBackgroundFailure(code, error)
+    if (this.scanGroup !== group) {
+      this.noteDiagnostic(
+        code,
+        this.scanGroup === null
+          ? 'the provider scan pump failed after its scan stopped'
+          : 'the provider scan pump failed after ownership moved to another scan'
+      )
+      return
+    }
     for (const consumer of group.consumers.values()) consumer.stream.closeWithReason('source-failed')
     const owner = group.consumers.get(String(group.ownerLeaseId))
     if (owner === undefined) return
@@ -3588,7 +4445,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * every consumer ends — `source-failed` with the OS's words when the OS
    * reported an error, `closed` otherwise — and a new scan can start.
    */
-  private applyScanTerminal(event: DesktopRustCoreScanTerminalEvent): void {
+  private async applyScanTerminal(event: DesktopRustCoreScanTerminalEvent): Promise<void> {
     if (event.kind === 'closed') {
       this.failCoreEventSource('scan-terminal-events-closed')
       return
@@ -3601,6 +4458,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     const group = this.scanGroup
     if (group === null || group.coreOperationId !== event.operationId) return
+    const owner = group.consumers.get(String(group.ownerLeaseId))
     this.scanGroup = null
     group.state = 'stopped'
     const error =
@@ -3612,9 +4470,55 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             metadata: Object.freeze({})
           }).normalized
         : null
+    const reason = error === null ? 'closed' : 'source-failed'
+    const evidence = await this.commitPendingTerminalEvidence(
+      event.terminalEvidence,
+      'scan',
+      owner?.options.terminalEvidenceScope ?? null,
+      Object.freeze({
+        kind: 'terminal',
+        reason,
+        droppedItems: resourceCount(0),
+        droppedBytes: resourceCount(0),
+        replacedItems: resourceCount(0),
+        ...(error === null ? {} : { error })
+      }),
+      this.op('scan.terminated')
+    )
     for (const consumer of group.consumers.values()) {
       consumer.removeAbort()
-      consumer.stream.closeWithReason(error === null ? 'closed' : 'source-failed', error)
+      consumer.stream.closeWithReason(reason, error, consumer === owner ? evidence : undefined)
+    }
+    group.consumers.clear()
+  }
+
+  /**
+   * A source terminal reached native dispatch, but its required durable stage
+   * failed. This is a scan-local source failure: do not turn it into the
+   * generic lag reconciliation path, which would erase the actual storage
+   * refusal and report a fabricated missed-terminal cause.
+   */
+  private failScanTerminalEvidenceStage(event: DesktopRustCoreScanTerminalEvent): void {
+    const group = this.scanGroup
+    if (group === null || group.state !== 'active') {
+      this.noteDiagnostic(
+        'scan-terminal-evidence-stage-without-group',
+        'the core reported a terminal evidence stage failure without its scan group'
+      )
+      return
+    }
+    if (typeof event.stageFailure !== 'string' || event.stageFailure.length === 0) {
+      this.failCoreEventSource('scan-terminal-evidence-stage-malformed')
+      return
+    }
+    const normalized = markTerminalEvidenceStageFailure(
+      desktopRustCoreError(new Error(event.stageFailure), this.op('scan.terminal-evidence-stage')).normalized
+    )
+    this.scanGroup = null
+    group.state = 'stopped'
+    for (const consumer of group.consumers.values()) {
+      consumer.removeAbort()
+      consumer.stream.closeWithReason('source-failed', normalized)
     }
     group.consumers.clear()
   }
@@ -3631,7 +4535,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     })
     const group = this.scanGroup
     if (group === null || group.state !== 'active' || this.destroyed) return
-    if (this.central.activeScanId() === group.coreOperationId) return
+    if (this.central.operationalScanId() === group.coreOperationId) return
     this.scanGroup = null
     group.state = 'stopped'
     const error = contractError('scan.start-failed', 'scan', this.op('scan.terminated'), {
@@ -4107,17 +5011,24 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     return null
   }
 
-  private liveLinkHolders(nativePeerId: string, except: ConnectionRecord | null): ConnectionRecord[] {
-    return [...this.connectionsById.values()].filter(
-      record =>
-        record !== except &&
-        record.nativePeerId === nativePeerId &&
-        (record.state === 'connected' || record.state === 'disconnecting')
-    )
-  }
-
-  private joinSharedLink(peerId: PeerId<string>, shared: ConnectionRecord): ConnectionLease<string, string, string> {
+  private async joinSharedLink(
+    peerId: PeerId<string>,
+    shared: ConnectionRecord
+  ): Promise<ConnectionLease<string, string, string>> {
     const platform = this.profile.platform
+    const lease = `${platform}-core-lease-${this.nextOrdinal()}`
+    if (typeof this.central.retainConnectionLease !== 'function')
+      throw contractError('protocol.incompatible', 'boundary', this.op('connection.connect'))
+    try {
+      await this.central.retainConnectionLease({
+        peerId: shared.nativePeerId,
+        sourceLease: shared.lease,
+        destinationLease: lease,
+        connectionGeneration: shared.coreGeneration
+      })
+    } catch (error) {
+      throw desktopRustCoreError(error, this.op('connection.connect'))
+    }
     const scope = `${platform}-rust-core`
     const linkOrdinal = this.nextConnection
     this.nextConnection += 1
@@ -4138,7 +5049,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     })
     const record: ConnectionRecord = {
       nativePeerId: shared.nativePeerId,
-      lease: shared.lease,
+      lease,
       coreGeneration: shared.coreGeneration,
       path,
       state: 'connected',
@@ -4221,19 +5132,24 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       return Object.freeze({ state: 'release-failed', failures: Object.freeze(childFailures) })
     }
     if (!['connected', 'disconnecting'].includes(record.state)) {
-      // Multiple public owners can share one native lease. A logical owner
-      // whose child cleanup is retried must not retire its survivor's lease.
-      // A distinct newer lease does not own this record's cleanup debt.
-      if (
-        this.liveLinkHolders(record.nativePeerId, record).some(
-          holder => holder.lease === record.lease && holder.coreGeneration === record.coreGeneration
-        )
-      ) {
-        return Object.freeze({ state: 'released', failures: Object.freeze([]) })
-      }
       // Logical loss does not retire native discovery/session cleanup debt.
       // The core visits only the exact terminal owner without disconnecting
       // a newer live generation; refusal keeps this public retry route alive.
+      const sameGenerationStillLive = [...this.connectionsById.values()].some(
+        candidate =>
+          candidate !== record &&
+          candidate.nativePeerId === record.nativePeerId &&
+          candidate.coreGeneration === record.coreGeneration &&
+          (candidate.state === 'connected' || candidate.state === 'disconnecting')
+      )
+      // A terminal owner is already locally retired. If a sibling lease still
+      // owns this native generation, sending the retired owner's release to
+      // the core would make the terminal cleanup compete with that live
+      // owner. The surviving lease is the only route that may release this
+      // generation; keep the terminal record's completed cleanup idempotent.
+      if (sameGenerationStillLive) {
+        return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+      }
       try {
         const answer = await this.central.disconnect({ peerId: record.nativePeerId, lease: record.lease })
         record.releasePlatform = parseDesktopRustCoreReleaseReport(answer, {
@@ -4254,11 +5170,6 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         failures: Object.freeze([]),
         ...(record.releasePlatform === undefined ? {} : { platform: record.releasePlatform })
       })
-    }
-    if (this.liveLinkHolders(record.nativePeerId, record).length > 0) {
-      record.state = 'disconnected'
-      this.invalidateConnectionState(record, 'connection-lost')
-      return Object.freeze({ state: 'released', failures: Object.freeze([]) })
     }
     try {
       const answer = await this.central.disconnect({ peerId: record.nativePeerId, lease: record.lease })
@@ -4473,6 +5384,782 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     return record
   }
 
+  private reserveOrderedRecordingMarker(base: DatabasePath<string, string, string>, recordingId: string) {
+    const operation = this.op('gatt.ordered-recording-marker')
+    this.assertOperational(operation)
+    if (!isRecordingId(recordingId)) throw contractError('argument.invalid', 'gatt', operation)
+    if (
+      !this.processOwnedRecording ||
+      this.central.orderedMarkerWireVersion?.call(this.central) !== 2 ||
+      this.central.orderedMarkerWriteSupported?.call(this.central) !== true ||
+      !this.central.reserveRecordingMarkerWrite ||
+      !this.central.startRecordingMarkerWrite ||
+      !this.central.recordingMarkerWriteStatus ||
+      !this.central.cancelRecordingMarkerWrite ||
+      !this.central.forgetRecordingMarkerWrite
+    )
+      throw contractError('capability.unsupported', 'gatt', operation)
+    const session = this.orderedRecorderSessions.get(recordingId)
+    if (!session || !session.active || session.databaseId !== String(base.databaseId))
+      throw contractError('ownership.denied', 'gatt', operation)
+    const record = this.connectionForPath(base, operation)
+    if (record.state !== 'connected') throw contractError('gatt.stale-handle', 'gatt', operation)
+    const central = this.central
+    const markerTransport: Pick<
+      DesktopRustCoreCentral,
+      | 'reserveOrderedMarkerWrite'
+      | 'startOrderedMarkerWrite'
+      | 'orderedMarkerWriteStatus'
+      | 'cancelOrderedMarkerWrite'
+      | 'forgetOrderedMarkerWrite'
+    > = {
+      reserveOrderedMarkerWrite: options => {
+        const invoke = central.reserveRecordingMarkerWrite
+        if (!invoke) throw contractError('capability.unsupported', 'gatt', operation)
+        return invoke.call(central, {
+          wireVersion: 2,
+          recordingId,
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          reservationKey: options.reservationKey
+        })
+      },
+      startOrderedMarkerWrite: options => {
+        const invoke = central.startRecordingMarkerWrite
+        if (!invoke) throw contractError('capability.unsupported', 'gatt', operation)
+        return invoke.call(central, {
+          wireVersion: 2,
+          recordingId,
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          reservationId: options.reservationId,
+          selector: options.selector,
+          value: options.value,
+          withResponse: options.withResponse
+        })
+      },
+      orderedMarkerWriteStatus: options => {
+        const invoke = central.recordingMarkerWriteStatus
+        if (!invoke) throw contractError('capability.unsupported', 'gatt', operation)
+        return invoke.call(central, {
+          wireVersion: 2,
+          recordingId,
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          reservationId: options.reservationId
+        })
+      },
+      cancelOrderedMarkerWrite: options => {
+        const invoke = central.cancelRecordingMarkerWrite
+        if (!invoke) throw contractError('capability.unsupported', 'gatt', operation)
+        return invoke.call(central, {
+          wireVersion: 2,
+          recordingId,
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          reservationId: options.reservationId
+        })
+      },
+      forgetOrderedMarkerWrite: options => {
+        const invoke = central.forgetRecordingMarkerWrite
+        if (!invoke) throw contractError('capability.unsupported', 'gatt', operation)
+        return invoke.call(central, {
+          wireVersion: 2,
+          recordingId,
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          reservationId: options.reservationId
+        })
+      }
+    }
+    return desktopMarkerReservations(
+      markerTransport,
+      { wireVersion: 2, peerId: '', collectionId: '' },
+      (target: CharacteristicPath<string, string, string, string, string, 'current'>) =>
+        this.selectorFor(this.resolveCharacteristic(base, target, operation), operation),
+      () => this.now(),
+      () => String(this.mintedCorrelation())
+    )()
+  }
+
+  private reserveOrderedRecordingReclaim(
+    base: DatabasePath<string, string, string>,
+    handoff: OrderedRecordingRecoveryHandle
+  ) {
+    const operation = this.op('gatt.ordered-recording-reclaim')
+    if (this.central.orderedRecordingReclaimSupported?.call(this.central) !== true)
+      throw contractError('capability.unsupported', 'gatt', operation)
+    if (this.central.orderedRecordingReclaimWireVersion?.call(this.central) !== 2)
+      throw contractError('protocol.incompatible', 'boundary', operation)
+    const authority = this.orderedRecoveryHandles.get(handoff)
+    const invoke = this.central.orderedRecordingReclaim
+    const confirm = this.central.confirmOrderedRecordingReclaim
+    if (!authority || !invoke || !confirm) throw contractError('ownership.denied', 'gatt', operation)
+    const session = this.orderedRecorderSessions.get(authority.recordingId)
+    const record = this.connectionForPath(base, operation)
+    if (
+      !session ||
+      session.startHandle !== authority.startHandle ||
+      !session.active ||
+      !session.recovery ||
+      record.nativePeerId !== session.peerId ||
+      record.state !== 'connected'
+    )
+      throw contractError('ownership.denied', 'gatt', operation)
+    if (authority.busy) throw contractError('lifecycle.invalid-state', 'cleanup', operation)
+    let recovery: unknown
+    try {
+      recovery = JSON.parse(session.recovery)
+    } catch {
+      throw contractError('protocol.malformed', 'boundary', operation)
+    }
+    if (typeof recovery !== 'object' || recovery === null)
+      throw contractError('protocol.malformed', 'boundary', operation)
+    const capability: unknown = Reflect.get(recovery, 'capability')
+    if (typeof capability !== 'string') throw contractError('protocol.malformed', 'boundary', operation)
+    const call = async (
+      action:
+        | 'next'
+        | 'reserve'
+        | 'start'
+        | 'status'
+        | 'commit'
+        | 'cancel'
+        | 'release'
+        | 'retire'
+        | 'ack-retirement'
+        | 'forget-retirement',
+      callerKey: string,
+      requestId?: string
+    ) => {
+      try {
+        return await invoke.call(this.central, action, {
+          wireVersion: 2,
+          recordingId: authority.recordingId,
+          capability,
+          lease: record.lease,
+          callerKey,
+          ...(requestId === undefined ? {} : { requestId })
+        })
+      } catch (error) {
+        throw desktopRustCoreError(error, operation)
+      }
+    }
+    const receipt = async (
+      action: 'reserve' | 'start' | 'status' | 'commit' | 'cancel' | 'release',
+      id: string,
+      key: string
+    ): Promise<OrderedRecordingReclaimReceipt> => {
+      let raw: unknown
+      try {
+        raw = JSON.parse(await call(action, key, id))
+      } catch (error) {
+        if (error instanceof BackendContractError) throw error
+        throw contractError('protocol.malformed', 'boundary', operation)
+      }
+      if (
+        typeof raw !== 'object' ||
+        raw === null ||
+        Array.isArray(raw) ||
+        Object.keys(raw).sort().join(',') !== 'error,mappingCommitted,state'
+      )
+        throw contractError('protocol.malformed', 'boundary', operation)
+      const state: unknown = Reflect.get(raw, 'state')
+      const committed: unknown = Reflect.get(raw, 'mappingCommitted')
+      const failure: unknown = Reflect.get(raw, 'error')
+      if (
+        !(
+          state === 'reserved' ||
+          state === 'pending' ||
+          state === 'ready' ||
+          state === 'committed' ||
+          state === 'releasing' ||
+          state === 'release-failed' ||
+          state === 'released' ||
+          state === 'failed' ||
+          state === 'retired'
+        ) ||
+        typeof committed !== 'boolean' ||
+        (state === 'failed' || state === 'release-failed' ? typeof failure !== 'string' : failure !== null) ||
+        (typeof failure === 'string' && parseDesktopRustCoreWireError(failure) === null) ||
+        (state === 'committed' && !committed) ||
+        (['reserved', 'pending', 'ready', 'failed'].includes(state) && committed)
+      )
+        throw contractError('protocol.malformed', 'boundary', operation)
+      const result: OrderedRecordingReclaimReceipt = {
+        state,
+        mappingCommitted: committed,
+        error: typeof failure === 'string' ? desktopRustCoreError(new Error(failure), operation).normalized : null
+      }
+      if (committed && this.orderedRecorderSessions.get(authority.recordingId) === session)
+        session.databaseId = String(base.databaseId)
+      return result
+    }
+    authority.busy = true
+    const reserve = createOrderedRecordingReclaimReservations<OrderedRecordingReclaimReceipt>(
+      {
+        next: async key => {
+          const response = await call('next', key)
+          if (isCanonicalIngressOrdinal(response)) return response
+          let raw: unknown
+          try {
+            raw = JSON.parse(response)
+          } catch {
+            throw contractError('protocol.malformed', 'boundary', operation)
+          }
+          if (
+            typeof raw !== 'object' ||
+            raw === null ||
+            Array.isArray(raw) ||
+            Object.keys(raw).sort().join(',') !== 'error,state' ||
+            Reflect.get(raw, 'state') !== 'not-reserved'
+          )
+            throw contractError('protocol.malformed', 'boundary', operation)
+          const failure: unknown = Reflect.get(raw, 'error')
+          if (typeof failure !== 'string' || parseDesktopRustCoreWireError(failure) === null)
+            throw contractError('protocol.malformed', 'boundary', operation)
+          return { state: 'not-reserved', error: desktopRustCoreError(new Error(failure), operation).normalized }
+        },
+        reserve: async (id, key) => {
+          if ((await receipt('reserve', id, key)).state !== 'reserved')
+            throw contractError('protocol.malformed', 'boundary', operation)
+        },
+        start: (id, key) => receipt('start', id, key),
+        status: (id, key) => receipt('status', id, key),
+        commit: (id, key) => receipt('commit', id, key),
+        cancel: (id, key) => receipt('cancel', id, key),
+        release: (id, key) => receipt('release', id, key),
+        retire: async (id, key) => {
+          if ((await call('retire', key, id)) !== '{"state":"retired"}')
+            throw contractError('protocol.malformed', 'boundary', operation)
+        },
+        acknowledgeRetirement: async (id, key) => {
+          if ((await call('ack-retirement', key, id)) !== '{"state":"acknowledged"}')
+            throw contractError('protocol.malformed', 'boundary', operation)
+        },
+        forgetRetirement: async (id, key) => {
+          if ((await call('forget-retirement', key, id)) !== '{"state":"forgotten"}')
+            throw contractError('protocol.malformed', 'boundary', operation)
+          confirm.call(this.central, {
+            wireVersion: 2,
+            recordingId: authority.recordingId,
+            capability,
+            lease: record.lease,
+            callerKey: key,
+            requestId: id
+          })
+        }
+      },
+      () => String(this.mintedCorrelation())
+    )
+    const handle = reserve()
+    return Object.freeze({
+      ...handle,
+      retire: async () => {
+        await handle.retire()
+        authority.busy = false
+      }
+    })
+  }
+
+  private reserveOrderedRecordingStart(base: DatabasePath<string, string, string>) {
+    const operation = this.op('gatt.ordered-recording')
+    this.assertOperational(operation)
+    if (!this.processOwnedRecording) throw contractError('capability.unsupported', 'gatt', operation)
+    if (this.orderedRecorderSessions.size >= 256) throw contractError('lifecycle.invalid-state', 'cleanup', operation)
+    const reserve = this.central.reserveOrderedRecordingStart
+    const start = this.central.startOrderedRecording
+    const status = this.central.orderedRecordingStartStatus
+    const retire = this.central.retireOrderedRecordingStart
+    const issueRecovery = this.central.issueOrderedRecordingRecovery
+    if (
+      !reserve ||
+      !start ||
+      !status ||
+      !retire ||
+      !issueRecovery ||
+      !this.central.forgetOrderedRecordingSession ||
+      this.central.orderedGroupWireVersion?.call(this.central) !== 5 ||
+      this.central.orderedMetadataVersion?.call(this.central) !== 2
+    )
+      throw contractError('capability.unsupported', 'gatt', operation)
+    assertDesktopOrderedReceiptVersion(this.central, operation)
+    const startHandle = reserve.call(this.central)
+    if (!isCanonicalIngressOrdinal(startHandle)) throw contractError('protocol.malformed', 'boundary', operation)
+    let request: { readonly id: string; readonly count: number } | null = null
+    const remember = async (
+      result: import('../../core/ordered-recording-start').OrderedRecordingStartResult,
+      id: string
+    ) => {
+      const session = this.orderedRecorderSessions.get(id)
+      if (result.kind === 'prepare-failed') {
+        if (session?.startHandle === startHandle) this.orderedRecorderSessions.delete(id)
+        return result
+      }
+      if (!session || session.startHandle !== startHandle) throw contractError('ownership.denied', 'gatt', operation)
+      if (result.kind === 'started' && result.receipt.state === 'active' && !session.finished) {
+        if (session.recovery === null) {
+          const raw = parse(await issueRecovery.call(this.central, startHandle))
+          if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+            throw contractError('protocol.malformed', 'boundary', operation)
+          const capability: unknown = Reflect.get(raw, 'capability')
+          if (
+            Object.keys(raw).sort().join(',') !== 'capability,collectionId,peerId,recordingId' ||
+            Reflect.get(raw, 'recordingId') !== id ||
+            Reflect.get(raw, 'collectionId') !== result.receipt.collectionId ||
+            Reflect.get(raw, 'peerId') !== session.peerId ||
+            typeof capability !== 'string' ||
+            !/^[0-9a-f]{64}$/.test(capability)
+          )
+            throw contractError('protocol.malformed', 'boundary', operation)
+          if (!session.finished && this.orderedRecorderSessions.get(id) === session)
+            session.recovery = JSON.stringify(raw)
+        }
+        if (!session.finished && this.orderedRecorderSessions.get(id) === session) session.active = true
+      }
+      return result
+    }
+    const parse = (value: string): unknown => {
+      try {
+        return JSON.parse(value)
+      } catch {
+        throw contractError('protocol.malformed', 'boundary', operation)
+      }
+    }
+    return {
+      start: async (
+        members: Parameters<NonNullable<GattDatabase<string, string, string>['subscribeOrdered']>>[0],
+        options: import('../../backend-contract/operations').RecordedSubscriptionOptions
+      ) => {
+        assertDesktopOrderedReceiptVersion(this.central, operation)
+        const database = this.databases.get(String(base.databaseId))
+        if (!database || database.nativeConnectionGeneration === null || database.nativeDatabaseGeneration === null)
+          throw contractError('gatt.stale-handle', 'gatt', operation)
+        const connectionGeneration = database.nativeConnectionGeneration
+        const databaseGeneration = database.nativeDatabaseGeneration
+        if (
+          !options.recording ||
+          !isRecordingId(options.recording.id) ||
+          !Number.isSafeInteger(options.recording.maxBytes) ||
+          options.recording.maxBytes < MIN_RECORDING_BYTES ||
+          options.recording.maxBytes > MAX_RECORDING_BYTES ||
+          !Number.isSafeInteger(options.recording.maxRecords) ||
+          options.recording.maxRecords < MIN_RECORDING_RECORDS ||
+          options.recording.maxRecords > MAX_RECORDING_RECORDS
+        )
+          throw contractError('argument.invalid', 'gatt', operation)
+        const record = this.connectionForPath(base, operation)
+        if (record.state !== 'connected' || record.coreGeneration !== database.nativeConnectionGeneration)
+          throw contractError('gatt.stale-handle', 'gatt', operation)
+        if (
+          !members.length ||
+          new Set(members.map(member => member.memberId)).size !== members.length ||
+          members.some(member => !member.memberId)
+        )
+          throw contractError('argument.invalid', 'gatt', operation)
+        const nativeMembers = members.map((member, index) => {
+          const path = this.resolveCharacteristic(base, member.path, operation)
+          this.assertDeliveryMode(path, member.deliveryMode, operation)
+          const requirement = this.coreRequirement(member.deliveryMode)
+          const preference =
+            member.deliveryMode === 'prefer-notification'
+              ? 'notification'
+              : member.deliveryMode === 'prefer-indication'
+                ? 'indication'
+                : null
+          return {
+            memberId: String(index),
+            publicMemberId: member.memberId,
+            selector: this.selectorFor(path, operation),
+            ...(requirement === null ? {} : { deliveryMode: requirement }),
+            ...(preference === null ? {} : { preferredDeliveryMode: preference })
+          }
+        })
+        if (request && (request.id !== options.recording.id || request.count !== members.length))
+          throw contractError('argument.invalid', 'gatt', operation)
+        const previous = this.orderedRecorderSessions.get(options.recording.id)
+        if (previous && previous.startHandle !== startHandle) throw contractError('ownership.denied', 'gatt', operation)
+        if (!previous && this.orderedRecorderSessions.size >= 256)
+          throw contractError('lifecycle.invalid-state', 'cleanup', operation)
+        if (!previous)
+          this.orderedRecorderSessions.set(options.recording.id, {
+            databaseId: String(base.databaseId),
+            startHandle,
+            peerId: record.nativePeerId,
+            active: false,
+            finished: false,
+            receiptRetired: false,
+            recovery: null,
+            handoff: null
+          })
+        request = { id: options.recording.id, count: members.length }
+        const text = await this.withTicket(
+          String(this.mintedCorrelation()),
+          options.signal,
+          operation,
+          ticket =>
+            start.call(this.central, {
+              startHandle,
+              wireVersion: 5,
+              metadataVersion: 2,
+              recordingId: options.recording.id,
+              recordingMaxBytes: options.recording.maxBytes,
+              recordingMaxRecords: options.recording.maxRecords,
+              peerId: record.nativePeerId,
+              lease: record.lease,
+              connectionGeneration,
+              databaseGeneration,
+              members: nativeMembers,
+              maxItems: options.delivery.itemCapacity,
+              maxBytes: options.delivery.byteCapacity,
+              maxControls: options.delivery.reservedControlCapacity,
+              ticket,
+              ...this.budget(options)
+            }),
+          record.nativePeerId
+        )
+        return await remember(
+          parseOrderedRecordingStartResult(parse(text), options.recording.id, members.length, 2),
+          options.recording.id
+        )
+      },
+      status: async () => {
+        const raw = parse(status.call(this.central, startHandle))
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+          throw contractError('protocol.malformed', 'boundary', operation)
+        const state = Reflect.get(raw, 'state')
+        const keys = Object.keys(raw)
+        if ((state === 'pending' || state === 'unknown' || state === 'retired') && keys.length === 1) return { state }
+        if (state === 'failed' && keys.length === 2 && Reflect.get(raw, 'receipt') === null) return { state }
+        if (state === 'result' && keys.length === 2 && request)
+          return {
+            state,
+            result: await remember(
+              parseOrderedRecordingStartResult(Reflect.get(raw, 'result'), request.id, request.count, 2),
+              request.id
+            )
+          }
+        throw contractError('protocol.malformed', 'boundary', operation)
+      },
+      retire: async () => {
+        if (request && this.orderedRecorderSessions.get(request.id)?.recovery === null) {
+          const raw = parse(status.call(this.central, startHandle))
+          if (
+            typeof raw === 'object' &&
+            raw !== null &&
+            !Array.isArray(raw) &&
+            Reflect.get(raw, 'state') === 'result'
+          ) {
+            await remember(
+              parseOrderedRecordingStartResult(Reflect.get(raw, 'result'), request.id, request.count, 2),
+              request.id
+            )
+          }
+        }
+        await retire.call(this.central, startHandle)
+        if (request) {
+          const session = this.orderedRecorderSessions.get(request.id)
+          if (session?.startHandle === startHandle) {
+            session.receiptRetired = true
+            if (session.finished) this.orderedRecorderSessions.delete(request.id)
+          }
+        }
+      },
+      ...(this.central.orderedRecordingReclaim &&
+      this.central.confirmOrderedRecordingReclaim &&
+      this.central.orderedRecordingReclaimSupported?.call(this.central) === true &&
+      this.central.orderedRecordingReclaimWireVersion?.call(this.central) === 2
+        ? {
+            recoveryHandle: (): OrderedRecordingRecoveryHandle => {
+              const session = request && this.orderedRecorderSessions.get(request.id)
+              if (!request || !session || session.startHandle !== startHandle || !session.active || !session.recovery)
+                throw contractError('ownership.denied', 'gatt', operation)
+              if (session.handoff === null) {
+                session.handoff = Object.freeze({ kind: 'ordered-recording-recovery' })
+                this.orderedRecoveryHandles.set(session.handoff, { recordingId: request.id, startHandle, busy: false })
+              }
+              return session.handoff
+            }
+          }
+        : {}),
+      ...(this.central.orderedMarkerWireVersion?.call(this.central) === 2 &&
+      this.central.orderedMarkerWriteSupported?.call(this.central) === true &&
+      this.central.reserveRecordingMarkerWrite &&
+      this.central.startRecordingMarkerWrite &&
+      this.central.recordingMarkerWriteStatus &&
+      this.central.cancelRecordingMarkerWrite &&
+      this.central.forgetRecordingMarkerWrite
+        ? {
+            reserveMarkerWrite: () => {
+              if (!request) throw contractError('lifecycle.invalid-state', 'gatt', operation)
+              const recordingId = request.id
+              return this.reserveOrderedRecordingMarker(base, recordingId)
+            }
+          }
+        : {})
+    }
+  }
+
+  private async subscribeOrdered(
+    base: DatabasePath<string, string, string>,
+    members: readonly {
+      readonly memberId: string
+      readonly path: CharacteristicPath<string, string, string, string, string, 'current'>
+      readonly deliveryMode: NonNullable<SubscriptionOptions['deliveryMode']>
+    }[],
+    options: SubscriptionOptions
+  ): Promise<import('../../core/ordered-notification-contract').OrderedNotificationSetup> {
+    const operation = this.op('gatt.subscribe-ordered')
+    this.assertOperational(operation)
+    if (options.signal?.aborted) throw contractError('operation.aborted', 'gatt', operation)
+    if (options.deadline !== null && options.deadline !== undefined && options.deadline <= this.now())
+      throw contractError('operation.timed-out', 'gatt', operation)
+    const version = this.central.orderedGroupWireVersion
+    const reserve = this.central.reserveOrderedGroup
+    const open = this.central.openOrderedGroup
+    const status = this.central.orderedGroupStatus
+    if (
+      version === undefined ||
+      reserve === undefined ||
+      open === undefined ||
+      status === undefined ||
+      this.central.pollOrderedGroup === undefined ||
+      this.central.acknowledgeOrderedDelivery === undefined ||
+      this.central.discardOrderedDelivery === undefined ||
+      this.central.pollOrderedDiscardReceipt === undefined ||
+      this.central.acknowledgeOrderedDiscardReceipt === undefined ||
+      this.central.closeOrderedGroup === undefined ||
+      this.central.acknowledgeOrderedGroup === undefined ||
+      this.central.forgetOrderedGroup === undefined ||
+      version.call(this.central) !== 5 ||
+      this.central.orderedMetadataVersion?.call(this.central) !== 2
+    )
+      throw contractError('protocol.incompatible', 'boundary', operation)
+    if (
+      members.length === 0 ||
+      new Set(members.map(member => member.memberId)).size !== members.length ||
+      members.some(member => member.memberId.length === 0)
+    )
+      throw contractError('argument.invalid', 'gatt', operation)
+    const database = this.databases.get(String(base.databaseId))
+    if (
+      database === undefined ||
+      database.nativeConnectionGeneration === null ||
+      database.nativeDatabaseGeneration === null
+    )
+      throw contractError('protocol.incompatible', 'boundary', `${operation}.discovery-generation`)
+    const nativeConnectionGeneration = database.nativeConnectionGeneration
+    const nativeDatabaseGeneration = database.nativeDatabaseGeneration
+    const record = this.connectionForPath(base, operation)
+    if (record.state !== 'connected' || record.coreGeneration !== database.nativeConnectionGeneration)
+      throw contractError('gatt.stale-handle', 'gatt', operation)
+    const nativeMembers = members.map((member, index) => {
+      const path = this.resolveCharacteristic(base, member.path, operation)
+      this.assertDeliveryMode(path, member.deliveryMode, operation)
+      const requirement = this.coreRequirement(member.deliveryMode)
+      const preference =
+        member.deliveryMode === 'prefer-notification'
+          ? 'notification'
+          : member.deliveryMode === 'prefer-indication'
+            ? 'indication'
+            : null
+      return {
+        memberId: String(index),
+        selector: this.selectorFor(path, operation),
+        ...(requirement === null ? {} : { deliveryMode: requirement }),
+        ...(preference === null ? {} : { preferredDeliveryMode: preference })
+      }
+    })
+    let collectionId: string
+    try {
+      collectionId = reserve.call(this.central, record.nativePeerId)
+    } catch (error) {
+      throw desktopRustCoreError(error, `${operation}.reserve`)
+    }
+    if (!isCanonicalIngressOrdinal(collectionId))
+      throw contractError('protocol.malformed', 'boundary', `${operation}.collection`)
+    const stream = new DesktopOrderedStream(
+      options.delivery,
+      this.central,
+      record.nativePeerId,
+      collectionId,
+      String(base.connectionGeneration),
+      String(base.databaseGeneration),
+      members.map(member => member.memberId)
+    )
+    const close = async () => {
+      const cleanup = await stream.close()
+      if (cleanup.group.state === 'released' && cleanup.members.every(member => member.cleanup.state === 'released'))
+        record.acquiredClosers.delete(closeForConnection)
+      return cleanup
+    }
+    const discard = async () => {
+      const cleanup = await stream.discard()
+      if (cleanup.group.state === 'released' && cleanup.members.every(member => member.cleanup.state === 'released'))
+        record.acquiredClosers.delete(closeForConnection)
+      return cleanup
+    }
+    const closeForConnection = async (): Promise<CleanupRecord> => (await close()).group
+    record.acquiredClosers.add(closeForConnection)
+    const markerSupported =
+      this.central.orderedMarkerWireVersion?.call(this.central) === 2 &&
+      this.central.orderedMarkerWriteSupported?.call(this.central) === true &&
+      this.central.reserveOrderedMarkerWrite !== undefined &&
+      this.central.startOrderedMarkerWrite !== undefined &&
+      this.central.orderedMarkerWriteStatus !== undefined &&
+      this.central.cancelOrderedMarkerWrite !== undefined &&
+      this.central.forgetOrderedMarkerWrite !== undefined
+    const reserveMarker = markerSupported
+      ? desktopMarkerReservations(
+          this.central,
+          { wireVersion: 2, peerId: record.nativePeerId, collectionId },
+          (target: CharacteristicPath<string, string, string, string, string, 'current'>) =>
+            this.selectorFor(this.resolveCharacteristic(base, target, operation), operation),
+          () => this.now(),
+          () => String(this.mintedCorrelation())
+        )
+      : null
+    const publicStream: import('../../core/ordered-notification-contract').OrderedNotificationStream = {
+      ...(reserveMarker ? { reserveMarkerWrite: reserveMarker } : {}),
+      limits: stream.limits,
+      close,
+      discard,
+      [Symbol.asyncIterator]: () => {
+        const iterator = stream[Symbol.asyncIterator]()
+        return {
+          next: () => iterator.next(),
+          return: async () => {
+            await discard()
+            return { done: true, value: undefined }
+          }
+        }
+      }
+    }
+    try {
+      await this.withTicket(
+        String(this.mintedCorrelation()),
+        options.signal,
+        operation,
+        ticket =>
+          open.call(this.central, {
+            wireVersion: 5,
+            metadataVersion: 2,
+            peerId: record.nativePeerId,
+            collectionId,
+            lease: record.lease,
+            connectionGeneration: nativeConnectionGeneration,
+            databaseGeneration: nativeDatabaseGeneration,
+            members: nativeMembers,
+            maxItems: options.delivery.itemCapacity,
+            maxBytes: options.delivery.byteCapacity,
+            maxControls: options.delivery.reservedControlCapacity,
+            ticket,
+            ...this.budget(options)
+          }),
+        record.nativePeerId
+      )
+      const inventory = parseOrderedStatus(
+        await status.call(this.central, { peerId: record.nativePeerId, collectionId }),
+        members.map(member => member.memberId)
+      )
+      if (options.signal?.aborted) throw contractError('operation.aborted', 'gatt', operation)
+      if (options.deadline !== null && options.deadline !== undefined && options.deadline <= this.now())
+        throw contractError('operation.timed-out', 'gatt', operation)
+      if (inventory.members.some(member => member.acquisition !== 'acquired'))
+        throw contractError('protocol.malformed', 'boundary', `${operation}.inventory`)
+      stream.setSourceGeneration(inventory.sourceGeneration)
+      return {
+        state: 'ready',
+        sourceGeneration: inventory.sourceGeneration,
+        members: members.map((member, index) => {
+          const memberStatus = inventory.members[index]
+          if (memberStatus === undefined)
+            throw contractError('protocol.malformed', 'boundary', `${operation}.inventory`)
+          return {
+            memberId: member.memberId,
+            path: member.path,
+            requestedDelivery: member.deliveryMode,
+            effectiveDelivery: memberStatus.effectiveDelivery
+          }
+        }),
+        stream: publicStream
+      }
+    } catch (error) {
+      let primary = desktopRustCoreError(error, operation).normalized
+      const failures: import('../../backend-contract/errors').CleanupFailure[] = []
+      let sourceGeneration: import('../../core/ordered-notification-contract').OrderedSourceGeneration | null = null
+      let acquisitions: readonly {
+        readonly memberId: string
+        readonly acquisition: 'not-started' | 'acquired' | 'indeterminate'
+      }[]
+      try {
+        const inventory = parseOrderedStatus(
+          await status.call(this.central, { peerId: record.nativePeerId, collectionId }),
+          members.map(member => member.memberId)
+        )
+        sourceGeneration = inventory.sourceGeneration
+        if (inventory.setupError !== null) primary = inventory.setupError
+        stream.setSourceGeneration(sourceGeneration)
+        acquisitions = inventory.members.map(member => ({ memberId: member.memberId, acquisition: member.acquisition }))
+      } catch (statusError) {
+        failures.push({
+          resourceKind: 'ordered-status',
+          error: desktopRustCoreError(statusError, `${operation}.status`).normalized
+        })
+        acquisitions = members.map(member => ({ memberId: member.memberId, acquisition: 'indeterminate' }))
+      }
+      let cleanup: import('../../core/ordered-notification-contract').OrderedNotificationCleanup
+      try {
+        cleanup = await close()
+      } catch (cleanupError) {
+        const normalized = desktopRustCoreError(cleanupError, `${operation}.cleanup`).normalized
+        const pending: CleanupRecord = {
+          state: 'release-failed',
+          failures: [{ resourceKind: 'ordered-group', error: normalized }]
+        }
+        cleanup = { group: pending, members: members.map(member => ({ memberId: member.memberId, cleanup: pending })) }
+      }
+      let observations: readonly (
+        | import('../../core/ordered-notification-contract').OrderedNotificationValue
+        | import('../../core/ordered-notification-contract').OrderedNotificationLoss
+        | import('../../core/ordered-notification-contract').OrderedNotificationMarker
+      )[]
+      try {
+        const drained = await stream.setupObservations()
+        observations = drained.observations
+        if (drained.error !== null) failures.push({ resourceKind: 'ordered-observations', error: drained.error })
+      } catch (observationError) {
+        failures.push({
+          resourceKind: 'ordered-observations',
+          error: desktopRustCoreError(observationError, `${operation}.observations`).normalized
+        })
+        observations = [
+          {
+            kind: 'loss',
+            scope: { kind: 'unknown' },
+            reason: 'control-loss',
+            lostValues: null,
+            lostBytes: null,
+            lostSourceRecords: null
+          }
+        ]
+      }
+      if (failures.length > 0)
+        cleanup = { ...cleanup, group: { state: 'release-failed', failures: [...cleanup.group.failures, ...failures] } }
+      return {
+        state: 'failed',
+        sourceGeneration,
+        error: primary,
+        members: acquisitions,
+        observations,
+        uncertainTail: true,
+        cleanup,
+        stream: publicStream,
+        close
+      }
+    }
+  }
+
   private async discover(
     connection: BackendConnection<string, string>,
     options: PublicOperationOptions
@@ -4489,22 +6176,22 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     // The core registers the whole snapshot or rejects with a typed error
     // (a malformed platform UUID, a database past the ATT handle space);
     // a partial snapshot never becomes current.
-    const paths = await this.withTicket(
+    const discovery = await this.withTicket(
       correlation,
       options.signal,
       operation,
       async ticket => {
-        await this.central.discover({
+        const report = await this.central.discover({
           peerId: record.nativePeerId,
           lease: record.lease,
           ticket,
           ...this.budget(options)
         })
-        return this.central.discoveredPaths(record.nativePeerId)
+        return { report, paths: await this.central.discoveredPaths(record.nativePeerId) }
       },
       record.nativePeerId
     )
-    const tree = groupCorePaths(paths, `${operation}.shape`)
+    const tree = groupCorePaths(discovery.paths, `${operation}.shape`)
     const names = LEGACY_DESKTOP_NAMES[this.profile.platform]
     const databaseOrdinal = names.databasePerConnection ? record.nextDatabase : this.nextDatabase
     if (names.databasePerConnection) record.nextDatabase += 1
@@ -4527,10 +6214,24 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         )
       }))
     }))
-    this.databases.set(String(databaseId), { base, services, connectionId: String(record.path.connectionId) })
+    this.databases.set(String(databaseId), {
+      base,
+      services,
+      connectionId: String(record.path.connectionId),
+      nativeConnectionGeneration: discovery.report.connectionGeneration ?? null,
+      nativeDatabaseGeneration: discovery.report.databaseGeneration ?? null
+    })
     record.databases.add(String(databaseId))
     return Object.freeze({
       path: base,
+      reserveOrderedRecordingStart: () => this.reserveOrderedRecordingStart(base),
+      reserveOrderedRecordingMarker: (recordingId: string) => this.reserveOrderedRecordingMarker(base, recordingId),
+      reserveOrderedRecordingReclaim: (handle: OrderedRecordingRecoveryHandle) =>
+        this.reserveOrderedRecordingReclaim(base, handle),
+      subscribeOrdered: (
+        members: Parameters<NonNullable<GattDatabase<string, string, string>['subscribeOrdered']>>[0],
+        orderedOptions: SubscriptionOptions
+      ) => this.subscribeOrdered(base, members, orderedOptions),
       snapshot: async () => this.databaseSnapshot(base),
       read: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
@@ -5288,6 +6989,156 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     return null
   }
 
+  /**
+   * Obtain the explicit retained-failure handle for one desktop subscription.
+   * This is deliberately separate from normal notification delivery so a
+   * legacy consumer cannot accidentally advance evidence it does not handle.
+   */
+  public peerNotificationFailureRecovery(
+    subscription: BackendSubscription<string, string, string, string, string>
+  ): DesktopPeerNotificationFailureRecovery {
+    const stored = this.subscriptions.get(String(subscription.subscriptionId))
+    if (stored === undefined) {
+      throw contractError('gatt.stale-handle', 'core', this.op('gatt.notification.failure-recovery'))
+    }
+    const read = this.central.readPeerNotificationFailureRecovery
+    const acknowledge = this.central.acknowledgePeerNotificationFailureRecovery
+    if (this.central.pollNotificationV2 === undefined || read === undefined || acknowledge === undefined) {
+      throw contractError('capability.unsupported', 'core', this.op('gatt.notification.failure-recovery'))
+    }
+    return Object.freeze({
+      next: async (): Promise<DesktopPeerNotificationFailureRecoveryOffer> => {
+        while (!stored.closed) {
+          if (stored.recovery !== null) return stored.recovery
+          // A failed durable stage deliberately retains the native head. A
+          // trusted recovery consumer explicitly retries that same offer;
+          // renderers cannot invoke this host-owned binding directly.
+          const retry = this.central.retryPeerFailureRecoveryStaging
+          if (retry !== undefined) await retry.call(this.central)
+          if (stored.recovery !== null) return stored.recovery
+          await new Promise<void>(resolve => {
+            const wake = (): void => {
+              stored.recoveryWaiters.delete(wake)
+              resolve()
+            }
+            stored.recoveryWaiters.add(wake)
+          })
+        }
+        throw contractError('gatt.stale-handle', 'core', this.op('gatt.notification.failure-recovery.next'))
+      },
+      read: async (offset: string): Promise<DesktopRustCorePeerSourceFailureRecoveryChunk> => {
+        const recovery = stored.recovery
+        if (recovery === null) {
+          throw contractError('lifecycle.invalid-state', 'core', this.op('gatt.notification.failure-recovery.read'))
+        }
+        return read.call(this.central, {
+          descriptor: recovery.descriptor,
+          offset,
+          peerId: stored.nativePeerId,
+          selector: stored.selector,
+          consumer: stored.consumer,
+          recipientLease: recovery.descriptor.recipientLease ?? ''
+        })
+      },
+      acknowledge: async (): Promise<void> => {
+        const recovery = stored.recovery
+        if (recovery === null) {
+          throw contractError('lifecycle.invalid-state', 'core', this.op('gatt.notification.failure-recovery.ack'))
+        }
+        const lease = recovery.descriptor.recipientLease
+        if (typeof lease !== 'string' || lease.length === 0) {
+          throw contractError('protocol.malformed', 'core', this.op('gatt.notification.failure-recovery.ack'))
+        }
+        await acknowledge.call(this.central, {
+          descriptor: recovery.descriptor,
+          peerId: stored.nativePeerId,
+          selector: stored.selector,
+          consumer: stored.consumer,
+          recipientLease: lease
+        })
+        stored.recovery = null
+        for (const wake of [...stored.recoveryWaiters]) wake()
+        this.wakePumps()
+      }
+    })
+  }
+
+  /**
+   * List trusted durable recovery handles restored from the configured
+   * recording ledger. Unlike `peerNotificationFailureRecovery`, these are
+   * not attached to a live subscription and therefore preserve their
+   * original source-time authority verbatim.
+   */
+  public durablePeerNotificationFailureRecoveries(): readonly DesktopDurablePeerNotificationFailureRecovery[] {
+    this.assertAlive('desktop-process-host.durable-peer-failure-recovery')
+    const list = this.central.listPeerNotificationFailureRecoveries
+    const read = this.central.readPeerNotificationFailureRecovery
+    const acknowledge = this.central.acknowledgePeerNotificationFailureRecovery
+    if (list === undefined || read === undefined || acknowledge === undefined) {
+      throw contractError(
+        'capability.unsupported',
+        'restoration',
+        this.op('gatt.notification.durable-failure-recovery')
+      )
+    }
+    return Object.freeze(
+      list.call(this.central).map(handle => this.durablePeerNotificationFailureRecovery(handle, read, acknowledge))
+    )
+  }
+
+  private durablePeerNotificationFailureRecovery(
+    handle: DesktopRustCoreDurablePeerSourceFailureRecoveryHandle,
+    read: NonNullable<DesktopRustCoreCentral['readPeerNotificationFailureRecovery']>,
+    acknowledge: NonNullable<DesktopRustCoreCentral['acknowledgePeerNotificationFailureRecovery']>
+  ): DesktopDurablePeerNotificationFailureRecovery {
+    const parseOccurrence = (value: string): number | null => {
+      if (!/^(?:0|[1-9][0-9]*)$/.test(value)) return null
+      const parsed = Number(value)
+      return Number.isSafeInteger(parsed) ? parsed : null
+    }
+    const serviceOccurrence = parseOccurrence(handle.serviceOccurrence)
+    const characteristicOccurrence = parseOccurrence(handle.characteristicOccurrence)
+    if (serviceOccurrence === null || characteristicOccurrence === null) {
+      throw contractError('protocol.malformed', 'restoration', this.op('gatt.notification.durable-failure-recovery'))
+    }
+    const selector: DesktopRustCoreSelector = Object.freeze({
+      serviceUuid: handle.serviceUuid,
+      serviceOccurrence,
+      characteristicUuid: handle.characteristicUuid,
+      characteristicOccurrence
+    })
+    const provenance = Object.freeze({
+      peerId: handle.peerId,
+      selector,
+      consumer: handle.consumer,
+      recipientLease: handle.recipientLease,
+      contiguousRead: handle.contiguousRead,
+      acknowledged: handle.acknowledged,
+      producerAck: handle.producerAck
+    })
+    return Object.freeze({
+      descriptor: handle.descriptor,
+      provenance,
+      read: (offset: string): Promise<DesktopRustCorePeerSourceFailureRecoveryChunk> =>
+        read.call(this.central, {
+          descriptor: handle.descriptor,
+          offset,
+          peerId: handle.peerId,
+          selector,
+          consumer: handle.consumer,
+          recipientLease: handle.recipientLease
+        }),
+      acknowledge: (): Promise<void> =>
+        acknowledge.call(this.central, {
+          descriptor: handle.descriptor,
+          peerId: handle.peerId,
+          selector,
+          consumer: handle.consumer,
+          recipientLease: handle.recipientLease
+        })
+    })
+  }
+
   private subscribe(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     request: SubscribeRequest<string, string>,
@@ -5306,6 +7157,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const consumer = `${this.profile.platform}-core-consumer-${consumerOrdinal}`
     const subscriptionOrdinal = this.nextSubscription
     this.nextSubscription += 1
+    const terminalEvidenceScopeBytes =
+      request.terminalEvidenceScope === undefined
+        ? undefined
+        : terminalEvidenceScopeUtf16le('subscription', request.terminalEvidenceScope)
     const completion = (async (): Promise<BackendSubscription<string, string, string, string, string>> => {
       const requirement = this.coreRequirement(request.options.deliveryMode)
       const preference =
@@ -5328,6 +7183,15 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             ...(requirement === null ? {} : { deliveryMode: requirement }),
             ...(preference === null ? {} : { preferredDeliveryMode: preference }),
             overflowPolicy: request.options.delivery.overflowPolicy,
+            ...(request.terminalEvidenceScope === undefined
+              ? {}
+              : {
+                  terminalEvidenceScope: request.terminalEvidenceScope,
+                  terminalEvidenceOperation: this.op('gatt.notification'),
+                  ...(terminalEvidenceScopeBytes === undefined
+                    ? {}
+                    : { terminalEvidenceScopeUtf16le: terminalEvidenceScopeBytes })
+                }),
             ...this.budget(request.operation)
           }),
         record.nativePeerId
@@ -5346,11 +7210,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         notifications,
         delivery: enabled.delivery,
         overflowPolicy: request.options.delivery.overflowPolicy,
+        terminalEvidenceScope: request.terminalEvidenceScope ?? null,
         closed: false,
-        pendingTerminal: null,
         surfacedLoss: 0,
         countersCheckedAt: -1,
-        emptyPolls: 0
+        emptyPolls: 0,
+        recovery: null,
+        recoveryWaiters: new Set()
       }
       this.subscriptions.set(String(subscriptionId), subscription)
       record.subscriptions.add(String(subscriptionId))
@@ -5393,30 +7259,20 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   }
 
   /**
-   * A lifecycle event ended this consumer's link or database. Native
-   * callbacks delivered every value that arrived before the event ahead of
-   * the stream's end, so the stream ends with `reason` only once its pump
-   * has drained what the core still holds; the pump is woken to do so now.
-   */
-  private endSubscriptionAfterDrain(subscription: SubscriptionRecord, reason: SubscriptionLifecycleTerminal): void {
-    if (subscription.closed || subscription.pendingTerminal !== null) return
-    subscription.pendingTerminal = reason
-    this.wakePumps()
-  }
-
-  /**
    * End a consumer's stream exactly once, after the values it already
    * accepted: a value the pump delivered before the end is still read
    * ahead of the terminal, whether or not anyone was reading when it ended.
    */
   private closeSubscription(
     subscription: SubscriptionRecord,
-    reason: SubscriptionLifecycleTerminal | 'overflow' | 'closed',
-    error?: NormalizedBleError
+    reason: 'connection-lost' | 'service-changed' | 'source-failed' | 'overflow' | 'closed',
+    error?: NormalizedBleError,
+    evidence?: TerminalEvidenceCommit
   ): void {
     if (subscription.closed) return
     subscription.closed = true
-    subscription.notifications.finishWithReason(reason, error ?? null)
+    for (const wake of [...subscription.recoveryWaiters]) wake()
+    subscription.notifications.finishWithReason(reason, error ?? null, evidence)
   }
 
   /**
@@ -5463,6 +7319,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.noteBackgroundFailure('notification-pump-failed', error)
     if (subscription.closed || this.destroyed) return
     subscription.closed = true
+    for (const wake of [...subscription.recoveryWaiters]) wake()
     subscription.notifications.closeWithReason(
       'source-failed',
       desktopRustCoreError(error, this.op('gatt.notification')).normalized
@@ -5475,24 +7332,24 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       const polledAt = this.wakeSequence
       let poll
       try {
-        poll = await this.central.pollNotification({
+        const options = {
           peerId: subscription.nativePeerId,
           selector: subscription.selector,
           consumer: subscription.consumer
-        })
+        }
+        poll =
+          this.central.pollNotificationV2 === undefined
+            ? await this.central.pollNotification(options)
+            : await this.central.pollNotificationV2(options)
       } catch (error) {
         if (subscription.closed || this.destroyed) return
-        // A consumer whose lifecycle end is already decided ends with that
-        // reason; any other poll failure is a failed source.
-        if (subscription.pendingTerminal !== null) this.closeSubscription(subscription, subscription.pendingTerminal)
-        else this.closeSubscription(subscription, 'source-failed', desktopRustCoreError(error, operation).normalized)
+        // A provider-side poll failure has no native terminal receipt, so it
+        // is a failed source. Lifecycle events never set a competing local
+        // terminal; the native poll names their first invalidation cause.
+        this.closeSubscription(subscription, 'source-failed', desktopRustCoreError(error, operation).normalized)
         return
       }
       if (poll.kind === 'empty') {
-        if (subscription.pendingTerminal !== null) {
-          this.closeSubscription(subscription, subscription.pendingTerminal)
-          return
-        }
         await this.surfaceCoreLoss(subscription, operation)
         if (subscription.closed) return
         await this.pumpWait(polledAt)
@@ -5510,6 +7367,26 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
           return
         }
         const receipt = poll.receipt
+        if (
+          (poll.sourceGeneration == null) !== (poll.sourceOrdinal == null) ||
+          (poll.sourceGeneration != null &&
+            (!isCanonicalIngressOrdinal(poll.sourceGeneration) || !isCanonicalIngressOrdinal(poll.sourceOrdinal)))
+        ) {
+          this.closeSubscription(
+            subscription,
+            'source-failed',
+            contractError('protocol.malformed', 'core', `${operation}.notification-source-order`).normalized
+          )
+          return
+        }
+        if (poll.provenance != null && !isNotificationProvenance(poll.provenance)) {
+          this.closeSubscription(
+            subscription,
+            'source-failed',
+            contractError('protocol.malformed', 'core', `${operation}.notification-provenance`).normalized
+          )
+          return
+        }
         if (receipt !== undefined && receipt !== null && !isNotificationReceipt(receipt)) {
           subscription.closed = true
           subscription.notifications.closeWithReason(
@@ -5522,37 +7399,152 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
           return
         }
         subscription.notifications.emit(
-          notificationValue(value, subscription.delivery, receipt ?? undefined),
+          notificationValue(
+            value,
+            subscription.delivery,
+            receipt ?? undefined,
+            poll.provenance ?? 'unknown',
+            poll.sourceGeneration ?? undefined,
+            poll.sourceOrdinal ?? undefined
+          ),
           NOTIFICATION_BYTES
         )
         continue
       }
-      if (poll.kind === 'terminal' && subscription.pendingTerminal === null) {
+      if (poll.kind === 'source-failure-recovery') {
+        const recovery = poll.recovery
+        const recoveryError = poll.recoveryError
+        const parsedRecoveryError =
+          typeof recoveryError === 'string' ? parseDesktopRustCoreWireError(recoveryError) : null
+        if (
+          recovery === null ||
+          recovery === undefined ||
+          recovery.protocol !== 1 ||
+          recovery.representation !== 'ubm-peer-source-failure/1' ||
+          typeof recovery.recipientLease !== 'string' ||
+          recovery.recipientLease.length === 0 ||
+          parsedRecoveryError === null
+        ) {
+          this.closeSubscription(
+            subscription,
+            'source-failed',
+            contractError('protocol.malformed', 'core', `${operation}.failure-recovery`).normalized
+          )
+          return
+        }
+        subscription.recovery = Object.freeze({ descriptor: recovery, error: parsedRecoveryError })
+        for (const wake of [...subscription.recoveryWaiters]) wake()
+        // Do not poll or auto-ACK while an explicit recipient owns the
+        // source-time lease. `acknowledge` wakes this pump after the core
+        // confirms its per-recipient commit.
+        await new Promise<void>(resolve => {
+          const wake = (): void => {
+            subscription.recoveryWaiters.delete(wake)
+            resolve()
+          }
+          subscription.recoveryWaiters.add(wake)
+        })
+        continue
+      }
+      if (poll.kind === 'source-failed') {
+        const sourceFailureWire =
+          typeof poll.sourceFailure === 'string' ? parseDesktopRustCoreWireError(poll.sourceFailure) : null
+        if (
+          sourceFailureWire === null ||
+          poll.terminalEvidence == null ||
+          subscription.terminalEvidenceScope === null
+        ) {
+          this.closeSubscription(
+            subscription,
+            'source-failed',
+            contractError('protocol.malformed', 'core', `${operation}.terminal-evidence-source-failure`).normalized
+          )
+          return
+        }
+        const sourceFailure = desktopRustCoreError(poll.sourceFailure, operation).normalized
+        const evidence = await this.commitPendingTerminalEvidence(
+          poll.terminalEvidence,
+          'subscription',
+          subscription.terminalEvidenceScope,
+          Object.freeze({
+            kind: 'terminal',
+            reason: 'source-failed',
+            droppedItems: resourceCount(0),
+            droppedBytes: resourceCount(0),
+            replacedItems: resourceCount(0),
+            error: sourceFailure
+          }),
+          operation
+        )
+        this.closeSubscription(subscription, 'source-failed', sourceFailure, evidence)
+        return
+      }
+      if (poll.kind === 'peer-source-loss') {
+        if (
+          typeof poll.peerId !== 'string' ||
+          !isPeerLossU64(poll.generation) ||
+          (poll.skippedRecords != null && !isPeerLossU64(poll.skippedRecords))
+        ) {
+          this.closeSubscription(
+            subscription,
+            'source-failed',
+            contractError('protocol.malformed', 'core', `${operation}.peer-source-loss`).normalized
+          )
+          return
+        }
+        subscription.notifications.observeSourceLoss({
+          kind: 'source-loss',
+          scope: 'peer',
+          peerId: poll.peerId,
+          generation: poll.generation,
+          skippedRecords: poll.skippedRecords ?? null
+        })
+        if (subscription.notifications.isTerminal()) {
+          this.closeSubscription(subscription, 'source-failed')
+          return
+        }
+        continue
+      }
+      if (poll.kind === 'terminal') {
         // The core ended an `error` consumer on overflow, its own or values
         // lost upstream: the stream ends overflow with the core's counts, as
         // a local `error` overflow does.
+        const evidence = await this.commitPendingTerminalEvidence(
+          poll.terminalEvidence,
+          'subscription',
+          subscription.terminalEvidenceScope,
+          Object.freeze({
+            kind: 'terminal',
+            reason: 'overflow',
+            droppedItems: resourceCount(poll.droppedItems ?? 0),
+            droppedBytes: resourceCount(poll.droppedBytes ?? 0),
+            replacedItems: resourceCount(poll.replacedItems ?? 0)
+          }),
+          operation
+        )
         subscription.closed = true
-        subscription.notifications.closeWithSourceOverflow({
-          kind: 'overflow',
-          policy: subscription.overflowPolicy,
-          droppedItems: resourceCount(poll.droppedItems ?? 0),
-          droppedBytes: resourceCount(poll.droppedBytes ?? 0),
-          replacedItems: resourceCount(poll.replacedItems ?? 0)
-        })
+        subscription.notifications.closeWithSourceOverflow(
+          {
+            kind: 'overflow',
+            policy: subscription.overflowPolicy,
+            droppedItems: resourceCount(poll.droppedItems ?? 0),
+            droppedBytes: resourceCount(poll.droppedBytes ?? 0),
+            replacedItems: resourceCount(poll.replacedItems ?? 0)
+          },
+          evidence
+        )
         return
       }
       this.closeSubscription(
         subscription,
-        subscription.pendingTerminal ??
-          (poll.kind === 'terminal'
-            ? 'overflow'
-            : poll.kind === 'invalidated'
-              ? poll.cause === 'services-changed'
-                ? 'service-changed'
-                : poll.cause === 'adapter-reset'
-                  ? 'source-failed'
-                  : 'connection-lost'
-              : 'closed')
+        poll.kind === 'invalidated'
+          ? poll.cause === 'services-changed'
+            ? 'service-changed'
+            : poll.cause === 'adapter-reset'
+              ? 'source-failed'
+              : 'connection-lost'
+          : 'closed',
+        undefined
       )
       return
     }
@@ -5641,11 +7633,16 @@ const ADAPTER_LOSS_SEQUENCE: Readonly<
 function notificationValue(
   value: OwnedBytes,
   delivery: 'notification' | 'indication' | 'unknown',
-  receipt?: NotificationValue['receipt']
+  receipt?: NotificationValue['receipt'],
+  provenance: NotificationValue['provenance'] = 'unknown',
+  sourceGeneration?: string,
+  sourceOrdinal?: string
 ): NotificationValue {
   return Object.freeze({
     value,
     delivery,
+    provenance,
+    ...(sourceGeneration === undefined ? {} : { sourceGeneration, sourceOrdinal }),
     ...(receipt === undefined ? {} : { receipt: Object.freeze({ ...receipt }) })
   })
 }
@@ -6324,4 +8321,8 @@ export function planDesktopRustCoreScan(platform: DesktopRustCorePlatform, query
       `invalid ${platform} rust-core scan planning context`
     )
   )
+}
+
+function isPeerLossU64(value: unknown): value is string {
+  return typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) && BigInt(value) <= 18446744073709551615n
 }

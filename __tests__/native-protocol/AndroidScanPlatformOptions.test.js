@@ -134,8 +134,12 @@ describe('OwnedAndroidGattRadio scan platform source guards', () => {
     // option there would start an unchanged legacy scan and report success.
     const guard = startScan.indexOf('require(legacyScan || scanSdkInt >= 26)')
     expect(guard).toBeGreaterThan(-1)
-    expect(guard).toBeLessThan(startScan.indexOf('scanSeenDeviceIds.clear()'))
-    expect(guard).toBeLessThan(startScan.indexOf('check(scanCallback == null)'))
+    const sessionAdmission = startScan.indexOf('scanSessions[owner] = session')
+    const radioStart = startScan.indexOf('scanner.startScan(')
+    expect(sessionAdmission).toBeGreaterThan(-1)
+    expect(radioStart).toBeGreaterThan(-1)
+    expect(guard).toBeLessThan(sessionAdmission)
+    expect(guard).toBeLessThan(radioStart)
     // setLegacy stays gated to API 26+ where it is honoured.
     expect(startScan).toMatch(/if \(scanSdkInt >= 26\) \{\s*\n\s*builder\.setLegacy\(legacyScan\)/)
   })
@@ -145,14 +149,15 @@ class ScanPlatformControl {
   handshake() {
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 7,
+      abi: 8,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
       eventSchema: 1,
       traceFormat: 1,
       maximumControlRecordBytes: 65536,
-      maximumBinaryPayloadBytes: 524288
+      maximumBinaryPayloadBytes: 524288,
+      scanEventIdentityAvailable: true
     })
   }
 
@@ -195,6 +200,15 @@ class ScanPlatformRuntime {
       return
     }
     throw new Error(`Unexpected test command ${kind}`)
+  }
+
+  submitWithAdmission(bytes) {
+    try {
+      this.submit(bytes)
+      return { state: 'submitted' }
+    } catch (error) {
+      return { state: 'notAdmitted', message: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   emitResult(command, kind, additions = []) {

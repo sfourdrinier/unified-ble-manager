@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use tauri::ipc::Channel;
+use ubm_core::contracts::BleErrorCode;
 use ubm_desktop::{
     CharacteristicSnapshot, DesktopCentral, FakeRadio, OpControl, PeerSnapshot, PropertyFlags,
     RadioEvent, ServiceSnapshot,
@@ -212,6 +213,76 @@ async fn every_identity_is_numbered_as_the_4x_dispatcher_numbered_it() {
         text(&connected, "connectionGeneration"),
         "connection-generation-9"
     );
+}
+
+/// A 5.2.1 renderer offers protocol 6. It must complete a real bootstrap and
+/// an ordinary route without being handed version-10-only recovery routes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn protocol_6_bootstrap_serves_ordinary_routes_and_refuses_v10_recovery() {
+    let (dispatcher, _) = dispatcher_over(FakeRadio::new());
+    let caller = AuthenticatedCaller::new("test-app".to_owned(), "protocol-6".to_owned());
+    let mut offer = version_offer();
+    let version = object([
+        ("axis", string("ipc-protocol")),
+        ("value", IpcValue::Number(serde_json::Number::from(6))),
+    ]);
+    offer.insert(
+        "ipcProtocol".to_owned(),
+        object([
+            ("axis", string("ipc-protocol")),
+            ("minimum", version.clone()),
+            ("maximum", version),
+        ]),
+    );
+    let response = dispatcher
+        .bootstrap(
+            caller.clone(),
+            IpcEventSink::new(Channel::new(|_| Ok(()))),
+            offer,
+        )
+        .await
+        .expect("protocol 6 bootstrap");
+    let bootstrap = field(&response, "bootstrap");
+    let versions = field(bootstrap, "versions");
+    assert_eq!(
+        field(field(versions, "ipcProtocol"), "selected"),
+        &object([
+            ("axis", string("ipc-protocol")),
+            ("value", IpcValue::Number(serde_json::Number::from(6)))
+        ])
+    );
+    let lease = (
+        text(field(bootstrap, "rendererLease"), "leaseId"),
+        text(field(bootstrap, "rendererLease"), "generation"),
+    );
+    dispatcher
+        .execute(
+            &caller,
+            "adapter.state",
+            leased(&lease, Vec::new()),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("an ordinary protocol-6 route remains supported");
+    let error = dispatcher
+        .execute(
+            &caller,
+            "peerFailureRecovery.list",
+            leased(&lease, Vec::new()),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect_err("protocol-10-only recovery must not be exposed to protocol 6");
+    assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+    let error = dispatcher
+        .enable_peer_failure_recovery_for_after(caller, async { Ok(()) })
+        .await
+        .expect_err(
+            "a protocol-6 trusted host grant cannot make a v10 recovery capability observable",
+        );
+    assert_eq!(error["code"], "capability.unsupported");
 }
 
 /// One attached renderer: every event its channel received, and what a

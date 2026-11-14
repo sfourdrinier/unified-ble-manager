@@ -49,6 +49,12 @@ import {
   type SourceTimestamp
 } from '../../backend-contract/advertisement'
 import { ScanEvidenceSession } from '../../backend-contract/scan-evidence'
+import type {
+  TerminalEvidenceAppendResult,
+  TerminalEvidenceRecord,
+  TerminalEvidenceReservation,
+  TerminalEvidenceReservationRequest
+} from '../../backend-contract/terminal-evidence'
 import {
   normalizeBackgroundContinuation,
   serializeBackgroundContinuation,
@@ -59,7 +65,11 @@ import {
   type ContinuationBacklog,
   type ContinuationStatus
 } from './react-native-continuation-claim'
-import { claimNativeContinuationBacklog } from '../../core/native-continuation-claim'
+import { claimNativeContinuationBacklog, claimNativeContinuationPrefixV1 } from '../../core/native-continuation-claim'
+import {
+  createNativeContinuationControl,
+  type NativeContinuationRetainedPrefixV2
+} from '../../core/native-continuation-control'
 import type {
   FeatureRegistry,
   MaximumWriteLengthFeatureInput,
@@ -89,6 +99,7 @@ import {
   BackendContractError,
   contractError,
   serializeNormalizedError,
+  snapshotPlatformMetadataEntries,
   type CleanupFailure,
   type CleanupRecord,
   type NormalizedBleError
@@ -140,6 +151,19 @@ import type { Deadline } from '../../backend-contract/primitives'
 import type { CoreTraceSink } from '../../core/trace-recorder'
 import { awaitWithOperationAdmission } from '../../core/unified-ble-core-helpers'
 import { ACCESSORY_CANCELLATION_DRAIN_MS } from './react-native-accessory-chooser'
+import { setupReactNativeOrdered } from './react-native-ordered-setup'
+import { createReactNativeOrderedMarkerReservations } from './react-native-ordered-marker'
+import { createReactNativeRecordingReclaims } from './react-native-ordered-recording-reclaim'
+import { supportsReactNativeRecordingAuthority } from './react-native-recording-authority'
+import { initializeReactNativeReservationKeys, nextReactNativeReservationKey } from './react-native-reservation-key'
+import { orderedStreamOrigin } from '../../core/ordered-stream-origin'
+import { isCanonicalIngressOrdinal } from '../../core/ordered-notification-contract'
+import { createReactNativeOrderedRecordingStart } from './react-native-ordered-recording-start'
+import { createSessionOrderedRecordingControls } from './react-native-ordered-recording-controls'
+import type { OrderedNotificationStream } from '../../core/ordered-notification-contract'
+import { OrderedNativeStream } from '../../core/ordered-native-stream'
+import { createReactNativeOrderedTransport } from './react-native-ordered-transport'
+import type { ReactNativeOrderedRecoveryHandle } from './react-native-ordered-recovery'
 import {
   canonicalBleAddress,
   canonicalUuid,
@@ -209,8 +233,10 @@ import {
   planReactNativeAndroidScan,
   planReactNativeAppleScan
 } from './react-native-scan-planner'
+import { terminalEvidenceScopeForNative } from './terminal-evidence-scope-utf16'
 import {
   checkWriteReceipt,
+  decodeBase64,
   encodeBase64,
   remotePlatformDetail,
   remoteFailureError,
@@ -470,6 +496,38 @@ async function openBackend(
   try {
     const state = await session.invoke('adapter.state', {})
     const controls = await session.invoke('connection.control-capabilities', {})
+    let markerSupported = false
+    try {
+      const markerVersion = (await session.invoke('gatt.ordered.marker.version', {})).wireVersion
+      if (markerVersion !== 0 && markerVersion !== 1)
+        throw contractError('protocol.incompatible', 'boundary', `${SCOPE}.ordered-marker.version`)
+      markerSupported = markerVersion === 1
+    } catch (error) {
+      if (!(error instanceof BackendContractError) || error.normalized.code !== 'capability.unsupported') throw error
+    }
+    let recorderSupported = false
+    if (session.orderedRecordingVersion !== undefined) {
+      try {
+        const recorderVersion = await session.orderedRecordingVersion()
+        if (recorderVersion !== 0 && recorderVersion !== 1)
+          throw contractError('protocol.incompatible', 'boundary', `${SCOPE}.ordered-recording.version`)
+        recorderSupported = recorderVersion === 1
+      } catch (error) {
+        if (!(error instanceof BackendContractError) || error.normalized.code !== 'capability.unsupported') throw error
+      }
+    }
+    let recorderReclaimSupported = false
+    if (recorderSupported) {
+      await initializeReactNativeReservationKeys(length => binding.randomBytes(length))
+      try {
+        const reclaimVersion = (await session.invoke('gatt.ordered.recording-reclaim.version', {})).wireVersion
+        if (reclaimVersion !== 0 && reclaimVersion !== 2)
+          throw contractError('protocol.incompatible', 'boundary', `${SCOPE}.ordered-recording.reclaim-version`)
+        recorderReclaimSupported = supportsReactNativeRecordingAuthority(reclaimVersion)
+      } catch (error) {
+        if (!(error instanceof BackendContractError) || error.normalized.code !== 'capability.unsupported') throw error
+      }
+    }
     backend = new ReactNativeRustCoreBackend(
       options.platform,
       session,
@@ -488,7 +546,9 @@ async function openBackend(
       options.trace ?? null,
       leaseId => releaseBackgroundThroughModule(binding, `${options.owner}/${ownerId}/background`, leaseId),
       continuationAccessFor(binding),
-      authorizedAccessories === undefined ? null : () => authorizedAccessories.call(binding)
+      authorizedAccessories === undefined ? null : () => authorizedAccessories.call(binding),
+      markerSupported,
+      recorderReclaimSupported
     )
   } catch (error) {
     await disposeUnopenedSession(session, error)
@@ -555,6 +615,13 @@ export interface ReactNativeContinuationAccess {
   readonly prepareClaim: (maxItems: number, maxBytes: number) => Promise<unknown>
   readonly acknowledgeClaim: (claimToken: string) => Promise<unknown>
   readonly readStatus: () => Promise<unknown>
+  readonly prepareRetainedClaimV1?: (maxItems: number, maxBytes: number) => Promise<unknown>
+  readonly acknowledgeRetainedClaimV1?: (token: string) => Promise<unknown>
+  readonly retireRetainedClaimReceiptV1?: (token: string) => Promise<unknown>
+  readonly prepareRetainedClaimV2?: (maxItems: number, maxBytes: number) => Promise<unknown>
+  readonly acknowledgeRetainedClaimV2?: (token: string) => Promise<unknown>
+  readonly readPeerFailureRecovery?: (record: string, offset: string) => Promise<unknown>
+  readonly acknowledgePeerFailureRecovery?: (record: string) => Promise<unknown>
 }
 
 function continuationAccessFor(binding: ReactNativeRustCoreBinding): ReactNativeContinuationAccess {
@@ -562,6 +629,28 @@ function continuationAccessFor(binding: ReactNativeRustCoreBinding): ReactNative
   const acknowledge = binding.acknowledgeContinuationClaim
   const status = binding.continuationStatus
   return Object.freeze({
+    ...(binding.prepareRetainedContinuationClaimV1 &&
+    binding.acknowledgeRetainedContinuationClaimV1 &&
+    binding.retireRetainedContinuationClaimReceiptV1
+      ? {
+          prepareRetainedClaimV1: (items: number, bytes: number) =>
+            binding.prepareRetainedContinuationClaimV1!(items, bytes),
+          acknowledgeRetainedClaimV1: (token: string) => binding.acknowledgeRetainedContinuationClaimV1!(token),
+          retireRetainedClaimReceiptV1: (token: string) => binding.retireRetainedContinuationClaimReceiptV1!(token)
+        }
+      : {}),
+    ...(binding.prepareRetainedContinuationClaimV2 &&
+    binding.acknowledgeRetainedContinuationClaimV2 &&
+    binding.readPeerFailureRecovery &&
+    binding.acknowledgePeerFailureRecovery
+      ? {
+          prepareRetainedClaimV2: (items: number, bytes: number) =>
+            binding.prepareRetainedContinuationClaimV2!(items, bytes),
+          acknowledgeRetainedClaimV2: (token: string) => binding.acknowledgeRetainedContinuationClaimV2!(token),
+          readPeerFailureRecovery: (record: string, offset: string) => binding.readPeerFailureRecovery!(record, offset),
+          acknowledgePeerFailureRecovery: (record: string) => binding.acknowledgePeerFailureRecovery!(record)
+        }
+      : {}),
     prepareClaim: (maxItems: number, maxBytes: number) => {
       if (prepare === undefined || acknowledge === undefined) {
         return Promise.reject(
@@ -605,6 +694,24 @@ function continuationAccessFor(binding: ReactNativeRustCoreBinding): ReactNative
       })
     }
   })
+}
+
+/**
+ * Mobile Kotlin/Swift continuation callbacks unwrap Rust's envelope before
+ * they reach this binding. The core public control consumes the envelope form
+ * used by host bridges, so re-wrap only the already parsed native value here;
+ * native rejection stays a rejection and is never turned into data.
+ */
+async function mobileContinuationEnvelope(value: Promise<unknown>, operation: string): Promise<string> {
+  const raw = await value
+  if (typeof raw !== 'string') throw contractError('protocol.malformed', 'restoration', operation)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw contractError('protocol.malformed', 'restoration', operation)
+  }
+  return JSON.stringify({ ok: true, value: parsed })
 }
 
 /** Disposes a session no backend owns yet; a failed disposal travels with the error. */
@@ -800,8 +907,6 @@ interface ScanConsumer {
   readonly filter: ScanFilter
   readonly stream: OwnedCoreBoundedStream<AdvertisementObservation<string>>
   readonly seenPeers: Set<string>
-  /** Advertisements the owner dropped at native ingress while this consumer was live (cumulative). */
-  ingressDropped: number
 }
 
 interface PendingScanStart {
@@ -824,6 +929,8 @@ interface ScanGroup extends ScanDelivery {
   readonly startOperationId: string
   readonly ownerLeaseId: LeaseId<string, string>
   readonly shareToken: ScanShareToken<string, string> | null
+  admissionFailure: Extract<WireDrainRecord, { t: 'scan-end'; version: 2 }> | null
+  admissionFailureReported: boolean
   nativeReleaseConfirmed: boolean
   state: 'active' | 'stopping' | 'release-failed' | 'released'
   stopping: Promise<CleanupRecord> | null
@@ -842,6 +949,8 @@ interface ConnectionEntry {
   release: Promise<CleanupRecord> | null
   released: boolean
   readonly databases: Set<string>
+  graphRevision: number
+  readonly discoveries: Set<{ readonly invalidated: Set<string>; overflow: boolean }>
 }
 
 interface DatabaseEntry {
@@ -862,18 +971,17 @@ interface SubscriptionEntry {
   readonly nativePeerId: string
   readonly connectionKey: string
   readonly selector: CharacteristicSelector
+  /** The reserved receipt binding this native consumer must return at terminal delivery. */
+  readonly terminalEvidenceScope: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  } | null
   readonly stream: OwnedCoreBoundedStream<NotificationValue>
   /** `ended`: the owner retired the consumer itself (`stream-end`); nothing remains to release. */
   state: 'subscribing' | 'active' | 'ended'
   removal: Promise<OperationTerminalRecord<string, string>> | null
-  /** Notifications the owner dropped at native ingress while this consumer was live (cumulative). */
-  ingressDropped: number
-}
-
-/** A stream that accounts for records its source lost before routing them. */
-interface IngressLossAccount {
-  readonly stream: Pick<OwnedCoreBoundedStream<unknown>, 'observeSourceOverflow'>
-  ingressDropped: number
+  lossCleanup: (() => void) | null
 }
 
 /** Why the owner invalidated a peer's streams, as the next `stream-end` should say. */
@@ -933,6 +1041,33 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    */
   private readonly pendingAcquisitions = new Map<string, { operationId: string; settled: Promise<void> }>()
   private readonly retiredLinks = new Set<string>()
+  private readonly orderedRecoveryHandles = new WeakMap<object, ReactNativeOrderedRecoveryHandle>()
+  readonly #orderedRecordingCapabilities = new Map<
+    string,
+    import('./react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle
+  >()
+  readonly #publicRecordingRecoveries = new WeakMap<
+    object,
+    {
+      readonly owner: object
+      readonly recordingId: string
+      readonly graph: { readonly connectionGeneration: string; readonly databaseGeneration: string }
+    }
+  >()
+  readonly #publicRecordingOwners = new Map<string, { revoked: boolean }>()
+  readonly #publicRecordingAttempts = new Map<string, Set<{ revoked: boolean }>>()
+  readonly #orderedRecordingReclaims = new Map<
+    string,
+    {
+      readonly handoff: import('./react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle
+      readonly reserve: () => import('./react-native-ordered-recovery').ReactNativeOrderedRecordingReclaimHandle
+    }
+  >()
+  readonly #orderedRecordingMarkers = new Map<
+    string,
+    { readonly database: DatabaseEntry; readonly reserve: NonNullable<OrderedNotificationStream['reserveMarkerWrite']> }
+  >()
+  private readonly orderedGroups = new Map<string, Set<OrderedNotificationStream>>()
   private readonly databases = new Map<string, DatabaseEntry>()
   private readonly subscriptions = new Map<string, SubscriptionEntry>()
   private readonly readinessWatches = new Set<ReadinessWatch>()
@@ -966,7 +1101,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     private readonly trace: CoreTraceSink | null = null,
     private readonly releaseModuleBackground: ((leaseId: string) => Promise<CleanupRecord>) | null = null,
     private readonly continuationAccess: ReactNativeContinuationAccess | null = null,
-    private readonly authorizedAccessories: (() => Promise<string>) | null = null
+    private readonly authorizedAccessories: (() => Promise<string>) | null = null,
+    private readonly markerSupported = false,
+    private readonly recorderReclaimSupported = false
   ) {
     // Legacy React Native attachment names (origin/main
     // corebluetooth-attachment-lifecycle.ts): the instance is this backend's,
@@ -1015,6 +1152,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     })
     this.scanner = Object.freeze({
       plan: (query: NormalizedScanQuery): ScanPlan => plan(query),
+      reserveTerminalEvidence: (request: TerminalEvidenceReservationRequest) => this.reserveTerminalEvidence(request),
+      readTerminalEvidence: (reference: string, maximumBytes: number) =>
+        this.readTerminalEvidence(reference, maximumBytes),
       start: (options: OwnerScanOptions<string, string>, clientId: ClientId<string, string>) =>
         this.startScan(options, clientId),
       join: (
@@ -1071,6 +1211,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         : {})
     })
     this.gatt = Object.freeze({
+      reserveTerminalEvidence: (request: TerminalEvidenceReservationRequest) => this.reserveTerminalEvidence(request),
+      readTerminalEvidence: (reference: string, maximumBytes: number) =>
+        this.readTerminalEvidence(reference, maximumBytes),
       discover: (connection: BackendConnection<string, string>, options: PublicOperationOptions) =>
         this.discover(connection, options),
       read: <Operation extends string>(
@@ -1133,7 +1276,47 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       counters: () => this.describeCounters(),
       claimContinuationBacklog: (request?: { readonly maxItems?: number; readonly maxBytes?: number }) =>
         this.claimContinuationBacklog(request),
-      continuationStatus: () => this.continuationStatus()
+      claimContinuationRetainedV1: (request?: { readonly maxItems?: number; readonly maxBytes?: number }) =>
+        this.claimContinuationRetainedV1(request),
+      ...(this.continuationAccess?.prepareRetainedClaimV2 &&
+      this.continuationAccess.acknowledgeRetainedClaimV2 &&
+      this.continuationAccess.readPeerFailureRecovery &&
+      this.continuationAccess.acknowledgePeerFailureRecovery
+        ? {
+            claimContinuationRetainedV2: (request?: { readonly maxItems?: number; readonly maxBytes?: number }) =>
+              this.claimContinuationRetainedV2(request)
+          }
+        : {}),
+      continuationStatus: () => this.continuationStatus(),
+      orderedRecoveryHandle: (stream: OrderedNotificationStream) => this.orderedRecoveryHandle(stream),
+      reclaimOrdered: (handle: ReactNativeOrderedRecoveryHandle) => this.reclaimOrdered(handle),
+      ...(this.recorderReclaimSupported
+        ? {
+            reserveOrderedRecordingReclaim: (
+              handle: import('./react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle
+            ) => this.reserveOrderedRecordingReclaim(handle)
+          }
+        : {}),
+      orderedRecordingContext: (id: string) => createSessionOrderedRecordingControls(this.session).context(id),
+      orderedRecordingStop: async (id: string) => {
+        const result = await createSessionOrderedRecordingControls(this.session).stop(id)
+        if (result.recording.state === 'finished' || result.recording.state === 'interrupted') {
+          this.#orderedRecordingMarkers.delete(id)
+          this.#orderedRecordingCapabilities.delete(id)
+          this.#orderedRecordingReclaims.delete(id)
+          for (const owner of this.#publicRecordingAttempts.get(id) ?? []) owner.revoked = true
+          this.#publicRecordingAttempts.delete(id)
+          this.#publicRecordingOwners.delete(id)
+        }
+        return result
+      },
+      orderedRecordingRecoveryHandle: (id: string) => {
+        if (!this.recorderReclaimSupported)
+          throw contractError('capability.unsupported', 'gatt', `${SCOPE}.ordered-recording.recovery`)
+        const handle = this.#orderedRecordingCapabilities.get(id)
+        if (handle === undefined) throw contractError('ownership.denied', 'gatt', `${SCOPE}.ordered-recording.recovery`)
+        return Object.freeze({ ...handle })
+      }
     })
   }
 
@@ -1153,6 +1336,68 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       throw contractError('capability.unsupported', 'restoration', `${SCOPE}.continuation.claim`)
     }
     return claimNativeContinuationBacklog(access, request, SCOPE)
+  }
+
+  async claimContinuationRetainedV1(request?: {
+    readonly maxItems?: number
+    readonly maxBytes?: number
+  }): Promise<import('./react-native-continuation-claim').ContinuationRetainedPrefixV1> {
+    this.assertOperational(`${SCOPE}.continuation.retained-v1`)
+    if (this.continuationAccess === null)
+      throw contractError('capability.unsupported', 'restoration', `${SCOPE}.continuation.retained-v1`)
+    return claimNativeContinuationPrefixV1(this.continuationAccess, request, SCOPE)
+  }
+
+  async claimContinuationRetainedV2(request?: {
+    readonly maxItems?: number
+    readonly maxBytes?: number
+  }): Promise<NativeContinuationRetainedPrefixV2> {
+    this.assertOperational(`${SCOPE}.continuation.retained-v2`)
+    const access = this.continuationAccess
+    if (
+      access === null ||
+      access.prepareRetainedClaimV2 === undefined ||
+      access.acknowledgeRetainedClaimV2 === undefined ||
+      access.readPeerFailureRecovery === undefined ||
+      access.acknowledgePeerFailureRecovery === undefined
+    )
+      throw contractError('capability.unsupported', 'restoration', `${SCOPE}.continuation.retained-v2`)
+    const control = createNativeContinuationControl(
+      {
+        execute: async () =>
+          Promise.reject(contractError('lifecycle.invalid-state', 'restoration', `${SCOPE}.continuation.execute`)),
+        describeBacklog: () => mobileContinuationEnvelope(access.readStatus(), `${SCOPE}.continuation.status`),
+        prepareClaim: (items, bytes) =>
+          mobileContinuationEnvelope(access.prepareClaim(items, bytes), `${SCOPE}.continuation.claim`),
+        acknowledgeClaim: token =>
+          mobileContinuationEnvelope(access.acknowledgeClaim(token), `${SCOPE}.continuation.claim-ack`),
+        prepareRetainedClaimV2: (items, bytes) =>
+          mobileContinuationEnvelope(
+            access.prepareRetainedClaimV2!(items, bytes),
+            `${SCOPE}.continuation.retained-v2.prepare`
+          ),
+        acknowledgeRetainedClaimV2: token =>
+          mobileContinuationEnvelope(
+            access.acknowledgeRetainedClaimV2!(token),
+            `${SCOPE}.continuation.retained-v2.acknowledge`
+          ),
+        readPeerFailureRecovery: (record, offset) =>
+          mobileContinuationEnvelope(
+            access.readPeerFailureRecovery!(record, offset),
+            `${SCOPE}.continuation.retained-v2.recovery.read`
+          ),
+        acknowledgePeerFailureRecovery: record =>
+          mobileContinuationEnvelope(
+            access.acknowledgePeerFailureRecovery!(record),
+            `${SCOPE}.continuation.retained-v2.recovery.acknowledge`
+          )
+      },
+      { hostDomain: 'react-native-rust-core', scope: SCOPE, format: 'mobile' }
+    )
+    const claimRetainedV2 = control.claimRetainedV2
+    if (claimRetainedV2 === undefined)
+      throw contractError('capability.unsupported', 'restoration', `${SCOPE}.continuation.retained-v2`)
+    return claimRetainedV2(request)
   }
 
   /** Reports the continuation posture (declared strategy, last wake). */
@@ -1186,7 +1431,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         hostKind: 'native-mobile',
         implementationVersion: REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION,
         diagnostics: Object.freeze({
-          boundary: 'ubm-mobile-wire/2',
+          boundary: 'ubm-mobile-wire/3',
           transport: 'native-core-session',
           sessionId: this.session.sessionId,
           nativeBinding: this.session.buildIdentity.binding,
@@ -1210,7 +1455,14 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   events(): BoundedAsyncStream<BackendEvent<string>> {
     this.assertOperational(`${SCOPE}.events`)
     const stream: OwnedCoreBoundedStream<BackendEvent<string>> = new OwnedCoreBoundedStream<BackendEvent<string>>(
-      { itemCapacity: capacity(256), byteCapacity: capacity(262144), reservedControlCapacity: capacity(1024) },
+      // A wire-valid failure can contain up to a MiB of JSON, and diagnostic
+      // encoding can duplicate and escape it. Keep the queue finite while
+      // admitting such a record even behind other ordinary diagnostics.
+      {
+        itemCapacity: capacity(256),
+        byteCapacity: capacity(16 * 1024 * 1024),
+        reservedControlCapacity: capacity(1024)
+      },
       'error',
       () => this.eventStreams.delete(stream)
     )
@@ -1357,7 +1609,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   /** Ends every JS-side stream and forgets the handles (the owner released their resources). */
   private retireLocalState(reason: CoreStreamTerminalReason, error: NormalizedBleError | null = null): void {
     for (const consumer of this.pendingScanStart?.delivery.consumers.values() ?? []) {
-      consumer.stream.closeWithReason(reason, error)
+      consumer.stream.finishWithReason(reason, error)
     }
     for (const group of this.scanGroups.values()) this.endScanGroup(group, reason, error)
     this.scanGroups.clear()
@@ -1397,7 +1649,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       if (!group.nativeReleaseConfirmed) group.state = 'release-failed'
     }
     for (const consumer of this.pendingScanStart?.delivery.consumers.values() ?? []) {
-      consumer.stream.closeWithReason('source-failed', normalized)
+      consumer.stream.finishWithReason('source-failed', normalized)
     }
     for (const entry of this.subscriptions.values()) {
       entry.stream.closeWithReason('source-failed', normalized)
@@ -1405,7 +1657,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     }
     for (const watch of [...this.adapterWatches]) watch.closeWithReason('source-failed', normalized)
     for (const watch of [...this.readinessWatches]) this.closeReadinessWatch(watch, 'source-failed', normalized)
-    for (const stream of [...this.eventStreams]) stream.closeWithReason('source-failed', normalized)
+    for (const stream of [...this.eventStreams]) stream.finishWithReason('source-failed', normalized)
     for (const [operationId, pending] of this.pendingOperations) {
       if (pending.sourceFailed !== undefined) {
         pending.sourceFailed(normalized)
@@ -1687,7 +1939,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       ingressOrdinal
     }) as BackendEvent<string>
     const bytes = RECORD_BYTES + utf8Length(JSON.stringify(event, jsonSafe))
-    for (const stream of [...this.eventStreams]) stream.emit(full, bytes)
+    for (const stream of [...this.eventStreams]) stream.emitPreservingAccepted(full, bytes)
   }
 
   // -- adapter ---------------------------------------------------------------------------
@@ -2087,6 +2339,80 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     }
   }
 
+  /**
+   * Reserve the native owner's durable terminal slot before shared-core
+   * activates a scan/subscription.  The opaque reservation stays native: JS
+   * can commit exact canonical bytes or release it, but never selects a path
+   * or falls back to process memory.
+   */
+  private async reserveTerminalEvidence(
+    request: TerminalEvidenceReservationRequest
+  ): Promise<TerminalEvidenceReservation> {
+    const nativeScope = terminalEvidenceScopeForNative(request.producer, request.scope)
+    const reserved = await this.invoke('terminal-evidence.reserve', {
+      producer: request.producer,
+      maximumBytes: request.maximumBytes,
+      formatVersion: request.formatVersion,
+      scope: {
+        managerId: nativeScope.managerId,
+        operationId: nativeScope.operationId,
+        incarnation: nativeScope.incarnation
+      },
+      ...(nativeScope.scopeUtf16leBase64 === undefined ? {} : { scopeUtf16leBase64: nativeScope.scopeUtf16leBase64 })
+    })
+    const reservationId = reserved.reservationId
+    let committed = false
+    let released = false
+    return Object.freeze({
+      maximumBytes: reserved.maximumBytes,
+      commit: async (record: TerminalEvidenceRecord) => {
+        if (released || committed)
+          throw contractError('lifecycle.invalid-state', 'stream', `${SCOPE}.terminal-evidence.commit`)
+        const result = await this.invoke('terminal-evidence.commit', {
+          reservationId,
+          canonicalBytesBase64: unwrap(encodeBase64(record.canonicalBytes)),
+          digest: record.digest
+        })
+        if (result.kind === 'refused') return result satisfies TerminalEvidenceAppendResult
+        committed = true
+        return Object.freeze({
+          ...result,
+          producer: request.producer,
+          scope: request.scope
+        }) satisfies TerminalEvidenceAppendResult
+      },
+      release: async () => {
+        if (released) return
+        await this.invoke('terminal-evidence.release', { reservationId })
+        released = true
+      }
+    })
+  }
+
+  private async readTerminalEvidence(
+    reference: string,
+    maximumBytes: number
+  ): Promise<
+    | { readonly kind: 'committed'; readonly canonicalBytes: Readonly<Uint8Array>; readonly digest: string }
+    | { readonly kind: 'missing' }
+  > {
+    try {
+      const result = await this.invoke('terminal-evidence.read', { ref: reference, maximumBytes })
+      return Object.freeze({
+        kind: 'committed' as const,
+        canonicalBytes: unwrap(
+          decodeBase64(result.canonicalBytesBase64, `${SCOPE}.terminal-evidence.read.canonicalBytesBase64`)
+        ),
+        digest: result.digest
+      })
+    } catch (error) {
+      if (error instanceof BackendContractError && error.normalized.code === 'lifecycle.invalid-state') {
+        return Object.freeze({ kind: 'missing' as const })
+      }
+      throw error
+    }
+  }
+
   private async startScan(
     options: OwnerScanOptions<string, string>,
     _clientId: ClientId<string, string>
@@ -2121,11 +2447,16 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const operationId = this.mintOperationId('scan')
     if (this.pendingScanStart !== null) throw contractError('scan.already-active', 'scan', operation)
     const budget = this.budget(options, operation)
+    const terminalEvidenceScope =
+      options.terminalEvidenceScope === undefined
+        ? undefined
+        : terminalEvidenceScopeForNative('scan', options.terminalEvidenceScope)
     const args: WireJsonObject = {
       serviceUuids: nativeFilter.serviceUuids.map(uuid => String(uuid)),
       duplicatePolicy: 'all',
       operationId,
       ...(deviceAddresses.length === 0 ? {} : { deviceAddresses }),
+      ...(terminalEvidenceScope === undefined ? {} : { terminalEvidenceScope }),
       ...this.scanPlatformArgs(options, operation),
       ...budget,
       ...(budget.budgetMs === undefined ? {} : { lifetimeMs: budget.budgetMs })
@@ -2168,13 +2499,20 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         ? this.identifiers.scanShareToken(`${resourcePrefixFor(this.platform)}-scan-share-${ordinal}`)
         : null,
       nativeReleaseConfirmed: false,
+      admissionFailure: null,
+      admissionFailureReported: false,
       state: 'active',
       stopping: null,
       removeAbort: null
     }
     this.scanGroups.set(membership, group)
     this.pendingScanStart = null
-    if (pending.ambiguous || (pending.observedMembership !== null && pending.observedMembership !== membership)) {
+    if (
+      pending.ambiguous ||
+      (pending.observedMembership !== null && pending.observedMembership !== membership) ||
+      (pending.terminal !== null && pending.terminal.operationId !== membership)
+    ) {
+      if (pending.terminal !== null) this.reportUnmatchedScanEnd(pending.terminal)
       const cleanup = await this.stopScanGroup(group)
       if (cleanup.state !== 'released') this.reportScanCleanup(group, cleanup)
       throw contractError('protocol.violation', 'scan', `${operation}.early-terminal-ambiguity`)
@@ -2202,7 +2540,19 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         group.removeAbort = () => signal.removeEventListener('abort', end)
       }
     }
+    if (
+      group.state === 'active' &&
+      owner.stream.isTerminal() &&
+      (owner.stream.terminalReason() === 'overflow' || owner.stream.terminalReason() === 'source-failed')
+    ) {
+      const cleanup = await this.stopScanGroup(group)
+      if (cleanup.state !== 'released') this.reportScanCleanup(group, cleanup)
+    }
     await this.refreshCounters()
+    if (options.signal?.aborted && group.admissionFailure !== null && !group.admissionFailureReported) {
+      this.reportUnmatchedScanEnd(group.admissionFailure)
+      group.admissionFailureReported = true
+    }
     return this.scanLease(group, owner)
   }
 
@@ -2258,8 +2608,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       options,
       filter: options.filter,
       stream,
-      seenPeers: new Set(),
-      ingressDropped: 0
+      seenPeers: new Set()
     }
     group.consumers.set(String(leaseId), consumer)
     return consumer
@@ -2301,21 +2650,29 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private async stopScanConsumer(group: ScanGroup, consumer: ScanConsumer): Promise<CleanupRecord> {
     if (consumer.leaseId !== group.ownerLeaseId) {
       group.consumers.delete(String(consumer.leaseId))
-      consumer.stream.closeWithReason('owner-released')
+      if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
       return RELEASED
     }
+    // The core may cancel after this backend has returned but before it adopts
+    // the lease. In that race only compensating stop reaches this owner.
+    if (consumer.options.signal?.aborted && group.admissionFailure !== null && !group.admissionFailureReported) {
+      this.reportUnmatchedScanEnd(group.admissionFailure)
+      group.admissionFailureReported = true
+    }
+    group.admissionFailure = null
     return this.stopScanGroup(group)
   }
 
   /**
-   * Stops the membership. Delivery ends at once; the membership id is kept
+   * Stops the membership. Delivery remains open while stop is pending; the membership id is kept
    * until the owner confirms release, so a failed stop can be retried with the
    * same identity (PR210-09). Concurrent stops share one attempt.
    */
   private stopScanGroup(group: ScanGroup): Promise<CleanupRecord> {
     if (group.state === 'released') return Promise.resolve(RELEASED)
     if (group.stopping !== null) return group.stopping
-    this.suspendScanGroup(group)
+    group.removeAbort?.()
+    group.removeAbort = null
     group.state = 'stopping'
     const stopping = (async (): Promise<CleanupRecord> => {
       let record: CleanupRecord
@@ -2362,6 +2719,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       if (record.state === 'released') {
         group.nativeReleaseConfirmed = true
         group.state = 'released'
+        // A successful native stop is the terminal fence for this membership.
+        // Finish only now, after every advertisement accepted before the stop
+        // response; a failed stop must leave the source live for its retry.
+        this.endScanDelivery(group, 'owner-released', null)
         this.scanGroups.delete(group.membership)
         await this.refreshCounters()
       } else {
@@ -2381,24 +2742,28 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     return stopping
   }
 
-  private suspendScanGroup(group: ScanGroup): void {
-    group.removeAbort?.()
-    group.removeAbort = null
-    for (const consumer of group.consumers.values()) consumer.stream.closeWithReason('owner-released')
-  }
-
-  private endScanGroup(group: ScanGroup, reason: CoreStreamTerminalReason, error: NormalizedBleError | null): void {
+  private endScanGroup(
+    group: ScanGroup,
+    reason: CoreStreamTerminalReason,
+    error: NormalizedBleError | null,
+    evidence?: import('../../backend-contract/terminal-evidence').TerminalEvidenceCommit
+  ): void {
     // Only authoritative native release callers use this transition:
     // scan-end, session reconciliation, or confirmed parent disposal.
-    this.endScanDelivery(group, reason, error)
+    this.endScanDelivery(group, reason, error, evidence)
     group.nativeReleaseConfirmed = true
     group.state = 'released'
   }
 
-  private endScanDelivery(group: ScanGroup, reason: CoreStreamTerminalReason, error: NormalizedBleError | null): void {
+  private endScanDelivery(
+    group: ScanGroup,
+    reason: CoreStreamTerminalReason,
+    error: NormalizedBleError | null,
+    evidence?: import('../../backend-contract/terminal-evidence').TerminalEvidenceCommit
+  ): void {
     group.removeAbort?.()
     group.removeAbort = null
-    for (const consumer of group.consumers.values()) consumer.stream.closeWithReason(reason, error)
+    for (const consumer of group.consumers.values()) consumer.stream.finishWithReason(reason, error, evidence)
   }
 
   private observation(
@@ -2476,7 +2841,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private onAdvertisement(record: Extract<WireDrainRecord, { t: 'adv' }>): void {
     const group = this.scanGroups.get(record.operationId)
     if (group !== undefined) {
-      if (group.state === 'active' && group.startOperationId === record.startOperationId) {
+      if (
+        (group.state === 'active' || group.state === 'stopping' || group.state === 'release-failed') &&
+        group.startOperationId === record.startOperationId
+      ) {
         this.deliverScanAdvertisement(group, record)
       }
       return
@@ -2507,7 +2875,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         if (consumer.seenPeers.has(record.peerId)) continue
         consumer.seenPeers.add(record.peerId)
       }
-      consumer.stream.emit(matched, bytes, record.peerId, bytes - RECORD_BYTES)
+      consumer.stream.emitPreservingAccepted(matched, bytes, record.peerId, bytes - RECORD_BYTES)
     }
   }
 
@@ -2516,6 +2884,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     if (group === undefined) {
       const pending = this.pendingScanStart
       if (pending !== null) {
+        if ('version' in record && record.startOperationId !== pending.startOperationId) {
+          this.reportUnmatchedScanEnd(record)
+          return
+        }
         if (pending.terminal === null) pending.terminal = record
         else {
           pending.ambiguous = true
@@ -2524,8 +2896,21 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       } else this.reportUnmatchedScanEnd(record)
       return
     }
+    if ('version' in record && record.startOperationId !== group.startOperationId) {
+      this.reportUnmatchedScanEnd(record)
+      return
+    }
     // The owner released the membership itself: nothing remains to stop.
-    this.endScanGroup(group, record.reason, null)
+    const error = 'version' in record ? this.scanFailure(record) : null
+    if ('version' in record) group.admissionFailure = record
+    if (error !== null && group.state !== 'active') {
+      this.reportUnmatchedScanEnd(record)
+      group.admissionFailureReported = true
+    }
+    // A committed evidence receipt is the authoritative terminal payload.
+    // Keep the wire failure for admission diagnostics, but do not duplicate a
+    // potentially large error into the bounded stream before hydration.
+    this.endScanGroup(group, record.reason, record.evidence === undefined ? error : null, record.evidence)
     this.scanGroups.delete(record.operationId)
   }
 
@@ -2534,8 +2919,81 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       kind: 'diagnostic-warning',
       code: 'unmatched-scan-end',
       message: 'The owner ended a scan membership this backend does not hold',
-      detail: Object.freeze({ reason: record.reason })
+      detail: Object.freeze({
+        reason: record.reason,
+        ...('version' in record
+          ? {
+              code: record.error.code,
+              source: record.source,
+              generation: record.generation,
+              failure: JSON.stringify(this.scanFailure(record))
+            }
+          : {})
+      })
     })
+  }
+
+  private scanFailure(record: Extract<WireDrainRecord, { t: 'scan-end'; version: 2 }>): NormalizedBleError {
+    const original = remoteFailureError(record.error).normalized
+    const platform = original.platform ?? {
+      domain: 'ubm-mobile',
+      code: record.error.code,
+      safeMessage: record.error.detail ?? 'Scan source failed',
+      metadata: {}
+    }
+    // Preserve the producer's ordered metadata, including duplicate keys. When
+    // only the legacy map exists, carry it into the ordered representation too.
+    const entries =
+      platform.metadataEntries ??
+      Object.entries(platform.metadata).map(([key, value]) => ({
+        key,
+        value:
+          typeof value === 'boolean'
+            ? { kind: 'bool' as const, value }
+            : typeof value === 'number'
+              ? { kind: 'int' as const, value: String(value) }
+              : { kind: 'text' as const, value: String(value) }
+      }))
+    const provenance = {
+      'ubm.scan.source': record.source,
+      'ubm.scan.generation': record.generation,
+      'ubm.scan.platform.present': record.error.platform !== null,
+      ...(record.error.platform?.message == null ? {} : { 'ubm.scan.platform.message': record.error.platform.message }),
+      ...(record.error.detail === null ? {} : { 'ubm.scan.detail': record.error.detail })
+    }
+    const enrichedEntries = [
+      ...entries,
+      { key: 'ubm.scan.source', value: { kind: 'text' as const, value: record.source } },
+      { key: 'ubm.scan.generation', value: { kind: 'text' as const, value: record.generation } },
+      { key: 'ubm.scan.platform.present', value: { kind: 'bool' as const, value: record.error.platform !== null } },
+      ...(record.error.platform?.message == null
+        ? []
+        : [
+            { key: 'ubm.scan.platform.message', value: { kind: 'text' as const, value: record.error.platform.message } }
+          ]),
+      ...(record.error.detail === null
+        ? []
+        : [{ key: 'ubm.scan.detail', value: { kind: 'text' as const, value: record.error.detail } }])
+    ]
+    let metadataEntries: typeof platform.metadataEntries = platform.metadataEntries
+    let metadata = platform.metadata
+    try {
+      metadataEntries = snapshotPlatformMetadataEntries(enrichedEntries, `${SCOPE}.scan.failure-metadata`)
+    } catch (error) {
+      if (!(error instanceof BackendContractError)) throw error
+      // Preserve every producer entry and the full provenance in the map when
+      // the ordered-entry contract has no room for additional fields.
+      metadata = { ...platform.metadata, ...provenance }
+    }
+    return {
+      ...original,
+      retryability: record.error.retryability,
+      platform: {
+        ...platform,
+        metadata,
+        ...(metadataEntries === undefined ? {} : { metadataEntries })
+      }
+    }
   }
 
   // -- connections -------------------------------------------------------------------------------
@@ -2633,6 +3091,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       release: null,
       released: false,
       databases: new Set(),
+      graphRevision: 0,
+      discoveries: new Set(),
       resource: Object.freeze({
         attachment: this.attachmentRecord,
         attachmentId: this.attachmentRecord.attachmentId,
@@ -2668,6 +3128,33 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     if (entry.release !== null) return entry.release
     const release = (async (): Promise<CleanupRecord> => {
       let record: CleanupRecord
+      const ordered = this.orderedGroups.get(entry.key)
+      if (ordered !== undefined) {
+        const failures: CleanupFailure[] = []
+        for (const stream of ordered) {
+          try {
+            const cleanup = await stream.close()
+            if (
+              cleanup.group.state === 'released' &&
+              cleanup.members.every(member => member.cleanup.state === 'released')
+            )
+              ordered.delete(stream)
+            else {
+              failures.push(...cleanup.group.failures)
+              for (const member of cleanup.members) failures.push(...member.cleanup.failures)
+            }
+          } catch (error) {
+            failures.push(cleanupFailure('ordered-group', error, `${SCOPE}.ordered.disconnect`))
+          }
+        }
+        if (ordered.size === 0) this.orderedGroups.delete(entry.key)
+        else if (failures.length === 0)
+          failures.push({
+            resourceKind: 'ordered-group',
+            error: contractError('lifecycle.invalid-state', 'cleanup', `${SCOPE}.ordered.pending`).normalized
+          })
+        if (failures.length > 0) return { state: 'release-failed', failures }
+      }
       try {
         record = cleanupRecordFrom(
           await this.invoke('connection.disconnect', { peerId: entry.nativePeerId, lease: entry.lease })
@@ -2738,7 +3225,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   private onLink(
-    record: Pick<Extract<WireDrainRecord, { t: 'link' }>, 'peerId' | 'connectionGeneration' | 'reason'>
+    record: Pick<Extract<WireDrainRecord, { t: 'link' }>, 'peerId' | 'connectionGeneration' | 'reason' | 'platform'>
   ): void {
     const link = linkKey(record.peerId, record.connectionGeneration)
     const entry = this.connectionsByLink.get(link)
@@ -2752,7 +3239,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       })
       return
     }
-    this.endLink(entry, record.reason)
+    this.endLink(entry, record.reason, record.platform)
   }
 
   /**
@@ -2761,12 +3248,26 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    * ends as lost and its streams end `connection-lost` here (their own
    * `stream-end` records may have been lost with it).
    */
-  private endLink(entry: ConnectionEntry, reason: 'local' | 'peer' | 'adapter' | null): void {
+  private endLink(
+    entry: ConnectionEntry,
+    reason: 'local' | 'peer' | 'adapter' | 'backend-restart' | null,
+    platform?: Extract<WireDrainRecord, { t: 'link' }>['platform']
+  ): void {
+    const resetPlatform =
+      reason === 'backend-restart' && platform === undefined
+        ? {
+            domain: 'ubm',
+            code: 'source-observation-overflow',
+            message: 'Host observation capacity exceeded',
+            metadata: {}
+          }
+        : platform
     this.closeReadinessWatches(entry, 'connection-lost')
     this.connectionsByLink.delete(linkKey(entry.nativePeerId, entry.coreGeneration))
     // An adapter loss failed the link's streams at their source, as the
     // legacy adapter-loss cleanup (and every desktop host and Tauri) said it.
-    const invalidation: InvalidationReason = reason === 'adapter' ? 'source-failed' : 'connection-lost'
+    const invalidation: InvalidationReason =
+      reason === 'adapter' || reason === 'backend-restart' ? 'source-failed' : 'connection-lost'
     this.invalidations.set(entry.nativePeerId, invalidation)
     this.markLost(entry)
     const path = this.connectionPath(entry, this.leaseIdFor(entry))
@@ -2782,14 +3283,24 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     }
     if (reason === 'peer' || reason === null) {
       this.emitEvent({ kind: 'connection-lost', connection: path })
-    } else if (reason === 'adapter') {
+    } else if (reason === 'adapter' || reason === 'backend-restart') {
       // Legacy `terminalizeAdapterLossConnection`: connected -> lost, reason adapter.
       this.emitEvent({
         kind: 'connection-state-changed',
         connection: path,
         previous: 'connected',
         current: 'lost',
-        reason: 'adapter'
+        reason,
+        ...(resetPlatform === undefined
+          ? {}
+          : {
+              platform: {
+                domain: resetPlatform.domain,
+                code: resetPlatform.code,
+                safeMessage: resetPlatform.message ?? '',
+                metadata: resetPlatform.metadata
+              }
+            })
       })
     } else {
       this.emitEvent({ kind: 'disconnected', connection: path, reason })
@@ -2826,6 +3337,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         detail: Object.freeze({})
       })
       return
+    }
+    for (const discovery of entry.discoveries) {
+      if (discovery.invalidated.size >= 256) discovery.overflow = true
+      else discovery.invalidated.add(record.databaseGeneration)
     }
     this.invalidations.set(record.peerId, 'service-changed')
     for (const key of entry.databases) {
@@ -3247,6 +3762,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): Promise<GattDatabase<string, string, string>> {
     const operation = `${SCOPE}.gatt.discover`
     const entry = this.requireConnection(connection, operation)
+    // A later discovery or observed change supersedes this reply, even when
+    // the affected generation was not installed locally yet.
+    const graphRevision = ++entry.graphRevision
+    const pendingGraph = { invalidated: new Set<string>(), overflow: false }
+    entry.discoveries.add(pendingGraph)
     const operationId = this.mintOperationId('discover')
     const args: WireJsonObject = {
       peerId: entry.nativePeerId,
@@ -3260,11 +3780,18 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       discovery = await this.invoke('gatt.discover', args)
     } finally {
       removeAbort()
+      entry.discoveries.delete(pendingGraph)
     }
     if (discovery.connectionGeneration !== entry.coreGeneration) {
       throw contractError('protocol.violation', 'gatt', `${operation}.connection-generation`)
     }
     this.requireConnection(connection, operation)
+    if (
+      entry.graphRevision !== graphRevision ||
+      pendingGraph.overflow ||
+      pendingGraph.invalidated.has(discovery.databaseGeneration)
+    )
+      throw contractError('gatt.stale-handle', 'gatt', `${operation}.superseded`)
     const ordinal = this.nextDatabase
     this.nextDatabase += 1
     const databaseId = this.identifiers.databaseId(`${resourcePrefixFor(this.platform)}-database-${ordinal}`)
@@ -3358,6 +3885,350 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           bytes: value,
           mode: writeOptions.mode
         }).completion,
+      reserveOrderedRecordingMarker: (recordingId: string) => {
+        const authority = this.#orderedRecordingMarkers.get(recordingId)
+        if (
+          authority === undefined ||
+          authority.database !== stored ||
+          !stored.valid ||
+          entry.linkState !== 'connected'
+        )
+          throw contractError('ownership.denied', 'gatt', `${SCOPE}.ordered-recording.marker`)
+        return authority.reserve()
+      },
+      ...(this.recorderReclaimSupported
+        ? {
+            reserveOrderedRecordingReclaim: (
+              handoff: import('../../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle
+            ) => {
+              const reclaimOperation = `${SCOPE}.ordered-recording.reclaim`
+              if (!stored.valid || entry.linkState !== 'connected')
+                throw contractError('gatt.stale-handle', 'gatt', reclaimOperation)
+              const authority = this.#publicRecordingRecoveries.get(handoff)
+              const capability =
+                authority === undefined ? undefined : this.#orderedRecordingCapabilities.get(authority.recordingId)
+              if (
+                !authority ||
+                !capability ||
+                this.#publicRecordingOwners.get(authority.recordingId) !== authority.owner ||
+                capability.peerId !== entry.nativePeerId
+              )
+                throw contractError('ownership.denied', 'gatt', reclaimOperation)
+              return this.reserveOrderedRecordingReclaim(capability, stored, authority.graph)
+            }
+          }
+        : {}),
+      reserveOrderedRecordingStart: () => {
+        if (!stored.valid || entry.linkState !== 'connected')
+          throw contractError('gatt.stale-handle', 'gatt', `${SCOPE}.ordered-recording.reserve`)
+        let recordingId: string | null = null
+        const owner = { revoked: false }
+        let publicRecovery: import('../../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle | null = null
+        let candidateGraph = { connectionGeneration: entry.coreGeneration, databaseGeneration: stored.coreGeneration }
+        let intendedGraph: typeof candidateGraph | null = null
+        let active = false
+        const handle = createReactNativeOrderedRecordingStart(
+          this.session,
+          (collectionId, reclaimCapability) => {
+            if (recordingId === null)
+              throw contractError('lifecycle.invariant-violation', 'gatt', `${SCOPE}.ordered-recording.recovery`)
+            if (owner.revoked || this.#publicRecordingOwners.get(recordingId) !== owner) return
+            const previous = this.#orderedRecordingCapabilities.get(recordingId)
+            if (
+              previous !== undefined &&
+              (previous.peerId !== entry.nativePeerId ||
+                previous.collectionId !== collectionId ||
+                previous.reclaimCapability !== reclaimCapability)
+            )
+              throw contractError('protocol.malformed', 'boundary', `${SCOPE}.ordered-recording.recovery`)
+            this.#orderedRecordingCapabilities.set(
+              recordingId,
+              Object.freeze({ recordingId, peerId: entry.nativePeerId, collectionId, reclaimCapability })
+            )
+          },
+          id => {
+            if (owner.revoked) throw contractError('ownership.denied', 'gatt', `${SCOPE}.ordered-recording.start`)
+            const previous = this.#publicRecordingOwners.get(id)
+            if (previous !== undefined && previous !== owner)
+              throw contractError('ownership.denied', 'gatt', `${SCOPE}.ordered-recording.start`)
+            recordingId = id
+            intendedGraph ??= candidateGraph
+            this.#publicRecordingOwners.set(id, owner)
+            const attempts = this.#publicRecordingAttempts.get(id) ?? new Set()
+            attempts.add(owner)
+            this.#publicRecordingAttempts.set(id, attempts)
+          },
+          () => {
+            owner.revoked = true
+            if (recordingId !== null && this.#publicRecordingOwners.get(recordingId) === owner) {
+              this.#orderedRecordingCapabilities.delete(recordingId)
+              this.#orderedRecordingMarkers.delete(recordingId)
+              this.#orderedRecordingReclaims.delete(recordingId)
+              this.#publicRecordingOwners.delete(recordingId)
+            }
+          }
+        )
+        let markerFactory: NonNullable<OrderedNotificationStream['reserveMarkerWrite']> | null = null
+        const acceptResult = (result: import('../../core/ordered-recording-start').OrderedRecordingStartResult) => {
+          if (result.kind === 'started' && result.receipt.state === 'active') {
+            const previous = this.#publicRecordingOwners.get(result.receipt.recordingId)
+            if (!owner.revoked && (previous === undefined || previous === owner)) {
+              this.#publicRecordingOwners.set(result.receipt.recordingId, owner)
+              active = true
+            }
+          }
+          if (
+            result.kind === 'started' &&
+            result.receipt.state === 'active' &&
+            active &&
+            !owner.revoked &&
+            this.#publicRecordingOwners.get(result.receipt.recordingId) === owner &&
+            markerFactory === null &&
+            this.markerSupported
+          ) {
+            markerFactory = createReactNativeOrderedMarkerReservations(
+              (op, markerArgs) => this.invoke(op, markerArgs),
+              entry.nativePeerId,
+              result.receipt.collectionId,
+              target => {
+                const resolvedTarget = this.resolveCharacteristic(target, `${SCOPE}.ordered-marker`)
+                if (resolvedTarget.database !== stored || resolvedTarget.entry !== entry)
+                  throw contractError('gatt.stale-handle', 'gatt', `${SCOPE}.ordered-marker`)
+                return { ...resolvedTarget.selector }
+              },
+              () => this.now(),
+              () => this.mintOperationId('ordered-marker')
+            )
+            this.#orderedRecordingMarkers.set(result.receipt.recordingId, { database: stored, reserve: markerFactory })
+          }
+          return result
+        }
+        return {
+          start: async (
+            members: Parameters<
+              ReturnType<NonNullable<GattDatabase<string, string, string>['reserveOrderedRecordingStart']>>['start']
+            >[0],
+            recordingOptions: import('../../backend-contract/operations').RecordedSubscriptionOptions
+          ) => {
+            const recordingOperation = `${SCOPE}.ordered-recording.start`
+            const budget = this.budget(recordingOptions, recordingOperation).budgetMs ?? MAX_BUDGET_MS
+            const resolved = members.map(member => ({
+              member,
+              resolved: this.resolveCharacteristic(member.path, recordingOperation)
+            }))
+            if (resolved.some(item => item.resolved.database !== stored))
+              throw contractError('gatt.stale-handle', 'gatt', recordingOperation)
+            const declaration = {
+              kind: 'ordered-recording',
+              version: 1,
+              peerId: entry.nativePeerId,
+              connectionGeneration: entry.coreGeneration,
+              databaseGeneration: stored.coreGeneration,
+              maxItems: recordingOptions.delivery.itemCapacity,
+              maxBytes: recordingOptions.delivery.byteCapacity,
+              maxControls: recordingOptions.delivery.reservedControlCapacity,
+              members: resolved.map(({ member, resolved: item }, index) => ({
+                memberId: String(index),
+                publicMemberId: member.memberId,
+                selector: {
+                  serviceUuid: item.selector.serviceUuid,
+                  serviceOccurrence: String(item.selector.serviceOccurrence),
+                  characteristicUuid: item.selector.characteristicUuid,
+                  characteristicOccurrence: String(item.selector.characteristicOccurrence)
+                },
+                delivery:
+                  member.deliveryMode === 'require-notification'
+                    ? 'notification'
+                    : member.deliveryMode === 'require-indication'
+                      ? 'indication'
+                      : null,
+                preference:
+                  member.deliveryMode === 'prefer-notification'
+                    ? 'notification'
+                    : member.deliveryMode === 'prefer-indication'
+                      ? 'indication'
+                      : null
+              }))
+            }
+            if (recordingId !== null && recordingId !== recordingOptions.recording.id)
+              throw contractError('lifecycle.invalid-state', 'gatt', `${SCOPE}.ordered-recording.identity`)
+            candidateGraph = { connectionGeneration: entry.coreGeneration, databaseGeneration: stored.coreGeneration }
+            return acceptResult(
+              await handle.start({
+                id: recordingOptions.recording.id,
+                maxBytes: recordingOptions.recording.maxBytes,
+                maxRecords: recordingOptions.recording.maxRecords,
+                declaration,
+                budgetMs: budget,
+                refreshBudget: () => this.budget(recordingOptions, recordingOperation).budgetMs ?? MAX_BUDGET_MS,
+                signal: recordingOptions.signal
+              })
+            )
+          },
+          status: async () => {
+            const result = await handle.status()
+            if (result.state === 'result') acceptResult(result.result)
+            return result
+          },
+          ...(this.recorderReclaimSupported
+            ? {
+                recoveryHandle: () => {
+                  const handoff = recordingId === null ? undefined : this.#orderedRecordingCapabilities.get(recordingId)
+                  if (
+                    !active ||
+                    !handoff ||
+                    intendedGraph === null ||
+                    this.#publicRecordingOwners.get(handoff.recordingId) !== owner
+                  )
+                    throw contractError('ownership.denied', 'gatt', `${SCOPE}.ordered-recording.recovery`)
+                  if (publicRecovery === null) {
+                    publicRecovery = Object.freeze({ kind: 'ordered-recording-recovery' })
+                    this.#publicRecordingRecoveries.set(publicRecovery, {
+                      owner,
+                      recordingId: handoff.recordingId,
+                      graph: intendedGraph
+                    })
+                  }
+                  return publicRecovery
+                }
+              }
+            : {}),
+          ...(this.markerSupported
+            ? {
+                reserveMarkerWrite: () => {
+                  if (
+                    markerFactory === null ||
+                    owner.revoked ||
+                    recordingId === null ||
+                    this.#publicRecordingOwners.get(recordingId) !== owner
+                  )
+                    throw contractError('lifecycle.invalid-state', 'gatt', `${SCOPE}.ordered-marker.recording`)
+                  return markerFactory()
+                }
+              }
+            : {}),
+          retire: async () => {
+            await handle.retire()
+            const reconciled = await handle.status()
+            if (reconciled.state === 'result') acceptResult(reconciled.result)
+            if (!active && recordingId !== null) {
+              owner.revoked = true
+              const attempts = this.#publicRecordingAttempts.get(recordingId)
+              attempts?.delete(owner)
+              if (attempts?.size === 0) this.#publicRecordingAttempts.delete(recordingId)
+              if (this.#publicRecordingOwners.get(recordingId) === owner)
+                this.#publicRecordingOwners.delete(recordingId)
+            }
+          }
+        }
+      },
+      subscribeOrdered: async (
+        members: Parameters<NonNullable<GattDatabase<string, string, string>['subscribeOrdered']>>[0],
+        orderedOptions: SubscriptionOptions
+      ) => {
+        const orderedOperation = `${SCOPE}.gatt.subscribe-ordered`
+        this.budget(orderedOptions, orderedOperation)
+        const resolved = members.map(member => ({
+          member,
+          resolved: this.resolveCharacteristic(member.path, orderedOperation)
+        }))
+        if (resolved.some(item => item.resolved.database !== stored))
+          throw contractError('gatt.stale-handle', 'gatt', orderedOperation)
+        let existing = this.orderedGroups.get(entry.key) ?? new Set<OrderedNotificationStream>()
+        let recoveryHandle: ReactNativeOrderedRecoveryHandle | null = null
+        const markerFactory: { value?: NonNullable<OrderedNotificationStream['reserveMarkerWrite']> } = {}
+        const result = await setupReactNativeOrdered({
+          invoke: (op, wireArgs) => this.invoke(op, wireArgs),
+          open: async openArgs => {
+            const orderedOperationId = this.mintOperationId('ordered-open')
+            const removeOrderedAbort = this.watchAbort(orderedOptions.signal, orderedOperationId, orderedOperation)
+            try {
+              await this.invoke('gatt.ordered.open', {
+                ...openArgs,
+                operationId: orderedOperationId,
+                ...this.budget(orderedOptions, orderedOperation)
+              })
+              this.budget(orderedOptions, orderedOperation)
+              for (const member of members) this.resolveCharacteristic(member.path, orderedOperation)
+            } finally {
+              removeOrderedAbort()
+            }
+          },
+          operationId: () => this.mintOperationId('ordered-close'),
+          validate: () => {
+            this.budget(orderedOptions, orderedOperation)
+            for (const member of members) this.resolveCharacteristic(member.path, orderedOperation)
+          },
+          peerId: entry.nativePeerId,
+          connectionGeneration: entry.coreGeneration,
+          databaseGeneration: stored.coreGeneration,
+          publicConnectionGeneration: String(path.connectionGeneration),
+          publicDatabaseGeneration: String(path.databaseGeneration),
+          members: resolved.map(({ member, resolved: item }) => ({
+            memberId: member.memberId,
+            path: member.path,
+            deliveryMode: member.deliveryMode,
+            selector: { ...item.selector }
+          })),
+          options: orderedOptions,
+          retain: (stream, handle) => {
+            recoveryHandle = handle
+            if (this.markerSupported) {
+              markerFactory.value = createReactNativeOrderedMarkerReservations(
+                (op, markerArgs) => this.invoke(op, markerArgs),
+                entry.nativePeerId,
+                handle.collectionId,
+                target => {
+                  const resolvedTarget = this.resolveCharacteristic(target, `${SCOPE}.ordered-marker`)
+                  if (resolvedTarget.database !== stored || resolvedTarget.entry !== entry)
+                    throw contractError('gatt.stale-handle', 'gatt', `${SCOPE}.ordered-marker`)
+                  return { ...resolvedTarget.selector }
+                },
+                () => this.now(),
+                () => this.mintOperationId('ordered-marker')
+              )
+            }
+            existing = this.orderedGroups.get(entry.key) ?? existing
+            existing.add(stream)
+            this.orderedGroups.set(entry.key, existing)
+          }
+        })
+        const stream = result.stream
+        const finish = async (discard: boolean) => {
+          const cleanup = await (discard ? stream.discard() : stream.close())
+          if (
+            cleanup.group.state === 'released' &&
+            cleanup.members.every(member => member.cleanup.state === 'released')
+          ) {
+            existing.delete(stream)
+            if (existing.size === 0) this.orderedGroups.delete(entry.key)
+          }
+          return cleanup
+        }
+        const wrapped: import('../../core/ordered-notification-contract').OrderedNotificationStream = {
+          get limits() {
+            return stream.limits
+          },
+          ...(stream.increaseByteCapacity ? { increaseByteCapacity: stream.increaseByteCapacity.bind(stream) } : {}),
+          ...(markerFactory.value ? { reserveMarkerWrite: markerFactory.value } : {}),
+          close: () => finish(false),
+          discard: () => finish(true),
+          [Symbol.asyncIterator]: () => {
+            const iterator = stream[Symbol.asyncIterator]()
+            return {
+              next: () => iterator.next(),
+              return: async () => {
+                await finish(true)
+                return { done: true, value: undefined }
+              }
+            }
+          }
+        }
+        if (recoveryHandle !== null) this.orderedRecoveryHandles.set(wrapped, recoveryHandle)
+        return result.state === 'ready'
+          ? { ...result, stream: wrapped }
+          : { ...result, stream: wrapped, close: () => finish(false) }
+      },
       subscribeRecorded: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         subscribeOptions: RecordedSubscribeRequest<string, string>['options']
@@ -3702,10 +4573,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       nativePeerId: entry.nativePeerId,
       connectionKey: entry.key,
       selector,
+      terminalEvidenceScope:
+        request.terminalEvidenceScope === undefined ? null : Object.freeze({ ...request.terminalEvidenceScope }),
       stream,
       state: 'subscribing',
       removal: null,
-      ingressDropped: 0
+      lossCleanup: null
     }
     this.subscriptions.set(consumer, stored)
     if (recording !== null) changed?.emit({ recordingId: recording.id }, 0, recording.id)
@@ -3717,6 +4590,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         operationId,
         ...(recording === null ? {} : { recording: { ...recording } }),
         ...(request.options.deliveryMode === undefined ? {} : { deliveryMode: request.options.deliveryMode }),
+        ...(request.terminalEvidenceScope === undefined
+          ? {}
+          : {
+              terminalEvidenceScope: terminalEvidenceScopeForNative('subscription', request.terminalEvidenceScope)
+            }),
         ...budget
       }).catch(error => {
         this.subscriptions.delete(consumer)
@@ -3726,7 +4604,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       })
       if (stored.state === 'subscribing') stored.state = 'active'
       await this.refreshCounters()
-      return Object.freeze({
+      const subscription = Object.freeze({
         subscriptionId,
         path,
         terminal: this.terminal(request.operation.correlation),
@@ -3734,6 +4612,26 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         notifications: stream,
         ...(changed === null ? {} : { changed })
       })
+      stored.lossCleanup = () => {
+        this.unsubscribe(subscription, {
+          signal: null,
+          deadline: null,
+          correlation: this.identifiers.operationCorrelation(this.mintOperationId('unsubscribe'))
+        }).completion.catch((error: unknown) => {
+          this.emitEvent({
+            kind: 'diagnostic-warning',
+            code: 'subscription-cleanup-failed',
+            message: 'Native subscription cleanup after ingress loss failed; removal can be retried',
+            detail: Object.freeze({ code: normalizedFrom(error, `${SCOPE}.gatt.unsubscribe`).code })
+          })
+        })
+      }
+      if (
+        stream.isTerminal() &&
+        (stream.terminalReason() === 'overflow' || stream.terminalReason() === 'source-failed')
+      )
+        stored.lossCleanup()
+      return subscription
     })
   }
 
@@ -3774,7 +4672,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       }
       this.subscriptions.delete(stored.consumer)
       stored.state = 'ended'
-      stored.stream.closeWithReason('owner-released')
+      if (!stored.stream.isTerminal()) stored.stream.closeWithReason('owner-released')
       this.finishRecordedWake(stored, 'owner-released')
       await this.refreshCounters()
       return this.terminal(operationOptions.correlation)
@@ -3803,17 +4701,24 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const value: NotificationValue = Object.freeze({
       value: ownedCopy(record.value),
       delivery: record.delivery,
+      provenance: record.provenance ?? 'unknown',
+      ...(record.sourceGeneration === undefined
+        ? {}
+        : { sourceGeneration: record.sourceGeneration, sourceOrdinal: record.sourceOrdinal }),
       ...(record.receipt === undefined ? {} : { receipt: Object.freeze({ ...record.receipt }) })
     })
     stored.stream.emit(value, record.value.byteLength)
   }
 
   private onStreamEnd(
-    record: Pick<Extract<WireDrainRecord, { t: 'stream-end' }>, 'consumer' | 'reason' | 'droppedItems' | 'droppedBytes'>
+    record: Pick<
+      Extract<WireDrainRecord, { t: 'stream-end' }>,
+      'consumer' | 'reason' | 'droppedItems' | 'droppedBytes' | 'error' | 'evidence'
+    >
   ): void {
     const stored = this.subscriptions.get(record.consumer)
     if (stored === undefined) return
-    if (!stored.recorded) {
+    if (!stored.recorded && record.reason !== 'source-failed') {
       this.subscriptions.delete(record.consumer)
       stored.state = 'ended'
     }
@@ -3821,27 +4726,49 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       stored.stream.observeSourceOverflow({
         kind: 'overflow',
         policy: 'error',
-        droppedItems: resourceCount(record.droppedItems + stored.ingressDropped),
+        droppedItems: resourceCount(record.droppedItems),
         droppedBytes: resourceCount(record.droppedBytes),
         replacedItems: resourceCount(0)
       })
     }
     const reason: CoreStreamTerminalReason =
-      stored.recorded && record.reason === 'closed'
+      record.reason === 'source-failed' || (stored.recorded && record.reason === 'closed')
         ? 'source-failed'
         : record.reason === 'overflow'
           ? 'overflow'
           : record.reason === 'closed'
             ? 'closed'
             : (this.invalidations.get(stored.nativePeerId) ?? 'connection-lost')
-    stored.stream.finishWithReason(reason)
-    this.finishRecordedWake(stored, reason)
+    const error = record.error === undefined ? null : remoteFailureError(record.error).normalized
+    if (
+      stored.terminalEvidenceScope !== null &&
+      (record.evidence === undefined ||
+        record.evidence.producer !== 'subscription' ||
+        !sameTerminalEvidenceScope(record.evidence.scope, stored.terminalEvidenceScope))
+    ) {
+      const protocolError = contractError(
+        'protocol.violation',
+        'gatt',
+        `${SCOPE}.subscription.terminal-evidence-missing`
+      ).normalized
+      stored.stream.finishWithReason('source-failed', protocolError)
+      this.finishRecordedWake(stored, 'source-failed', protocolError)
+      stored.lossCleanup?.()
+      return
+    }
+    stored.stream.finishWithReason(reason, error, record.evidence)
+    this.finishRecordedWake(stored, reason, error)
+    if (record.reason === 'source-failed') stored.lossCleanup?.()
   }
 
-  private finishRecordedWake(stored: SubscriptionEntry, reason: CoreStreamTerminalReason): void {
+  private finishRecordedWake(
+    stored: SubscriptionEntry,
+    reason: CoreStreamTerminalReason,
+    error: NormalizedBleError | null = null
+  ): void {
     if (stored.recordingId !== null) {
       stored.changed?.emit({ recordingId: stored.recordingId }, 0, stored.recordingId)
-      stored.changed?.finishWithReason(reason)
+      stored.changed?.finishWithReason(reason, error)
     }
   }
 
@@ -3858,6 +4785,27 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       case 'value':
         this.onValue(record)
         break
+      case 'peer-source-loss': {
+        const stored = this.subscriptions.get(record.consumer)
+        if (stored !== undefined && stored.state !== 'ended') {
+          stored.stream.observeSourceLoss({
+            kind: 'source-loss',
+            scope: 'peer',
+            peerId: record.peerId,
+            generation: record.generation,
+            skippedRecords: record.skippedRecords
+          })
+          if (stored.stream.isTerminal()) stored.lossCleanup?.()
+        } else {
+          this.emitEvent({
+            kind: 'diagnostic-warning',
+            code: 'unmatched-notification',
+            message: 'The owner delivered peer source loss for an unknown consumer',
+            detail: Object.freeze({})
+          })
+        }
+        break
+      }
       case 'recording-changed': {
         const entry = this.subscriptions.get(record.consumer)
         if (entry?.recordingId === record.recordingId && entry.state !== 'ended')
@@ -3895,10 +4843,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   /**
-   * The owner dropped records at a full native queue. A dropped advertisement
-   * or notification is lost before routing, so the owner cannot say which
-   * consumer it was for: every stream that could have received it counts it
-   * in its drop accounting (an upper bound, never silence). A dropped control
+   * Native ingress lost records before routing, so candidate streams receive
+   * a host-global notice rather than per-stream counts. A dropped control
    * record is re-read from the owner.
    */
   /** The last control-loss total acted on (X-R5; monotonic per session). */
@@ -3920,7 +4866,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.emitEvent({
       kind: 'diagnostic-warning',
       code: 'native-ingress-drop',
-      message: `The Rust owner dropped ${count} control record(s) at a full queue`,
+      message: `Native ingress dropped ${count} control record(s)`,
       detail: Object.freeze({ class: 'control', count })
     })
   }
@@ -3928,31 +4874,67 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private onIngressDrop(record: Extract<WireDrainRecord, { t: 'ingress-drop' }>): void {
     if (record.class === 'advertisement') {
       for (const group of this.scanDeliveries()) {
-        for (const consumer of group.consumers.values()) this.noteIngressLoss(consumer, record.count)
+        for (const consumer of group.consumers.values()) {
+          consumer.stream.observeSourceLoss({
+            kind: 'source-loss',
+            scope: 'host-global',
+            source: 'advertisement-ingress',
+            lostRecords: resourceCount(record.count)
+          })
+          // The loss notice remains available to loss-aware consumers, while
+          // the legacy iterator fails closed. `finish` retains any accepted
+          // FIFO prefix and lets the successful physical stop preserve this
+          // authoritative overflow terminal.
+          consumer.stream.finishWithReason('overflow')
+        }
       }
     } else if (record.class === 'notification') {
       for (const stored of this.subscriptions.values()) {
-        if (stored.state !== 'ended') this.noteIngressLoss(stored, record.count)
+        if (stored.state !== 'ended') {
+          stored.stream.observeSourceLoss({
+            kind: 'source-loss',
+            scope: 'host-global',
+            source: 'notification-ingress',
+            lostRecords: resourceCount(record.count)
+          })
+          // See the scan path above: provenance is retained separately, but
+          // an ordinary subscription iterator cannot claim completeness after
+          // native ingress loss.
+          stored.stream.finishWithReason('overflow')
+        }
       }
     } else {
       this.reconcileControlLoss()
     }
+    if (record.class === 'notification') {
+      for (const stored of this.subscriptions.values()) {
+        if (stored.stream.isTerminal() && stored.stream.terminalReason() === 'overflow') stored.lossCleanup?.()
+      }
+    } else if (record.class === 'advertisement') {
+      for (const group of this.scanGroups.values()) {
+        if (
+          [...group.consumers.values()].some(
+            consumer => consumer.stream.isTerminal() && consumer.stream.terminalReason() === 'overflow'
+          )
+        ) {
+          this.stopScanGroup(group)
+            .then(cleanup => {
+              if (cleanup.state !== 'released') this.reportScanCleanup(group, cleanup)
+            })
+            .catch((error: unknown) =>
+              this.reportScanCleanup(group, {
+                state: 'release-failed',
+                failures: [cleanupFailure('scan', error, `${SCOPE}.scan.stop`)]
+              })
+            )
+        }
+      }
+    }
     this.emitEvent({
       kind: 'diagnostic-warning',
       code: 'native-ingress-drop',
-      message: `The Rust owner dropped ${record.count} ${record.class} record(s) at a full queue`,
+      message: `Native ingress dropped ${record.count} ${record.class} record(s)`,
       detail: Object.freeze({ class: record.class, count: record.count })
-    })
-  }
-
-  private noteIngressLoss(account: IngressLossAccount, count: number): void {
-    account.ingressDropped += count
-    account.stream.observeSourceOverflow({
-      kind: 'overflow',
-      policy: 'drop-newest',
-      droppedItems: resourceCount(account.ingressDropped),
-      droppedBytes: resourceCount(0),
-      replacedItems: resourceCount(0)
     })
   }
 
@@ -4113,6 +5095,254 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     })
   }
 
+  private reserveOrderedRecordingReclaim(
+    handle: import('./react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle,
+    targetDatabase?: DatabaseEntry,
+    intendedGraph?: { readonly connectionGeneration: string; readonly databaseGeneration: string }
+  ): import('./react-native-ordered-recovery').ReactNativeOrderedRecordingReclaimHandle {
+    const operation = `${SCOPE}.ordered-recording.reclaim`
+    this.assertOperational(operation)
+    if (
+      typeof handle !== 'object' ||
+      handle === null ||
+      typeof handle.recordingId !== 'string' ||
+      handle.recordingId.length === 0 ||
+      typeof handle.peerId !== 'string' ||
+      handle.peerId.length === 0 ||
+      !isCanonicalIngressOrdinal(handle.collectionId) ||
+      typeof handle.reclaimCapability !== 'string' ||
+      handle.reclaimCapability.length === 0 ||
+      handle.reclaimCapability.length > 512
+    )
+      throw contractError('argument.invalid', 'gatt', operation)
+    if (!this.recorderReclaimSupported) throw contractError('capability.unsupported', 'gatt', operation)
+    const previous = this.#orderedRecordingReclaims.get(handle.recordingId)
+    if (previous) {
+      const old = previous.handoff
+      if (
+        old.peerId !== handle.peerId ||
+        old.collectionId !== handle.collectionId ||
+        old.reclaimCapability !== handle.reclaimCapability
+      )
+        throw contractError('ownership.denied', 'gatt', operation)
+      return previous.reserve()
+    }
+    if (this.#orderedRecordingReclaims.size >= 256) throw contractError('capability.limited', 'gatt', operation)
+    const copy = Object.freeze({
+      recordingId: handle.recordingId,
+      peerId: handle.peerId,
+      collectionId: handle.collectionId,
+      reclaimCapability: handle.reclaimCapability
+    })
+    let verified: import('../../core/ordered-recording').OrderedRecordingContext | null = null
+    const validateTarget = () => {
+      if (this.#orderedRecordingReclaims.get(copy.recordingId) !== entry)
+        throw contractError('ownership.denied', 'gatt', operation)
+      if (targetDatabase !== undefined && intendedGraph !== undefined) {
+        const connection = this.connectionsByKey.get(targetDatabase.connectionKey)
+        if (
+          !targetDatabase.valid ||
+          connection?.linkState !== 'connected' ||
+          connection.nativePeerId !== copy.peerId ||
+          connection.coreGeneration !== intendedGraph.connectionGeneration ||
+          targetDatabase.coreGeneration !== intendedGraph.databaseGeneration
+        )
+          throw contractError('gatt.stale-handle', 'gatt', operation)
+      }
+    }
+    const activate = async () => {
+      if (this.#orderedRecordingReclaims.get(copy.recordingId) !== entry) return
+      validateTarget()
+      let context: import('../../core/ordered-recording').OrderedRecordingContext
+      try {
+        context = await createSessionOrderedRecordingControls(this.session).context(copy.recordingId)
+      } catch (error) {
+        if (this.#orderedRecordingReclaims.get(copy.recordingId) !== entry) return
+        throw error
+      }
+      if (this.#orderedRecordingReclaims.get(copy.recordingId) !== entry) return
+      validateTarget()
+      if (context.peerId !== copy.peerId) throw contractError('ownership.denied', 'gatt', operation)
+      if (targetDatabase !== undefined) {
+        const connection = this.connectionsByKey.get(targetDatabase.connectionKey)
+        if (
+          !targetDatabase.valid ||
+          connection?.linkState !== 'connected' ||
+          connection.nativePeerId !== copy.peerId ||
+          connection.coreGeneration !== context.connectionGeneration ||
+          targetDatabase.coreGeneration !== context.databaseGeneration
+        )
+          throw contractError('gatt.stale-handle', 'gatt', operation)
+      }
+      this.#orderedRecordingCapabilities.set(copy.recordingId, copy)
+      const reserve = this.markerSupported
+        ? createReactNativeOrderedMarkerReservations<
+            CharacteristicPath<string, string, string, string, string, 'current'>
+          >(
+            (op, markerArgs) => this.invoke(op, markerArgs),
+            copy.peerId,
+            copy.collectionId,
+            target => {
+              const found = this.resolveCharacteristic(target, operation)
+              if (
+                found.entry.nativePeerId !== copy.peerId ||
+                found.entry.coreGeneration !== context.connectionGeneration ||
+                found.database.coreGeneration !== context.databaseGeneration
+              )
+                throw contractError('gatt.stale-handle', 'gatt', operation)
+              return { ...found.selector }
+            },
+            () => this.now(),
+            () => this.mintOperationId('ordered-marker')
+          )
+        : undefined
+      if (reserve) {
+        const database = [...this.databases.values()].find(candidate => {
+          const connection = this.connectionsByKey.get(candidate.connectionKey)
+          return (
+            candidate.valid &&
+            candidate.coreGeneration === context.databaseGeneration &&
+            connection?.nativePeerId === copy.peerId &&
+            connection.coreGeneration === context.connectionGeneration &&
+            connection.linkState === 'connected'
+          )
+        })
+        if (database === undefined) throw contractError('gatt.stale-handle', 'gatt', operation)
+        this.#orderedRecordingMarkers.set(copy.recordingId, { database, reserve })
+      }
+      verified = context
+    }
+    const make = createReactNativeRecordingReclaims(
+      (op, reclaimArgs) => this.invoke(op, reclaimArgs),
+      copy,
+      () => nextReactNativeReservationKey(),
+      activate,
+      async commit => {
+        validateTarget()
+        return commit()
+      }
+    )
+    let currentToken: object | null = null
+    const reserve = () => {
+      const inner = make()
+      const token = {}
+      currentToken = token
+      return Object.freeze({
+        ...inner,
+        context: async () => {
+          if (verified === null) throw contractError('lifecycle.invalid-state', 'gatt', operation)
+          return verified
+        },
+        retire: async () => {
+          await inner.retire()
+          if (currentToken === token && this.#orderedRecordingReclaims.get(copy.recordingId) === entry)
+            this.#orderedRecordingReclaims.delete(copy.recordingId)
+        }
+      })
+    }
+    const entry = { handoff: copy, reserve }
+    this.#orderedRecordingReclaims.set(copy.recordingId, entry)
+    return reserve()
+  }
+
+  private orderedRecoveryHandle(stream: OrderedNotificationStream): ReactNativeOrderedRecoveryHandle {
+    const handle = this.orderedRecoveryHandles.get(orderedStreamOrigin(stream))
+    if (handle === undefined) throw contractError('ownership.denied', 'gatt', `${SCOPE}.ordered.recovery-handle`)
+    return Object.freeze({ ...handle })
+  }
+
+  private async reclaimOrdered(
+    handle: ReactNativeOrderedRecoveryHandle
+  ): Promise<import('./react-native-ordered-recovery').ReactNativeOrderedRecovery> {
+    this.assertOperational(`${SCOPE}.ordered.reclaim`)
+    if (
+      typeof handle !== 'object' ||
+      handle === null ||
+      typeof handle.peerId !== 'string' ||
+      handle.peerId.length === 0 ||
+      typeof handle.collectionId !== 'string' ||
+      typeof handle.reclaimCapability !== 'string' ||
+      handle.reclaimCapability.length === 0
+    )
+      throw contractError('argument.invalid', 'gatt', `${SCOPE}.ordered.reclaim`)
+    const version = await this.invoke('gatt.ordered.version', {})
+    if (version.wireVersion !== 2) throw contractError('protocol.incompatible', 'boundary', `${SCOPE}.ordered.version`)
+    const metadata = await this.invoke('gatt.ordered.failure-metadata.version', {})
+    if (!metadata.versions.includes(1))
+      throw contractError('protocol.incompatible', 'boundary', `${SCOPE}.ordered.failure-metadata.version`)
+    const context = await this.invoke('gatt.ordered.reclaim', {
+      peerId: handle.peerId,
+      collectionId: handle.collectionId,
+      reclaimCapability: handle.reclaimCapability
+    })
+    if (context !== null && 'recordingId' in context)
+      throw contractError('ownership.denied', 'gatt', `${SCOPE}.ordered.reclaim-recorder`)
+    const copy = Object.freeze({
+      peerId: handle.peerId,
+      collectionId: handle.collectionId,
+      reclaimCapability: handle.reclaimCapability
+    })
+    if (context === null) {
+      return {
+        state: 'unopened',
+        close: async () => {
+          const outcome = await this.invoke('gatt.ordered.close', {
+            peerId: copy.peerId,
+            collectionId: copy.collectionId,
+            operationId: this.mintOperationId('ordered-recovery-close')
+          })
+          if (outcome === 'released') {
+            await this.invoke('gatt.ordered.ack-group', { peerId: copy.peerId, collectionId: copy.collectionId })
+            await this.invoke('gatt.ordered.forget-group', { ...copy })
+          }
+          return outcome
+        }
+      }
+    }
+    if (
+      context.members.length === 0 ||
+      new Set(context.members.map(member => member.publicMemberId)).size !== context.members.length ||
+      context.members.some((member, index) => member.memberId !== String(index))
+    )
+      throw contractError('protocol.malformed', 'boundary', `${SCOPE}.ordered.reclaim-context`)
+    const memberIds = context.members.map(member => member.publicMemberId)
+    const transport = createReactNativeOrderedTransport(
+      (op, args) => this.invoke(op, args),
+      copy.peerId,
+      copy.collectionId,
+      copy.reclaimCapability,
+      memberIds,
+      () => this.mintOperationId('ordered-recovery-close')
+    )
+    const status = await transport.status()
+    const stream = new OrderedNativeStream(
+      {
+        itemCapacity: capacity(context.maxItems),
+        byteCapacity: capacity(context.maxBytes),
+        reservedControlCapacity: capacity(context.maxControls)
+      },
+      transport,
+      copy.peerId,
+      copy.collectionId,
+      context.publicConnectionGeneration,
+      context.publicDatabaseGeneration,
+      memberIds
+    )
+    stream.setSourceGeneration(status.sourceGeneration)
+    this.orderedRecoveryHandles.set(stream, copy)
+    return {
+      state: 'reclaimed',
+      stream,
+      members: context.members.map(member => ({
+        memberId: member.publicMemberId,
+        selector: member.selector,
+        requestedDelivery: member.requestedDelivery
+      })),
+      connectionGeneration: context.publicConnectionGeneration,
+      databaseGeneration: context.publicDatabaseGeneration
+    }
+  }
+
   // -- host services ------------------------------------------------------------------------------------
 
   private async acquireBackground(request: {
@@ -4266,8 +5496,28 @@ export interface ReactNativeRustCoreHostServices {
     readonly maxItems?: number
     readonly maxBytes?: number
   }): Promise<ContinuationBacklog>
+  claimContinuationRetainedV1?(request?: {
+    readonly maxItems?: number
+    readonly maxBytes?: number
+  }): Promise<import('./react-native-continuation-claim').ContinuationRetainedPrefixV1>
+  claimContinuationRetainedV2?(request?: {
+    readonly maxItems?: number
+    readonly maxBytes?: number
+  }): Promise<NativeContinuationRetainedPrefixV2>
   /** Reports the continuation posture (declared strategy, last wake). */
   continuationStatus(): Promise<ContinuationStatus>
+  reserveOrderedRecordingReclaim?(
+    handle: import('./react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle
+  ): import('./react-native-ordered-recovery').ReactNativeOrderedRecordingReclaimHandle
+  orderedRecordingRecoveryHandle(
+    id: string
+  ): import('./react-native-ordered-recovery').ReactNativeOrderedRecordingRecoveryHandle
+  orderedRecordingContext(id: string): Promise<import('../../core/ordered-recording').OrderedRecordingContext>
+  orderedRecordingStop(id: string): Promise<import('../../core/continuation-recording').OrderedRecordingHostStopResult>
+  orderedRecoveryHandle(stream: OrderedNotificationStream): ReactNativeOrderedRecoveryHandle
+  reclaimOrdered(
+    handle: ReactNativeOrderedRecoveryHandle
+  ): Promise<import('./react-native-ordered-recovery').ReactNativeOrderedRecovery>
 }
 
 type DistributiveOmit<Type, Key extends PropertyKey> = Type extends unknown ? Omit<Type, Key> : never
@@ -4313,6 +5563,17 @@ function advertisementBytes(record: Extract<WireDrainRecord, { t: 'adv' }>): num
   for (const entry of record.manufacturerData ?? []) bytes += 2 + entry.payload.byteLength
   if (record.rawRecord !== null) bytes += record.rawRecord.byteLength
   return bytes
+}
+
+function sameTerminalEvidenceScope(
+  actual: { readonly managerId: string; readonly operationId: string; readonly incarnation: string },
+  expected: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
+): boolean {
+  return (
+    actual.managerId === expected.managerId &&
+    actual.operationId === expected.operationId &&
+    actual.incarnation === expected.incarnation
+  )
 }
 
 /** Identity of the connection records for tests that inspect retained state. */

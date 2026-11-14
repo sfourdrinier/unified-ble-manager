@@ -1,6 +1,6 @@
 // __tests__/ElectronIpcHardening.test.js
 
-const { ElectronMainBleBinding, ElectronMainBleRouter } = require('../src/electron-main')
+const { ElectronMainBleBinding, ElectronMainBleRouter, createElectronIpcVersionAxes } = require('../src/electron-main')
 const { ElectronRendererStreamRegistry } = require('../src/electron/renderer-stream-registry')
 const { ElectronRendererBleClient } = require('../src/electron-renderer')
 const { IPC_CLIENT_COMPATIBILITY_OFFER } = require('../src/ipc/protocol')
@@ -8,12 +8,25 @@ const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/
 const { snapshotSerializableRecord } = require('../src/backend-contract/serializable')
 const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
+const { markTerminalEvidenceStageFailure } = require('../src/core/terminal-evidence-stage-failure')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 6 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 10 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
+
+test('new Electron main negotiates the normal BLE protocol with a protocol-6 renderer', () => {
+  const core = createAuthority().versions
+  const legacyOffer = {
+    backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),
+    capabilitySchema: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
+    eventSchema: versionRange(version('event-schema', 1), version('event-schema', 1)),
+    traceFormat: versionRange(version('trace-format', 1), version('trace-format', 1)),
+    ipcProtocol: versionRange(version('ipc-protocol', 6), version('ipc-protocol', 6))
+  }
+  expect(createElectronIpcVersionAxes(core, legacyOffer).ipcProtocol.selected.value).toBe(6)
+})
 
 function emptyCapabilitySnapshot(backendGeneration) {
   return { schemaVersion: 2, backendGeneration, descriptors: [] }
@@ -634,6 +647,8 @@ describe('Electron IPC hardening', () => {
         publish = listener
       },
       validateRequest: jest.fn(),
+      validateBootstrapOffer: jest.fn(),
+      publishPeerFailureRecoveryAvailability: jest.fn(async () => 'delivered'),
       dispatch: jest.fn(async authenticated => ({
         kind: 'bootstrap',
         bootstrap: {
@@ -755,6 +770,91 @@ describe('Electron IPC hardening', () => {
     expectConsoleError('[ElectronRendererStreamRegistry] Stream item exceeded the configured IPC message limit:', {
       streamId
     })
+  })
+
+  test('forwards a source-loss terminal without attributing host loss to the renderer stream', async () => {
+    const lease = rendererLease('host-global-loss')
+    const stream = createControlledStream()
+    const resources = { scans: new Map(), subscriptions: new Map(), releasedHandles: new Set() }
+    const events = []
+    const registry = new ElectronRendererStreamRegistry({
+      maximumMessageBytes: 4096,
+      publish: async (_lease, event) => {
+        events.push(event)
+        return 'delivered'
+      },
+      createEvent: (rendererLease, streamId, item) => ({ rendererLease, streamId, item, eventId: 'loss-event' })
+    })
+    const resource = registry.registerSubscription(resources, lease, 'loss-stream', 'database', {
+      values: stream,
+      remove: async () => {
+        stream.close()
+        return released()
+      }
+    })
+    // `source-loss` is retained by the explicit loss-aware projection. The
+    // stable renderer stream ends as a normal terminal overflow instead.
+    const terminal = {
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0,
+      replacedItems: 0
+    }
+    stream.push(terminal)
+    await flushAsyncWork()
+    expect(events[0].item).toEqual(terminal)
+    await registry.removeSubscription(resources, 'loss-stream', resource, true)
+  })
+
+  test('serializes a source-native terminal evidence staging refusal exactly', async () => {
+    const lease = rendererLease('terminal-evidence-stage-failed')
+    const stream = createControlledStream()
+    const resources = { scans: new Map(), subscriptions: new Map(), releasedHandles: new Set() }
+    const events = []
+    const registry = new ElectronRendererStreamRegistry({
+      maximumMessageBytes: 4096,
+      publish: async (_lease, event) => {
+        events.push(event)
+        return 'delivered'
+      },
+      createEvent: (rendererLease, streamId, item) => ({ rendererLease, streamId, item, eventId: 'stage-failed-event' })
+    })
+    const resource = registry.registerSubscription(resources, lease, 'stage-failed-stream', 'database', {
+      values: stream,
+      remove: async () => {
+        stream.close()
+        return released()
+      }
+    })
+    const error = markTerminalEvidenceStageFailure({
+      code: 'platform.failure',
+      domain: 'restoration',
+      operation: 'native.scan.terminal-evidence.stage',
+      platform: null,
+      retryability: 'caller-decides'
+    })
+
+    stream.push({
+      kind: 'terminal',
+      reason: 'source-failed',
+      droppedItems: 0,
+      droppedBytes: 0,
+      replacedItems: 0,
+      error
+    })
+    await flushAsyncWork()
+
+    expect(events).toHaveLength(1)
+    expect(events[0].item).toEqual(
+      expect.objectContaining({
+        kind: 'terminal',
+        reason: 'source-failed',
+        error,
+        terminalEvidenceStageFailed: true
+      })
+    )
+    await registry.removeSubscription(resources, 'stage-failed-stream', resource, true)
   })
 
   test('preserves native receipt clocks in renderer notification snapshots', async () => {
@@ -1017,6 +1117,8 @@ describe('Electron IPC hardening', () => {
         publish = listener
       },
       validateRequest: jest.fn(),
+      validateBootstrapOffer: jest.fn(),
+      publishPeerFailureRecoveryAvailability: jest.fn(async () => 'delivered'),
       dispatch: jest.fn(async sender => ({
         kind: 'bootstrap',
         bootstrap: {
@@ -1103,6 +1205,7 @@ describe('Electron IPC hardening', () => {
     const router = {
       setEventPublisher: jest.fn(),
       validateRequest: jest.fn(),
+      validateBootstrapOffer: jest.fn(),
       dispatch: jest.fn(),
       releaseRenderer: jest.fn(),
       terminateStream: jest.fn(),
@@ -1338,6 +1441,8 @@ describe('Electron IPC hardening', () => {
       const router = {
         setEventPublisher: jest.fn(),
         validateRequest: jest.fn(),
+        validateBootstrapOffer: jest.fn(),
+        publishPeerFailureRecoveryAvailability: jest.fn(async () => 'delivered'),
         dispatch: jest.fn(async authenticated => ({
           kind: 'bootstrap',
           bootstrap: {
@@ -1845,16 +1950,19 @@ describe('Electron IPC protocol version 6', () => {
     }
   }
 
-  test('the renderer offers exactly IPC protocol 6', () => {
-    expect(IPC_PROTOCOL_VERSION).toBe(6)
-    expect(IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol).toEqual(protocolRange(6))
+  test('the renderer offers IPC protocols 6 through 11', () => {
+    expect(IPC_PROTOCOL_VERSION).toBe(11)
+    expect(IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol).toEqual(
+      versionRange(version('ipc-protocol', 6), version('ipc-protocol', 11))
+    )
   })
 
   test.each([3, 4, 5])(
     'new main refuses protocol %s renderer at bootstrap with no lease and no effects',
     async oldVersion => {
       const connect = jest.fn()
-      const current = createRouter({ connect })
+      const subscribe = jest.fn()
+      const current = createRouter({ connect, subscribe })
       const sender = trusted('old-renderer')
       const oldOffer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(oldVersion) }
 
@@ -1863,15 +1971,144 @@ describe('Electron IPC protocol version 6', () => {
       })
       expect(current.router.resources).toHaveProperty('size', 0)
       expect(connect).not.toHaveBeenCalled()
+      expect(subscribe).not.toHaveBeenCalled()
 
       const response = await current.router.dispatch(sender, {
         kind: 'bootstrap',
         offer: IPC_CLIENT_COMPATIBILITY_OFFER
       })
-      expect(response.bootstrap.versions.ipcProtocol.selected).toEqual(version('ipc-protocol', 6))
+      expect(response.bootstrap.versions.ipcProtocol.selected).toEqual(version('ipc-protocol', 11))
       await current.router.destroy()
     }
   )
+
+  test('a protocol-6 renderer completes representative connect, discovery, and read routes', async () => {
+    const characteristic = {
+      serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb',
+      serviceOccurrence: 0,
+      characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb',
+      characteristicOccurrence: 0
+    }
+    const database = {
+      snapshot: jest.fn(async () => ({ characteristics: [{ path: characteristic }] })),
+      readReceipt: jest.fn(async () => ({ value: new Uint8Array([0x06]), provenance: 'read' }))
+    }
+    const connection = {
+      peerId: 'legacy-v6-peer',
+      connectionId: 'legacy-v6-connection',
+      connectionGeneration: 'legacy-v6-generation',
+      discover: jest.fn(async () => database),
+      disconnect: jest.fn(async () => released())
+    }
+    const current = createRouter({ connect: jest.fn(async () => connection) })
+    const sender = trusted('legacy-v6-routes')
+    const legacyOffer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(6) }
+    const boot = (await current.router.dispatch(sender, { kind: 'bootstrap', offer: legacyOffer })).bootstrap
+
+    expect(boot.versions.ipcProtocol.selected.value).toBe(6)
+    const connected = await current.router.dispatch(
+      sender,
+      route(current, boot, 1, 'connection.connect', { peerId: 'legacy-v6-peer' })
+    )
+    const discovered = await current.router.dispatch(
+      sender,
+      route(current, boot, 2, 'gatt.discover', { connectionHandle: connected.payload.handle })
+    )
+    const read = await current.router.dispatch(
+      sender,
+      route(current, boot, 3, 'gatt.read', {
+        databaseHandle: discovered.payload.handle,
+        characteristicHandle: discovered.payload.characteristics[0].handle
+      })
+    )
+
+    expect(read).toMatchObject({ kind: 'route', payload: { value: new Uint8Array([0x06]), provenance: 'read' } })
+    expect(database.readReceipt).toHaveBeenCalledWith(expect.objectContaining(characteristic), expect.any(Object))
+    await current.router.destroy()
+  })
+
+  test('a protocol-6 renderer cannot dispatch any ordered route before an ordered resource or backend operation', async () => {
+    const connect = jest.fn()
+    const planScan = jest.fn()
+    const current = createRouter({ connect, planScan })
+    const sender = trusted('legacy-v6-ordered-routes')
+    const legacyOffer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(6) }
+    const boot = (await current.router.dispatch(sender, { kind: 'bootstrap', offer: legacyOffer })).bootstrap
+    const orderedCommands = [
+      'gatt.ordered.open',
+      'gatt.ordered.next',
+      'gatt.ordered.close',
+      'gatt.ordered-recording.reserve',
+      'gatt.ordered-recording.start',
+      'gatt.ordered-recording.reclaim.pending',
+      'gatt.ordered-recording.reclaim.reserve',
+      'gatt.ordered-recording.reclaim.status',
+      'gatt.ordered-recording.marker-owner',
+      'gatt.ordered-recording.markers',
+      'gatt.ordered.marker.reserve',
+      'gatt.ordered-recording.marker.reserve',
+      'gatt.ordered.orphans',
+      'gatt.ordered-recording.starts'
+    ]
+
+    for (const [index, command] of orderedCommands.entries()) {
+      await expect(current.router.dispatch(sender, route(current, boot, index + 1, command, {}))).rejects.toMatchObject(
+        {
+          normalized: {
+            code: 'capability.unsupported',
+            domain: 'gatt',
+            operation: 'electron.ordered.ipc-v9-required'
+          }
+        }
+      )
+    }
+
+    expect(connect).not.toHaveBeenCalled()
+    expect(planScan).not.toHaveBeenCalled()
+    await current.router.destroy()
+  })
+
+  test('a protocol-10 renderer cannot dispatch terminal-evidence routes', async () => {
+    const current = createRouter()
+    const sender = trusted('legacy-v10-terminal-evidence')
+    const v10Offer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(10) }
+    const boot = (await current.router.dispatch(sender, { kind: 'bootstrap', offer: v10Offer })).bootstrap
+    for (const [index, command] of [
+      'terminalEvidence.reserve',
+      'terminalEvidence.commit',
+      'terminalEvidence.read',
+      'terminalEvidence.release',
+      'terminalEvidence.recovery.list',
+      'terminalEvidence.recovery.read',
+      'terminalEvidence.recovery.ack'
+    ].entries()) {
+      await expect(current.router.dispatch(sender, route(current, boot, index + 1, command, {}))).rejects.toMatchObject(
+        {
+          normalized: {
+            code: 'capability.unsupported',
+            domain: 'restoration',
+            operation: 'electron.terminal-evidence.ipc-v11-required'
+          }
+        }
+      )
+    }
+    await current.router.destroy()
+  })
+
+  test.each([9, 10])('protocol-%s renderer can use an ordered read-only route', async ipcProtocol => {
+    const current = createRouter()
+    const sender = trusted(`ordered-v${ipcProtocol}`)
+    const offer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(ipcProtocol) }
+    const boot = (await current.router.dispatch(sender, { kind: 'bootstrap', offer })).bootstrap
+
+    await expect(
+      current.router.dispatch(sender, route(current, boot, 1, 'gatt.ordered.orphans', {}))
+    ).resolves.toMatchObject({
+      kind: 'route',
+      payload: { receipts: [], truncated: false }
+    })
+    await current.router.destroy()
+  })
 
   test('new renderer refuses an old main that cannot negotiate protocol 4', async () => {
     const transport = {
@@ -1908,5 +2145,22 @@ describe('Electron IPC protocol version 6', () => {
 
     await expect(client.initialize()).rejects.toMatchObject({ normalized: { code: 'protocol.incompatible' } })
     expect(transport.invoke.mock.calls.map(([request]) => request.kind)).toEqual(['bootstrap', 'release'])
+  })
+
+  test.each([6, 7, 8, 9])('new renderer accepts compatible bootstrap protocol %s', async compatibleVersion => {
+    const transport = {
+      invoke: jest.fn(async request => {
+        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: clientBootstrap(compatibleVersion) }
+        if (request.kind === 'release') return { kind: 'release', cleanup: released() }
+        throw new Error(`unexpected ${request.kind}`)
+      }),
+      acknowledge: jest.fn(),
+      subscribe: () => () => {}
+    }
+    const client = new ElectronRendererBleClient(transport)
+    await expect(client.initialize()).resolves.toMatchObject({
+      versions: { ipcProtocol: { selected: { value: compatibleVersion } } }
+    })
+    await client.destroy()
   })
 })

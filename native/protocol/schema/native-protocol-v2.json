@@ -1,7 +1,7 @@
 {
   "schema": "unified-ble-native-protocol",
   "version": 2,
-  "abiVersion": 7,
+  "abiVersion": 8,
   "controlSurfaceVersion": 2,
   "abiManifest": "native-protocol-v2-abi.json",
   "maximumControlRecordBytes": 262144,
@@ -89,13 +89,16 @@
     "backendRestarted",
     "restorationAvailable",
     "diagnostic",
-    "securityStateChanged"
+    "securityStateChanged",
+    "notificationLoss",
+    "notificationTerminated"
   ],
   "terminalOutcomes": ["succeeded", "failed"],
   "cancellationStates": ["cancellationRequested", "alreadyTerminal", "notCancellable"],
   "binaryOwnership": ["nativeOwnedCopy", "javascriptOwnedCopy", "transferred"],
   "writeModes": ["withResponse", "withoutResponse"],
   "notificationDeliveryModes": ["notification", "indication"],
+  "notificationDeliveryConstraints": ["preferNotification", "preferIndication", "requireNotification", "requireIndication"],
   "connectionPriorities": ["lowPower", "balanced", "highThroughput"],
   "connectionIntents": ["direct", "whenAvailable"],
   "connectionPhys": ["le1m", "le2m", "leCoded"],
@@ -261,7 +264,8 @@
         ["phyRx", "enum:connectionPhys", false],
         ["pairTransport", "enum:pairTransports", false],
         ["connectionIntent", "enum:connectionIntents", false],
-        ["notificationDeliveryMode", "enum:notificationDeliveryModes", false]
+        ["notificationDeliveryMode", "enum:notificationDeliveryModes", false],
+        ["notificationDeliveryConstraint", "enum:notificationDeliveryConstraints", false]
       ]
     },
     {
@@ -341,7 +345,9 @@
         ["error", "record:error", false],
         ["adapterState", "record:adapterStateSnapshot", false],
         ["peerId", "string", false],
-        ["bondState", "enum:securityBondStates", false]
+        ["bondState", "enum:securityBondStates", false],
+        ["lostItems", "uint64", false],
+        ["lostBytes", "uint64", false]
       ]
     },
     {

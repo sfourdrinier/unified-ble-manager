@@ -22,7 +22,7 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `5.2.2`. Verify the current published version in
+This source tree is versioned `5.2.3`. Verify the current published version in
 the npm registry. During release preparation, the version
 in `package.json` can be ahead of npm until the matching tag-driven workflow
 publishes it; the registry and GitHub release remain authoritative.
@@ -56,7 +56,7 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.2.2
+pnpm add unified-ble-manager@5.2.3
 ```
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun 1.4.2 loads the same desktop Node-API addon as Node. `bun scripts/ci/bun-desktop-host-smoke.js` opens the synthetic central and closes it. `--list-adapters` lists the OS adapters; on glibc Linux x64 it returned both host adapters. `scripts/ci/bun-desktop-h10-session.js` is an opt-in session for a simulator named exactly `SIM Polar H10 0001`. On macOS Apple Silicon that session scanned, connected, read, wrote, notified, and disconnected. On glibc Linux x64 the same GATT session completed and `setEventWaker` ran. Against the installed `5.87-ubm.4` daemon, disconnect after discovery returned `lease-released-protected` and left the link up, as Node does on that stack. Source `5.87-ubm.6` ends a finished read or write hold when the call completes. That daemon was installed and the same H10 session then returned `lease-released-indeterminate` and left the link up, because profile-probe auto-connect bookkeeping was recorded as an unknown holder. Source `5.87-ubm.7` does not treat that bookkeeping as a hold on an exclusive link this process created, and that exclusive release stops kernel auto-connect for an untrusted device. Installing it changed the same H10 disconnect to `lease-released-protected` and left the link up: the controller had already initiated the bonded link, and the lease adopted it as borrowed. Source `5.87-ubm.8` releases a locally initiated link when no other application hold remains. Installing it, the same H10 session reported disconnect `released` and close `released`, and the link was down. Source `5.87-ubm.9` leaves an unbonded link up when an encrypted attribute returns Insufficient Encryption. Installing it, the unbonded Linux session, the macOS session, and two back-to-back Windows sessions on source digest `0b31ce8e` each completed the same exchange and left the link down. Neither the smoke nor those receipts is a platform evidence label.
@@ -78,17 +78,20 @@ the Rust core themselves; see `CONTRIBUTING.md`); any other value fails
 
 The packaged native core and the JavaScript package are one sealed release
 unit. Consumer builds verify the native build identity before use and fail
-with `protocol.incompatible` when the linked artifact does not match. For
-prebuilt/source modes and the exact refresh rules for repository fixtures, see
+with `protocol.incompatible` when the linked artifact does not match. This is
+an exact co-deployment requirement, not a downgrade negotiation: the released
+5.2.1 `/2` artifact cannot run with this worktree's `/3` JavaScript, and a
+`/3` artifact cannot run with 5.2.1 JavaScript. For prebuilt/source modes and
+the exact refresh rules for repository fixtures, see
 [`docs/NATIVE_ARTIFACTS.md`](docs/NATIVE_ARTIFACTS.md).
 
 Every React Native and Expo factory runs that core through the
 `UnifiedBleRustCore` TurboModule: one process-owned Rust owner per app, one
 session lease per manager. There is no TypeScript or protocol-control route and
-no option to request one. Before its first radio call the factory checks the
-binary's build identity, contract revision and wire revision against the
-identity this package was sealed with, and fails `protocol.incompatible` on any
-difference. Platform events reach JavaScript through one wake-driven drain, so
+no option to request one. Before it opens a native session or makes a radio
+call, the factory checks the binary's build identity, contract revision and
+wire revision against the identity this package was sealed with, and fails
+`protocol.incompatible` on any difference. Platform events reach JavaScript through one wake-driven drain, so
 an idle manager makes no bridge calls. The wire is described in
 [`docs/MOBILE_RUST_WIRE.md`](docs/MOBILE_RUST_WIRE.md).
 
@@ -308,16 +311,25 @@ Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Reac
 
 ### `ScanSession`
 
-| Member         | Use                                                                                                                                                  |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `observations` | Bounded stream: `value`, `overflow`, or `terminal`. Drop-policy overflow means ads were missed; the scan stays up. `error` fail-closes.              |
-| `events`       | Optional derived current-view events: `observed` and monotonic `lost` (`observation.reportLostAfterMs`); unsupported host façades reject this option |
-| `plan`         | Host-owned native/residual planning diagnostics, or `null` when this host has no planner                                                             |
-| `stop()`       | End the scan and return a cleanup receipt. `find` already does this.                                                                                 |
+| Member              | Use                                                                                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `observations`      | Bounded stream: `value`, `overflow`, or `terminal`. Drop-policy overflow means ads were missed; the scan stays up. `error` fail-closes.              |
+| `events`            | Optional derived current-view events: `observed` and monotonic `lost` (`observation.reportLostAfterMs`); unsupported host façades reject this option |
+| `lossAwareEventsV1` | Optional versioned event view with explicit upstream and subscriber loss; subscribing opts in and creates a bounded view                             |
+| `plan`              | Host-owned native/residual planning diagnostics, or `null` when this host has no planner                                                             |
+| `stop()`            | End the scan and return a cleanup receipt. `find` already does this.                                                                                 |
+
+`stop()` ends the producer; accepted observations already buffered remain readable, including when the observation view is first opened after stopping. Call `observations.close()` when finished reading to release the replayable terminal and the view. `find()` and `useDiscoveredPeers` close the views they own during cleanup. On the shared-core route, explicit close discards queued observations and reports their count on the view terminal. React Native currently cannot establish an exact native stop cutoff; see [scan semantics](docs/UNIFIED_SEMANTICS.md#6-scan-sessions).
 
 `AdvertisementObservation.device` is identity (`id`, address, stability). The advertised name is `observation.localName`.
 
 `scan({ observation: { reportLostAfterMs } })` derives timeout events from the same coalesced current view. The timeout is monotonic and bounded; RF absence, OS throttling, filtering, process suspension, or a stopped scan can all produce a derived `lost` event. Raw advertisement inclusion is capability-gated and unsupported by the normal public façade. Typed `platform` controls are validated at the public boundary; controls not implemented by the selected host reject before radio work rather than silently no-op.
+
+`events` keeps the original three `DiscoveryEvent` variants. Drop-policy overflow notices are skipped and source-loss controls reject with `stream.overflow`, as before. Consumers who need loss visibility can subscribe to `lossAwareEventsV1`; each iterator has its own bounded queue and should be returned when no longer needed. A `stream-loss` event gives separate cumulative `upstream` counters for the scan source and `subscriber` counters for this event iterator, each containing `droppedItems`, `droppedBytes`, and `replacedItems`. Counters are snapshots, not deltas; upstream counts may be repeated across views and must not be summed across them. Event history, including presence and `lost` events, may be incomplete after loss.
+
+The versioned view also delivers `source-loss` controls. A host-global notice identifies its source and a delta of records lost before routing; it does not identify which scan lost them and must not be summed across candidate streams. A peer-scoped notice identifies the peer and generation, with a skipped count or `null` when unknown; it is shared source evidence, not a per-scan count. Drop-policy notices permit later events; an error-policy host-global source loss or terminal overflow ends the affected view. Source failures and terminal overflow reject the iterator with the delivered error when available.
+
+The React `useDiscoveredPeers` hook reports these loss notices as a `stream.overflow` error while retaining subsequent peer updates when the stream continues. Its peer list may be incomplete. A terminal failure changes the state to `failed` and takes precedence over an earlier loss warning, preserving the terminal error's reported details.
 
 ### `Connection`
 
@@ -428,7 +440,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`5.2.2` is the selected patch release. Keep consumers pinned to `5.2.2` after
+`5.2.3` is the selected patch release. Keep consumers pinned to `5.2.3` after
 the matching publication is verified. Numbered
 5.x RCs use `next`. Publication uses npm trusted publishing/OIDC with
 provenance.

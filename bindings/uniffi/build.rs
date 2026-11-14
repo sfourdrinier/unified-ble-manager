@@ -8,5 +8,6 @@ include!("../ubm_build_identity.rs");
 
 fn main() {
     ubm_build_identity::emit("uniffi");
+    println!("cargo:rerun-if-changed=src/ubm_echo.udl");
     uniffi::generate_scaffolding("src/ubm_echo.udl").expect("UDL scaffolding");
 }

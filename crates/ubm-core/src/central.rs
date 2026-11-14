@@ -35,11 +35,65 @@ pub struct NotificationReceipt {
     pub clock_id: String,
 }
 
+/// Provenance reported by the native notification callback source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationProvenance {
+    Notification,
+    ReadOrNotification,
+    Unknown,
+}
+impl NotificationProvenance {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Notification => "notification",
+            Self::ReadOrNotification => "read-or-notification",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Native source identity and ordering, separate from receipt timestamps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotificationSource {
+    pub provenance: NotificationProvenance,
+    pub generation: u64,
+    pub ordinal: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct BufferedNotification {
     value: Vec<u8>,
     receipt: Option<NotificationReceipt>,
+    provenance: Option<NotificationSource>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+enum NotificationSlot {
+    Data(Option<BufferedNotification>),
+    PeerSourceLoss {
+        peer_id: String,
+        generation: u64,
+        skipped_records: Option<u64>,
+    },
+}
+
+/// A value or an ordered peer-source control. Counts describe the peer source,
+/// not the number of values lost by this individual consumer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NotificationEntry {
+    Value {
+        value: Vec<u8>,
+        receipt: Option<NotificationReceipt>,
+        provenance: Option<NotificationSource>,
+    },
+    PeerSourceLoss {
+        peer_id: String,
+        generation: u64,
+        skipped_records: Option<u64>,
+    },
+}
+
 use std::hash::{BuildHasher, Hasher};
 
 use crate::contracts::{
@@ -1263,6 +1317,28 @@ impl CentralEffectKind {
     }
 }
 
+/// Immutable identity captured as a resource operation enters the core.
+/// It remains valid as evidence after the kernel settles or forgets the operation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OperationAdmission {
+    operation_id: OperationId,
+    attachment: AttachmentTuple,
+}
+
+impl OperationAdmission {
+    /// The kernel operation admitted under this attachment.
+    #[must_use]
+    pub fn operation_id(&self) -> &OperationId {
+        &self.operation_id
+    }
+
+    /// The attachment on which the core admitted the operation.
+    #[must_use]
+    pub fn attachment(&self) -> &AttachmentTuple {
+        &self.attachment
+    }
+}
+
 /// One typed observation effect staged by a central operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CentralEffect {
@@ -1389,6 +1465,20 @@ pub enum ConsumerState {
     Removed,
     Failed,
     Invalid,
+}
+
+/// The first authoritative lifecycle event that retired a notification
+/// consumer.  The consumer can retain admitted values after its path is no
+/// longer resolvable, so this belongs to the consumer rather than being
+/// inferred later from the current connection state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NotificationInvalidationCause {
+    /// The peer's GATT database changed.
+    ServicesChanged,
+    /// The link ended or was explicitly released.
+    LinkEnded,
+    /// The host adapter reset while the consumer was active.
+    AdapterReset,
 }
 
 impl ConsumerState {
@@ -1634,6 +1724,8 @@ struct ConnectionRecord {
     database_generation: Generation,
     db_state: DatabaseState,
     leases: Vec<String>,
+    /// Admissions for leases acquired through the identity-bearing API.
+    lease_admissions: Vec<(String, OperationId)>,
     closing_leases: Vec<String>,
     sharing: bool,
     /// Operation owning the pending establishment, if the link never came up.
@@ -1649,10 +1741,19 @@ struct ConsumerRecord {
     lease: String,
     connection_lease: String,
     state: ConsumerState,
+    /// First lifecycle cause, retained until the terminal consumer is
+    /// reclaimed so delayed polling reports the event that retired this
+    /// exact admission rather than a later unrelated event.
+    invalidation_cause: Option<NotificationInvalidationCause>,
     op: Option<OperationId>,
-    stream: Stream,
+    attachment: AttachmentTuple,
+    /// An exact release still owns this record until its receipt is acknowledged.
+    exact_cleanup_pending: bool,
+    /// None owns the physical CCCD without a duplicate delivery stream.
+    stream: Option<Stream>,
     terminal: Option<SubscriptionTerminal>,
     terminal_taken: bool,
+    peer_control_overflow: bool,
     quarantined: u64,
     delivered: u64,
     /// One slot per stream-ledger entry, in arrival order (M2 value
@@ -1661,7 +1762,7 @@ struct ConsumerRecord {
     /// accounting mutate together on every decision, so takes always pair
     /// a value with its own ledger size; popping frees stream bytes so the
     /// bound recycles.
-    slots: VecDeque<Option<BufferedNotification>>,
+    slots: VecDeque<NotificationSlot>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2126,6 +2227,27 @@ impl Central {
         })
     }
 
+    fn exact_consumer_position(
+        &self,
+        path_index: usize,
+        consumer: &str,
+        admission: &OperationAdmission,
+    ) -> Option<(usize, usize)> {
+        self.hubs.iter().enumerate().find_map(|(hub_index, hub)| {
+            if hub.path_index != path_index {
+                return None;
+            }
+            hub.consumers
+                .iter()
+                .position(|known| {
+                    known.lease == consumer
+                        && known.op.as_ref() == Some(&admission.operation_id)
+                        && known.attachment == admission.attachment
+                })
+                .map(|consumer_index| (hub_index, consumer_index))
+        })
+    }
+
     /// The path of `consumer`'s subscription on `peer_key` matching
     /// `selector`, whatever its generation (finding 111): a stale path no
     /// longer resolves, but the values its consumer already holds still
@@ -2148,6 +2270,50 @@ impl Central {
             })
     }
 
+    /// The first lifecycle cause that invalidated this exact consumer, when
+    /// it remains retained for its accepted-prefix drain.
+    #[must_use]
+    pub fn consumer_invalidation_cause(
+        &self,
+        peer_key: &str,
+        selector: &PathSelector,
+        consumer: &str,
+    ) -> Option<NotificationInvalidationCause> {
+        self.hubs.iter().find_map(|hub| {
+            let path = self.paths.get(hub.path_index)?;
+            (path.peer_key == peer_key && selector_matches(path, selector))
+                .then(|| {
+                    hub.consumers
+                        .iter()
+                        .find(|known| known.lease == consumer)
+                        .and_then(|known| known.invalidation_cause)
+                })
+                .flatten()
+        })
+    }
+
+    /// Find a consumer only when its resource admission matches as well as
+    /// the peer and selector. Callers must keep the core lock while using
+    /// the returned path for any name-addressed consumer operation.
+    #[must_use]
+    pub fn consumer_path_exact(
+        &self,
+        peer_key: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        admission: &OperationAdmission,
+    ) -> Option<usize> {
+        self.hubs.iter().enumerate().find_map(|(hub_index, hub)| {
+            let path = self.paths.get(hub.path_index)?;
+            (path.peer_key == peer_key
+                && selector_matches(path, selector)
+                && self
+                    .exact_consumer_position(hub.path_index, consumer, admission)
+                    .is_some_and(|(index, _)| index == hub_index))
+            .then_some(hub.path_index)
+        })
+    }
+
     /// Whether a hub is garbage: physically invalid with no live operation
     /// and no untaken terminal anywhere in it (F04). Only such hubs
     /// reclaim; anything an operation or observation still references is
@@ -2164,10 +2330,14 @@ impl Central {
                 ),
                 None => false,
             };
-            let terminal_owed = consumer.terminal.is_some() && !consumer.terminal_taken;
+            let terminal_owed = (consumer.terminal.is_some() || consumer.peer_control_overflow)
+                && !consumer.terminal_taken;
             // Finding 111: values held at invalidation are owed to the host.
-            let values_owed = consumer.slots.iter().any(Option::is_some);
-            !op_live && !terminal_owed && !values_owed
+            let values_owed = consumer
+                .slots
+                .iter()
+                .any(|slot| !matches!(slot, NotificationSlot::Data(None)));
+            !op_live && !terminal_owed && !values_owed && !consumer.exact_cleanup_pending
         })
     }
 
@@ -2196,7 +2366,7 @@ impl Central {
     /// Invalidate every subscription hub whose path belongs to `peer_key`.
     /// Used when a terminal record is replaced and on service change: after
     /// removal/revocation, later native values cannot reach old consumers.
-    fn invalidate_peer_hubs(&mut self, peer_key: &str) {
+    fn invalidate_peer_hubs(&mut self, peer_key: &str, cause: NotificationInvalidationCause) {
         let mut stale_paths: Vec<usize> = Vec::new();
         for (index, path) in self.paths.iter().enumerate() {
             if path.peer_key == peer_key {
@@ -2207,6 +2377,9 @@ impl Central {
             if stale_paths.contains(&hub.path_index) {
                 hub.physical = CccdPhysical::Invalid;
                 for consumer in hub.consumers.iter_mut() {
+                    if consumer.invalidation_cause.is_none() {
+                        consumer.invalidation_cause = Some(cause);
+                    }
                     consumer.state = ConsumerState::Invalid;
                 }
             }
@@ -2749,6 +2922,9 @@ impl Central {
                     OwnershipDecision::GrantLease { .. } => {
                         let id = self.admit_op(client_lease, timeout_ms, now, out)?;
                         self.connections[index]
+                            .lease_admissions
+                            .retain(|(name, _)| name != client_lease);
+                        self.connections[index]
                             .leases
                             .push(String::from(client_lease));
                         self.op_peers.push((id.clone(), String::from(peer_key)));
@@ -2760,7 +2936,7 @@ impl Central {
                     }
                 }
             } else {
-                self.invalidate_peer_hubs(peer_key);
+                self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::LinkEnded);
                 self.connections.remove(index);
             }
         }
@@ -2781,6 +2957,7 @@ impl Central {
             database_generation,
             db_state: DatabaseState::Undiscovered,
             leases: Vec::from([String::from(client_lease)]),
+            lease_admissions: Vec::new(),
             closing_leases: Vec::new(),
             sharing: self.sharing_supported,
             connect_op: Some(id.clone()),
@@ -2789,6 +2966,47 @@ impl Central {
         self.op_peers.push((id.clone(), String::from(peer_key)));
         self.stage_effect(CentralEffectKind::Connect, &id, "connection.connect");
         Ok(id)
+    }
+
+    /// Connect and return the identity of the exact core admission.
+    pub fn connect_with_admission(
+        &mut self,
+        peer_key: &str,
+        client_lease: &str,
+        timeout_ms: u64,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<OperationAdmission, CoreError> {
+        let operation_id = self.connect(peer_key, client_lease, timeout_ms, now, out)?;
+        if let Some(index) = self.connection_position(peer_key) {
+            let admissions = &mut self.connections[index].lease_admissions;
+            admissions.retain(|(lease, _)| lease != client_lease);
+            admissions.push((String::from(client_lease), operation_id.clone()));
+        }
+        Ok(OperationAdmission {
+            operation_id,
+            attachment: self.attachment.clone(),
+        })
+    }
+
+    /// The immutable admission that owns `lease` on this live connection.
+    /// A retirement receipt uses this identity to distinguish an older
+    /// same-named lease from a later connection generation.
+    #[must_use]
+    pub fn connection_lease_admission(
+        &self,
+        peer_key: &str,
+        lease: &str,
+    ) -> Option<OperationAdmission> {
+        let index = self.connection_position(peer_key)?;
+        self.connections[index]
+            .lease_admissions
+            .iter()
+            .find(|(name, _)| name == lease)
+            .map(|(_, operation_id)| OperationAdmission {
+                operation_id: operation_id.clone(),
+                attachment: self.attachment.clone(),
+            })
     }
 
     /// Borrow the physical link under the explicit sharing rule. Without
@@ -2836,6 +3054,12 @@ impl Central {
             }
         }
         let id = self.admit_op(client_lease, timeout_ms, now, out)?;
+        self.connections[index]
+            .lease_admissions
+            .retain(|(name, _)| name != client_lease);
+        self.connections[index]
+            .lease_admissions
+            .push((String::from(client_lease), id.clone()));
         self.connections[index]
             .leases
             .push(String::from(client_lease));
@@ -2944,6 +3168,9 @@ impl Central {
         self.connections[index]
             .leases
             .retain(|lease| lease != source);
+        self.connections[index]
+            .lease_admissions
+            .retain(|(lease, _)| lease != source);
         if !self.connections[index]
             .leases
             .iter()
@@ -3004,6 +3231,9 @@ impl Central {
         }
         self.connections[index].leases.retain(|held| held != lease);
         self.connections[index]
+            .lease_admissions
+            .retain(|(held, _)| held != lease);
+        self.connections[index]
             .closing_leases
             .retain(|held| held != lease);
         // Paths describe the shared physical topology, not a public logical
@@ -3054,7 +3284,7 @@ impl Central {
         }
         let next = step_connection(self.connections[index].state, ConnectionEvent::Disconnect)?;
         self.connections[index].state = next;
-        self.invalidate_peer_hubs(peer_key);
+        self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::LinkEnded);
         Ok(())
     }
 
@@ -3116,7 +3346,7 @@ impl Central {
         let next = step_connection(self.connections[index].state, ConnectionEvent::PeerLoss)?;
         self.connections[index].state = next;
         self.connections[index].db_state = DatabaseState::Invalid;
-        self.invalidate_peer_hubs(peer_key);
+        self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::LinkEnded);
         Ok(next)
     }
 
@@ -3143,7 +3373,7 @@ impl Central {
         })?;
         let next = step_connection(self.connections[index].state, ConnectionEvent::LinkReleased)?;
         self.connections[index].state = next;
-        self.invalidate_peer_hubs(peer_key);
+        self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::LinkEnded);
         // The platform confirmed this link released: earlier failed release
         // attempts no longer describe an outstanding resource (finding 38).
         self.disconnect_failures
@@ -3270,6 +3500,24 @@ impl Central {
             .collect()
     }
 
+    /// Every still-owned logical consumer of one physical notification path.
+    /// This preserves the source-time recipient cut when a physical source
+    /// failure is retained: two consumers sharing a CCCD remain distinct
+    /// durable recipients and may not acknowledge each other's evidence.
+    #[must_use]
+    pub fn consumers_for_path(&self, path_index: usize) -> Vec<String> {
+        self.hub_position(path_index)
+            .map(|hub_index| {
+                self.hubs[hub_index]
+                    .consumers
+                    .iter()
+                    .filter(|consumer| consumer.state != ConsumerState::Removed)
+                    .map(|consumer| consumer.lease.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Whether `lease` is one of the leases holding the link to `peer_key`.
     /// A requested release keeps its lease until the platform confirms it,
     /// so a retried disconnect in `Disconnecting` stays authorized by the
@@ -3294,6 +3542,69 @@ impl Central {
         })
     }
 
+    /// Retain an additional exact lease under an already-authorized live lease.
+    /// This does not start a radio operation or transfer ownership of children.
+    pub fn retain_connection_lease(
+        &mut self,
+        peer_key: &str,
+        source: &str,
+        dest: &str,
+        generation: &str,
+    ) -> Result<(), CoreError> {
+        const OP: &str = "connection.retain";
+        if source.is_empty() || dest.is_empty() || source == dest || generation.is_empty() {
+            return Err(err(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Connection,
+                OP,
+            ));
+        }
+        let index = self.connection_position(peer_key).ok_or_else(|| {
+            err(
+                BleErrorCode::ConnectionNotFound,
+                BleErrorDomain::Connection,
+                OP,
+            )
+        })?;
+        let connection = &self.connections[index];
+        if connection.connection_generation.as_str() != generation {
+            return Err(err(
+                BleErrorCode::ConnectionStale,
+                BleErrorDomain::Connection,
+                OP,
+            ));
+        }
+        if connection.state != ConnectionState::Connected {
+            return Err(err(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Connection,
+                OP,
+            ));
+        }
+        if !connection.leases.iter().any(|lease| lease == source)
+            || connection
+                .closing_leases
+                .iter()
+                .any(|lease| lease == source)
+            || connection.leases.iter().any(|lease| lease == dest)
+        {
+            return Err(err(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Connection,
+                OP,
+            ));
+        }
+        if connection.leases.len() >= 256 {
+            return Err(err(
+                BleErrorCode::StreamQuota,
+                BleErrorDomain::Connection,
+                OP,
+            ));
+        }
+        self.connections[index].leases.push(String::from(dest));
+        Ok(())
+    }
+
     /// Fence new GATT admission before scoped child teardown. The lease stays
     /// owned until cleanup confirms release, so retries retain authority.
     pub fn begin_lease_release(&mut self, peer_key: &str, lease: &str) -> Result<(), CoreError> {
@@ -3316,6 +3627,30 @@ impl Central {
             connection.closing_leases.push(String::from(lease));
         }
         Ok(())
+    }
+
+    /// Atomically fence a lease only if its attachment and admission still match.
+    pub fn begin_lease_release_exact(
+        &mut self,
+        peer_key: &str,
+        lease: &str,
+        admission: &OperationAdmission,
+    ) -> Result<(), CoreError> {
+        let matches = self.attachment == admission.attachment
+            && self.connection_position(peer_key).is_some_and(|index| {
+                self.connections[index]
+                    .lease_admissions
+                    .iter()
+                    .any(|(name, op)| name == lease && op == &admission.operation_id)
+            });
+        if !matches {
+            return Err(err(
+                BleErrorCode::ConnectionStale,
+                BleErrorDomain::Connection,
+                "connection.release.admission",
+            ));
+        }
+        self.begin_lease_release(peer_key, lease)
     }
 
     fn require_lease_not_closing(
@@ -3481,6 +3816,9 @@ impl Central {
         for hub in self.hubs.iter_mut() {
             hub.physical = CccdPhysical::Invalid;
             for consumer in hub.consumers.iter_mut() {
+                if consumer.invalidation_cause.is_none() {
+                    consumer.invalidation_cause = Some(NotificationInvalidationCause::AdapterReset);
+                }
                 consumer.state = ConsumerState::Invalid;
             }
         }
@@ -3518,7 +3856,7 @@ impl Central {
         let next = step_database(self.connections[index].db_state, event)?;
         self.connections[index].db_state = next;
         if replacing {
-            self.invalidate_peer_hubs(peer_key);
+            self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::ServicesChanged);
         }
         Ok(())
     }
@@ -3578,7 +3916,7 @@ impl Central {
         self.connections[index].db_state = next;
         self.connections[index].database_generation = generation;
         self.connections[index].live_paths = 0;
-        self.invalidate_peer_hubs(peer_key);
+        self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::ServicesChanged);
         Ok(())
     }
 
@@ -4774,17 +5112,82 @@ impl Central {
         now: MonotonicTime,
         out: &mut EffectBatch,
     ) -> Result<OperationId, CoreError> {
+        self.subscribe_inner(
+            path.into(),
+            Some((policy, item_capacity, byte_capacity)),
+            consumer,
+            timeout_ms,
+            now,
+            out,
+        )
+    }
+
+    /// Subscribe and return the identity of the exact core admission.
+    #[allow(clippy::too_many_arguments)]
+    pub fn subscribe_with_admission(
+        &mut self,
+        path: impl Into<GattOperationPath>,
+        policy: &str,
+        item_capacity: u64,
+        byte_capacity: u64,
+        consumer: &str,
+        timeout_ms: u64,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<OperationAdmission, CoreError> {
+        let operation_id = self.subscribe(
+            path,
+            policy,
+            item_capacity,
+            byte_capacity,
+            consumer,
+            timeout_ms,
+            now,
+            out,
+        )?;
+        Ok(OperationAdmission {
+            operation_id,
+            attachment: self.attachment.clone(),
+        })
+    }
+
+    /// Own a shared physical notification registration without a second data
+    /// stream. The ordered source group is the only value/control consumer.
+    pub fn subscribe_ownership_only(
+        &mut self,
+        path: impl Into<GattOperationPath>,
+        consumer: &str,
+        timeout_ms: u64,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<OperationId, CoreError> {
+        self.subscribe_inner(path.into(), None, consumer, timeout_ms, now, out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn subscribe_inner(
+        &mut self,
+        path: GattOperationPath,
+        delivery: Option<(&str, u64, u64)>,
+        consumer: &str,
+        timeout_ms: u64,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<OperationId, CoreError> {
         let GattOperationPath {
             index: path_index,
             caller_lease,
-        } = path.into();
+        } = path;
         self.check_effect_room()?;
-        let Some(parsed_policy) = OverflowPolicy::from_str(policy) else {
-            return Err(err(
-                BleErrorCode::ArgumentInvalid,
-                BleErrorDomain::Core,
-                "subscribe.policy",
-            ));
+        let parsed_policy = match delivery {
+            Some((policy, _, _)) => Some(OverflowPolicy::from_str(policy).ok_or_else(|| {
+                err(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Core,
+                    "subscribe.policy",
+                )
+            })?),
+            None => None,
         };
         if consumer.is_empty() {
             return Err(err(
@@ -4807,12 +5210,25 @@ impl Central {
                 "subscribe",
             ));
         }
-        let limits = StreamLimits::new(
-            item_capacity,
-            byte_capacity,
-            RESERVED_CONTROL_CAPACITY,
-            RESERVED_CONTROL_BYTES,
-        )?;
+        let stream = match (delivery, parsed_policy) {
+            (Some((_, item_capacity, byte_capacity)), Some(policy)) => Some(Stream::new(
+                StreamLimits::new(
+                    item_capacity,
+                    byte_capacity,
+                    RESERVED_CONTROL_CAPACITY,
+                    RESERVED_CONTROL_BYTES,
+                )?,
+                policy,
+            )),
+            (None, None) => None,
+            _ => {
+                return Err(err(
+                    BleErrorCode::LifecycleInvariantViolation,
+                    BleErrorDomain::Core,
+                    "subscribe.mode",
+                ));
+            }
+        };
         self.sweep_reclaimable_hubs();
         // An invalidated hub still holding values never blocks a new
         // subscription (finding 111): only a live hub is joined.
@@ -4857,15 +5273,21 @@ impl Central {
                 && record.state.is_terminal()
                 && (record.terminal_taken || record.terminal.is_none()))
         });
-        let known_op = self.hubs[hub_index]
+        let known = self.hubs[hub_index]
             .consumers
             .iter()
-            .find(|consumer_record| {
-                consumer_record.lease == consumer && !consumer_record.state.is_terminal()
-            })
-            .and_then(|consumer_record| consumer_record.op.clone());
-        if let Some(op) = known_op {
-            return Ok(op);
+            .find(|record| record.lease == consumer && !record.state.is_terminal());
+        if let Some(known) = known {
+            if known.stream.is_some() != stream.is_some() {
+                return Err(err(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Gatt,
+                    "subscribe.mode",
+                ));
+            }
+            if let Some(op) = &known.op {
+                return Ok(op.clone());
+            }
         }
         if self.hubs[hub_index].consumers.len() >= self.config.max_consumers_per_subscription {
             return Err(err(
@@ -4897,10 +5319,14 @@ impl Central {
                 lease: String::from(consumer),
                 connection_lease,
                 state: ConsumerState::Ready,
+                invalidation_cause: None,
                 op: Some(id.clone()),
-                stream: Stream::new(limits, parsed_policy),
+                attachment: self.attachment.clone(),
+                exact_cleanup_pending: false,
+                stream,
                 terminal: None,
                 terminal_taken: false,
+                peer_control_overflow: false,
                 quarantined: 0,
                 delivered: 0,
                 slots: VecDeque::new(),
@@ -4911,10 +5337,14 @@ impl Central {
             lease: String::from(consumer),
             connection_lease,
             state: ConsumerState::Enabling,
+            invalidation_cause: None,
             op: Some(id.clone()),
-            stream: Stream::new(limits, parsed_policy),
+            attachment: self.attachment.clone(),
+            exact_cleanup_pending: false,
+            stream,
             terminal: None,
             terminal_taken: false,
+            peer_control_overflow: false,
             quarantined: 0,
             delivered: 0,
             slots: VecDeque::new(),
@@ -5093,14 +5523,24 @@ impl Central {
             Some(index) => index,
             None => return Ok(false),
         };
-        let consumer_index = match self.hubs[hub_index]
+        let Some(consumer_index) = self.hubs[hub_index]
             .consumers
             .iter()
             .position(|known| known.lease == consumer)
-        {
-            Some(index) => index,
-            None => return Ok(false),
+        else {
+            return Ok(false);
         };
+        self.unsubscribe_from_hub(hub_index, consumer_index, now, out)
+    }
+
+    fn unsubscribe_from_hub(
+        &mut self,
+        hub_index: usize,
+        consumer_index: usize,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<bool, CoreError> {
+        let consumer = self.hubs[hub_index].consumers[consumer_index].lease.clone();
         match self.hubs[hub_index].consumers[consumer_index].state {
             ConsumerState::Enabling | ConsumerState::Ready => {}
             ConsumerState::Removing => return Ok(false),
@@ -5121,7 +5561,45 @@ impl Central {
             self.hubs[hub_index].consumers[consumer_index].state = ConsumerState::Removed;
             return Ok(false);
         }
-        self.issue_physical_disable(hub_index, consumer, now, out)
+        self.issue_physical_disable(hub_index, &consumer, now, out)
+    }
+
+    /// Retire a consumer only when the selected record has this exact admission.
+    pub fn unsubscribe_exact(
+        &mut self,
+        path_index: usize,
+        consumer: &str,
+        admission: &OperationAdmission,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<bool, CoreError> {
+        self.check_effect_room()?;
+        let (hub_index, consumer_index) = self
+            .exact_consumer_position(path_index, consumer, admission)
+            .ok_or_else(|| {
+                err(
+                    BleErrorCode::ConnectionStale,
+                    BleErrorDomain::Gatt,
+                    "gatt.unsubscribe.admission",
+                )
+            })?;
+        self.hubs[hub_index].consumers[consumer_index].exact_cleanup_pending = true;
+        self.unsubscribe_from_hub(hub_index, consumer_index, now, out)
+    }
+
+    /// Release the retained core record after the exact cleanup receipt and
+    /// any required drain have been acknowledged by its owner.
+    pub fn acknowledge_exact_consumer_cleanup(
+        &mut self,
+        path_index: usize,
+        consumer: &str,
+        admission: &OperationAdmission,
+    ) {
+        if let Some((hub_index, consumer_index)) =
+            self.exact_consumer_position(path_index, consumer, admission)
+        {
+            self.hubs[hub_index].consumers[consumer_index].exact_cleanup_pending = false;
+        }
     }
 
     /// Shared tail of [`Central::unsubscribe`]: issue the physical disable
@@ -5243,7 +5721,7 @@ impl Central {
         path_index: usize,
         value_len: u64,
     ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
-        self.deliver_inner(path_index, value_len, None, None)
+        self.deliver_inner(path_index, value_len, None, None, None)
     }
 
     /// Deliver one native notification value to every consumer of a path:
@@ -5259,7 +5737,7 @@ impl Central {
         value: &[u8],
     ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
         let value_len = value.len() as u64;
-        self.deliver_inner(path_index, value_len, Some(value), None)
+        self.deliver_inner(path_index, value_len, Some(value), None, None)
     }
 
     /// Deliver a value while retaining its native ingress receipt with every
@@ -5282,7 +5760,29 @@ impl Central {
                 "subscribe.receipt",
             ));
         }
-        self.deliver_inner(path_index, value.len() as u64, Some(value), Some(&receipt))
+        self.deliver_inner(
+            path_index,
+            value.len() as u64,
+            Some(value),
+            Some(&receipt),
+            None,
+        )
+    }
+
+    /// Deliver a value with provenance supplied by the native callback.
+    pub fn deliver_notification_value_with_provenance(
+        &mut self,
+        path_index: usize,
+        value: &[u8],
+        provenance: NotificationSource,
+    ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
+        self.deliver_inner(
+            path_index,
+            value.len() as u64,
+            Some(value),
+            None,
+            Some(provenance),
+        )
     }
 
     fn deliver_inner(
@@ -5291,6 +5791,7 @@ impl Central {
         value_len: u64,
         value: Option<&[u8]>,
         receipt: Option<&NotificationReceipt>,
+        provenance: Option<NotificationSource>,
     ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
         let hub_index = self.hub_position(path_index).ok_or_else(|| {
             err(
@@ -5302,6 +5803,9 @@ impl Central {
         let mut outcomes: Vec<(String, DeliveryOutcome)> =
             Vec::with_capacity(self.hubs[hub_index].consumers.len());
         for consumer in self.hubs[hub_index].consumers.iter_mut() {
+            let Some(stream) = consumer.stream.as_mut() else {
+                continue;
+            };
             let outcome = match consumer.state {
                 ConsumerState::Removed => DeliveryOutcome::DroppedRemoved,
                 ConsumerState::Invalid | ConsumerState::Failed => DeliveryOutcome::DroppedLate,
@@ -5313,16 +5817,17 @@ impl Central {
                     if consumer.terminal_taken {
                         DeliveryOutcome::DroppedLate
                     } else {
-                        match consumer.stream.push_data(value_len) {
+                        match stream.push_data(value_len) {
                             Ok(push) => match push.decision {
                                 crate::streams::AdmissionDecision::Admit => {
                                     consumer.delivered = consumer.delivered.saturating_add(1);
-                                    consumer.slots.push_back(value.map(|bytes| {
-                                        BufferedNotification {
+                                    consumer.slots.push_back(NotificationSlot::Data(value.map(
+                                        |bytes| BufferedNotification {
                                             value: bytes.to_vec(),
                                             receipt: receipt.cloned(),
-                                        }
-                                    }));
+                                            provenance,
+                                        },
+                                    )));
                                     DeliveryOutcome::Delivered
                                 }
                                 crate::streams::AdmissionDecision::Replace
@@ -5332,15 +5837,24 @@ impl Central {
                                     // the ledger evicted, then retain the
                                     // newest alongside its ledger entry.
                                     consumer.delivered = consumer.delivered.saturating_add(1);
-                                    let dropped =
-                                        (push.evicted_items as usize).min(consumer.slots.len());
-                                    consumer.slots.drain(0..dropped);
-                                    consumer.slots.push_back(value.map(|bytes| {
-                                        BufferedNotification {
+                                    let mut remaining = push.evicted_items;
+                                    consumer.slots.retain(|slot| {
+                                        if remaining > 0
+                                            && matches!(slot, NotificationSlot::Data(_))
+                                        {
+                                            remaining -= 1;
+                                            false
+                                        } else {
+                                            true
+                                        }
+                                    });
+                                    consumer.slots.push_back(NotificationSlot::Data(value.map(
+                                        |bytes| BufferedNotification {
                                             value: bytes.to_vec(),
                                             receipt: receipt.cloned(),
-                                        }
-                                    }));
+                                            provenance,
+                                        },
+                                    )));
                                     DeliveryOutcome::OverflowNoticed
                                 }
                                 crate::streams::AdmissionDecision::DropNewest => {
@@ -5390,11 +5904,14 @@ impl Central {
         })?;
         let mut outcomes = Vec::with_capacity(self.hubs[hub_index].consumers.len());
         for consumer in self.hubs[hub_index].consumers.iter_mut() {
+            let Some(stream) = consumer.stream.as_mut() else {
+                continue;
+            };
             let outcome = match consumer.state {
                 ConsumerState::Ready | ConsumerState::Removing | ConsumerState::Enabling
                     if !consumer.terminal_taken =>
                 {
-                    match consumer.stream.note_upstream_loss(lost_items) {
+                    match stream.note_upstream_loss(lost_items) {
                         Ok(crate::streams::AdmissionDecision::Terminate) => {
                             consumer.terminal = Some(SubscriptionTerminal {
                                 dropped_items: lost_items,
@@ -5425,7 +5942,12 @@ impl Central {
                     .consumers
                     .iter()
                     .find(|known| known.lease == consumer)
-                    .map(|known| known.stream.accounting().upstream_lost())
+                    .and_then(|known| {
+                        known
+                            .stream
+                            .as_ref()
+                            .map(|stream| stream.accounting().upstream_lost())
+                    })
             })
     }
 
@@ -5444,7 +5966,30 @@ impl Central {
                     .consumers
                     .iter()
                     .find(|known| known.lease == consumer)
-                    .map(|known| *known.stream.accounting())
+                    .and_then(|known| known.stream.as_ref().map(|stream| *stream.accounting()))
+            })
+    }
+
+    /// Whether the next retained item needs the typed poll interface.
+    #[must_use]
+    pub fn notification_requires_typed_poll(&self, path_index: usize, consumer: &str) -> bool {
+        self.consumer_hub(path_index, consumer)
+            .and_then(|hub| {
+                self.hubs[hub]
+                    .consumers
+                    .iter()
+                    .find(|known| known.lease == consumer)
+            })
+            .and_then(|record| {
+                record
+                    .slots
+                    .iter()
+                    .find(|slot| !matches!(slot, NotificationSlot::Data(None)))
+            })
+            .is_some_and(|slot| match slot {
+                NotificationSlot::PeerSourceLoss { .. } => true,
+                NotificationSlot::Data(Some(value)) => value.provenance.is_some(),
+                NotificationSlot::Data(None) => false,
             })
     }
 
@@ -5476,28 +6021,170 @@ impl Central {
             .consumers
             .iter_mut()
             .find(|known| known.lease == consumer)?;
-        match record.state {
-            // Finding 111: an invalidated consumer still drains the values
-            // it held at invalidation, before the invalidation is observed.
-            ConsumerState::Ready
-            | ConsumerState::Removing
-            | ConsumerState::Failed
-            | ConsumerState::Invalid
-            | ConsumerState::Removed => {}
-            _ => return None,
+        let stream = record.stream.as_mut()?;
+        while matches!(record.slots.front(), Some(NotificationSlot::Data(None))) {
+            record.slots.pop_front();
+            stream.release_oldest_data(1);
         }
+        if matches!(
+            record.slots.front(),
+            Some(NotificationSlot::PeerSourceLoss { .. })
+        ) {
+            return None;
+        }
+        match self.take_notification_entry(path_index, consumer)? {
+            NotificationEntry::Value { value, receipt, .. } => Some((value, receipt)),
+            NotificationEntry::PeerSourceLoss { .. } => None,
+        }
+    }
+
+    /// Take the next value or source control in admission order.
+    pub fn take_notification_entry(
+        &mut self,
+        path_index: usize,
+        consumer: &str,
+    ) -> Option<NotificationEntry> {
+        let hub_index = self.consumer_hub(path_index, consumer)?;
+        let consumer_index = self.hubs[hub_index]
+            .consumers
+            .iter()
+            .position(|known| known.lease == consumer)?;
+        self.take_notification_entry_from_hub(hub_index, consumer_index)
+    }
+
+    /// Take an entry only from the consumer bearing the exact admission.
+    pub fn take_notification_entry_exact(
+        &mut self,
+        path_index: usize,
+        consumer: &str,
+        admission: &OperationAdmission,
+    ) -> Option<NotificationEntry> {
+        let (hub_index, consumer_index) =
+            self.exact_consumer_position(path_index, consumer, admission)?;
+        self.take_notification_entry_from_hub(hub_index, consumer_index)
+    }
+
+    fn take_notification_entry_from_hub(
+        &mut self,
+        hub_index: usize,
+        consumer_index: usize,
+    ) -> Option<NotificationEntry> {
+        let record = self.hubs[hub_index].consumers.get_mut(consumer_index)?;
+        if record.state == ConsumerState::Enabling {
+            return None;
+        }
+        let stream = record.stream.as_mut()?;
         loop {
-            match record.slots.pop_front() {
-                None => return None,
-                Some(None) => {
-                    record.stream.release_oldest_data(1);
+            match record.slots.pop_front()? {
+                NotificationSlot::Data(None) => {
+                    stream.release_oldest_data(1);
                 }
-                Some(Some(value)) => {
-                    record.stream.release_oldest_data(1);
-                    return Some((value.value, value.receipt));
+                NotificationSlot::Data(Some(value)) => {
+                    stream.release_oldest_data(1);
+                    return Some(NotificationEntry::Value {
+                        value: value.value,
+                        receipt: value.receipt,
+                        provenance: value.provenance,
+                    });
+                }
+                NotificationSlot::PeerSourceLoss {
+                    peer_id,
+                    generation,
+                    skipped_records,
+                } => {
+                    return Some(NotificationEntry::PeerSourceLoss {
+                        peer_id,
+                        generation,
+                        skipped_records,
+                    });
                 }
             }
         }
+    }
+
+    /// Queue one peer-wide source gap for every live consumer of this hub.
+    pub fn deliver_peer_source_loss(
+        &mut self,
+        path_index: usize,
+        peer_id: &str,
+        generation: u64,
+        skipped_records: Option<u64>,
+    ) -> Result<(), CoreError> {
+        let hub_index = self.hub_position(path_index).ok_or_else(|| {
+            err(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "subscribe.hub",
+            )
+        })?;
+        for consumer in &mut self.hubs[hub_index].consumers {
+            if consumer.stream.is_none() {
+                continue;
+            }
+            if matches!(
+                consumer.state,
+                ConsumerState::Ready | ConsumerState::Removing | ConsumerState::Enabling
+            ) {
+                if consumer
+                    .slots
+                    .iter()
+                    .filter(|slot| matches!(slot, NotificationSlot::PeerSourceLoss { .. }))
+                    .count()
+                    >= 64
+                {
+                    consumer.peer_control_overflow = true;
+                    consumer.state = ConsumerState::Failed;
+                    continue;
+                }
+                consumer.slots.push_back(NotificationSlot::PeerSourceLoss {
+                    peer_id: peer_id.to_owned(),
+                    generation,
+                    skipped_records,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Take the reserved terminal when the peer-control queue overflowed.
+    pub fn take_peer_control_overflow(&mut self, path_index: usize, consumer: &str) -> bool {
+        let Some(index) = self.consumer_hub(path_index, consumer) else {
+            return false;
+        };
+        let Some(consumer_index) = self.hubs[index]
+            .consumers
+            .iter()
+            .position(|known| known.lease == consumer)
+        else {
+            return false;
+        };
+        self.take_peer_control_overflow_from_hub(index, consumer_index)
+    }
+
+    /// Take peer-control overflow only from the exact admitted consumer.
+    pub fn take_peer_control_overflow_exact(
+        &mut self,
+        path_index: usize,
+        consumer: &str,
+        admission: &OperationAdmission,
+    ) -> bool {
+        let Some((index, consumer_index)) =
+            self.exact_consumer_position(path_index, consumer, admission)
+        else {
+            return false;
+        };
+        self.take_peer_control_overflow_from_hub(index, consumer_index)
+    }
+
+    fn take_peer_control_overflow_from_hub(&mut self, index: usize, consumer_index: usize) -> bool {
+        let Some(record) = self.hubs[index].consumers.get_mut(consumer_index) else {
+            return false;
+        };
+        if !record.slots.is_empty() || !record.peer_control_overflow || record.terminal_taken {
+            return false;
+        }
+        record.terminal_taken = true;
+        true
     }
 
     /// Buffered values waiting for a consumer (observation without drain).
@@ -5509,7 +6196,13 @@ impl Central {
             .consumers
             .iter()
             .find(|known| known.lease == consumer)
-            .map(|record| record.slots.iter().filter(|slot| slot.is_some()).count() as u64)
+            .map(|record| {
+                record
+                    .slots
+                    .iter()
+                    .filter(|slot| matches!(slot, NotificationSlot::Data(Some(_))))
+                    .count() as u64
+            })
     }
 
     /// Take one consumer's terminal overflow event, if present. A terminal
@@ -5520,10 +6213,31 @@ impl Central {
         consumer: &str,
     ) -> Option<SubscriptionTerminal> {
         let hub_index = self.consumer_hub(path_index, consumer)?;
-        let consumer_record = self.hubs[hub_index]
+        let consumer_index = self.hubs[hub_index]
             .consumers
-            .iter_mut()
-            .find(|known| known.lease == consumer)?;
+            .iter()
+            .position(|known| known.lease == consumer)?;
+        self.take_terminal_from_hub(hub_index, consumer_index)
+    }
+
+    /// Take a terminal only from the consumer bearing the exact admission.
+    pub fn take_terminal_exact(
+        &mut self,
+        path_index: usize,
+        consumer: &str,
+        admission: &OperationAdmission,
+    ) -> Option<SubscriptionTerminal> {
+        let (hub_index, consumer_index) =
+            self.exact_consumer_position(path_index, consumer, admission)?;
+        self.take_terminal_from_hub(hub_index, consumer_index)
+    }
+
+    fn take_terminal_from_hub(
+        &mut self,
+        hub_index: usize,
+        consumer_index: usize,
+    ) -> Option<SubscriptionTerminal> {
+        let consumer_record = self.hubs[hub_index].consumers.get_mut(consumer_index)?;
         if consumer_record.terminal_taken {
             return None;
         }
@@ -6688,6 +7402,233 @@ mod tests {
             "no op admitted",
         );
         check(out.len() == before_effects, "no radio effect");
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_lease_retains_its_own_admission_for_exact_release() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, _) = live_characteristic(&mut central, &mut out)?;
+        let borrowed = central.borrow_connection(&peer, "borrowed", 5000, 2000, &mut out)?;
+        let admission = OperationAdmission {
+            operation_id: borrowed,
+            attachment: central.attachment.clone(),
+        };
+        central.release_lease(&peer, "borrowed", 2001, &mut out)?;
+        let replacement = OperationAdmission {
+            operation_id: central.borrow_connection(&peer, "borrowed", 5000, 2002, &mut out)?,
+            attachment: central.attachment.clone(),
+        };
+        let effects_before = out.len();
+        assert!(
+            central
+                .begin_lease_release_exact(&peer, "borrowed", &admission)
+                .is_err()
+        );
+        assert_eq!(out.len(), effects_before);
+        assert!(central.lease_accepts_work(&peer, "borrowed"));
+        central.begin_lease_release_exact(&peer, "borrowed", &replacement)?;
+        assert!(central.lease_accepts_work(&peer, "client-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn exact_consumer_selects_same_name_record_in_shared_hub() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_, path) = live_characteristic(&mut central, &mut out)?;
+        let old = central
+            .subscribe_with_admission(path, "error", 1, 128, "consumer", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.deliver_notification_value(path, &[1])?;
+        central.deliver_notification_value(path, &[2])?;
+        let replacement = central
+            .subscribe_with_admission(path, "error", 4, 128, "consumer", 5000, 2002, &mut out)?;
+        central.deliver_notification_value(path, &[3])?;
+        assert!(
+            matches!(central.take_notification_entry_exact(path, "consumer", &replacement),
+            Some(NotificationEntry::Value { value, .. }) if value == vec![3])
+        );
+        assert!(
+            matches!(central.take_notification_entry_exact(path, "consumer", &old),
+            Some(NotificationEntry::Value { value, .. }) if value == vec![1])
+        );
+        assert!(
+            central
+                .take_terminal_exact(path, "consumer", &old)
+                .is_some()
+        );
+        assert!(
+            central
+                .take_terminal_exact(path, "consumer", &replacement)
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_consumer_tail_survives_attachment_reset() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_, path) = live_characteristic(&mut central, &mut out)?;
+        let admission = central
+            .subscribe_with_admission(path, "error", 8, 1024, "consumer", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.deliver_notification_value(path, &[21, 22])?;
+        central.handle_adapter_reset(
+            other_attachment()?,
+            Generation::new("kernel-gen-2")?,
+            2002,
+            &mut out,
+        )?;
+        let mut wrong = admission.clone();
+        wrong.attachment = other_attachment()?;
+        assert!(
+            central
+                .take_notification_entry_exact(path, "consumer", &wrong)
+                .is_none()
+        );
+        assert!(
+            matches!(central.take_notification_entry_exact(path, "consumer", &admission),
+            Some(NotificationEntry::Value { value, .. }) if value == vec![21, 22])
+        );
+        assert!(
+            central
+                .take_notification_entry_exact(path, "consumer", &admission)
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resource_admission_identity_survives_reset() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        let connection = central.connect_with_admission(&peer, "client-2", 5000, 2000, &mut out)?;
+        let subscription = central
+            .subscribe_with_admission(path, "error", 8, 1024, "consumer", 5000, 2001, &mut out)?;
+        let old = fixture_attachment()?;
+        assert_eq!(connection.attachment(), &old);
+        assert_eq!(subscription.attachment(), &old);
+        central.handle_adapter_reset(
+            other_attachment()?,
+            Generation::new("kernel-gen-2")?,
+            2002,
+            &mut out,
+        )?;
+        assert_eq!(connection.attachment(), &old);
+        assert_eq!(subscription.attachment(), &old);
+        let fresh = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:77")?;
+        let replacement =
+            central.connect_with_admission(&fresh, "client-2", 5000, 2003, &mut out)?;
+        assert_eq!(replacement.attachment(), &other_attachment()?);
+        assert_ne!(connection.operation_id(), replacement.operation_id());
+        assert!(
+            central
+                .begin_lease_release_exact(&fresh, "client-2", &connection)
+                .is_err()
+        );
+        assert!(central.lease_accepts_work(&fresh, "client-2"));
+        central.begin_lease_release_exact(&fresh, "client-2", &replacement)?;
+        Ok(())
+    }
+
+    #[test]
+    fn exact_release_rejects_reused_lease_and_consumer_names() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        let old = central.connect_with_admission(&peer, "reused", 5000, 2000, &mut out)?;
+        central.release_lease(&peer, "reused", 2001, &mut out)?;
+        let replacement = central.connect_with_admission(&peer, "reused", 5000, 2002, &mut out)?;
+        assert!(
+            central
+                .begin_lease_release_exact(&peer, "reused", &old)
+                .is_err()
+        );
+        assert!(central.lease_accepts_work(&peer, "reused"));
+        central.begin_lease_release_exact(&peer, "reused", &replacement)?;
+
+        central.subscribe(path, "error", 8, 1024, "keeper", 5000, 2003, &mut out)?;
+        let old = central.subscribe_with_admission(
+            path,
+            "error",
+            8,
+            1024,
+            "reused-consumer",
+            5000,
+            2003,
+            &mut out,
+        )?;
+        central.unsubscribe(path, "reused-consumer", 2004, &mut out)?;
+        let replacement = central.subscribe_with_admission(
+            path,
+            "error",
+            8,
+            1024,
+            "reused-consumer",
+            5000,
+            2005,
+            &mut out,
+        )?;
+        assert!(
+            central
+                .unsubscribe_exact(path, "reused-consumer", &old, 2006, &mut out)
+                .is_err()
+        );
+        central.unsubscribe_exact(path, "reused-consumer", &replacement, 2007, &mut out)?;
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_connect_admission_cannot_fence_its_replacement() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let peer = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:77")?;
+        let old = central.connect_with_admission(&peer, "reused", 5000, 2000, &mut out)?;
+        central.cancel_op(old.operation_id(), 2001, &mut out)?;
+        let replacement = central.connect_with_admission(&peer, "reused", 5000, 2002, &mut out)?;
+        let late = central.settle_op(
+            old.operation_id(),
+            ContenderKind::Success,
+            true,
+            1,
+            2003,
+            &mut out,
+        )?;
+        assert!(matches!(
+            late,
+            CompletionOutcome::DuplicateSuppressed { .. }
+        ));
+        assert!(
+            central
+                .begin_lease_release_exact(&peer, "reused", &old)
+                .is_err()
+        );
+        assert!(central.lease_accepts_work(&peer, "reused"));
+        central.begin_lease_release_exact(&peer, "reused", &replacement)?;
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_subscribe_admission_cannot_retire_its_replacement() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_, path) = live_characteristic(&mut central, &mut out)?;
+        let old = central
+            .subscribe_with_admission(path, "error", 8, 1024, "reused", 5000, 2000, &mut out)?;
+        central.cancel_op(old.operation_id(), 2001, &mut out)?;
+        let replacement = central
+            .subscribe_with_admission(path, "error", 8, 1024, "reused", 5000, 2002, &mut out)?;
+        assert_ne!(old.operation_id(), replacement.operation_id());
+        assert!(
+            central
+                .unsubscribe_exact(path, "reused", &old, 2003, &mut out)
+                .is_err()
+        );
+        central.unsubscribe_exact(path, "reused", &replacement, 2004, &mut out)?;
         Ok(())
     }
 
@@ -9272,6 +10213,107 @@ mod tests {
     }
 
     #[test]
+    fn ownership_only_claim_shares_cccd_without_duplicate_stream() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        central.subscribe_ownership_only(path, "group-owner", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.subscribe(
+            path,
+            "drop-oldest",
+            4,
+            256,
+            "ordinary",
+            5000,
+            2002,
+            &mut out,
+        )?;
+        for index in 0..10_000_u32 {
+            let value = index.to_le_bytes();
+            let delivered = central.deliver_notification_value(path, &value)?;
+            assert_eq!(
+                delivered.len(),
+                1,
+                "ownership-only claims never receive duplicate data"
+            );
+            assert_eq!(
+                central.take_notification_value(path, "ordinary"),
+                Some(value.to_vec())
+            );
+        }
+        central.deliver_upstream_loss(path, 2)?;
+        central.deliver_peer_source_loss(path, "peer", 8, Some(3))?;
+        assert_eq!(central.upstream_lost_count(path, "group-owner"), None);
+        assert_eq!(central.consumer_accounting(path, "group-owner"), None);
+        assert_eq!(central.take_notification_entry(path, "group-owner"), None);
+        let hub = central.consumer_hub(path, "group-owner").unwrap();
+        let owner = central.hubs[hub]
+            .consumers
+            .iter()
+            .find(|entry| entry.lease == "group-owner")
+            .unwrap();
+        assert!(owner.stream.is_none() && owner.slots.is_empty());
+        assert_eq!(owner.state, ConsumerState::Ready);
+        assert!(central.physical_cccd_enabled(path));
+        assert!(!central.unsubscribe(path, "ordinary", 2003, &mut out)?);
+        assert!(
+            central.physical_cccd_enabled(path),
+            "group claim keeps CCCD owned"
+        );
+        assert!(central.unsubscribe(path, "group-owner", 2004, &mut out)?);
+        central.settle_subscribe_disable(path, 2005, &mut out)?;
+        assert!(!central.physical_cccd_enabled(path));
+        Ok(())
+    }
+
+    #[test]
+    fn peer_source_controls_preserve_order_and_bounded_overflow() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        central.subscribe(path, "drop-oldest", 2, 256, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.subscribe(path, "error", 4, 256, "app-b", 5000, 2002, &mut out)?;
+        central.deliver_notification_value(path, &[1])?;
+        central.deliver_peer_source_loss(path, "peer", 3, Some(7))?;
+        central.deliver_notification_value(path, &[2])?;
+        for consumer in ["app-a", "app-b"] {
+            assert!(
+                matches!(central.take_notification_entry(path, consumer), Some(NotificationEntry::Value { value, .. }) if value == [1])
+            );
+            assert!(matches!(
+                central.take_notification_entry(path, consumer),
+                Some(NotificationEntry::PeerSourceLoss {
+                    generation: 3,
+                    skipped_records: Some(7),
+                    ..
+                })
+            ));
+            assert!(
+                matches!(central.take_notification_entry(path, consumer), Some(NotificationEntry::Value { value, .. }) if value == [2])
+            );
+        }
+        for _ in 0..65 {
+            central.deliver_peer_source_loss(path, "peer", 3, None)?;
+        }
+        for consumer in ["app-a", "app-b"] {
+            for _ in 0..64 {
+                assert!(matches!(
+                    central.take_notification_entry(path, consumer),
+                    Some(NotificationEntry::PeerSourceLoss {
+                        skipped_records: None,
+                        ..
+                    })
+                ));
+            }
+            assert!(central.take_peer_control_overflow(path, consumer));
+            assert!(!central.take_peer_control_overflow(path, consumer));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn native_receipt_survives_identical_value_overflow_without_retiming() -> Result<(), CoreError>
     {
         let mut central = fixture_central()?;
@@ -9392,8 +10434,11 @@ mod tests {
                 )
             })?;
         Ok((
-            record.stream.data_items(),
-            record.stream.bytes(),
+            record
+                .stream
+                .as_ref()
+                .map_or(0, |stream| stream.data_items()),
+            record.stream.as_ref().map_or(0, |stream| stream.bytes()),
             record.slots.len(),
         ))
     }

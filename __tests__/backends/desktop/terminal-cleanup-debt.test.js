@@ -49,6 +49,33 @@ test('terminal cleanup preserves the exact native lease while another logical ow
   expect(disconnect).not.toHaveBeenCalled()
 })
 
+test('terminal cleanup does not race a sibling lease already disconnecting in the same native generation', async () => {
+  const backend = Object.create(DesktopRustCoreBackend.prototype)
+  const record = {
+    nativePeerId: 'peer',
+    lease: 'retired-lease',
+    coreGeneration: 'shared-generation',
+    state: 'disconnected',
+    acquiredClosers: new Set()
+  }
+  const disconnectingSibling = {
+    ...record,
+    lease: 'sibling-lease',
+    state: 'disconnecting'
+  }
+  const disconnect = jest.fn()
+  Object.assign(backend, {
+    op: operation => operation,
+    central: { disconnect },
+    connectionsById: new Map([
+      ['retired', record],
+      ['disconnecting', disconnectingSibling]
+    ])
+  })
+  await expect(backend.disconnectConnectionCurrent(record)).resolves.toEqual({ state: 'released', failures: [] })
+  expect(disconnect).not.toHaveBeenCalled()
+})
+
 test('a newer live native generation does not erase old terminal cleanup debt', async () => {
   const backend = Object.create(DesktopRustCoreBackend.prototype)
   const record = { nativePeerId: 'peer', lease: 'old-lease', coreGeneration: 'old-generation',

@@ -56,16 +56,54 @@ export type {
 export type { ReactNativeRestorationAuthority } from './backends/reactnative/react-native-rust-core-restoration'
 export type { ReactNativeRustCoreRuntimeFacts } from './backends/reactnative/react-native-rust-core-features'
 export { createReactNativeBleManager } from './react-native-app-manager'
+export {
+  createReactNativeScanFailureRecovery,
+  readReactNativeRawRecoveryToken,
+  readReactNativeScanFailureRecoveryPage
+} from './backends/reactnative/react-native-scan-failure-recovery'
+export type {
+  ReactNativeRawRecoveryInfo,
+  ReactNativeRawRecoveryMember,
+  ReactNativeRawRecoveryToken,
+  ReactNativeScanFailureRecovery,
+  ReactNativeScanFailureRecoveryPage
+} from './backends/reactnative/react-native-scan-failure-recovery'
 export { createReactNativeContinuationRecordings } from './react-native-continuation-recording'
-export type { ReactNativeContinuationRecordingController } from './react-native-continuation-recording'
+export type {
+  ReactNativeContinuationRecordingController,
+  ReactNativeTerminalEvidenceRecovery,
+  ReactNativeTerminalEvidenceRecoveryChunk,
+  ReactNativeTerminalEvidenceRecoveryItem,
+  ReactNativeTerminalEvidenceRecoveryPage
+} from './react-native-continuation-recording'
 export type {
   ContinuationRecordingController,
   ContinuationRecordingStatus,
+  OrderedRecordingOwnerStatus,
+  OrderedRecordingHostStopResult,
+  OrderedRecordingStopReceipt,
+  OrderedRecordingStopFailure,
   ContinuationRecordingBatch,
   ContinuationRecordingMetadata,
   ContinuationRecordingFailure,
+  ContinuationRecordingDiagnosticMarker,
+  ContinuationRecordingRuntimeDiagnostic,
+  ContinuationRecordingCollectionDiagnostic,
   ContinuationRecordingPrepareOptions
 } from './core/continuation-recording'
+export type {
+  OrderedRecordingBatch,
+  OrderedRecordingContext,
+  OrderedRecordingRecord,
+  OrderedRecordingMetadata,
+  OrderedRecordingMembership,
+  OrderedRecordingScope,
+  OrderedRecordingLoss,
+  OrderedRecordingFailure,
+  OrderedRecordingFailureValue,
+  OrderedRecordingRejection,
+  OrderedRecordingReason
+} from './core/ordered-recording'
 export type { CreateReactNativeBleManagerOptions } from './react-native-app-manager'
 export type { BleManagerCreateOptions } from './public/host-identity'
 export {
@@ -82,3 +120,8 @@ export type {
   ReactNativeRestorationReplayRecord
 } from './backends/reactnative/react-native-restoration'
 export type { Spec as NativeUnifiedBleRustCore, RustCoreSessionWake } from './NativeUnifiedBleRustCore'
+
+export type {
+  ReactNativeOrderedRecordingReclaimHandle,
+  ReactNativeOrderedRecordingRecoveryHandle
+} from './backends/reactnative/react-native-ordered-recovery'

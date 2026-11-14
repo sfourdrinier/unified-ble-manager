@@ -93,6 +93,9 @@ test('public parameter read and watch reach the inner NAPI radio', async () => {
     await stage.stageConnectionParameterGap('parameter-peer', 3)
     await expect(reconciled).resolves.toMatchObject({ done: false, value: { intervalMs: 90 } })
     expect(harness.calls.filter(([method]) => method === 'connectionParameters').length).toBeGreaterThan(beforeGap)
+    // Attach the rejection assertion before staging the terminal native
+    // failure. The provider can reject this pending read synchronously with
+    // the stage's asynchronous completion.
     const failedRead = expect(events.next()).rejects.toMatchObject({
       code: 'platform.failure',
       operation: 'winrt.connection.parameters.event',

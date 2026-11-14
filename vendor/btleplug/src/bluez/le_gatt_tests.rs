@@ -14,6 +14,38 @@ const CHAR: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0010/char0020";
 const DESC: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0010/char0020/desc0030";
 const CHAR_NEXT: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0010/char0040";
 
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn ordinary_writes_remain_owned_after_waiter_cancellation() {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        peripheral.discover_services().await.unwrap();
+        let characteristic = peripheral.characteristics().into_iter().next().unwrap();
+        let descriptor = characteristic.descriptors.iter().next().unwrap().clone();
+        for descriptor_write in [false, true] {
+            let entered = fixture.hold_write();
+            let peer = peripheral.clone();
+            let characteristic = characteristic.clone();
+            let descriptor = descriptor.clone();
+            let waiter = tokio::spawn(async move {
+                if descriptor_write { peer.write_descriptor(&descriptor, &[9]).await }
+                else { peer.write(&characteristic, &[9], WriteType::WithResponse).await }
+            });
+            tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
+            assert_eq!(peripheral.peer.marker_reclaim_snapshot().0, 1);
+            waiter.abort();
+            assert!(waiter.await.unwrap_err().is_cancelled());
+            assert_eq!(peripheral.peer.marker_reclaim_snapshot().0, 1);
+            fixture.finish_write(None);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while peripheral.peer.marker_reclaim_snapshot().0 != 0 { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            assert!(!peripheral.peer.marker_reclaim_snapshot().1);
+        }
+    });
+}
+
 #[derive(Default)]
 struct State {
     snapshots: usize,
@@ -39,6 +71,15 @@ struct State {
     missing_field: bool,
     next_characteristic: bool,
     stopped_notify_paths: Vec<String>,
+    started_notify: Vec<(String, String)>,
+    retired_notify_senders: Vec<String>,
+    hold_notify: bool,
+    pending_notify: Option<dbus::Message>,
+    notify_entered: Arc<tokio::sync::Notify>,
+    write_entered: Arc<tokio::sync::Notify>,
+    hold_write: bool,
+    pending_write: Option<dbus::Message>,
+    writes: Vec<(String, Vec<u8>)>,
     disconnected_left: usize,
     snapshot_sequence: std::collections::VecDeque<(u64, bool)>,
     disconnect_at_snapshot: Option<usize>,
@@ -47,12 +88,271 @@ struct State {
     le_connects: usize,
 }
 
-struct Fixture {
+pub(in crate::bluez) struct Fixture {
     server: Arc<dbus::blocking::SyncConnection>,
     replies: std::sync::mpsc::Sender<dbus::Message>,
     state: Arc<Mutex<State>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn write_is_sent_before_reply_future_is_polled() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let fixture = Fixture::new();
+            let peripheral = fixture.peripheral().await;
+            peripheral.discover_services().await.unwrap();
+            let characteristic = peripheral.characteristics().into_iter().next().unwrap();
+            let (_, _, daemon, id) = peripheral
+                .peer
+                .activation_snapshot(&characteristic)
+                .unwrap();
+            let entered = fixture.state.lock().unwrap().write_entered.clone();
+            let reply = peripheral.session.start_characteristic_write(
+                &daemon,
+                &id,
+                vec![1, 2],
+                WriteOptions::default(),
+            );
+            tokio::time::timeout(Duration::from_secs(5), entered.notified())
+                .await
+                .unwrap();
+            assert_eq!(
+                fixture.state.lock().unwrap().writes,
+                vec![(CHAR.to_owned(), vec![1, 2])]
+            );
+            reply.await.unwrap();
+        });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn source_marker_precedes_synchronous_write_dispatch() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            use crate::common::util::{
+                SourceGroupError, SourceUnresolvedWriteRequest, SourceWriteRequest,
+                SourceWriteStatus,
+            };
+            use crate::ubm_peer_notification_ingress::{IngressRecord, NotificationRoute, Poll};
+            let fixture = Fixture::new();
+            let peripheral = fixture.peripheral().await;
+            peripheral.discover_services().await.unwrap();
+            let characteristic = peripheral.characteristics().into_iter().next().unwrap();
+            let token = peripheral.accepted_le_gatt_ready_token().unwrap().unwrap();
+            let expected = (token.daemon_owner, token.attachment, token.revision);
+            peripheral
+                .start_notification_source_generation(1)
+                .await
+                .unwrap();
+            let (group, consumer) = peripheral
+                .open_notification_source_group(1, 8, 128)
+                .unwrap();
+            let graph = crate::common::util::marker_graph_identity(&expected);
+            let request = SourceWriteRequest {
+                selector: Default::default(),
+                id: 0,
+                graph,
+                value: vec![3],
+                write_type: WriteType::WithResponse,
+                route: NotificationRoute {
+                    service_uuid: characteristic.service_uuid,
+                    service_instance: characteristic.service_instance,
+                    characteristic_uuid: characteristic.uuid,
+                    characteristic_instance: characteristic.instance,
+                },
+            };
+            let unresolved = SourceUnresolvedWriteRequest {
+                id: request.id,
+                graph: request.graph.clone(),
+                selector: request.selector.clone(),
+                value: request.value.clone(),
+                write_type: request.write_type,
+            };
+            let entered = fixture.state.lock().unwrap().write_entered.clone();
+            let receipt = peripheral
+                .start_ordered_marker_write(&group, &expected, &characteristic, request.clone())
+                .await
+                .unwrap();
+            assert!(matches!(
+                consumer.poll(),
+                Poll::Record(IngressRecord::Marker { id: 0, ordinal: 0 })
+            ));
+            tokio::time::timeout(Duration::from_secs(5), entered.notified())
+                .await
+                .unwrap();
+            let replay = peripheral
+                .start_ordered_marker_write(&group, &expected, &characteristic, request.clone())
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if matches!(receipt.status(), SourceWriteStatus::Settled { .. }) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(receipt.status(), replay.status());
+            assert!(matches!(
+                group
+                    .cancel_unresolved_marker_write(&unresolved)
+                    .unwrap()
+                    .status(),
+                SourceWriteStatus::Settled { .. }
+            ));
+            assert_eq!(fixture.state.lock().unwrap().writes.len(), 1);
+            group.forget_marker_write(0).unwrap();
+            let mut next = request;
+            next.id = 1;
+            let cancelled = SourceUnresolvedWriteRequest {
+                id: next.id,
+                graph: next.graph.clone(),
+                selector: next.selector.clone(),
+                value: next.value.clone(),
+                write_type: next.write_type,
+            };
+            assert_eq!(
+                group
+                    .cancel_unresolved_marker_write(&cancelled)
+                    .unwrap()
+                    .status(),
+                SourceWriteStatus::NotAdmitted(SourceGroupError::Cancelled)
+            );
+            let replay = peripheral
+                .start_ordered_marker_write(&group, &expected, &characteristic, next)
+                .await
+                .unwrap();
+            assert_eq!(
+                replay.status(),
+                SourceWriteStatus::NotAdmitted(SourceGroupError::Cancelled)
+            );
+            assert_eq!(fixture.state.lock().unwrap().writes.len(), 1);
+        });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn marker_write_reply_retains_reclaim_owner_after_caller_cancellation() {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        use crate::common::util::{SourceUnresolvedWriteRequest, SourceWriteRequest, SourceWriteStatus};
+        use crate::ubm_peer_notification_ingress::NotificationRoute;
+        use crate::ubm_reclaim_authority::GraphKey;
+        use crate::ubm_reclaim_graph_gate::GateError;
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        peripheral.discover_services().await.unwrap();
+        let characteristic = peripheral.characteristics().into_iter().next().unwrap();
+        let token = peripheral.accepted_le_gatt_ready_token().unwrap().unwrap();
+        let expected = (token.daemon_owner, token.attachment, token.revision);
+        let binding = peripheral.capture_reclaim_graph_binding("peer", "connection", &expected).unwrap();
+        let key = GraphKey {
+            authority_id: 1, peer_id: "peer".into(), connection_generation: "connection".into(),
+            graph: expected.clone(), permit_id: 1,
+        };
+        peripheral.start_notification_source_generation(1).await.unwrap();
+        let (group, _) = peripheral.open_notification_source_group(1, 8, 128).unwrap();
+        let request = SourceWriteRequest {
+            selector: Default::default(), id: 0,
+            graph: crate::common::util::marker_graph_identity(&expected), value: vec![3],
+            write_type: WriteType::WithResponse,
+            route: NotificationRoute {
+                service_uuid: characteristic.service_uuid,
+                service_instance: characteristic.service_instance,
+                characteristic_uuid: characteristic.uuid,
+                characteristic_instance: characteristic.instance,
+            },
+        };
+        let unresolved = SourceUnresolvedWriteRequest {
+            id: request.id, graph: request.graph.clone(), selector: request.selector.clone(),
+            value: request.value.clone(), write_type: request.write_type,
+        };
+        let entered = fixture.hold_write();
+        let receipt = peripheral.start_ordered_marker_write(&group, &expected, &characteristic, request.clone()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
+        assert_eq!(receipt.status(), SourceWriteStatus::Started { ordinal: 0 });
+        assert_eq!(peripheral.peer.marker_reclaim_snapshot().0, 1);
+        assert_eq!(peripheral.peer.acquire_reclaim_gate(&binding, key.clone()), Err(GateError::Busy));
+        assert_eq!(group.cancel_unresolved_marker_write(&unresolved).unwrap().status(), SourceWriteStatus::Started { ordinal: 0 });
+        drop(receipt);
+        assert_eq!(peripheral.peer.marker_reclaim_snapshot().0, 1);
+        assert_eq!(peripheral.peer.acquire_reclaim_gate(&binding, key.clone()), Err(GateError::Busy));
+        fixture.finish_write(None);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while peripheral.peer.marker_reclaim_snapshot().0 != 0 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert!(!peripheral.peer.marker_reclaim_snapshot().1);
+        group.forget_marker_write(0).unwrap();
+        let mut failed = request;
+        failed.id = 1;
+        let receipt = peripheral.start_ordered_marker_write(&group, &expected, &characteristic, failed).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
+        assert_eq!(receipt.status(), SourceWriteStatus::Started { ordinal: 1 });
+        assert_eq!(peripheral.peer.marker_reclaim_snapshot().0, 1);
+        assert_eq!(peripheral.peer.acquire_reclaim_gate(&binding, key), Err(GateError::Busy));
+        fixture.finish_write(Some("org.bluez.Error.Failed"));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while peripheral.peer.marker_reclaim_snapshot().0 != 0 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert!(peripheral.peer.marker_reclaim_snapshot().1);
+        assert!(matches!(receipt.status(), SourceWriteStatus::Settled { ordinal: 1, result: Err(_) }));
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn marker_runtime_shutdown_settles_receipt_and_releases_operation() {
+    use crate::common::util::{SourceWriteRequest, SourceWriteStatus};
+    use crate::ubm_peer_notification_ingress::NotificationRoute;
+    for poll_reply in [false, true] {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (fixture, peripheral, group, request, receipt) = runtime.block_on(async {
+            let fixture = Fixture::new();
+            let peripheral = fixture.peripheral().await;
+            peripheral.discover_services().await.unwrap();
+            let characteristic = peripheral.characteristics().into_iter().next().unwrap();
+            let token = peripheral.accepted_le_gatt_ready_token().unwrap().unwrap();
+            let expected = (token.daemon_owner, token.attachment, token.revision);
+            peripheral.start_notification_source_generation(1).await.unwrap();
+            let (group, _) = peripheral.open_notification_source_group(1, 8, 128).unwrap();
+            let request = SourceWriteRequest {
+                selector: Default::default(), id: 0,
+                graph: crate::common::util::marker_graph_identity(&expected), value: vec![3],
+                write_type: WriteType::WithResponse,
+                route: NotificationRoute {
+                    service_uuid: characteristic.service_uuid, service_instance: characteristic.service_instance,
+                    characteristic_uuid: characteristic.uuid, characteristic_instance: characteristic.instance,
+                },
+            };
+            let entered = fixture.hold_write();
+            let receipt = peripheral.start_ordered_marker_write(&group, &expected, &characteristic, request.clone()).await.unwrap();
+            if poll_reply {
+                tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(receipt.status(), SourceWriteStatus::Started { ordinal: 0 });
+            assert_eq!(peripheral.peer.marker_reclaim_snapshot().0, 1);
+            (fixture, peripheral, group, request, receipt)
+        });
+        drop(runtime);
+        assert_eq!(peripheral.peer.marker_reclaim_snapshot(), (0, true));
+        assert!(matches!(receipt.status(), SourceWriteStatus::Settled {
+            ordinal: 0, result: Err(error),
+        } if error.code == "write-reply-abandoned"));
+        assert_eq!(group.replay_marker_write(&request).unwrap().unwrap().status(), receipt.status());
+        group.forget_marker_write(0).unwrap();
+        drop(fixture);
+    }
 }
 
 impl Drop for Fixture {
@@ -63,7 +363,7 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(in crate::bluez) fn new() -> Self {
         assert_eq!(
             std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
             Ok("1")
@@ -78,6 +378,31 @@ impl Fixture {
             revision: 1,
             ..State::default()
         }));
+        server
+            .add_match_no_cb(
+                "type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged'",
+            )
+            .unwrap();
+        let observed_signals = state.clone();
+        server.start_receive(
+            MatchRule::new_signal("org.freedesktop.DBus", "NameOwnerChanged"),
+            Box::new(move |message, _| {
+                if let Ok((name, old_owner, new_owner)) = message.read3::<String, String, String>()
+                {
+                    if name == old_owner && !old_owner.is_empty() && new_owner.is_empty() {
+                        let mut state = observed_signals.lock().unwrap();
+                        if state
+                            .started_notify
+                            .iter()
+                            .any(|(_, sender)| sender == &name)
+                        {
+                            state.retired_notify_senders.push(name);
+                        }
+                    }
+                }
+                true
+            }),
+        );
         let observed = state.clone();
         server.start_receive(
             MatchRule::new_method_call(),
@@ -234,6 +559,24 @@ impl Fixture {
                             ))
                         }
                     }
+                    (Some("org.freedesktop.DBus.Properties"), Some("GetAll"))
+                        if object == DEVICE =>
+                    {
+                        let mut properties: PropMap = HashMap::new();
+                        properties.insert(
+                            "Address".into(),
+                            Variant(Box::new("AA:BB:CC:DD:EE:FF".to_owned())),
+                        );
+                        properties
+                            .insert("AddressType".into(), Variant(Box::new("public".to_owned())));
+                        for name in ["Paired", "Trusted", "Blocked", "LegacyPairing"] {
+                            properties.insert(name.into(), Variant(Box::new(false)));
+                        }
+                        for name in ["Connected", "ServicesResolved"] {
+                            properties.insert(name.into(), Variant(Box::new(true)));
+                        }
+                        message.method_return().append1(properties)
+                    }
                     (Some("org.freedesktop.DBus.Properties"), Some("GetAll")) => {
                         state.graph_reads += 1;
                         let mut properties: PropMap = HashMap::new();
@@ -245,8 +588,30 @@ impl Fixture {
                             .insert("Flags".into(), Variant(Box::new(vec!["notify".to_owned()])));
                         message.method_return().append1(properties)
                     }
+                    (Some("org.freedesktop.DBus.Peer"), Some("Ping")) => message.method_return(),
+                    (Some("org.bluez.GattCharacteristic1"), Some("StartNotify")) => {
+                        state
+                            .started_notify
+                            .push((object, message.sender().unwrap().to_string()));
+                        if state.hold_notify {
+                            state.pending_notify = Some(message);
+                            state.notify_entered.notify_one();
+                            return true;
+                        }
+                        message.method_return()
+                    }
                     (Some("org.bluez.GattCharacteristic1"), Some("StopNotify")) => {
                         state.stopped_notify_paths.push(object);
+                        message.method_return()
+                    }
+                    (Some("org.bluez.GattCharacteristic1" | "org.bluez.GattDescriptor1"), Some("WriteValue")) => {
+                        let (value, _options): (Vec<u8>, PropMap) = message.read2().unwrap();
+                        state.writes.push((object, value));
+                        state.write_entered.notify_one();
+                        if state.hold_write {
+                            state.pending_write = Some(message);
+                            return true;
+                        }
                         message.method_return()
                     }
                     (Some("org.bluez.Bearer.LE1"), Some("Connect")) => {
@@ -280,7 +645,60 @@ impl Fixture {
         }
     }
 
-    async fn peripheral(&self) -> Peripheral {
+    pub(in crate::bluez) fn hold_notify(&self) -> Arc<tokio::sync::Notify> {
+        let mut state = self.state.lock().unwrap();
+        state.hold_notify = true;
+        state.notify_entered.clone()
+    }
+    fn hold_write(&self) -> Arc<tokio::sync::Notify> {
+        let mut state = self.state.lock().unwrap();
+        state.hold_write = true;
+        state.write_entered.clone()
+    }
+    fn finish_write(&self, error: Option<&str>) {
+        let message = self.state.lock().unwrap().pending_write.take().unwrap();
+        let reply = match error {
+            Some(name) => message.error(
+                &dbus::strings::ErrorName::new(name).unwrap(),
+                &std::ffi::CString::new("write refused").unwrap(),
+            ),
+            None => message.method_return(),
+        };
+        self.replies.send(reply).unwrap();
+    }
+    pub(in crate::bluez) fn finish_notify(&self) {
+        let message = self.state.lock().unwrap().pending_notify.take().unwrap();
+        self.replies.send(message.method_return()).unwrap();
+    }
+    pub(in crate::bluez) fn refresh_same_path(&self) {
+        self.state.lock().unwrap().revision += 1;
+    }
+    pub(in crate::bluez) fn retired_senders(&self) -> Vec<String> {
+        self.state.lock().unwrap().retired_notify_senders.clone()
+    }
+    pub(in crate::bluez) fn notify_calls(&self) -> (Vec<(String, String)>, Vec<String>) {
+        let state = self.state.lock().unwrap();
+        (
+            state.started_notify.clone(),
+            state.stopped_notify_paths.clone(),
+        )
+    }
+    pub(in crate::bluez) fn sender_present(&self, sender: &str) -> bool {
+        // The fixture server is concurrently driven by its processing thread.
+        // Use an independent connection so that thread cannot consume this reply.
+        let observer = dbus::blocking::SyncConnection::new_session().unwrap();
+        let (present,): (bool,) = observer
+            .with_proxy(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                Duration::from_secs(1),
+            )
+            .method_call("org.freedesktop.DBus", "NameHasOwner", (sender,))
+            .unwrap();
+        present
+    }
+
+    pub(in crate::bluez) async fn peripheral(&self) -> Peripheral {
         let (_, session) = BluetoothSession::new_session_bus().await.unwrap();
         let device = session.get_devices().await.unwrap().remove(0);
         Peripheral::new(session, device)
@@ -828,6 +1246,7 @@ fn cancelled_new_attachment_wait_never_publishes_late_ready_reply() {
         entered.notified().await;
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(peripheral.peer.marker_reclaim_snapshot().0, 0);
         let pending = {
             let mut state = fixture.state.lock().unwrap();
             state.hold_snapshot_at = None;

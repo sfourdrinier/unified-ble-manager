@@ -813,7 +813,7 @@ string_id!(Generation, "kernel.generation");
 /// The unrepeatable tuple that scopes all handles and correlations. A handle
 /// from backend instance A is stale at instance B even when visible ids
 /// repeat. Mirrors C-UBM `AttachmentTuple`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AttachmentTuple {
     attachment_id: AttachmentId,
     backend_instance_id: BackendInstanceId,

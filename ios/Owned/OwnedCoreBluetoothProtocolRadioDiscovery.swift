@@ -1,3 +1,4 @@
+// ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift
 // Discovery remains confined to the owning radio queue.
 import CoreBluetooth
 import Foundation
@@ -5,6 +6,18 @@ import Foundation
 extension OwnedCoreBluetoothProtocolRadio {
   public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
     let identifier = peripheral.identifier.uuidString
+    let services = Array(peripheral.services ?? [])
+    let failure = error as NSError?
+    if let gate = orderedGraphPermitGates[identifier], gate.isHolding {
+      gate.enqueue(bytes: min(services.count, 131_073) * MemoryLayout<CBService>.size) { self.handleDiscoveredServices(peripheral, services: services, error: failure) }
+      return
+    }
+    handleDiscoveredServices(peripheral, services: services, error: failure)
+  }
+
+  private func handleDiscoveredServices(_ peripheral: CBPeripheral, services: [CBService], error: Error?) {
+    let identifier = peripheral.identifier.uuidString
+    guard peripheralByIdentifier[identifier] === peripheral else { return }
     guard var pending = pendingDiscovery[identifier], pending.awaitingServices else { return }
     pending.awaitingServices = false
     if let error { failDiscovery(identifier, pending: pending, error: error); return }
@@ -13,7 +26,6 @@ extension OwnedCoreBluetoothProtocolRadio {
       finishDiscoveryIfReady(identifier)
       return
     }
-    let services = peripheral.services ?? []
     guard services.count <= 4096, Set(services.map(ObjectIdentifier.init)).count == services.count else {
       failDiscovery(identifier, pending: pending, error: self.error(code: 1009, message: "The service graph exceeds its bound or contains duplicate objects"))
       return
@@ -31,6 +43,18 @@ extension OwnedCoreBluetoothProtocolRadio {
 
   public func peripheral(_ peripheral: CBPeripheral, didDiscoverIncludedServicesFor service: CBService, error: Error?) {
     let identifier = peripheral.identifier.uuidString
+    let included = Array(service.includedServices ?? [])
+    let failure = error as NSError?
+    if let gate = orderedGraphPermitGates[identifier], gate.isHolding {
+      gate.enqueue(bytes: min(included.count, 131_073) * MemoryLayout<CBService>.size) { self.handleDiscoveredIncludes(peripheral, service: service, included: included, error: failure) }
+      return
+    }
+    handleDiscoveredIncludes(peripheral, service: service, included: included, error: failure)
+  }
+
+  private func handleDiscoveredIncludes(_ peripheral: CBPeripheral, service: CBService, included: [CBService], error: Error?) {
+    let identifier = peripheral.identifier.uuidString
+    guard peripheralByIdentifier[identifier] === peripheral else { return }
     guard var pending = pendingDiscovery[identifier], pending.consumeIncludes(service) else { return }
     if let error { failDiscovery(identifier, pending: pending, error: error); return }
     if pending.cancelled || pending.completionDelivered {
@@ -40,7 +64,7 @@ extension OwnedCoreBluetoothProtocolRadio {
     }
     var services = servicesByPeer[identifier] ?? []
     var added = [CBService]()
-    for target in service.includedServices ?? [] where !services.contains(where: { $0 === target }) {
+    for target in included where !services.contains(where: { $0 === target }) {
       services.append(target)
       added.append(target)
     }
@@ -63,6 +87,18 @@ extension OwnedCoreBluetoothProtocolRadio {
 
   public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
     let identifier = peripheral.identifier.uuidString
+    let characteristics = Array(service.characteristics ?? [])
+    let failure = error as NSError?
+    if let gate = orderedGraphPermitGates[identifier], gate.isHolding {
+      gate.enqueue(bytes: min(characteristics.count, 131_073) * MemoryLayout<CBCharacteristic>.size) { self.handleDiscoveredCharacteristics(peripheral, service: service, characteristics: characteristics, error: failure) }
+      return
+    }
+    handleDiscoveredCharacteristics(peripheral, service: service, characteristics: characteristics, error: failure)
+  }
+
+  private func handleDiscoveredCharacteristics(_ peripheral: CBPeripheral, service: CBService, characteristics: [CBCharacteristic], error: Error?) {
+    let identifier = peripheral.identifier.uuidString
+    guard peripheralByIdentifier[identifier] === peripheral else { return }
     guard var pending = pendingDiscovery[identifier], pending.consumeCharacteristics(service) else { return }
     if let error { failDiscovery(identifier, pending: pending, error: error); return }
     if pending.cancelled || pending.completionDelivered {
@@ -70,7 +106,6 @@ extension OwnedCoreBluetoothProtocolRadio {
       finishDiscoveryIfReady(identifier)
       return
     }
-    let characteristics = service.characteristics ?? []
     guard pending.descriptorCallbacks.count + characteristics.count <= 65536 else {
       failDiscovery(identifier, pending: pending, error: self.error(code: 1009, message: "The characteristic graph exceeds its bound"))
       return
@@ -85,6 +120,12 @@ extension OwnedCoreBluetoothProtocolRadio {
 
   public func peripheral(_ peripheral: CBPeripheral, didDiscoverDescriptorsFor characteristic: CBCharacteristic, error: Error?) {
     let identifier = peripheral.identifier.uuidString
+    if let gate = orderedGraphPermitGates[identifier], gate.isHolding {
+      let failure = error as NSError?
+      gate.enqueue { self.peripheral(peripheral, didDiscoverDescriptorsFor: characteristic, error: failure) }
+      return
+    }
+    guard peripheralByIdentifier[identifier] === peripheral else { return }
     guard var pending = pendingDiscovery[identifier], pending.consumeDescriptors(characteristic) else { return }
     if let error { failDiscovery(identifier, pending: pending, error: error); return }
     pendingDiscovery[identifier] = pending
@@ -112,7 +153,18 @@ extension OwnedCoreBluetoothProtocolRadio {
     clearDiscoveryCancellationCleanup(forPeerIdentifier: peerIdentifier)
     guard !pending.cancelled && !pending.completionDelivered else { return }
     do {
-      pending.completion(try OwnedCoreBluetoothProtocolRadioSupport.discoverySnapshot(servicesByPeer[peerIdentifier] ?? []), nil)
+      guard let snapshot = try OwnedCoreBluetoothProtocolRadioSupport.discoverySnapshot(servicesByPeer[peerIdentifier] ?? []).mutableCopy() as? NSMutableDictionary else {
+        pending.completion(nil, self.error(code: 1009, message: "Native discovery snapshot could not be copied"))
+        return
+      }
+      guard let identity = orderedSnapshotIdentities.publish(peerIdentifier) else {
+        pending.completion(nil, self.error(code: 1009, message: "Native graph revision exhausted"))
+        return
+      }
+      snapshot["nativeSnapshotOwner"] = identity.owner
+      snapshot["nativeSnapshotAttachment"] = NSNumber(value: identity.attachment)
+      snapshot["nativeSnapshotRevision"] = NSNumber(value: identity.revision)
+      pending.completion(snapshot, nil)
     } catch { pending.completion(nil, error as NSError) }
   }
 }

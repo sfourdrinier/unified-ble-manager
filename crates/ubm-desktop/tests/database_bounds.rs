@@ -68,7 +68,10 @@ async fn open() -> DesktopCentral<FakeRadio> {
 }
 
 async fn connected(central: &DesktopCentral<FakeRadio>, peer_id: &str, lease: &str) {
-    central.boundary().push_event(advertisement(peer_id));
+    central
+        .boundary()
+        .push_event(advertisement(peer_id))
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.peer_key_for(peer_id).await.is_some() {
             break;

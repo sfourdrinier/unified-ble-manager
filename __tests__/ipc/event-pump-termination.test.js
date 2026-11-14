@@ -3,8 +3,11 @@ const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilitie
 const { ElectronRendererBleClient } = require('../../src/electron/renderer')
 const { IpcPublicManagerAdapter } = require('../../src/ipc/public-manager')
 const { awaitSignal } = require('../helpers/async')
+const {
+  markAuthenticatedElectronTerminalEvidenceStageFailure
+} = require('../../src/ipc/electron-terminal-evidence-wire')
 
-function negotiated(axis, value = axis === 'ipc-protocol' ? 6 : 1) {
+function negotiated(axis, value = axis === 'ipc-protocol' ? 10 : 1) {
   const selected = { axis, value }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
@@ -86,6 +89,24 @@ function permanentAckFailure() {
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function packedScope(producer, managerId, operationId, incarnation) {
+  const fields = [producer, managerId, operationId, incarnation]
+  const bytes = new Uint8Array(16 + fields.reduce((total, field) => total + field.length, 0) * 2)
+  const view = new DataView(bytes.buffer)
+  let offset = 0
+  for (const field of fields) {
+    view.setUint32(offset, field.length, true)
+    offset += 4
+  }
+  for (const field of fields) {
+    for (let index = 0; index < field.length; index += 1) {
+      view.setUint16(offset, field.charCodeAt(index), true)
+      offset += 2
+    }
+  }
+  return bytes
 }
 
 async function flushPump() {
@@ -171,6 +192,24 @@ async function killPump(harness) {
 }
 
 describe('IPC event pump termination', () => {
+  test('retained attachment diagnostic loss is recorded without terminalizing the event pump', async () => {
+    const harness = await createPumpHarness()
+    harness.emit('attachment', {
+      kind: 'value',
+      value: {
+        kind: 'diagnostic-warning',
+        schemaVersion: 1,
+        code: 'gatt.source-uncertain-retention-lagged',
+        missed: 1
+      }
+    })
+    await flushPump()
+    expect(harness.ipc.diagnostics().warnings()).toContainEqual(
+      expect.objectContaining({ code: 'gatt.source-uncertain-retention-lagged', cause: null, platform: null })
+    )
+    await harness.ipc.destroy()
+  })
+
   test.each(['reject', 'release-failed', 'aggregate-reject'])(
     'missing required scan plan reports %s stop and retains retry debt',
     async stopMode => {
@@ -507,6 +546,102 @@ describe('IPC event pump termination', () => {
     } finally {
       getter.mockRestore()
     }
+  })
+
+  test('forwards a validated native terminal-evidence staging refusal to the public stream', async () => {
+    const harness = await createPumpHarness()
+    const child = harness.ipc.registerStream('terminal-evidence-stage-failed', isRecord)
+    const error = {
+      code: 'platform.failure',
+      domain: 'restoration',
+      operation: 'native.scan.terminal-evidence.stage',
+      platform: null,
+      retryability: 'caller-decides'
+    }
+
+    const terminal = {
+      kind: 'terminal',
+      reason: 'source-failed',
+      droppedItems: 0,
+      droppedBytes: 0,
+      replacedItems: 0,
+      error,
+      terminalEvidenceStageFailed: true
+    }
+    markAuthenticatedElectronTerminalEvidenceStageFailure(terminal)
+    harness.emit('terminal-evidence-stage-failed', terminal)
+    await flushPump()
+
+    await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        error
+      }
+    })
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('reconstructs a committed terminal receipt scope from its UTF-16LE sidecar', async () => {
+    const harness = await createPumpHarness()
+    const child = harness.ipc.registerStream('terminal-evidence-raw-scope', isRecord)
+    const managerId = 'manager\ud800'
+    harness.emit('terminal-evidence-raw-scope', {
+      kind: 'terminal',
+      reason: 'closed',
+      droppedItems: 0,
+      droppedBytes: 0,
+      replacedItems: 0,
+      evidence: {
+        ref: 'receipt',
+        byteLength: 1,
+        digest: 'a'.repeat(64),
+        formatVersion: 1,
+        durability: 'committed',
+        producer: 'scan',
+        scope: {
+          managerId: 'manager\ufffd',
+          operationId: 'operation',
+          incarnation: 'incarnation',
+          scopeUtf16le: packedScope('scan', managerId, 'operation', 'incarnation')
+        }
+      }
+    })
+    await flushPump()
+    await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', evidence: { scope: { managerId, operationId: 'operation' } } }
+    })
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('a generic IPC source cannot brand a terminal-evidence staging failure', async () => {
+    const harness = await createPumpHarness()
+    const child = harness.ipc.registerStream('forged-terminal-evidence-stage-failed', isRecord)
+    harness.emit('forged-terminal-evidence-stage-failed', {
+      kind: 'terminal',
+      reason: 'source-failed',
+      droppedItems: 0,
+      droppedBytes: 0,
+      replacedItems: 0,
+      error: {
+        code: 'platform.failure',
+        domain: 'restoration',
+        operation: 'forged.stage-failure',
+        platform: null,
+        retryability: 'caller-decides'
+      },
+      terminalEvidenceStageFailed: true
+    })
+    await flushPump()
+
+    await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: { code: 'platform.failure', operation: 'forged.stage-failure' }
+      }
+    })
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test('bare inner iterator failure is a source-failed terminal and does not poison cleanup', async () => {

@@ -30,14 +30,23 @@ pub mod continuation_journal;
 pub mod continuation_outbox;
 pub mod delivery;
 pub mod errors;
+mod fake_ordered_source;
 mod gatt_admission;
+pub mod ordered_recording;
+pub mod scan_failure_recovery;
+pub mod terminal_evidence_ledger;
 pub use gatt_admission::GattAdmission;
 pub mod executor;
 pub mod identity;
+pub mod marker_reservation;
 pub mod op_control;
+pub mod ordered_notification_groups;
 pub mod os;
 #[cfg(all(feature = "btleplug", any(target_os = "windows", test)))]
 mod parameter_source;
+#[cfg(feature = "btleplug")]
+pub mod peer_notification_ingress;
+pub mod reclaim_reservation;
 
 pub use boundary::bluez_bus_supported;
 pub use boundary::{
@@ -63,8 +72,10 @@ pub use central::{
     AdapterEvent, AdapterResetEvent, AdapterStatus, COMPLETED_SCAN_TICKET_CAPACITY,
     CentralObserver, CentralProfile, CentralSignal, ConnectionHandle, DesktopCentral,
     DiscoveredPath, DiscoveryReport, InvalidationCause, LIFECYCLE_EVENT_CAPACITY, LifecycleEvent,
-    LifecycleKind, LinkRelease, NotificationPoll, PeerRecord, ResourceCounters, ScanObservation,
-    ScanSession, ScanStop, ShutdownReport,
+    LifecycleKind, LinkRelease, NotificationPoll, OrderedClaimRequest, OrderedIngressReceipt,
+    OrderedIngressRecord, PeerFailureRecoveryShutdownDebt, PeerFailureRecoveryShutdownRecipient,
+    PeerRecord, ResourceCounters, ScanObservation, ScanSession, ScanStop, ShutdownReport,
+    SourceUncertaintyEvent,
 };
 pub use central::{
     CancelPairingOutcome, ConnectionParametersEvent, PairRequest, PairingGeneration,
@@ -84,3 +95,8 @@ pub use ubm_core::central::{
 };
 pub use ubm_core::contracts::OperationId;
 pub use ubm_core::ownership::{CleanupRecord, CleanupState};
+
+pub use ubm_core::central::NotificationProvenance;
+
+/// Shared lossless encoding of native ordered-group records.
+pub mod ordered_wire;

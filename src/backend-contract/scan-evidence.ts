@@ -23,6 +23,13 @@ export const SCAN_EVIDENCE_WINDOW_MS = 10_000
 export const SCAN_EVIDENCE_PEER_CAPACITY = 4096
 const SCAN_EVIDENCE_FACT_CAPACITY = 1024
 
+export interface StagedScanEvidence<Value> {
+  readonly matched: Value | null
+  readonly bytes: number
+  readonly buffers: readonly ArrayBufferLike[]
+  commit(): void
+}
+
 interface EvidenceBucket<Carried> {
   atMs: number
   facts: Map<string, Carried>
@@ -60,10 +67,42 @@ export class ScanEvidenceSession {
   private readonly advertisements = new Map<string, EvidenceBucket<CarriedAdvertisement>>()
   private readonly ipc = new Map<string, EvidenceBucket<CarriedIpc>>()
 
+  constructor(private readonly admit?: (bytes: number, buffers: readonly ArrayBufferLike[]) => boolean) {}
+
+  /** Build a candidate without changing the live cache or its quota charge. */
+  stage<Value>(match: (candidate: ScanEvidenceSession) => Value | null): StagedScanEvidence<Value> {
+    let bytes = 0
+    const candidate = new ScanEvidenceSession(value => {
+      bytes = value
+      return true
+    })
+    for (const [key, bucket] of this.advertisements) candidate.advertisements.set(key, bucket)
+    for (const [key, bucket] of this.ipc) candidate.ipc.set(key, bucket)
+    const matched = match(candidate)
+    // A core-merged input does not update the candidate or call its admission.
+    const ownership = evidenceOwnership()
+    bytes = evidenceBytes(candidate.advertisements, ownership) + evidenceBytes(candidate.ipc, ownership)
+    let committed = false
+    return {
+      matched,
+      bytes,
+      buffers: [...ownership.buffers],
+      commit: () => {
+        if (committed) throw contractError('lifecycle.invalid-state', 'scan', 'scan.evidence.stage-committed')
+        committed = true
+        this.advertisements.clear()
+        this.ipc.clear()
+        for (const [key, bucket] of candidate.advertisements) this.advertisements.set(key, bucket)
+        for (const [key, bucket] of candidate.ipc) this.ipc.set(key, bucket)
+      }
+    }
+  }
+
   /** Drop every peer. Call this when the scan generation ends. */
   clear(): void {
     this.advertisements.clear()
     this.ipc.clear()
+    this.admit?.(0, [])
   }
 
   /**
@@ -88,7 +127,8 @@ export class ScanEvidenceSession {
       carriedFromAdvertisement(observation),
       splitAdvertisement,
       mergeAdvertisement,
-      emptyEvidence
+      emptyEvidence,
+      this.admit === undefined ? undefined : candidate => this.admitSnapshot(candidate, this.ipc)
     )
     if (matches(observation)) return observation
     const merged = mergedAdvertisement(observation, carried)
@@ -115,13 +155,83 @@ export class ScanEvidenceSession {
       { ...carriedFromIpc(observation), atMs },
       splitIpc,
       mergeIpc,
-      emptyEvidence
+      emptyEvidence,
+      this.admit === undefined ? undefined : candidate => this.admitSnapshot(this.advertisements, candidate)
     )
     if (matches(observation)) return observation
     const merged = mergedIpc(observation, carried)
     if (merged !== null && matches(merged)) return merged
     return null
   }
+
+  private admitSnapshot(
+    advertisements: Map<string, EvidenceBucket<CarriedAdvertisement>>,
+    ipc: Map<string, EvidenceBucket<CarriedIpc>>
+  ): void {
+    const ownership = evidenceOwnership()
+    const bytes = evidenceBytes(advertisements, ownership) + evidenceBytes(ipc, ownership)
+    if (this.admit?.(bytes, [...ownership.buffers]) !== true)
+      throw contractError('stream.quota', 'scan', 'scan.evidence.retained-bytes')
+  }
+}
+
+const retainedBucketFootprints = new WeakMap<
+  object,
+  { readonly bytes: number; readonly buffers: readonly ArrayBufferLike[]; readonly clocks: readonly SourceTimestamp[] }
+>()
+
+function evidenceOwnership() {
+  return { buffers: new Set<ArrayBufferLike>(), clocks: new Set<SourceTimestamp>() }
+}
+
+function evidenceBytes<Carried extends EvidenceTiming>(
+  peers: Map<string, EvidenceBucket<Carried>>,
+  ownership: ReturnType<typeof evidenceOwnership>
+): number {
+  let bytes = 0
+  for (const [key, bucket] of peers) {
+    let footprint = retainedBucketFootprints.get(bucket)
+    if (footprint === undefined) {
+      let bucketBytes = 32 + key.length * 2
+      const bucketBuffers = new Set<ArrayBufferLike>()
+      const clocks = new Set<SourceTimestamp>()
+      for (const [fact, value] of bucket.facts) {
+        bucketBytes += 64 + fact.length * 2
+        if (value.sourceTime !== null) clocks.add(value.sourceTime)
+        for (const entry of Object.values(value)) {
+          if (typeof entry === 'string') bucketBytes += entry.length * 2
+          else if (Array.isArray(entry)) {
+            bucketBytes += entry.length * 8
+            for (const item of entry) {
+              if (typeof item === 'string') bucketBytes += item.length * 2
+              else if (item !== null && typeof item === 'object') {
+                for (const part of Object.values(item)) {
+                  if (part instanceof Uint8Array) bucketBuffers.add(part.buffer)
+                  else if (typeof part === 'string') bucketBytes += part.length * 2
+                }
+              }
+            }
+          }
+        }
+      }
+      footprint = { bytes: bucketBytes, buffers: [...bucketBuffers], clocks: [...clocks] }
+      retainedBucketFootprints.set(bucket, footprint)
+    }
+    bytes += footprint.bytes
+    for (const buffer of footprint.buffers) {
+      if (!ownership.buffers.has(buffer)) {
+        ownership.buffers.add(buffer)
+        bytes += buffer.byteLength
+      }
+    }
+    for (const clock of footprint.clocks) {
+      if (!ownership.clocks.has(clock)) {
+        ownership.clocks.add(clock)
+        bytes += 32 + (clock.clockScope?.length ?? 0) * 2
+      }
+    }
+  }
+  return bytes
 }
 
 function remember<Carried extends EvidenceTiming>(
@@ -131,10 +241,15 @@ function remember<Carried extends EvidenceTiming>(
   incoming: Carried,
   split: (incoming: Carried) => ReadonlyMap<string, Carried>,
   merge: (previous: Carried, incoming: Carried) => Carried,
-  empty: (atMs: number) => Carried
+  empty: (atMs: number) => Carried,
+  admit?: (candidate: Map<string, EvidenceBucket<Carried>>) => void
 ): Carried {
   if (!Number.isFinite(atMs) || atMs < 0)
     throw contractError('protocol.violation', 'scan', 'scan.evidence.receipt-clock')
+  const original = peers
+  if (admit !== undefined) {
+    peers = new Map(peers)
+  }
   let newest = atMs
   for (const bucket of peers.values()) newest = Math.max(newest, bucket.atMs)
   // Expiration is driven by receipt progress. Keep bounded source ordering
@@ -142,20 +257,33 @@ function remember<Carried extends EvidenceTiming>(
   // All other inactive peers are swept, including their ordering metadata.
   for (const [peer, bucket] of peers) {
     if (newest - bucket.atMs > SCAN_EVIDENCE_WINDOW_MS && peer !== key) peers.delete(peer)
-    else
+    else {
+      let writable = bucket
       for (const [fact, value] of bucket.facts) {
         if (newest - value.atMs > SCAN_EVIDENCE_WINDOW_MS) {
-          if (!scopedSource(value.sourceTime)) bucket.facts.delete(fact)
+          if (admit !== undefined && writable === bucket) {
+            writable = { ...bucket, facts: new Map(bucket.facts) }
+            peers.set(peer, writable)
+          }
+          if (!scopedSource(value.sourceTime)) writable.facts.delete(fact)
           else
-            bucket.facts.set(fact, {
+            writable.facts.set(fact, {
               ...empty(value.atMs),
               sourceTime: value.sourceTime,
               ingressOrdinal: value.ingressOrdinal
             })
         }
       }
+    }
   }
-  if (newest - atMs > SCAN_EVIDENCE_WINDOW_MS) return incoming
+  if (newest - atMs > SCAN_EVIDENCE_WINDOW_MS) {
+    if (admit !== undefined) {
+      admit(peers)
+      original.clear()
+      for (const [peer, bucket] of peers) original.set(peer, bucket)
+    }
+    return incoming
+  }
   const previous = peers.get(key)
   if (previous === undefined && peers.size >= SCAN_EVIDENCE_PEER_CAPACITY) {
     throw contractError('stream.quota', 'scan', 'scan.evidence.peer-capacity')
@@ -190,6 +318,11 @@ function remember<Carried extends EvidenceTiming>(
   if (facts.size > SCAN_EVIDENCE_FACT_CAPACITY)
     throw contractError('stream.quota', 'scan', 'scan.evidence.fact-capacity')
   peers.set(key, { atMs: Math.max(previous?.atMs ?? atMs, atMs), facts })
+  if (admit !== undefined) {
+    admit(peers)
+    original.clear()
+    for (const [peer, bucket] of peers) original.set(peer, bucket)
+  }
   // The selected latest fact must be fresh and not from this packet's future.
   // Do not merge incoming again: that would undo the per-fact ordering choice.
   let carried = empty(atMs)

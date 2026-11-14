@@ -305,6 +305,7 @@ const CENTRAL_METHODS: readonly (keyof DesktopRustCoreCentral)[] = Object.freeze
   'setEventWaker',
   'eventWakeFailures',
   'activeScanId',
+  'operationalScanId',
   'takeAdapterResetEvent',
   'adapterStatus',
   'awaitUsableAdapter',
@@ -373,11 +374,82 @@ function recordingStore(host: DesktopCoreHost, module: unknown): DesktopRustCore
   }
   return Object.freeze({
     configureDirectory: (directory: string) => invoke('configureDirectory', [directory]),
+    ...(hasFunction(store, 'releaseIdle') ? { releaseIdle: () => invoke('releaseIdle', []) } : {}),
     status: (id: string) => invoke('status', [id]),
     prepare: (id: string, maxItems: number, maxBytes: number) => invoke('prepare', [id, maxItems, maxBytes]),
     acknowledge: (id: string, token: string) => invoke('acknowledge', [id, token]),
+    ...(hasFunction(store, 'diagnosticSummaryPage')
+      ? {
+          diagnosticSummaryPage: (id: string, offset: string, maxBytes: number) =>
+            invoke('diagnosticSummaryPage', [id, offset, maxBytes])
+        }
+      : {}),
+    ...(hasFunction(store, 'diagnosticOccurrencesPage')
+      ? {
+          diagnosticOccurrencesPage: (id: string, after: string | null, limit: number) =>
+            invoke('diagnosticOccurrencesPage', [id, after, limit])
+        }
+      : {}),
+    ...(hasFunction(store, 'diagnosticOccurrencePage')
+      ? {
+          diagnosticOccurrencePage: (id: string, occurrence: string, offset: string, maxBytes: number) =>
+            invoke('diagnosticOccurrencePage', [id, occurrence, offset, maxBytes])
+        }
+      : {}),
+    ...(hasFunction(store, 'retryDiagnosticOccurrence')
+      ? {
+          retryDiagnosticOccurrence: (id: string, occurrence: string) =>
+            invoke('retryDiagnosticOccurrence', [id, occurrence])
+        }
+      : {}),
+    ...(hasFunction(store, 'acknowledgeDiagnosticOccurrence')
+      ? {
+          acknowledgeDiagnosticOccurrence: (id: string, occurrence: string, payload: string) =>
+            invoke('acknowledgeDiagnosticOccurrence', [id, occurrence, payload])
+        }
+      : {}),
+    ...(hasFunction(store, 'retireDiagnosticOccurrence')
+      ? {
+          retireDiagnosticOccurrence: (id: string, occurrence: string, payload: string) =>
+            invoke('retireDiagnosticOccurrence', [id, occurrence, payload])
+        }
+      : {}),
+    ...(hasFunction(store, 'confirmDiagnosticRetirement')
+      ? {
+          confirmDiagnosticRetirement: (id: string, occurrence: string, payload: string) =>
+            invoke('confirmDiagnosticRetirement', [id, occurrence, payload])
+        }
+      : {}),
+    ...(hasFunction(store, 'releaseDiagnosticConfirmation')
+      ? {
+          releaseDiagnosticConfirmation: (id: string, occurrence: string, payload: string) =>
+            invoke('releaseDiagnosticConfirmation', [id, occurrence, payload])
+        }
+      : {}),
     stop: (id: string) => invoke('stop', [id]),
-    clear: (id: string) => invoke('clear', [id])
+    ...(hasFunction(store, 'stopOrdered') ? { stopOrdered: (id: string) => invoke('stopOrdered', [id]) } : {}),
+    ...(hasFunction(store, 'orderedContext') ? { orderedContext: (id: string) => invoke('orderedContext', [id]) } : {}),
+    clear: (id: string) => invoke('clear', [id]),
+    ...(hasFunction(store, 'inspectRawRecord')
+      ? {
+          inspectRawRecord: (id: string, source: string, ordinal: string | null, offset: string, maxBytes: number) =>
+            invoke('inspectRawRecord', [id, source, ordinal, offset, maxBytes])
+        }
+      : {}),
+    ...(hasFunction(store, 'legacyRecordingPrepareExact') &&
+    hasFunction(store, 'legacyRecordingAcknowledgeExact') &&
+    hasFunction(store, 'legacyRecordingRetireExact') &&
+    hasFunction(store, 'legacyRecordingConfirmExactRetirement')
+      ? {
+          legacyRecordingPrepareExact: (id: string, maxItems: number, maxBytes: number) =>
+            invoke('legacyRecordingPrepareExact', [id, maxItems, maxBytes]),
+          legacyRecordingAcknowledgeExact: (id: string, page: string) =>
+            invoke('legacyRecordingAcknowledgeExact', [id, page]),
+          legacyRecordingRetireExact: (id: string, page: string) => invoke('legacyRecordingRetireExact', [id, page]),
+          legacyRecordingConfirmExactRetirement: (id: string, page: string) =>
+            invoke('legacyRecordingConfirmExactRetirement', [id, page])
+        }
+      : {})
   })
 }
 
@@ -402,7 +474,16 @@ export function bindDesktopCore(host: DesktopCoreHost, loaded: LoadedDesktopCore
       }
     )
   }
+  const addon = loaded.module
   return Object.freeze({
+    ...(hasFunction(addon, 'orderedRecordingReceiptVersion')
+      ? {
+          orderedRecordingReceiptVersion: () => {
+            const version: unknown = Reflect.apply(Reflect.get(addon, 'orderedRecordingReceiptVersion'), addon, [])
+            return typeof version === 'number' ? version : NaN
+          }
+        }
+      : {}),
     openRecordingStore: async (directory: string) => {
       if (typeof directory !== 'string' || directory.length === 0)
         throw contractError('argument.invalid', 'platform', 'continuation.recording.directory')

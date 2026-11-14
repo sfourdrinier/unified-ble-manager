@@ -5,9 +5,13 @@ export { DesktopProcessHostInitializationError } from './desktop-process-initial
 import { byteLimit, opaqueId } from './backend-contract/primitives'
 import type { HostNeutralBackendIdentity } from './backend-contract/identity'
 import { normalizeBackgroundContinuation } from './backend-contract/background-continuation'
-import { DesktopRustCoreBackend, DESKTOP_RUST_CORE_PROFILES } from './backends/desktop/desktop-rust-core-provider'
+import {
+  DesktopRustCoreBackend,
+  DESKTOP_RUST_CORE_PROFILES,
+  type DesktopDurablePeerNotificationFailureRecovery
+} from './backends/desktop/desktop-rust-core-provider'
 import type {
-  NativeContinuationController,
+  NativeContinuationControllerV1,
   NativeContinuationControlAccess
 } from './backends/desktop/native-continuation-controller'
 import {
@@ -27,9 +31,18 @@ export type DesktopProcessInternalManager = InternalBleManager<string, HostNeutr
 
 /** Trusted process lifetime: child destruction never shuts down the shared radio. */
 export interface DesktopProcessHost {
-  readonly continuation: NativeContinuationController
+  readonly continuation: NativeContinuationControllerV1
   /** Trusted authenticated bridge only: prepare/deliver/ack are separate operations. */
   readonly continuationAccess: NativeContinuationControlAccess
+  /**
+   * Trusted-process-only recovery authority. The returned records retain the
+   * native descriptor and recipient authority, so they must never be passed
+   * through a renderer bridge. Reads and acknowledgement are deliberately
+   * separate; acknowledgement is never implicit.
+   */
+  readonly peerFailureRecovery?: Readonly<{
+    list(): readonly DesktopDurablePeerNotificationFailureRecovery[]
+  }>
   createManager(options?: DesktopProcessManagerOptions): Promise<BleManager>
   /** Trusted main-process adapter for routers using the existing advanced manager contract. */
   createInternalManager(options?: DesktopProcessManagerOptions): Promise<DesktopProcessInternalManager>
@@ -63,6 +76,7 @@ async function initializeDesktopProcessHost(
     item => item.backendId === backend.identity.registeredBackendId
   )
   if (profile === undefined) throw contractError('protocol.incompatible', 'core', 'desktop-process-host.backend')
+  backend.enableProcessOwnedRecording()
   const native = backend.nativeContinuationController()
   const nativeAccess = backend.nativeContinuationControlAccess()
   const attachedBackend = await attachBleBackend(backend, profile.compatibility)
@@ -132,7 +146,7 @@ async function initializeDesktopProcessHost(
     )
     return promise
   }
-  const continuation = Object.freeze<NativeContinuationController>({
+  const continuation = Object.freeze<NativeContinuationControllerV1>({
     execute: declaration =>
       rehydratePublicPromise(
         (async () => {
@@ -152,11 +166,28 @@ async function initializeDesktopProcessHost(
         })()
       ),
     claim: input => native.claim(input),
+    claimRetainedV1: input => native.claimRetainedV1(input),
     status: () => native.status()
   })
   return Object.freeze<DesktopProcessHost>({
     continuation,
+    peerFailureRecovery: Object.freeze({
+      list: () => {
+        admit()
+        return backend.durablePeerNotificationFailureRecoveries()
+      }
+    }),
     continuationAccess: Object.freeze<NativeContinuationControlAccess>({
+      ...(nativeAccess.prepareRetainedClaimV1 &&
+      nativeAccess.acknowledgeRetainedClaimV1 &&
+      nativeAccess.retireRetainedClaimReceiptV1
+        ? {
+            prepareRetainedClaimV1: (items: number, bytes: number) =>
+              nativeAccess.prepareRetainedClaimV1!(items, bytes),
+            acknowledgeRetainedClaimV1: (token: string) => nativeAccess.acknowledgeRetainedClaimV1!(token),
+            retireRetainedClaimReceiptV1: (token: string) => nativeAccess.retireRetainedClaimReceiptV1!(token)
+          }
+        : {}),
       execute: (peerId, declarationJson) =>
         rehydratePublicPromise(
           (async () => {

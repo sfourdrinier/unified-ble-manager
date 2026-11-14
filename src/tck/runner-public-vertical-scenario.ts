@@ -17,7 +17,7 @@ export async function executePublicVerticalSlice<
   fixture: BackendTckFixture<Attachment, Identity, Backend>,
   definition: TckScenarioDefinition
 ): Promise<void> {
-  const scan = await fixture.controller.settle(manager.scan(managerScenarioScanOptions(4, 128)))
+  const scan = await fixture.controller.settle(manager.scan(managerScenarioScanOptions(4, 513)))
   const scanIterator = scan.observations[Symbol.asyncIterator]()
   const observation = scanIterator.next()
   await fixture.controller.perform('queue-advertisement', emptyInput)
@@ -42,7 +42,7 @@ export async function executePublicVerticalSlice<
   const subscription = await fixture.controller.settle(
     database.subscribe(characteristic.path, {
       ...operationOptions,
-      delivery: managerScenarioScanOptions(4, 128).delivery
+      delivery: managerScenarioScanOptions(4, 513).delivery
     })
   )
   const notification = subscription.values[Symbol.asyncIterator]().next()

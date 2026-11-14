@@ -232,11 +232,13 @@ async function qualifyPublicRoute({ moduleKind = 'cjs' } = {}) {
     assert.ok(refused.failures.length > 0)
     requireReleased(await subscription.remove())
     requireReleased(await connection.release())
-    assert.equal(calls.filter(name => name === 'disconnect').length, 0, 'a shared owner must preserve the live link')
+    // The native disconnect entrypoint also retires a logical lease. Inspect
+    // native link ownership instead of counting calls across that boundary.
+    assert.equal((await stage.resourceCounters()).liveConnections, 1, 'a shared owner must preserve the live link')
     assert.deepEqual([...(await characteristic.read())], [42])
     requireReleased(await shared.release())
     shared = undefined
-    assert.equal(calls.filter(name => name === 'disconnect').length, 1)
+    assert.equal((await stage.resourceCounters()).liveConnections, 0, 'the last owner must release the native link')
     await assert.rejects(
       characteristic.read(),
       error => error.code === 'gatt.stale-handle' || error.code === 'connection.stale'

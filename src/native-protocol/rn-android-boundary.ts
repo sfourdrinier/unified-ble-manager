@@ -1,6 +1,6 @@
 // src/native-protocol/rn-android-boundary.ts
 
-import { contractError } from '../backend-contract/errors'
+import { contractError, type BleErrorCode, type BleErrorDomain } from '../backend-contract/errors'
 import { bleErrorCodeForCoreBluetoothNativeCode } from '../backends/corebluetooth/corebluetooth-read-notify-provenance'
 import type { SecurityPairOptions } from '../backend-contract/security'
 import {
@@ -22,7 +22,9 @@ import type {
   CoreBluetoothCharacteristicAddress,
   CoreBluetoothDescriptorAddress,
   CoreBluetoothGattSnapshot,
+  CoreBluetoothNotificationClaim,
   CoreBluetoothNotificationDeliveryMode,
+  CoreBluetoothNotificationSourceEvent,
   CoreBluetoothPhyObservation,
   CoreBluetoothPhyRequestResult,
   CoreBluetoothScanPlatformOptions
@@ -31,6 +33,7 @@ import type { ConnectionIntent } from '../backend-contract/backend'
 import {
   copyNativeProtocolBytes,
   releaseNativeProtocolBytes,
+  requireNativeProtocolBinaryRuntime,
   retainNativeProtocolBytes,
   setNativeProtocolFatalSink,
   setNativeProtocolEventSink,
@@ -122,8 +125,12 @@ type NativeConnection = {
 
 type NativeSubscription = {
   readonly subscriptionId: string
+  readonly claim: CoreBluetoothNotificationClaim
   readonly address: CoreBluetoothCharacteristicAddress
   readonly onValue: (value: Uint8Array) => void
+  readonly onSourceEvent: ((event: CoreBluetoothNotificationSourceEvent) => void) | undefined
+  readonly characteristic: NativeProtocolRecord
+  readonly correlation: NativeProtocolRecord
 }
 
 function nativeConnectionIntent(intent: ConnectionIntent): 'direct' | 'whenAvailable' {
@@ -143,6 +150,8 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   })
   readonly descriptorOperationsAvailable: boolean = true
   private phyExtensionAvailable = false
+  protected readonly requireScanEventIdentity: boolean = true
+  private scanEventIdentityAvailable = false
   private securityExtensionAvailable = false
   private securityCancellationExtensionAvailable = false
   private readonly securityListeners = new Set<(record: AndroidSecurityStateChangedRecord) => void>()
@@ -176,6 +185,8 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   private readonly databases = new Map<string, NativeProtocolRecord>()
   private readonly subscriptionsByAddress = new Map<string, NativeSubscription>()
   private readonly scanListeners = new Set<(advertisement: CoreBluetoothAdvertisement) => void>()
+  private activeScanCorrelation: NativeProtocolRecord | null = null
+  private scanCleanupPending = false
   private readonly scanFailureListeners = new Set<(safeMessage: string) => void>()
   private readonly disconnectListeners = new Set<(nativePeerId: string, safeMessage: string | null) => void>()
   private readonly databaseChangedListeners = new Set<(nativePeerId: string) => void>()
@@ -184,7 +195,14 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   private latestAdapterState: CoreBluetoothAdapterSnapshot | null = null
   private attachmentRecord: NativeProtocolRecord | null = null
   private maximumInputPayloadBytes = 0
-  private nextEpoch = 1
+  // Each lane is contiguous: odd epochs belong only to scan starts; even epochs
+  // belong to all other commands. No retired identity history is needed.
+  private nextScanEpoch = 1
+  private nextOperationEpoch = 2
+  // Apple still uses the shared contiguous legacy protocol and its existing
+  // scan-correlation history. Android never adds entries to this set.
+  private nextLegacyEpoch = 1
+  private readonly legacyIssuedScanEpochs = new Set<number>()
   private nextConnection = 1
   private nextDatabase = 1
   private nextSubscription = 1
@@ -248,6 +266,9 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
         capabilitySchema: { minimum: contractVersion, maximum: contractVersion },
         eventSchema: { minimum: contractVersion, maximum: contractVersion },
         traceFormat: { minimum: contractVersion, maximum: contractVersion },
+        ...(this.requireScanEventIdentity
+          ? { scanEventIdentitySupported: true, androidRegistryAdmissionSupported: true }
+          : {}),
         ...attachmentIdentityFromRecord(attachment),
         ownerId: this.ownerId
       })
@@ -255,11 +276,25 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       this.nativeDestroyCompleted = false
       assertHandshakeSelection(handshake)
       this.maximumInputPayloadBytes = Math.min(maximumNativePayloadBytes, handshake.maximumBinaryPayloadBytes)
+      this.scanEventIdentityAvailable = handshake.scanEventIdentityAvailable === true
+      // Android's handshake combines scan identity and registry admission: both
+      // are required by the lane protocol, even for non-scan commands.
+      if (this.requireScanEventIdentity && !this.scanEventIdentityAvailable) {
+        throw contractError('capability.unsupported', 'boundary', 'rn-android-boundary.open.registry-admission')
+      }
       this.phyExtensionAvailable = handshake.phyAvailable === true
       this.securityExtensionAvailable = handshake.securityAvailable === true
       this.securityCancellationExtensionAvailable =
         this.securityExtensionAvailable && handshake.securityCancelPairingAvailable === true
       await this.control.installExecutionRuntime()
+      // Older Java can advertise scan identity while installing an older JSI
+      // runtime that predates the admission result method.
+      if (
+        this.requireScanEventIdentity &&
+        typeof Reflect.get(requireNativeProtocolBinaryRuntime(), 'submitWithAdmission') !== 'function'
+      ) {
+        throw contractError('capability.unsupported', 'boundary', 'rn-android-boundary.open.registry-admission')
+      }
       setNativeProtocolFatalSink(reason => this.failAttachment(reason))
       setNativeProtocolEventSink(bytes => this.receiveRecord(bytes))
       if (this.preJavaScriptEventBufferOverflowed) {
@@ -268,7 +303,10 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       this.opened = true
     } catch (error) {
       this.maximumInputPayloadBytes = 0
+      this.scanEventIdentityAvailable = false
       this.phyExtensionAvailable = false
+      this.securityExtensionAvailable = false
+      this.securityCancellationExtensionAvailable = false
       let closeFailure: Error | null = null
       if (this.nativeAttachmentOpened) {
         try {
@@ -301,6 +339,19 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     platform?: CoreBluetoothScanPlatformOptions
   ): Promise<void> {
     this.requireOpen('start-scan')
+    if (this.requireScanEventIdentity && !this.scanEventIdentityAvailable) {
+      throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.event-identity')
+    }
+    if (this.activeScanCorrelation !== null) {
+      throw contractError('scan.already-active', 'scan', 'rn-android-boundary.scan.start')
+    }
+    if (this.scanCleanupPending) {
+      await this.dispatch('scanStop', [])
+      this.scanCleanupPending = false
+      if (this.activeScanCorrelation !== null) {
+        throw contractError('scan.already-active', 'scan', 'rn-android-boundary.scan.start')
+      }
+    }
     if (platform !== undefined && platform.kind !== 'android') {
       throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.platform-options')
     }
@@ -314,22 +365,34 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       // emitted as a fresh observation. Fail closed instead of encoding it.
       throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.callback-type-match-lost')
     }
+    const correlation = this.nextCorrelation('scan')
+    this.activeScanCorrelation = correlation.record
     this.scanListeners.add(onAdvertisement)
     try {
-      await this.dispatch('scanStart', [
-        field(
-          12,
-          protocolRecord('scanOptions', [
-            field(1, [...serviceUuids]),
-            field(2, true),
-            field(3, androidScanMode(platform)),
-            field(4, androidScanCallbackType(platform)),
-            field(5, androidScanLegacy(platform)),
-            ...(deviceAddresses.length === 0 ? [] : [field(6, [...deviceAddresses])])
-          ])
-        )
-      ])
+      await this.submit(
+        commandRecord(protocolVersion, 'scanStart', correlation.record, [
+          field(
+            12,
+            protocolRecord('scanOptions', [
+              field(1, [...serviceUuids]),
+              field(2, true),
+              field(3, androidScanMode(platform)),
+              field(4, androidScanCallbackType(platform)),
+              field(5, androidScanLegacy(platform)),
+              ...(deviceAddresses.length === 0 ? [] : [field(6, [...deviceAddresses])])
+            ])
+          )
+        ]),
+        correlation.nonce,
+        'scanStart'
+      )
     } catch (error) {
+      if (this.activeScanCorrelation === correlation.record) {
+        this.activeScanCorrelation = null
+        // A rejected or interrupted start may already own a native scan.
+        // Retry actual cleanup before admitting another start.
+        this.scanCleanupPending = true
+      }
       this.scanListeners.delete(onAdvertisement)
       throw error
     }
@@ -337,8 +400,13 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
 
   async stopScan(): Promise<void> {
     this.requireOpen('stop-scan')
+    const target = this.activeScanCorrelation
     await this.dispatch('scanStop', [])
-    this.scanListeners.clear()
+    this.scanCleanupPending = false
+    if (this.activeScanCorrelation === target) {
+      this.activeScanCorrelation = null
+      this.scanListeners.clear()
+    }
   }
 
   /** Reads the current Android system bond table without creating GATT ownership. */
@@ -594,10 +662,11 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     if (bytes.byteLength > this.maximumInputPayloadBytes) {
       throw contractError('bytes.too-large', 'boundary', 'rn-android-boundary.write')
     }
+    const characteristic = this.characteristicPath(address)
     const correlation = this.nextCorrelation()
     const reference = retainNativeProtocolBytes(correlation.nonce, bytes)
     const command = commandRecord(protocolVersion, 'write', correlation.record, [
-      field(4, this.characteristicPath(address)),
+      field(4, characteristic),
       field(6, binaryReferenceRecord(reference)),
       field(13, withResponse ? 'withResponse' : 'withoutResponse')
     ])
@@ -624,10 +693,11 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     if (bytes.byteLength > this.maximumInputPayloadBytes) {
       throw contractError('bytes.too-large', 'boundary', 'rn-android-boundary.write-descriptor')
     }
+    const descriptor = this.descriptorPath(address)
     const correlation = this.nextCorrelation()
     const reference = retainNativeProtocolBytes(correlation.nonce, bytes)
     const command = commandRecord(protocolVersion, 'writeDescriptor', correlation.record, [
-      field(5, this.descriptorPath(address)),
+      field(5, descriptor),
       field(6, binaryReferenceRecord(reference))
     ])
     const result = await this.submit(command, correlation.nonce, 'writeDescriptor', () => {
@@ -640,14 +710,21 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     )
   }
 
-  async startNotify(address: CoreBluetoothCharacteristicAddress, onValue: (bytes: Uint8Array) => void): Promise<void> {
-    return this.startNotifyWithMode(address, 'notification', onValue)
+  async startNotify(
+    address: CoreBluetoothCharacteristicAddress,
+    onValue: (bytes: Uint8Array) => void,
+    claim: CoreBluetoothNotificationClaim
+  ): Promise<void> {
+    return this.startNotifyWithMode(address, 'notification', onValue, undefined, claim)
   }
 
   async startNotifyWithMode(
     address: CoreBluetoothCharacteristicAddress,
     mode: CoreBluetoothNotificationDeliveryMode,
-    onValue: (bytes: Uint8Array) => void
+    onValue: (bytes: Uint8Array) => void,
+    onSourceEvent: ((event: CoreBluetoothNotificationSourceEvent) => void) | undefined,
+    claim: CoreBluetoothNotificationClaim,
+    constraint?: import('../backend-contract/operations').SubscriptionOptions['deliveryMode']
   ): Promise<void> {
     this.requireOpen('start-notify')
     const key = addressKey(address)
@@ -656,33 +733,48 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
     const subscriptionId = `rn-android-subscription-${this.nextSubscription}`
     this.nextSubscription += 1
-    const subscription: NativeSubscription = { subscriptionId, address, onValue }
+    const characteristic = this.characteristicPath(address)
+    const correlation = this.nextCorrelation()
+    const subscription: NativeSubscription = {
+      subscriptionId,
+      claim,
+      address,
+      onValue,
+      onSourceEvent,
+      characteristic,
+      correlation: correlation.record
+    }
     // Native Android can emit a value immediately after CCCD enablement, before its terminal result arrives.
     this.subscriptionsByAddress.set(key, subscription)
     try {
-      await this.dispatch('subscribe', [
-        field(4, this.characteristicPath(address)),
-        field(7, subscriptionId),
-        field(21, mode)
-      ])
+      await this.submit(
+        commandRecord(protocolVersion, 'subscribe', correlation.record, [
+          field(4, characteristic),
+          field(7, subscriptionId),
+          field(21, mode),
+          ...(constraint === undefined ? [] : [field(22, nativeNotificationConstraint(constraint))])
+        ]),
+        correlation.nonce,
+        'subscribe'
+      )
     } catch (error) {
-      this.subscriptionsByAddress.delete(key)
+      if (this.subscriptionsByAddress.get(key) === subscription) this.subscriptionsByAddress.delete(key)
       throw error
     }
   }
 
-  async stopNotify(address: CoreBluetoothCharacteristicAddress): Promise<void> {
+  async stopNotify(address: CoreBluetoothCharacteristicAddress, claim: CoreBluetoothNotificationClaim): Promise<void> {
     this.requireOpen('stop-notify')
     const key = addressKey(address)
     const subscription = this.subscriptionsByAddress.get(key)
-    if (subscription === undefined) {
+    if (subscription === undefined || subscription.claim !== claim) {
       return
     }
     await this.dispatch('unsubscribe', [
       field(4, this.characteristicPath(address)),
       field(7, subscription.subscriptionId)
     ])
-    this.subscriptionsByAddress.delete(key)
+    if (this.subscriptionsByAddress.get(key) === subscription) this.subscriptionsByAddress.delete(key)
   }
 
   onDisconnect(listener: (nativePeerId: string, safeMessage: string | null) => void): () => void {
@@ -743,6 +835,8 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.opened = false
     this.closing = false
     this.phyExtensionAvailable = false
+    this.activeScanCorrelation = null
+    this.scanCleanupPending = false
     this.scanListeners.clear()
     this.scanFailureListeners.clear()
     this.connections.clear()
@@ -775,16 +869,83 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     kind: string,
     onSubmissionFailure: (() => void) | null = null
   ): Promise<NativeProtocolRecord> {
-    const key = operationKey(commandEpoch(command), nonce)
+    const epoch = commandEpoch(command)
+    const scan = kind === 'scanStart'
+    const expectedEpoch = this.requireScanEventIdentity
+      ? scan
+        ? this.nextScanEpoch
+        : this.nextOperationEpoch
+      : this.nextLegacyEpoch
+    if (epoch !== expectedEpoch) {
+      throw contractError('lifecycle.invariant-violation', 'boundary', 'rn-android-boundary.correlation-epoch')
+    }
+    const key = operationKey(epoch, nonce)
     const nativePeerId = nativePeerIdForCommand(command)
     return new Promise<NativeProtocolRecord>((resolve, reject) => {
       this.pending.set(key, { kind, nativePeerId, resolve, reject })
+      let encoded: Uint8Array
       try {
-        submitNativeProtocolCommand(encodeNativeProtocolRecord(command))
+        encoded = encodeNativeProtocolRecord(command)
       } catch (error) {
         this.pending.delete(key)
         onSubmissionFailure?.()
         reject(error instanceof Error ? error : new Error('Native protocol command submission failed'))
+        return
+      }
+      if (!this.requireScanEventIdentity) {
+        this.nextLegacyEpoch += 1
+        if (scan) this.legacyIssuedScanEpochs.add(epoch)
+        try {
+          submitNativeProtocolCommand(encoded)
+        } catch (error) {
+          this.pending.delete(key)
+          onSubmissionFailure?.()
+          reject(error instanceof Error ? error : new Error('Native protocol command submission failed'))
+        }
+        return
+      }
+      if (scan) this.nextScanEpoch += 2
+      else this.nextOperationEpoch += 2
+      try {
+        const runtime = requireNativeProtocolBinaryRuntime()
+        const submit: unknown = Reflect.get(runtime, 'submitWithAdmission')
+        if (typeof submit !== 'function') {
+          throw new Error('Native Android protocol admission result is unavailable')
+        }
+        const outcome: unknown = Reflect.apply(submit, runtime, [encoded])
+        if (typeof outcome !== 'object' || outcome === null || !('state' in outcome)) {
+          throw new Error('Native Android protocol returned an invalid admission result')
+        }
+        if (outcome.state === 'submitted') return
+        const message =
+          'message' in outcome && typeof outcome.message === 'string'
+            ? outcome.message
+            : 'Native protocol submission failed'
+        if (outcome.state !== 'notAdmitted' && outcome.state !== 'registrationFailed') {
+          throw new Error(message)
+        }
+        if (!this.pending.has(key)) throw new Error('Native admission failed after terminal delivery')
+        if (scan && outcome.state === 'registrationFailed') {
+          // A consumed scan epoch that never reached the dispatcher cannot be
+          // distinguished from an issued scan using the compact lane alone.
+          throw new Error(message)
+        }
+        if (outcome.state === 'notAdmitted') {
+          const next = scan ? this.nextScanEpoch : this.nextOperationEpoch
+          if (next !== epoch + 2) throw new Error('Native admission failed after a reentrant submission')
+          if (scan) this.nextScanEpoch = epoch
+          else this.nextOperationEpoch = epoch
+        }
+        this.pending.delete(key)
+        onSubmissionFailure?.()
+        reject(new Error(message))
+      } catch (error) {
+        // A thrown or malformed submission result cannot establish who owns the
+        // epoch or payload. Retire the attachment; never retry on a guess.
+        const failure = error instanceof Error ? error : new Error('Native protocol command submission failed')
+        this.failAttachment(`Native Android protocol submission outcome is unknown: ${failure.message}`)
+        this.pending.delete(key)
+        reject(failure)
       }
     })
   }
@@ -882,10 +1043,51 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       const advertisement = requiredRecord(event, 12, 'rn-android-boundary.event.advertisement')
       const parsedAdvertisement = parseAdvertisementRecord(advertisement)
       const advertisementBytes = this.takeAdvertisementBytes(parsedAdvertisement)
+      const correlation = optionalRecord(event, 10)
+      if (
+        this.requireScanEventIdentity &&
+        (correlation === null ||
+          this.activeScanCorrelation === null ||
+          !sameProtocolRecord(correlation, this.activeScanCorrelation))
+      )
+        return
       const value = advertisementFromRecord(parsedAdvertisement, advertisementBytes)
       for (const listener of this.scanListeners) {
         this.invokeConsumerListener('advertisement', () => listener(value))
       }
+      return
+    }
+    if (kind === 'notificationLoss' || kind === 'notificationTerminated') {
+      const subscriptionId = requiredString(event, 11, 'rn-android-boundary.event.subscription')
+      const subscription = [...this.subscriptionsByAddress.values()].find(
+        candidate => candidate.subscriptionId === subscriptionId
+      )
+      if (subscription === undefined) return
+      const characteristic = requiredRecord(event, 9, 'rn-android-boundary.event.characteristic')
+      const correlation = requiredRecord(event, 10, 'rn-android-boundary.event.operation')
+      if (
+        !sameProtocolRecord(characteristic, subscription.characteristic) ||
+        !sameProtocolRecord(correlation, subscription.correlation)
+      ) {
+        throw contractError('protocol.violation', 'boundary', 'rn-android-boundary.event.subscription-identity')
+      }
+      const sourceEvent: CoreBluetoothNotificationSourceEvent =
+        kind === 'notificationLoss'
+          ? {
+              kind: 'loss',
+              lostItems: requiredUnsigned(event, 18, 'rn-android-boundary.event.lost-items'),
+              lostBytes: requiredUnsigned(event, 19, 'rn-android-boundary.event.lost-bytes')
+            }
+          : {
+              kind: 'terminated',
+              error: notificationTerminationError(
+                requiredRecord(event, 14, 'rn-android-boundary.event.termination-error')
+              )
+            }
+      if (subscription.onSourceEvent === undefined) {
+        throw contractError('protocol.violation', 'boundary', 'rn-android-boundary.event.unhandled-source-event')
+      }
+      this.invokeConsumerListener(kind, () => subscription.onSourceEvent?.(sourceEvent))
       return
     }
     if (kind === 'notification') {
@@ -990,7 +1192,24 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
         return
       }
       if (code === 'scanFailed') {
-        const message = safeMessage ?? 'Android scan failed'
+        const correlation = optionalRecord(event, 10)
+        if (
+          correlation !== null &&
+          (this.activeScanCorrelation === null || !sameProtocolRecord(correlation, this.activeScanCorrelation))
+        ) {
+          if (this.isEarlierIssuedCorrelation(correlation)) return
+        }
+        const valid =
+          correlation !== null &&
+          this.activeScanCorrelation !== null &&
+          sameProtocolRecord(correlation, this.activeScanCorrelation)
+        if (this.activeScanCorrelation === null) {
+          console.error('[ReactNativeAndroidProtocolBoundary.receiveEvent] Unexpected scan failure identity')
+          return
+        }
+        this.activeScanCorrelation = null
+        this.scanCleanupPending = true
+        const message = valid ? (safeMessage ?? 'Android scan failed') : 'Android scan failure has an invalid identity'
         this.scanListeners.clear()
         for (const listener of this.scanFailureListeners) {
           this.invokeConsumerListener('scanFailed', () => listener(message))
@@ -1006,6 +1225,32 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     console.error('[ReactNativeAndroidProtocolBoundary.receiveEvent] Unsupported native event was quarantined:', {
       kind
     })
+  }
+
+  // Only exact issued scan identities may be treated as stale callbacks.
+  private isEarlierIssuedCorrelation(correlation: NativeProtocolRecord): boolean {
+    try {
+      if (correlation.kind !== 'operationCorrelation') return false
+      const epoch = requiredSigned(correlation, 2, 'rn-android-boundary.scan.correlation-epoch')
+      const limit =
+        this.activeScanCorrelation === null
+          ? this.requireScanEventIdentity
+            ? this.nextScanEpoch
+            : this.nextLegacyEpoch
+          : requiredSigned(this.activeScanCorrelation, 2, 'rn-android-boundary.scan.active-epoch')
+      if (!Number.isSafeInteger(epoch) || epoch < 1 || epoch >= limit) return false
+      if (this.requireScanEventIdentity ? epoch % 2 !== 1 : !this.legacyIssuedScanEpochs.has(epoch)) return false
+      return sameProtocolRecord(
+        correlation,
+        protocolRecord('operationCorrelation', [
+          field(1, this.requireAttachmentRecord('scan-correlation')),
+          field(2, epoch),
+          field(3, `rn-android-scan-${epoch}`)
+        ])
+      )
+    } catch {
+      return false
+    }
   }
 
   private takeAdvertisementBytes(advertisement: ParsedNativeAdvertisement): Map<NativeBinaryReference, Uint8Array> {
@@ -1149,6 +1394,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.closing = true
     this.destroyRequested = true
     this.nativeDestroyCompleted = true
+    this.activeScanCorrelation = null
     this.scanListeners.clear()
     this.scanFailureListeners.clear()
     this.connections.clear()
@@ -1178,10 +1424,19 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     })
   }
 
-  private nextCorrelation(): { readonly nonce: string; readonly record: NativeProtocolRecord } {
-    const dispatchEpoch = this.nextEpoch
-    this.nextEpoch += 1
-    const nonce = `rn-android-operation-${dispatchEpoch}`
+  private nextCorrelation(kind: 'scan' | 'operation' = 'operation'): {
+    readonly nonce: string
+    readonly record: NativeProtocolRecord
+  } {
+    const dispatchEpoch = this.requireScanEventIdentity
+      ? kind === 'scan'
+        ? this.nextScanEpoch
+        : this.nextOperationEpoch
+      : this.nextLegacyEpoch
+    if (!Number.isSafeInteger(dispatchEpoch)) {
+      throw contractError('lifecycle.invariant-violation', 'boundary', 'rn-android-boundary.correlation-epoch')
+    }
+    const nonce = `rn-android-${kind}-${dispatchEpoch}`
     return {
       nonce,
       record: protocolRecord('operationCorrelation', [
@@ -1361,6 +1616,122 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   }
 }
 
+/**
+ * Historical direct-GATT provider boundary.
+ *
+ * The 5.x Rust route requires the Android registry-admission lane. The
+ * retained legacy provider still speaks the original contiguous v2 JSI lane,
+ * so it must neither negotiate nor invoke the new admission method.
+ */
+export class ReactNativeAndroidLegacyProtocolBoundary extends ReactNativeAndroidProtocolBoundary {
+  protected override readonly requireScanEventIdentity: boolean = false
+}
+
+function nativeNotificationConstraint(
+  constraint: NonNullable<import('../backend-contract/operations').SubscriptionOptions['deliveryMode']>
+): string {
+  switch (constraint) {
+    case 'prefer-notification':
+      return 'preferNotification'
+    case 'prefer-indication':
+      return 'preferIndication'
+    case 'require-notification':
+      return 'requireNotification'
+    case 'require-indication':
+      return 'requireIndication'
+  }
+}
+
+/** Maps typed platform categories shared by normal operations and notification-source stops. */
+function nativeFailureIdentity(kind: string): { readonly code: BleErrorCode; readonly domain: BleErrorDomain } | null {
+  switch (kind) {
+    case 'permissionDenied':
+    case 'permission-denied':
+      return { code: 'permission.denied', domain: 'adapter' }
+    case 'permission-restricted':
+      return { code: 'permission.restricted', domain: 'adapter' }
+    case 'permission-not-determined':
+      return { code: 'permission.not-determined', domain: 'adapter' }
+    case 'adapterPoweredOff':
+    case 'adapter-off':
+      return { code: 'adapter.powered-off', domain: 'adapter' }
+    case 'adapterUnavailable':
+    case 'adapter-unavailable':
+      return { code: 'adapter.unavailable', domain: 'adapter' }
+    case 'adapterResetting':
+    case 'adapter-resetting':
+      return { code: 'adapter.resetting', domain: 'adapter' }
+    case 'cancelled':
+      return { code: 'operation.aborted', domain: 'core' }
+    case 'unsupported':
+      return { code: 'capability.unsupported', domain: 'capability' }
+    case 'peer-unknown':
+      return { code: 'peer.not-found', domain: 'connection' }
+    case 'path-stale':
+      return { code: 'gatt.stale-handle', domain: 'gatt' }
+    case 'not-connected':
+    case 'busy':
+    case 'gatt-status':
+    case 'platform':
+      return { code: 'platform.failure', domain: 'platform' }
+    default:
+      return null
+  }
+}
+
+function notificationTerminationError(record: NativeProtocolRecord) {
+  const operation = 'rn-android-boundary.event.termination-error'
+  if (record.kind !== 'error') throw contractError('protocol.malformed', 'boundary', operation)
+  const kind = requiredString(record, 1, `${operation}.kind`)
+  if (
+    ![
+      'not-connected',
+      'peer-unknown',
+      'path-stale',
+      'busy',
+      'permission-denied',
+      'permission-restricted',
+      'permission-not-determined',
+      'adapter-off',
+      'adapter-unavailable',
+      'adapter-resetting',
+      'gatt-status',
+      'cancelled',
+      'unsupported',
+      'platform'
+    ].includes(kind)
+  ) {
+    throw contractError('protocol.malformed', 'boundary', `${operation}.kind`)
+  }
+  let identity = nativeFailureIdentity(kind)
+  if (identity === null) throw contractError('protocol.malformed', 'boundary', `${operation}.kind`)
+  const sourceDomain = requiredString(record, 2, `${operation}.domain`)
+  if (sourceDomain !== 'android') throw contractError('protocol.malformed', 'boundary', `${operation}.domain`)
+  const nativeOperation = requiredString(record, 3, `${operation}.operation`)
+  const nativeRetryability = requiredString(record, 4, `${operation}.retryability`)
+  if (nativeRetryability !== 'notRetryable')
+    throw contractError('protocol.malformed', 'boundary', `${operation}.retryability`)
+  const platformDomain = requiredString(record, 5, `${operation}.platform-domain`)
+  const platformCode = requiredString(record, 6, `${operation}.platform-code`)
+  const safeMessage = requiredString(record, 7, `${operation}.message`)
+  const statusPresent = record.fields.some(candidate => candidate.id === 8)
+  const status = statusPresent ? requiredSigned(record, 8, `${operation}.gatt-status`) : null
+  if (status === 19) identity = { code: 'platform.failure', domain: 'platform' }
+  const metadata = status === null ? Object.freeze({}) : Object.freeze({ androidGattStatus: status })
+  return Object.freeze({
+    ...identity,
+    operation: nativeOperation,
+    retryability: 'never' as const,
+    platform: Object.freeze({ domain: platformDomain, code: platformCode, safeMessage, metadata })
+  })
+}
+
+function sameProtocolRecord(left: NativeProtocolRecord, right: NativeProtocolRecord): boolean {
+  const a = encodeNativeProtocolRecord(left)
+  const b = encodeNativeProtocolRecord(right)
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
 function sameDatabasePath(left: NativeProtocolRecord, right: NativeProtocolRecord): boolean {
   if (left.kind !== 'databasePath' || right.kind !== 'databasePath') {
     return false
@@ -1450,20 +1821,22 @@ function nativeOperationFailure(error: NativeProtocolRecord | null, operation: s
   const nativeCode = nativeErrorCode(error)
   const androidGattStatus = nativeAndroidGattStatus(error)
   const metadata = androidGattStatus === null ? Object.freeze({}) : Object.freeze({ androidGattStatus })
-  if (nativeCode === 'cancelled') {
-    return contractError('operation.aborted', 'core', `rn-android-boundary.${operation}`)
-  }
-  if (nativeCode === 'permissionDenied') {
-    return contractError('permission.denied', 'adapter', `rn-android-boundary.${operation}`)
-  }
-  if (nativeCode === 'adapterUnavailable') {
-    return contractError('adapter.unavailable', 'adapter', `rn-android-boundary.${operation}`)
-  }
-  if (nativeCode === 'adapterPoweredOff') {
-    return contractError('adapter.powered-off', 'adapter', `rn-android-boundary.${operation}`)
-  }
-  if (nativeCode === 'adapterResetting') {
-    return contractError('adapter.resetting', 'adapter', `rn-android-boundary.${operation}`)
+  const identity = nativeFailureIdentity(nativeCode)
+  if (
+    identity !== null &&
+    ['cancelled', 'permissionDenied', 'adapterUnavailable', 'adapterPoweredOff', 'adapterResetting'].includes(
+      nativeCode
+    )
+  ) {
+    if (nativeCode === 'permissionDenied') {
+      return contractError(identity.code, identity.domain, `rn-android-boundary.${operation}`, {
+        domain: nativeDomain,
+        code: nativeCode,
+        safeMessage: safeMessage ?? `Native ${operation} operation failed`,
+        metadata
+      })
+    }
+    return contractError(identity.code, identity.domain, `rn-android-boundary.${operation}`)
   }
   if (nativeCode === 'connectionLost' || androidGattStatus === 19) {
     return contractError('connection.lost', 'connection', `rn-android-boundary.${operation}`, {
@@ -1519,7 +1892,8 @@ function assertHandshakeSelection(handshake: NativeProtocolHandshakeResult): voi
     (handshake.securityAvailable !== undefined && typeof handshake.securityAvailable !== 'boolean') ||
     (handshake.securityCancelPairingAvailable !== undefined &&
       typeof handshake.securityCancelPairingAvailable !== 'boolean') ||
-    (handshake.phyAvailable !== undefined && typeof handshake.phyAvailable !== 'boolean')
+    (handshake.phyAvailable !== undefined && typeof handshake.phyAvailable !== 'boolean') ||
+    (handshake.scanEventIdentityAvailable !== undefined && typeof handshake.scanEventIdentityAvailable !== 'boolean')
   ) {
     throw contractError('protocol.incompatible', 'boundary', 'rn-android-boundary.open.handshake')
   }

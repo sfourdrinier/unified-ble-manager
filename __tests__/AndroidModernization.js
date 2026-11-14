@@ -26,6 +26,31 @@ function sourceFilesBelow(directory) {
 }
 
 describe('Android RN 0.86 unified protocol boundary', () => {
+  test('keeps RustCore scan recovery bytes on a dedicated lifecycle-fenced JSI runtime', () => {
+    const module = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/UnifiedBleRustCoreModule.java'
+    )
+    const binding = read('android/src/main/jni/UnifiedBleProtocolJsiBinding.cpp')
+
+    expect(module).toContain('installScanFailureRecoveryBinaryRuntime')
+    expect(module).toContain('uninstallScanFailureRecoveryBinaryRuntime')
+    expect(module).toContain('copySelectedScanFailureRecoveryPage')
+    expect(module).toContain('selectionGeneration')
+    expect(module).toContain('binding')
+    expect(binding).toContain('__unifiedBleRustCoreScanFailureRecoveryV1')
+    expect(binding).toContain('RustCoreScanFailureRecoveryBinaryRuntime')
+    expect(binding).toContain('NativeScanRecoveryJsiBinding')
+    expect(binding).toContain('jsi::Uint8Array output')
+    expect(binding).toContain('selectionGeneration')
+    expect(binding).toContain('state->binding')
+    // An asynchronous install may run after replacement. It must only publish
+    // the state currently registered for this owner, not merely any state.
+    expect(binding).toContain('current->second == state')
+    expect(binding).toContain('nextOffset')
+    expect(binding).toContain('"done"')
+    expect(binding).not.toContain('nativeScanFailureRecoveryReadBytesForBinding')
+  })
+
   test('uses Android API 36 defaults and the modern React Android artifact', () => {
     const gradleProperties = read('android/gradle.properties')
     const buildGradle = read('android/build.gradle')
@@ -59,6 +84,9 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     const controlJava = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
     )
+    const rustCoreModule = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/UnifiedBleRustCoreModule.java'
+    )
     const codegenConfig = JSON.parse(read('package.json')).codegenConfig
 
     expect(packageJava).toContain('import com.facebook.react.BaseReactPackage;')
@@ -74,6 +102,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(packageJava).toContain('import com.sfourdrinier.unifiedblemanager.rustcore.UnifiedBleRustCoreModule;')
     expect(packageJava).toContain('if (UnifiedBleRustCoreModule.NAME.equals(name))')
     expect(packageJava).toContain('UnifiedBleRustCoreModule.class.getName()')
+    expect(rustCoreModule).toContain('import com.ubm.core.MobileCoreBridge;')
     expect(packageJava).not.toMatch(/\bBlePlxModule\b|\bNativeBlePlxSpec\b/)
     expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(3)
     expect(controlJava).toContain('extends NativeUnifiedBleProtocolControlSpec')
@@ -150,10 +179,15 @@ describe('Android RN 0.86 unified protocol boundary', () => {
         // Runtime-gated public Android encryption/subrate API adapters.
         'radio/AndroidEncryptionApi.kt',
         'radio/AndroidGattDisconnectOwners.kt',
+        'radio/AndroidOrderedGroupOwner.kt',
+        'radio/AndroidOrderedOpenSlots.kt',
         'radio/AndroidSubrateApi.kt',
         'radio/DeferredCoreShadow.kt',
         'radio/GattCentralWire.kt',
         'radio/GattOccurrenceResolver.kt',
+        'radio/NotificationOwnershipFifo.kt',
+        'radio/OrderedMarkerTransactions.kt',
+        'radio/OrderedNotificationSource.kt',
         'radio/OwnedAndroidLog.kt',
         'radio/OwnedAndroidGattRadio.kt',
         'radio/UbmGattCentralBridge.kt',
@@ -180,7 +214,11 @@ describe('Android RN 0.86 unified protocol boundary', () => {
         // OwnedRadioPortMappingTest. RustCoreAdapterStateReader and
         // RustCoreSessionRouter are legacy, kept until Phase 4 deletion.
         'rustcore/AndroidRadioPort.kt',
+        'rustcore/AndroidOwnerQuiescenceCoordinator.kt',
         'rustcore/MobileCorePort.kt',
+        'rustcore/OrderedGroupBridgeMapper.kt',
+        'rustcore/OrderedGroupPort.kt',
+        'rustcore/OwnedOrderedGroupPort.kt',
         'rustcore/OwnedRadioPort.kt',
         'rustcore/PlatformServicePorts.kt',
         'rustcore/ReactCompanionChooser.kt',
@@ -258,10 +296,11 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(control).toContain('backgroundLeases.release(leaseId)')
     expect(driver).toContain('startForegroundService')
     expect(driver).toContain('stopService')
-    expect(registry).toContain('driver.start(reason, configuration)')
+    expect(registry).toContain('driver.start(reason, selected)')
     expect(registry).toContain('foregroundServiceConfigurationConflict')
     expect(registry).toContain('retryPendingStartCleanup()')
-    expect(registry).toContain('if (leases.size() == 1) driver.stop()')
+    expect(registry).toContain('last = leases.size() == 1')
+    expect(registry).toContain('if (last) driver.stop()')
     expect(service).toContain('startForeground')
     expect(service).toContain('START_NOT_STICKY')
     expect(service).toContain('FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE')

@@ -20,6 +20,8 @@
 //   --out:   copy the built cdylib to <file.node> and write the prebuild
 //            identity sidecar (ubm_desktop_core.identity.json) beside it,
 //            recording the file's sha256 and the binary's own identity.
+//   --reclaim-test-support: enable synthetic reclaim only for debug builds
+//            with an explicit --out, never for the normal packaged addon.
 //
 // Every failure is actionable (non-zero exit + the exact missing piece).
 
@@ -48,10 +50,14 @@ function fail(message) {
 }
 
 function parseArguments(argv) {
-  const options = { profile: 'debug', target: null, out: null }
+  const options = { profile: 'debug', target: null, out: null, reclaimTestSupport: false }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument === '--') continue
+    if (argument === '--reclaim-test-support') {
+      options.reclaimTestSupport = true
+      continue
+    }
     const value = argv[index + 1]
     if (argument === '--profile' || argument === '--target' || argument === '--out') {
       if (value === undefined || value.startsWith('--')) fail(`${argument} needs a value`)
@@ -64,6 +70,8 @@ function parseArguments(argv) {
   if (options.profile !== 'debug' && options.profile !== 'release') {
     fail(`--profile must be debug or release, got ${options.profile}`)
   }
+  if (options.reclaimTestSupport && (options.profile !== 'debug' || options.out === null))
+    fail('--reclaim-test-support requires a debug build and an explicit --out path')
   if (options.target === 'x86_64-apple-darwin' || (process.platform === 'darwin' && process.arch !== 'arm64')) {
     fail('Intel macOS is unsupported; macOS requires Apple Silicon (arm64)')
   }
@@ -170,6 +178,7 @@ function main() {
   }
   const identity = identityEnvironment()
   const cargoArgs = ['run', toolchain, 'cargo', 'build', '-p', 'ubm5_napi_echo', '--locked']
+  if (options.reclaimTestSupport) cargoArgs.push('--features', 'reclaim-test-support')
   if (options.profile === 'release') cargoArgs.push('--release')
   if (options.target !== null) cargoArgs.push('--target', options.target)
   console.log(

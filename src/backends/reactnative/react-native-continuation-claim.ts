@@ -9,6 +9,7 @@
 // malformed batch fails closed: no partial backlog is ever delivered as if
 // complete.
 
+import { remoteFailureError } from '../../core/recording-wire'
 import {
   CONTINUATION_CONSUMER_PREFIX,
   type BackgroundContinuationResubscribeSelector
@@ -27,7 +28,7 @@ import {
 /** The native prepared-claim shape (`sessions.prepareContinuationClaim`): verbatim batches. */
 export interface ContinuationClaimPayload {
   readonly recording?: { readonly id: string }
-  /** Opaque native ownership token; it is acknowledged only after this payload decodes. */
+  /** Opaque native ownership token; the application explicitly acknowledges the disclosed handoff. */
   readonly claimToken: string
   /** Consumer count captured from the exact native session being claimed. */
   readonly consumerCount: number
@@ -46,6 +47,9 @@ export interface ContinuationClaimPayload {
 }
 
 export interface ContinuationBacklogValue {
+  readonly sourceGeneration?: string
+  readonly sourceOrdinal?: string
+  readonly provenance?: import('../../backend-contract/gatt').NotificationProvenance
   readonly consumer: string
   readonly value: Uint8Array
   readonly delivery: WireDelivery
@@ -54,6 +58,10 @@ export interface ContinuationBacklogValue {
 
 export interface ContinuationBacklogStreamEnd {
   readonly consumer: string
+  /**
+   * The complete legacy handoff is fixed at the 5.2.1 stream-end vocabulary.
+   * Richer source failures remain owned by the native evidence/recovery route.
+   */
   readonly reason: 'overflow' | 'invalidated' | 'closed'
   readonly droppedItems: number
   readonly droppedBytes: number
@@ -73,14 +81,40 @@ export interface ContinuationBacklog {
   /** Native intake observed after the handoff cutoff. */
   readonly afterCutoffLoss: { readonly items: number; readonly bytes: number }
   readonly disposed: boolean
-  /** Why the session is still alive (null when disposed or no wake existed). */
+  /** Prepared-state cleanup detail; use the acknowledgement receipt for the final cleanup outcome. */
   readonly disposeFailure: string | null
+}
+
+/** One retained prefix. A tokenless result means no native wake exists. */
+export interface ContinuationRetainedPrefixV1 extends ContinuationBacklog {
+  readonly claimToken?: string
+  readonly acknowledge?: () => Promise<ContinuationClaimAcknowledgement>
+  /** Retire only after the acknowledgement receipt has been durably accepted. */
+  readonly retireReceipt?: () => Promise<void>
+  readonly records: readonly WireDrainRecord[]
 }
 
 export interface ContinuationClaimAcknowledgement {
   readonly disposed: boolean
   readonly afterCutoffLoss: { readonly items: number; readonly bytes: number }
   readonly disposeFailure: string | null
+}
+
+/**
+ * The shared drain codec also serves versioned recovery paths, whose terminal
+ * vocabulary is intentionally richer than the 5.2.1 complete-claim result.
+ * Keep that distinction private until a caller selects the versioned route.
+ */
+interface ParsedContinuationStreamEnd {
+  readonly consumer: string
+  readonly reason: 'overflow' | 'invalidated' | 'closed' | 'source-failed'
+  readonly droppedItems: number
+  readonly droppedBytes: number
+  readonly error?: import('../../backend-contract/errors').NormalizedBleError
+}
+
+interface ParsedContinuationClaim extends Omit<ContinuationRetainedPrefixV1, 'streamEnds'> {
+  readonly streamEnds: readonly ParsedContinuationStreamEnd[]
 }
 
 function assertClaimPayload(value: unknown): asserts value is ContinuationClaimPayload {
@@ -487,7 +521,11 @@ function assertDeclaredConsumer(consumer: string, declaredConsumerCount: number)
 }
 
 /** Parses and aggregates one native claim; fails closed on any gap. */
-export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog {
+export function aggregateContinuationClaim(
+  claim: unknown,
+  previousOrdinal: number | null = null,
+  previousControlLost = 0
+): ParsedContinuationClaim {
   assertClaimPayload(claim)
   const declaredConsumerCount = claim.consumerCount
   const selectors = Object.freeze(
@@ -501,10 +539,11 @@ export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog 
     )
   )
   const values: ContinuationBacklogValue[] = []
-  const streamEnds: ContinuationBacklogStreamEnd[] = []
+  const streamEnds: ParsedContinuationStreamEnd[] = []
   const control: WireDrainRecord[] = []
-  let controlLost = 0
-  let lastOrdinal: number | null = null
+  const records: WireDrainRecord[] = []
+  let controlLost = previousControlLost
+  let lastOrdinal: number | null = previousOrdinal
   for (const text of claim.batches) {
     const parsed = parseDrainText(text, lastOrdinal)
     if (!parsed.ok) throw parsed.error
@@ -514,6 +553,8 @@ export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog 
     }
     controlLost = batch.controlLost
     for (const record of batch.records) {
+      if (record.t === 'peer-source-loss') assertDeclaredConsumer(record.consumer, declaredConsumerCount)
+      records.push(record)
       if (record.t === 'value') {
         assertDeclaredConsumer(record.consumer, declaredConsumerCount)
         values.push(
@@ -521,6 +562,10 @@ export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog 
             consumer: record.consumer,
             value: record.value,
             delivery: record.delivery,
+            ...(record.provenance === undefined ? {} : { provenance: record.provenance }),
+            ...(record.sourceGeneration === undefined
+              ? {}
+              : { sourceGeneration: record.sourceGeneration, sourceOrdinal: record.sourceOrdinal }),
             ...(record.receipt === undefined ? {} : { receipt: Object.freeze({ ...record.receipt }) })
           })
         )
@@ -531,7 +576,8 @@ export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog 
             consumer: record.consumer,
             reason: record.reason,
             droppedItems: record.droppedItems,
-            droppedBytes: record.droppedBytes
+            droppedBytes: record.droppedBytes,
+            ...(record.error === undefined ? {} : { error: remoteFailureError(record.error).normalized })
           })
         )
       } else {
@@ -544,6 +590,7 @@ export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog 
   return Object.freeze({
     selectors,
     ...(claim.recording === undefined ? {} : { recording: Object.freeze({ id: claim.recording.id }) }),
+    records: Object.freeze(records),
     values: Object.freeze(values),
     streamEnds: Object.freeze(streamEnds),
     control: Object.freeze(control),
@@ -551,5 +598,32 @@ export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog 
     afterCutoffLoss: Object.freeze({ items: claim.afterCutoffLoss.items, bytes: claim.afterCutoffLoss.bytes }),
     disposed: claim.disposed,
     disposeFailure: claim.disposeFailure ?? null
+  })
+}
+
+/**
+ * The native legacy drain atomically projects unsupported terminal records
+ * into retained evidence before it yields a batch. Seeing one here therefore
+ * means a broken/native-mismatched legacy boundary: refuse before any caller
+ * can ACK and erase an error it cannot represent.
+ */
+export function projectLegacyContinuationClaim(
+  claim: ParsedContinuationClaim,
+  scope: string
+): ContinuationRetainedPrefixV1 {
+  const streamEnds: ContinuationBacklogStreamEnd[] = claim.streamEnds.map(record => {
+    if (record.reason === 'source-failed' || record.error !== undefined) {
+      throw contractError('protocol.violation', 'restoration', `${scope}.continuation.legacy-stream-end`)
+    }
+    return Object.freeze({
+      consumer: record.consumer,
+      reason: record.reason,
+      droppedItems: record.droppedItems,
+      droppedBytes: record.droppedBytes
+    })
+  })
+  return Object.freeze({
+    ...claim,
+    streamEnds: Object.freeze(streamEnds)
   })
 }

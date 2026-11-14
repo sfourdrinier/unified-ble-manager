@@ -336,6 +336,38 @@ describe('BleManager authority and cleanup security', () => {
     destroyBackend.mockRestore()
   })
 
+  test('keeps owning authority through failed resource release and shares a concurrent retry', async () => {
+    const { attachedBackend, authority } = await attachedFixture()
+    const owner = await createManager(attachedBackend, authority, 1, 'owning')
+    const originalRelease = owner.core.releaseResources.bind(owner.core)
+    let beginRetry
+    const releaseResources = jest
+      .spyOn(owner.core, 'releaseResources')
+      .mockResolvedValueOnce(failedCleanup('manager', 'test.owner-release'))
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            beginRetry = () => originalRelease().then(resolve)
+          })
+      )
+
+    // The first destroy does release the physical backend, but its own
+    // retryable resource debt keeps the owner registered for the retry.
+    await expect(owner.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    const callsBeforeRetry = releaseResources.mock.calls.length
+    const firstRetry = owner.destroy()
+    const concurrentRetry = owner.destroy()
+    expect(concurrentRetry).toBe(firstRetry)
+    expect(releaseResources).toHaveBeenCalledTimes(callsBeforeRetry + 1)
+
+    beginRetry()
+    await expect(firstRetry).resolves.toMatchObject({ state: 'released' })
+    await expect(concurrentRetry).resolves.toMatchObject({ state: 'released' })
+    expect(releaseResources).toHaveBeenCalledTimes(callsBeforeRetry + 1)
+
+    releaseResources.mockRestore()
+  })
+
   test('allows the same transfer grant to retry after resource release reports failure', async () => {
     const { attachedBackend, authority } = await attachedFixture()
     const owner = await createManager(attachedBackend, authority, 1, 'owning')

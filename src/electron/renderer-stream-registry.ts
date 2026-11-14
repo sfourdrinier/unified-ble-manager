@@ -1,5 +1,8 @@
 // src/electron/renderer-stream-registry.ts
 
+import { isCanonicalIngressOrdinal } from '../core/ordered-notification-contract'
+import { isTrustedTerminalEvidenceStageFailure } from '../core/terminal-evidence-stage-failure'
+
 import {
   BackendContractError,
   contractError,
@@ -10,13 +13,14 @@ import {
 import { byteLimit, ownBytes, type SerializableRecord } from '../backend-contract/primitives'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import type { StreamItem } from '../backend-contract/streams'
+import type { TerminalEvidenceCommit } from '../backend-contract/terminal-evidence'
 import type { HostNeutralBackendIdentity } from '../backend-contract/identity'
 import type { RendererLeaseIdentity } from '../backend-contract/electron'
 import type { ScanSession, Subscription } from '../manager/ble-manager'
 import type { ElectronBleIpcEvent } from './protocol'
 import { assertAdvertisementObservation, snapshotAdvertisementObservation } from './advertisement-observation'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
-import { NOTIFICATION_DELIVERIES, type NotificationValue } from '../backend-contract/gatt'
+import { isNotificationProvenance, NOTIFICATION_DELIVERIES, type NotificationValue } from '../backend-contract/gatt'
 
 /**
  * `terminalized` means main has terminalized the exact stream or made the
@@ -85,7 +89,8 @@ export class ElectronRendererStreamRegistry {
     resources: RendererStreamResources,
     rendererLease: RendererLeaseIdentity,
     handle: string,
-    scan: ScanSession<string>
+    scan: ScanSession<string>,
+    receiveTerminalEvidence?: (evidence: TerminalEvidenceCommit) => void
   ): ManagedScan {
     const resource: ManagedScan = {
       scan,
@@ -101,7 +106,8 @@ export class ElectronRendererStreamRegistry {
       scan.observations,
       reason => this.terminalizeScan(resources, rendererLease, handle, resource, reason),
       () => this.completeTerminalScan(resources, rendererLease, handle, resource),
-      () => resource.cleanupRequested
+      () => resource.cleanupRequested,
+      receiveTerminalEvidence
     )
     return resource
   }
@@ -111,7 +117,8 @@ export class ElectronRendererStreamRegistry {
     rendererLease: RendererLeaseIdentity,
     handle: string,
     databaseHandle: string,
-    subscription: Pick<Subscription<string, HostNeutralBackendIdentity<string>>, 'values' | 'remove'>
+    subscription: Pick<Subscription<string, HostNeutralBackendIdentity<string>>, 'values' | 'remove'>,
+    receiveTerminalEvidence?: (evidence: TerminalEvidenceCommit) => void
   ): ManagedSubscription {
     const resource: ManagedSubscription = {
       databaseHandle,
@@ -128,7 +135,8 @@ export class ElectronRendererStreamRegistry {
       subscription.values,
       reason => this.terminalizeSubscription(resources, rendererLease, handle, resource, reason),
       () => this.completeTerminalSubscription(resources, rendererLease, handle, resource),
-      () => resource.cleanupRequested
+      () => resource.cleanupRequested,
+      receiveTerminalEvidence
     )
     return resource
   }
@@ -199,12 +207,14 @@ export class ElectronRendererStreamRegistry {
     stream: AsyncIterable<StreamItem<Value>>,
     terminalize: (reason: 'ipc-message-too-large' | 'source-failed') => Promise<void>,
     completeTerminal: () => Promise<void>,
-    cleanupRequested: () => boolean
+    cleanupRequested: () => boolean,
+    receiveTerminalEvidence: ((evidence: TerminalEvidenceCommit) => void) | undefined
   ): Promise<void> {
     let nextSequence = 1
     const now = this.options.now ?? (() => globalThis.performance?.now() ?? Date.now())
     try {
       for await (const item of stream) {
+        if (item.kind === 'terminal' && item.evidence !== undefined) receiveTerminalEvidence?.(item.evidence)
         const itemRecord = streamItemRecord(item, now, () => nextSequence++)
         const event = this.options.createEvent(rendererLease, streamId, itemRecord)
         if (
@@ -460,7 +470,21 @@ function streamItemRecord<Value>(
     droppedItems: Number(item.droppedItems),
     droppedBytes: Number(item.droppedBytes),
     replacedItems: Number(item.replacedItems),
-    ...(item.error === undefined || item.error === null ? {} : { error: serializeNormalizedError(item.error) })
+    ...(item.error === undefined || item.error === null ? {} : { error: serializeNormalizedError(item.error) }),
+    ...(item.evidence === undefined
+      ? {}
+      : {
+          evidence: Object.freeze({
+            ref: item.evidence.ref,
+            byteLength: item.evidence.byteLength,
+            digest: item.evidence.digest,
+            formatVersion: item.evidence.formatVersion,
+            durability: item.evidence.durability,
+            producer: item.evidence.producer,
+            scope: Object.freeze({ ...item.evidence.scope })
+          })
+        }),
+    ...(isTrustedTerminalEvidenceStageFailure(item) ? { terminalEvidenceStageFailed: true } : {})
   })
 }
 
@@ -469,6 +493,10 @@ function snapshotStreamValue(value: unknown, now: () => number, nextSequence: ()
     return Object.freeze({
       value: ownBytes(value.value, byteLimit(value.value.byteLength)),
       delivery: value.delivery,
+      provenance: value.provenance ?? 'unknown',
+      ...(value.sourceGeneration === undefined
+        ? {}
+        : { sourceGeneration: value.sourceGeneration, sourceOrdinal: value.sourceOrdinal }),
       observedAtMonotonicMs: now(),
       sequence: nextSequence(),
       ...(value.receipt === undefined ? {} : { receipt: Object.freeze({ ...value.receipt }) })
@@ -487,7 +515,13 @@ function isNotificationValue(value: unknown): value is NotificationValue {
     'value' in value &&
     value.value instanceof Uint8Array &&
     'delivery' in value &&
-    NOTIFICATION_DELIVERIES.some(delivery => delivery === value.delivery)
+    NOTIFICATION_DELIVERIES.some(delivery => delivery === value.delivery) &&
+    ((!('sourceGeneration' in value) && !('sourceOrdinal' in value)) ||
+      ('sourceGeneration' in value &&
+        'sourceOrdinal' in value &&
+        isCanonicalIngressOrdinal(value.sourceGeneration) &&
+        isCanonicalIngressOrdinal(value.sourceOrdinal))) &&
+    (!('provenance' in value) || value.provenance === undefined || isNotificationProvenance(value.provenance))
   )
 }
 

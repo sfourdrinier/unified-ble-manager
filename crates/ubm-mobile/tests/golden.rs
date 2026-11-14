@@ -1,26 +1,32 @@
 // crates/ubm-mobile/tests/golden.rs
-//! Golden wire vectors: real `ubm-mobile-wire/2` text produced by the Rust
+//! Golden wire vectors: real `ubm-mobile-wire/3` text produced by the Rust
 //! owner over the scripted radio, replayed by the TS parsers in
 //! `__tests__/backends/reactnative/rust-core-wire.golden.test.js`.
 //!
 //! Check (default): regenerate in memory and fail when the committed file
 //! differs. Regenerate: `UBM_MOBILE_GOLDEN_WRITE=1 cargo test -p ubm-mobile --test golden`.
 //! Clock-valued fields (`observedAtMs`, `updatedAt`, `lastSeenAtMonotonicMs`)
-//! and native receipt clock pairs/identities are normalized for reproducibility;
+//! native receipt clock pairs/identities, and random reclaim capabilities are
+//! normalized for reproducibility;
 //! receipt types and finite clocks are checked before normalization. Every other byte is the
 //! owner's own output.
 
 mod common;
+#[path = "golden/ordered.rs"]
+mod golden_ordered;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::*;
 use serde_json::{Value, json};
+use ubm_desktop::continuation_journal::JournalRegistry;
 use ubm_mobile::{
     AdapterAuthorization, AdapterAvailability, AdapterPower, AdapterSnapshot, Advertisement,
-    AuthenticationState, BondState, EncryptionState, IngressClass, Instance, ManufacturerData,
-    MobilePlatform, RadioCompletion, RadioIngress, RadioRequest, RestoredPeer,
-    SecureConnectionsState, SecurityState, ServiceData,
+    AuthenticationState, BondState, EncryptionState, HostOptions, IngressClass, Instance,
+    ManufacturerData, MobileHost, MobilePlatform, PlatformRadio, RadioCompletion, RadioIngress,
+    RadioRequest, RestoredPeer, SecureConnectionsState, SecurityState, ServiceData, WakeSink,
 };
 
 const CLOCK_FIELDS: &[&str] = &["observedAtMs", "updatedAt", "lastSeenAtMonotonicMs"];
@@ -52,6 +58,30 @@ fn normalize(value: &mut Value) {
             for (key, entry) in map.iter_mut() {
                 if CLOCK_FIELDS.contains(&key.as_str()) && entry.is_u64() {
                     *entry = Value::from(0u64);
+                } else if key == "reclaimCapability" {
+                    let capability = entry.as_str().expect("reclaim capability is a string");
+                    assert_eq!(capability.len(), 128);
+                    assert!(capability.bytes().all(|b| b.is_ascii_hexdigit()));
+                    *entry = json!("0".repeat(128));
+                } else if key == "reservationId" {
+                    let reservation = entry.as_str().expect("terminal reservation is a string");
+                    if reservation.len() == 64 && reservation.bytes().all(|b| b.is_ascii_hexdigit())
+                    {
+                        *entry = json!("0".repeat(64));
+                    } else {
+                        normalize(entry);
+                    }
+                } else if key == "ref" {
+                    let reference = entry
+                        .as_str()
+                        .expect("terminal evidence reference is a string");
+                    if let Some(suffix) = reference.strip_prefix("te1-") {
+                        assert_eq!(suffix.len(), 48);
+                        assert!(suffix.bytes().all(|b| b.is_ascii_hexdigit()));
+                        *entry = json!(format!("te1-{}", "0".repeat(48)));
+                    } else {
+                        normalize(entry);
+                    }
                 } else {
                     normalize(entry);
                 }
@@ -81,7 +111,7 @@ impl Recorder {
         name: &str,
         op: &str,
         args: Value,
-    ) {
+    ) -> Value {
         let args_text = admitted_args(session, op, &args.to_string());
         let envelope = session.call(op, &args_text).await;
         let kind = if parse(&envelope)["ok"] == true {
@@ -92,10 +122,11 @@ impl Recorder {
         self.invokes.push(json!({
             "name": name,
             "op": op,
-            "args": args_text,
+            "args": normalized(&args_text),
             "expect": kind,
             "envelope": normalized(&envelope),
         }));
+        parse(&envelope)
     }
 
     /// Accumulate drained records until `want` arrived, then record them
@@ -241,6 +272,15 @@ fn hr(epoch: u64, value: &[u8]) -> RadioIngress {
         epoch,
         value: value.to_vec(),
     }
+}
+
+fn golden_evidence_directory() -> PathBuf {
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "ubm-mobile-golden-terminal-evidence-{}-{}",
+        std::process::id(),
+        SERIAL.fetch_add(1, Ordering::Relaxed),
+    ))
 }
 
 async fn generate() -> String {
@@ -395,6 +435,41 @@ async fn generate() -> String {
     r.drain(&session, "notification values", 2).await;
     r.invoke(&session, "reconcile live", "session.reconcile", json!({}))
         .await;
+    host.ingest(RadioIngress::NotificationSourceFailed {
+        instance: Instance {
+            peer_id: peer.to_owned(),
+            service_uuid: HR_SERVICE.to_owned(),
+            service_occurrence: 0,
+            characteristic_uuid: HR_MEASUREMENT.to_owned(),
+            characteristic_occurrence: 0,
+        },
+        epoch,
+        failure: ubm_mobile::PlatformFailure {
+            gatt_status: Some(133),
+            native_name: Some("NOTIFICATION_DELIVERY_UNCERTAIN".into()),
+            ..ubm_mobile::PlatformFailure::new(
+                ubm_mobile::FailureKind::GattStatus,
+                "notification delivery uncertain",
+            )
+        },
+    });
+    r.drain(&session, "notification source failure", 1).await;
+    r.invoke(
+        &session,
+        "reconcile source failure",
+        "session.reconcile",
+        json!({}),
+    )
+    .await;
+    r.invoke(
+        &session,
+        "remove failed subscription",
+        "gatt.unsubscribe",
+        json!({"peerId":peer,"selector":sel,"consumer":"hr","operationId":"unsub-failed"}),
+    )
+    .await;
+    r.invoke(&session, "subscribe again", "gatt.subscribe", json!({"peerId":peer,"selector":sel,"consumer":"hr","deliveryMode":"require-notification","operationId":"sub-again"})).await;
+
     r.invoke(
         &session,
         "rssi",
@@ -670,12 +745,107 @@ async fn generate() -> String {
     r.invoke(&session, "dispose", "session.dispose", json!({}))
         .await;
 
+    golden_ordered::generate(&mut r).await;
+
+    // The terminal-evidence control surface owns a durable private ledger.
+    // Generate these four vectors from that real Rust owner without changing
+    // the main golden session's intentionally unconfigured recording path.
+    let evidence_directory = golden_evidence_directory();
+    std::fs::create_dir_all(&evidence_directory).expect("create durable golden registry directory");
+    let registry = Arc::new(JournalRegistry::default());
+    registry
+        .configure_directory(&evidence_directory)
+        .expect("configure durable golden registry directory");
+    ubm_mobile::continuation::configure_terminal_evidence_maximum_bytes(65_536)
+        .expect("configure golden terminal evidence maximum");
+    let evidence_radio = Scripted::new(Box::new(responder));
+    let evidence_wakes = Arc::new(Wakes::default());
+    let evidence_host = Arc::new(
+        MobileHost::open_with_recording_registry(
+            Arc::clone(&evidence_radio) as Arc<dyn PlatformRadio>,
+            Arc::clone(&evidence_wakes) as Arc<dyn WakeSink>,
+            HostOptions {
+                platform: MobilePlatform::Android,
+                owner: "ubm-mobile-golden-terminal-evidence".to_owned(),
+                adapter_label: "golden-terminal-evidence-adapter".to_owned(),
+            },
+            tokio::runtime::Handle::current(),
+            Arc::clone(&registry),
+        )
+        .await
+        .expect("open durable golden evidence host"),
+    );
+    evidence_radio.bind_host(&evidence_host);
+    let evidence_session = evidence_host
+        .open_session("golden-terminal-evidence")
+        .expect("open terminal evidence session");
+    let terminal_scope =
+        json!({"managerId":"golden","operationId":"terminal-evidence","incarnation":"1"});
+    let terminal_reservation = r
+        .invoke(
+            &evidence_session,
+            "reserve terminal evidence",
+            "terminal-evidence.reserve",
+            json!({"producer":"scan","maximumBytes":65_536,"formatVersion":1,"scope":terminal_scope}),
+        )
+        .await;
+    let terminal_reservation_id = terminal_reservation["value"]["reservationId"]
+        .as_str()
+        .expect("terminal evidence reserve returns reservation ID")
+        .to_owned();
+    let terminal_commit = r
+        .invoke(
+            &evidence_session,
+            "commit terminal evidence",
+            "terminal-evidence.commit",
+            json!({
+                "reservationId":terminal_reservation_id,
+                "canonicalBytesBase64":"eyJ0IjoidGVybWluYWwiLCJyZWFzb24iOiJnb2xkZW4ifQ==",
+                "digest":"ff4582b96a7531aa9451237df3bd704f0bfef0d303a6649d0697250fae8cbcce"
+            }),
+        )
+        .await;
+    let terminal_reference = terminal_commit["value"]["ref"]
+        .as_str()
+        .expect("terminal evidence commit returns reference")
+        .to_owned();
+    r.invoke(
+        &evidence_session,
+        "read terminal evidence",
+        "terminal-evidence.read",
+        json!({"ref":terminal_reference,"maximumBytes":65_536}),
+    )
+    .await;
+    r.invoke(
+        &evidence_session,
+        "release terminal evidence",
+        "terminal-evidence.release",
+        json!({"reservationId":terminal_reservation_id}),
+    )
+    .await;
+
     // Apple: this golden flow observes a live restoration event. Open the
     // claimant before ingress; pre-session restoration is exercised through
     // the durable peers.restored/claim path in the session tests. This host's
     // records are not included in the Android ordinal chain.
     let apple_radio = Scripted::new(Box::new(responder));
-    let (apple, _) = open(&apple_radio, MobilePlatform::Apple).await;
+    let apple_wakes = Arc::new(Wakes::default());
+    let apple = Arc::new(
+        MobileHost::open_with_recording_registry(
+            Arc::clone(&apple_radio) as Arc<dyn PlatformRadio>,
+            Arc::clone(&apple_wakes) as Arc<dyn WakeSink>,
+            HostOptions {
+                platform: MobilePlatform::Apple,
+                owner: "ubm-mobile-golden-apple".to_owned(),
+                adapter_label: "golden-apple-adapter".to_owned(),
+            },
+            tokio::runtime::Handle::current(),
+            registry,
+        )
+        .await
+        .expect("open durable golden Apple host"),
+    );
+    apple_radio.bind_host(&apple);
     let claimant = apple.open_session("golden-apple").expect("session");
     apple.ingest(RadioIngress::Restored {
         peers: vec![RestoredPeer {

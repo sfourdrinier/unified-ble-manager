@@ -189,7 +189,8 @@ async fn the_central_takes_its_attachment_from_the_owning_host_at_open_and_after
     let mut resets = central.adapter_reset_events();
     central
         .boundary()
-        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+        .expect("synthetic event admission failed");
     let reset = tokio::time::timeout(Duration::from_secs(5), resets.recv())
         .await
         .expect("a reset is published")

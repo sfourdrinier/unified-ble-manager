@@ -16,13 +16,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root: bindings/<script>
 
-RS_FILES = sorted(ROOT.glob("bindings/*/src/*.rs")) + sorted(
-    ROOT.glob("crates/ubm-core/src/*.rs")
-)
-DOC_FILES = sorted(ROOT.glob("bindings/*/LIFETIME_RULES.md")) + sorted(
-    ROOT.glob("bindings/jni/java/**/*.java")
-)
-
 RS_FORBIDDEN = [
     (re.compile(r"\.unwrap\("), ".unwrap("),
     (re.compile(r"\.expect\("), ".expect("),
@@ -44,6 +37,59 @@ def fail(msg):
     sys.exit(1)
 
 
+# Only these standalone sources are test-only. Keeping the parent declaration
+# alongside each child prevents a filename convention from silently exempting
+# a future production `*_tests.rs` module from the production guard.
+TEST_ONLY_MODULES = {
+    "bindings/napi/src/platform_metadata_transport_522_tests.rs": (
+        "bindings/napi/src/dispatch.rs",
+        '#[cfg(test)]\n#[path = "platform_metadata_transport_522_tests.rs"]\n'
+        "mod platform_metadata_transport_522_tests;",
+    ),
+    "bindings/uniffi/src/ordered_admission_tests.rs": (
+        "bindings/uniffi/src/mobile.rs",
+        '#[cfg(test)]\n#[path = "ordered_admission_tests.rs"]\n'
+        "mod ordered_admission_tests;",
+    ),
+    "crates/ubm-core/src/ordered_notifications_tests.rs": (
+        "crates/ubm-core/src/ordered_notifications.rs",
+        '#[cfg(test)]\n#[path = "ordered_notifications_tests.rs"]\nmod tests;',
+    ),
+}
+
+
+def test_only_rs_files(root, test_only_modules=TEST_ONLY_MODULES):
+    """Return explicitly proven test-only standalone Rust sources."""
+    paths = set()
+    for child_rel, (parent_rel, declaration) in test_only_modules.items():
+        child = root / child_rel
+        parent = root / parent_rel
+        if not child.is_file():
+            fail(f"test-only source is missing: {child_rel}")
+        if not parent.is_file() or declaration not in parent.read_text():
+            fail(
+                f"test-only source lacks its exact #[cfg(test)] parent declaration: "
+                f"{child_rel} via {parent_rel}"
+            )
+        paths.add(child)
+    return paths
+
+
+def production_rs_files(root, test_only_modules=TEST_ONLY_MODULES):
+    """Return every candidate except standalone modules proven test-only."""
+    test_only = test_only_rs_files(root, test_only_modules)
+    candidates = sorted(root.glob("bindings/*/src/*.rs")) + sorted(
+        root.glob("crates/ubm-core/src/*.rs")
+    )
+    return [path for path in candidates if path not in test_only]
+
+
+RS_FILES = production_rs_files(ROOT)
+DOC_FILES = sorted(ROOT.glob("bindings/*/LIFETIME_RULES.md")) + sorted(
+    ROOT.glob("bindings/jni/java/**/*.java")
+)
+
+
 def scan_item(lines, j):
     """Return the index one past the #[cfg(test)]-gated item starting at j.
 
@@ -51,6 +97,10 @@ def scan_item(lines, j):
     items) or at the close of its balanced `{...}` block (fn/mod/impl/
     struct items). String, char, line-comment and (nested) block-comment
     contents never affect brace depth. Fails closed on unknown shapes.
+
+    Test-gated struct and enum members are handled by ``strip_test_gated``:
+    their terminating comma is not an item terminator and must not make this
+    item scanner consume the enclosing type.
     """
     n = len(lines)
     depth = 0
@@ -131,9 +181,30 @@ def strip_test_gated(path, text):
     i = 0
     while i < len(lines):
         if lines[i].strip() == "#[cfg(test)]":
-            if i + 1 >= len(lines) or lines[i + 1].strip().startswith("#"):
+            item = i + 1
+            # Rust permits attributes such as #[path = "..."] between the
+            # test gate and its item. Recognize only complete one-line
+            # attributes here; a multi-line or malformed attribute remains a
+            # hard error rather than letting this lexical guard guess.
+            while item < len(lines) and lines[item].strip().startswith("#["):
+                if not lines[item].rstrip().endswith("]"):
+                    fail(
+                        f"{path}: unsupported multi-line attribute after #[cfg(test)] "
+                        f"at line {item + 1}"
+                    )
+                item += 1
+            if item >= len(lines):
                 fail(f"{path}: unsupported shape after #[cfg(test)] at line {i + 1}")
-            i = scan_item(lines, i + 1)
+            # A cfg-gated member is a complete, rustfmt-normalized physical
+            # line ending in `,`. It is not a Rust item: passing it to
+            # scan_item would scan past the enclosing struct/enum and can
+            # report an unrelated unmatched closing brace. Deliberately keep
+            # multi-line members unsupported so unknown grammar still fails
+            # closed instead of accidentally hiding production code.
+            if lines[item].rstrip().endswith(","):
+                i = item + 1
+            else:
+                i = scan_item(lines, item)
         else:
             out.append((i + 1, lines[i]))
             i += 1
@@ -172,4 +243,5 @@ def main():
     )
 
 
-main()
+if __name__ == "__main__":
+    main()

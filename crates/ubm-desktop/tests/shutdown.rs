@@ -39,7 +39,8 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
             service_data: Vec::new(),
             tx_power_level: None,
             extras: ubm_desktop::AdvertisementExtras::default(),
-        }));
+        }))
+        .expect("synthetic event admission failed");
     central
         .connect("peer-1", "lease-a", OpControl::budget_ms(5000))
         .await

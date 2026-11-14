@@ -7,6 +7,7 @@
 #include <fbjni/fbjni.h>
 #include <jsi/jsi.h>
 #include <ReactCommon/CallInvokerHolder.h>
+#include "GenerationInstallGate.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -33,6 +34,8 @@ namespace protocol = unified_ble::native_protocol::v2;
 namespace {
 
 constexpr const char* kRuntimeName = "__unifiedBleNativeProtocolV2";
+constexpr const char* kRustCoreScanRecoveryRuntimeName =
+    "__unifiedBleRustCoreScanFailureRecoveryV1";
 
 using RuntimeSchedule = std::function<void(std::function<void(jsi::Runtime&)>)>;
 
@@ -1117,6 +1120,38 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
                     activeRuntime->retainUint8Array(innerRuntime, correlation, arguments[1])));
           });
     }
+    if (propertyName == "submitWithAdmission") {
+      return jsi::Function::createFromHostFunction(
+          runtime, name, 1U,
+          [runtimeLease = runtimeLease_, nativeHandle = nativeHandle_](
+              jsi::Runtime& innerRuntime, const jsi::Value&, const jsi::Value* arguments, std::size_t count) {
+            // Allocate the result before admission. If reporting itself throws,
+            // JS must retire the attachment rather than guess the epoch.
+            jsi::Object result(innerRuntime);
+            bool admitted = false;
+            bool registered = false;
+            const char* state = "submitted";
+            std::string message;
+            try {
+              if (count != 1U) throw std::runtime_error("Native Protocol v2 submit takes one Uint8Array command");
+              const auto bytes = commandBytesFromUint8Array(innerRuntime, arguments[0]);
+              const auto command = protocol::NativeProtocolV2Codec{}.decode(bytes);
+              const auto activeRuntime = requireRuntime(innerRuntime, runtimeLease);
+              activeRuntime->registerCommand(command, true, &admitted);
+              registered = true;
+              dispatchCommandToAndroid(innerRuntime, nativeHandle, bytes);
+            } catch (const std::exception& error) {
+              state = !admitted ? "notAdmitted" : registered ? "dispatchFailed" : "registrationFailed";
+              message = error.what();
+            } catch (...) {
+              state = !admitted ? "notAdmitted" : registered ? "dispatchFailed" : "registrationFailed";
+              message = "Native protocol submission failed";
+            }
+            result.setProperty(innerRuntime, "state", jsi::String::createFromUtf8(innerRuntime, state));
+            if (!message.empty()) result.setProperty(innerRuntime, "message", jsi::String::createFromUtf8(innerRuntime, message));
+            return jsi::Value(innerRuntime, result);
+          });
+    }
     if (propertyName == "submit") {
       return jsi::Function::createFromHostFunction(
           runtime,
@@ -1335,6 +1370,296 @@ class UnifiedBleProtocolJsiBinding final : public jni::JavaClass<UnifiedBleProto
   static void registerNatives() {
     javaClassStatic()->registerNatives({
         makeNativeMethod("installNative", UnifiedBleProtocolJsiBinding::installNative),
+    });
+  }
+};
+
+// This is intentionally separate from NativeProtocolBinaryRuntime. The radio
+// protocol attachment cannot authorise a durable scan-recovery read, and a
+// RustCore module invalidation must fence every retained JSI function before
+// its JNI binding can retire.
+struct RustCoreScanRecoveryJsiState final {
+  RustCoreScanRecoveryJsiState(
+      jni::global_ref<jobject> moduleValue,
+      jlong selectionGenerationValue,
+      jlong bindingValue)
+      : module(std::move(moduleValue)),
+        selectionGeneration(selectionGenerationValue),
+        binding(bindingValue) {}
+
+  std::atomic<bool> active{true};
+  jni::global_ref<jobject> module;
+  jlong selectionGeneration;
+  jlong binding;
+};
+
+class RustCoreScanFailureRecoveryBinaryRuntime final : public jsi::HostObject {
+ public:
+  explicit RustCoreScanFailureRecoveryBinaryRuntime(
+      std::shared_ptr<RustCoreScanRecoveryJsiState> state)
+      : state_(std::move(state)) {}
+
+  jsi::Value get(
+      jsi::Runtime& runtime,
+      const jsi::PropNameID& name) override {
+    const auto property = name.utf8(runtime);
+    if (property != "read" && property != "rawToken") return jsi::Value::undefined();
+    if (property == "rawToken") {
+      return jsi::Function::createFromHostFunction(runtime, name, 4U,
+        [state = state_](jsi::Runtime& inner, const jsi::Value&, const jsi::Value* args, std::size_t count) {
+          if (count != 4U || !args[0].isString() || !args[1].isNumber() || !args[2].isString() || !args[3].isString())
+            throw jsi::JSError(inner, "RustCore raw token requires owner, index, offset and maxBytes");
+          if (!state->active.load(std::memory_order_acquire)) throw jsi::JSError(inner, "RustCore scan recovery runtime is closed");
+          const auto index = args[1].asNumber();
+          if (index < 0 || std::floor(index) != index || index > static_cast<double>(std::numeric_limits<jint>::max()))
+            throw jsi::JSError(inner, "RustCore raw token index is invalid");
+          const auto offsetText = args[2].asString(inner).utf8(inner);
+          const auto maximumText = args[3].asString(inner).utf8(inner);
+          const auto canonicalUnsigned = [](const std::string& value) {
+            return !value.empty() &&
+                (value == "0" || value.front() != '0') &&
+                std::all_of(value.begin(), value.end(), [](unsigned char character) {
+                  return character >= '0' && character <= '9';
+                });
+          };
+          if (!canonicalUnsigned(offsetText) || !canonicalUnsigned(maximumText) ||
+              maximumText == "0" || maximumText.size() > 5U ||
+              (maximumText.size() == 5U && maximumText > "65536")) {
+            throw jsi::JSError(inner, "RustCore raw token range is invalid");
+          }
+          auto* env = jni::Environment::current();
+          const auto klass = env->GetObjectClass(state->module.get());
+          const auto method = env->GetMethodID(klass, "copySelectedScanFailureRecoveryRawToken", "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;JJ)Lcom/ubm/core/MobileCoreBridge$ScanFailureRecoveryRawToken;");
+          env->DeleteLocalRef(klass);
+          if (method == nullptr) throw jsi::JSError(inner, "RustCore raw token bridge is unavailable");
+          const auto owner = env->NewStringUTF(args[0].asString(inner).utf8(inner).c_str());
+          const auto offset = env->NewStringUTF(offsetText.c_str());
+          const auto maximum = env->NewStringUTF(maximumText.c_str());
+          const auto token = env->CallObjectMethod(state->module.get(), method, owner, static_cast<jint>(index), offset, maximum, state->selectionGeneration, state->binding);
+          env->DeleteLocalRef(owner); env->DeleteLocalRef(offset); env->DeleteLocalRef(maximum);
+          if (env->ExceptionCheck() || token == nullptr) { env->ExceptionClear(); throw jsi::JSError(inner, "RustCore raw token read was rejected"); }
+          const auto tokenClass = env->GetObjectClass(token);
+          const auto kindField = env->GetFieldID(tokenClass, "kind", "Ljava/lang/String;");
+          const auto textField = env->GetFieldID(tokenClass, "value", "Ljava/lang/String;");
+          const auto totalField = env->GetFieldID(tokenClass, "total", "Ljava/lang/String;");
+          const auto countField = env->GetFieldID(tokenClass, "count", "Ljava/lang/String;");
+          const auto bytesField = env->GetFieldID(tokenClass, "bytes", "[B");
+          const auto kind = static_cast<jstring>(env->GetObjectField(token, kindField));
+          const auto value = static_cast<jstring>(env->GetObjectField(token, textField));
+          const auto total = static_cast<jstring>(env->GetObjectField(token, totalField));
+          const auto countValue = static_cast<jstring>(env->GetObjectField(token, countField));
+          const auto payload = static_cast<jbyteArray>(env->GetObjectField(token, bytesField));
+          const auto kindText = stringFromJava(env, kind, "raw token kind");
+          auto result = jsi::Object(inner); result.setProperty(inner, "kind", kindText);
+          if (value != nullptr) { const auto text = stringFromJava(env, value, "raw token value"); if (kindText == "bool") result.setProperty(inner, "value", text == "true"); else result.setProperty(inner, "value", text); }
+          if (total != nullptr) result.setProperty(inner, "total", stringFromJava(env, total, "raw token total"));
+          if (countValue != nullptr) result.setProperty(inner, "count", stringFromJava(env, countValue, "raw token count"));
+          if (payload != nullptr) { const auto length = env->GetArrayLength(payload); if (length < 0 || length > 65536) throw jsi::JSError(inner, "RustCore raw token payload exceeds limit"); jsi::Uint8Array bytes(inner, static_cast<std::size_t>(length)); if (length > 0) env->GetByteArrayRegion(payload, 0, length, reinterpret_cast<jbyte*>(bytes.buffer(inner).data(inner))); result.setProperty(inner, "bytes", std::move(bytes)); }
+          if (kind != nullptr) env->DeleteLocalRef(kind); if (value != nullptr) env->DeleteLocalRef(value); if (total != nullptr) env->DeleteLocalRef(total); if (countValue != nullptr) env->DeleteLocalRef(countValue); if (payload != nullptr) env->DeleteLocalRef(payload); env->DeleteLocalRef(tokenClass); env->DeleteLocalRef(token);
+          if (!state->active.load(std::memory_order_acquire)) throw jsi::JSError(inner, "RustCore scan recovery runtime closed during raw token read");
+          return jsi::Value(std::move(result));
+        });
+    }
+    return jsi::Function::createFromHostFunction(
+        runtime,
+        name,
+        2U,
+        [state = state_](
+            jsi::Runtime& innerRuntime,
+            const jsi::Value&,
+            const jsi::Value* arguments,
+            std::size_t count) {
+          if (count != 2U || !arguments[0].isString() || !arguments[1].isString()) {
+            throw jsi::JSError(
+                innerRuntime,
+                "RustCore scan recovery read requires opaque head and offset handles");
+          }
+          if (!state->active.load(std::memory_order_acquire)) {
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery runtime is closed");
+          }
+          const auto head = arguments[0].asString(innerRuntime).utf8(innerRuntime);
+          const auto offset = arguments[1].asString(innerRuntime).utf8(innerRuntime);
+          if (head.empty() || offset.empty()) {
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery handles must not be empty");
+          }
+
+          auto* environment = jni::Environment::current();
+          const auto moduleClass = environment->GetObjectClass(state->module.get());
+          if (moduleClass == nullptr) {
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery module is unavailable");
+          }
+          const auto method = environment->GetMethodID(
+              moduleClass,
+              "copySelectedScanFailureRecoveryPage",
+              "(Ljava/lang/String;Ljava/lang/String;JJ)Lcom/ubm/core/MobileCoreBridge$ScanFailureRecoveryPage;");
+          environment->DeleteLocalRef(moduleClass);
+          if (method == nullptr) {
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery binary bridge is unavailable");
+          }
+          const auto javaHead = environment->NewStringUTF(head.c_str());
+          const auto javaOffset = environment->NewStringUTF(offset.c_str());
+          if (javaHead == nullptr || javaOffset == nullptr) {
+            if (javaHead != nullptr) environment->DeleteLocalRef(javaHead);
+            if (javaOffset != nullptr) environment->DeleteLocalRef(javaOffset);
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery could not allocate handles");
+          }
+          const auto value = environment->CallObjectMethod(
+              state->module.get(),
+              method,
+              javaHead,
+              javaOffset,
+              state->selectionGeneration,
+              state->binding);
+          environment->DeleteLocalRef(javaHead);
+          environment->DeleteLocalRef(javaOffset);
+          if (environment->ExceptionCheck()) {
+            environment->ExceptionClear();
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery page read was rejected");
+          }
+          if (value == nullptr) {
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery page read returned no bytes");
+          }
+          const auto pageClass = environment->GetObjectClass(value);
+          const auto bytesField = environment->GetFieldID(pageClass, "bytes", "[B");
+          const auto offsetField = environment->GetFieldID(pageClass, "offset", "Ljava/lang/String;");
+          const auto nextOffsetField = environment->GetFieldID(pageClass, "nextOffset", "Ljava/lang/String;");
+          const auto doneField = environment->GetFieldID(pageClass, "done", "Z");
+          environment->DeleteLocalRef(pageClass);
+          if (bytesField == nullptr || offsetField == nullptr || nextOffsetField == nullptr || doneField == nullptr) {
+            environment->DeleteLocalRef(value);
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery page schema is unavailable");
+          }
+          const auto payload = static_cast<jbyteArray>(environment->GetObjectField(value, bytesField));
+          const auto pageOffset = static_cast<jstring>(environment->GetObjectField(value, offsetField));
+          const auto pageNextOffset = static_cast<jstring>(environment->GetObjectField(value, nextOffsetField));
+          const auto done = environment->GetBooleanField(value, doneField) == JNI_TRUE;
+          if (payload == nullptr || pageOffset == nullptr || pageNextOffset == nullptr) {
+            if (payload != nullptr) environment->DeleteLocalRef(payload);
+            if (pageOffset != nullptr) environment->DeleteLocalRef(pageOffset);
+            if (pageNextOffset != nullptr) environment->DeleteLocalRef(pageNextOffset);
+            environment->DeleteLocalRef(value);
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery page is malformed");
+          }
+          const auto length = environment->GetArrayLength(payload);
+          if (length < 0 || static_cast<std::size_t>(length) > protocol::kMaximumControlRecordBytes) {
+            environment->DeleteLocalRef(payload);
+            environment->DeleteLocalRef(pageOffset);
+            environment->DeleteLocalRef(pageNextOffset);
+            environment->DeleteLocalRef(value);
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery page exceeds the binary boundary limit");
+          }
+          jsi::Uint8Array output(innerRuntime, static_cast<std::size_t>(length));
+          auto buffer = output.buffer(innerRuntime);
+          auto* bytes = buffer.data(innerRuntime);
+          if (length > 0 && bytes == nullptr) {
+            environment->DeleteLocalRef(payload);
+            environment->DeleteLocalRef(pageOffset);
+            environment->DeleteLocalRef(pageNextOffset);
+            environment->DeleteLocalRef(value);
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery could not allocate Uint8Array");
+          }
+          if (length > 0) {
+            environment->GetByteArrayRegion(
+                payload, 0, length, reinterpret_cast<jbyte*>(bytes));
+          }
+          const auto offsetText = stringFromJava(environment, pageOffset, "scan recovery page offset");
+          const auto nextOffsetText = stringFromJava(environment, pageNextOffset, "scan recovery page next offset");
+          environment->DeleteLocalRef(payload);
+          environment->DeleteLocalRef(pageOffset);
+          environment->DeleteLocalRef(pageNextOffset);
+          environment->DeleteLocalRef(value);
+          if (environment->ExceptionCheck()) {
+            environment->ExceptionClear();
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery page copy failed");
+          }
+          if (!state->active.load(std::memory_order_acquire)) {
+            throw jsi::JSError(innerRuntime, "RustCore scan recovery runtime closed during page read");
+          }
+          auto page = jsi::Object(innerRuntime);
+          page.setProperty(innerRuntime, "offset", offsetText);
+          page.setProperty(innerRuntime, "nextOffset", nextOffsetText);
+          page.setProperty(innerRuntime, "done", done);
+          page.setProperty(innerRuntime, "bytes", std::move(output));
+          return jsi::Value(std::move(page));
+        });
+  }
+
+ private:
+  std::shared_ptr<RustCoreScanRecoveryJsiState> state_;
+};
+
+std::mutex rustCoreScanRecoveryStatesMutex;
+std::unordered_map<jint, std::shared_ptr<RustCoreScanRecoveryJsiState>> rustCoreScanRecoveryStates;
+protocol::GenerationInstallGate rustCoreScanRecoveryInstallGate;
+
+class NativeScanRecoveryJsiBinding final : public jni::JavaClass<NativeScanRecoveryJsiBinding> {
+ public:
+  static constexpr auto kJavaDescriptor =
+      "Lcom/sfourdrinier/unifiedblemanager/rustcore/UnifiedBleRustCoreModule;";
+
+  static void install(
+      jni::alias_ref<NativeScanRecoveryJsiBinding> self,
+      jni::alias_ref<facebook::react::CallInvokerHolder::javaobject> jsCallInvokerHolder,
+      jint ownerId,
+      jlong selectionGeneration,
+      jlong binding) {
+    if (ownerId == 0 || selectionGeneration <= 0 || binding <= 0) {
+      throw std::invalid_argument("RustCore scan recovery JSI snapshot is invalid");
+    }
+    auto callInvoker = jsCallInvokerHolder->cthis()->getCallInvoker();
+    if (!callInvoker) throw std::invalid_argument("React Native JS CallInvoker is unavailable");
+    const auto module = jni::make_global(jni::alias_ref<jobject>(self.get()));
+    auto state = std::make_shared<RustCoreScanRecoveryJsiState>(module, selectionGeneration, binding);
+    const auto installation = rustCoreScanRecoveryInstallGate.replaceWhenIdle(ownerId, [&] {
+      std::scoped_lock lock(rustCoreScanRecoveryStatesMutex);
+      const auto existing = rustCoreScanRecoveryStates.find(ownerId);
+      if (existing != rustCoreScanRecoveryStates.end()) {
+        existing->second->active.store(false, std::memory_order_release);
+        rustCoreScanRecoveryStates.erase(existing);
+      }
+      rustCoreScanRecoveryStates.emplace(ownerId, state);
+    });
+    callInvoker->invokeAsync([state, ownerId, installation](jsi::Runtime& runtime) {
+      static_cast<void>(rustCoreScanRecoveryInstallGate.withCurrent(installation, [&] {
+        bool accepted = false;
+        {
+          std::scoped_lock lock(rustCoreScanRecoveryStatesMutex);
+          const auto current = rustCoreScanRecoveryStates.find(ownerId);
+          accepted = state->active.load(std::memory_order_acquire) &&
+              current != rustCoreScanRecoveryStates.end() && current->second == state;
+        }
+        if (!accepted) return;
+        // Do not hold native mutexes across setProperty: JavaScript can define
+        // an accessor on a global name.  The installation permit keeps native
+        // replacement/invalidation from completing until this write returns.
+        runtime.global().setProperty(
+            runtime,
+            kRustCoreScanRecoveryRuntimeName,
+            jsi::Object::createFromHostObject(
+                runtime,
+                std::make_shared<RustCoreScanFailureRecoveryBinaryRuntime>(state)));
+      }));
+    });
+  }
+
+  static void uninstall(jni::alias_ref<NativeScanRecoveryJsiBinding>, jint ownerId) {
+    static_cast<void>(rustCoreScanRecoveryInstallGate.invalidateWhenIdle(ownerId, [&] {
+      std::shared_ptr<RustCoreScanRecoveryJsiState> state;
+      {
+        std::scoped_lock lock(rustCoreScanRecoveryStatesMutex);
+        const auto found = rustCoreScanRecoveryStates.find(ownerId);
+        if (found == rustCoreScanRecoveryStates.end()) return;
+        state = found->second;
+        rustCoreScanRecoveryStates.erase(found);
+      }
+      state->active.store(false, std::memory_order_release);
+    }));
+  }
+
+  static void registerNatives() {
+    javaClassStatic()->registerNatives({
+        makeNativeMethod("installScanFailureRecoveryBinaryRuntime", NativeScanRecoveryJsiBinding::install),
+        makeNativeMethod("uninstallScanFailureRecoveryBinaryRuntime", NativeScanRecoveryJsiBinding::uninstall),
     });
   }
 };
@@ -1677,7 +2002,7 @@ protocol::ProtocolRecord diagnosticEvent(
   };
 }
 
-void emitDiagnosticFromJava(JNIEnv* environment, jlong nativeHandle, jstring code, jstring message) {
+void emitDiagnosticFromJava(JNIEnv* environment, jlong nativeHandle, jstring code, jstring message, jbyteArray encodedCorrelation = nullptr) {
   try {
     const auto state = eventSinkState(nativeHandle);
     if (!state) {
@@ -1699,6 +2024,18 @@ void emitDiagnosticFromJava(JNIEnv* environment, jlong nativeHandle, jstring cod
     }
     const auto nativeCode = stringFromJava(environment, code, "diagnostic code");
     const auto nativeMessage = stringFromJava(environment, message, "diagnostic message");
+    if (nativeCode == "scanFailed" && encodedCorrelation == nullptr) {
+      requestFatalAttachment(state, "Untagged Android scan failure from an incompatible dispatcher");
+      return;
+    }
+    auto event = diagnosticEvent(nativeHandle, state, activeRuntime, nativeCode, nativeMessage);
+    if (encodedCorrelation != nullptr) {
+      const auto correlation = protocol::NativeProtocolV2Codec{}.decode(bytesFromJava(environment, encodedCorrelation));
+      if (correlation.kind != protocol::RecordKind::operationCorrelation) {
+        throw std::runtime_error("Android scan diagnostic correlation is invalid");
+      }
+      event.fields.insert(event.fields.end() - 1, protocolField(10U, protocolRecordReference(correlation)));
+    }
     __android_log_print(
         ANDROID_LOG_ERROR,
         "UnifiedBleProtocol",
@@ -1709,12 +2046,15 @@ void emitDiagnosticFromJava(JNIEnv* environment, jlong nativeHandle, jstring cod
     if (!deliverNativeEvent(
             state,
             activeRuntime,
-            diagnosticEvent(nativeHandle, state, activeRuntime, nativeCode, nativeMessage))) {
+            event)) {
       __android_log_print(
           ANDROID_LOG_ERROR,
           "UnifiedBleProtocol",
           "Android diagnostic ingress rejected handle=%lld",
           static_cast<long long>(nativeHandle));
+      if (encodedCorrelation != nullptr) {
+        requestFatalAttachment(state, "Android scan failure diagnostic ingress was rejected");
+      }
     }
   } catch (const std::exception& error) {
     __android_log_print(
@@ -1723,6 +2063,10 @@ void emitDiagnosticFromJava(JNIEnv* environment, jlong nativeHandle, jstring cod
         "native diagnostic handling failed handle=%lld: %s",
         static_cast<long long>(nativeHandle),
         error.what());
+    if (encodedCorrelation != nullptr) {
+      const auto state = eventSinkState(nativeHandle);
+      if (state) requestFatalAttachment(state, std::string("Android scan failure delivery failed: ") + error.what());
+    }
   }
 }
 
@@ -1943,9 +2287,94 @@ void emitNotificationFromJava(
   }
 }
 
+void emitSubscriptionStatusFromJava(
+    JNIEnv* environment,
+    jlong nativeHandle,
+    jstring subscriptionId,
+    jlong items,
+    jlong bytes,
+    bool terminated,
+    jstring code,
+    jstring nativeCode,
+    bool hasGattStatus,
+    jint gattStatus,
+    jstring safeMessage) {
+  try {
+    const auto state = eventSinkState(nativeHandle);
+    const auto runtime = state ? state->runtimeLease.lock() : nullptr;
+    if (!runtime) {
+      throw std::runtime_error("subscription status dropped because the runtime is closed");
+    }
+    const auto id = stringFromJava(environment, subscriptionId, "subscription identifier");
+    auto command = runtime->subscriptionCommandFor(id);
+    if (!command) {
+      command = runtime->pendingSubscriptionCommandFor(id);
+    }
+    if (!command) {
+      __android_log_print(ANDROID_LOG_WARN, "UnifiedBleProtocol",
+          "subscription status dropped for inactive subscription handle=%lld subscription=%s",
+          static_cast<long long>(nativeHandle), id.c_str());
+      return;
+    }
+    if (!terminated && (items < 0 || bytes < 0)) {
+      throw std::invalid_argument("notification loss counts must be nonnegative");
+    }
+    const auto ordinal = nextIngressOrdinal(state);
+    protocol::ProtocolRecord event{
+        .kind = protocol::RecordKind::event,
+        .fields = {
+            protocolField(1U, std::uint64_t{protocol::kProtocolVersion}),
+            protocolField(2U, std::string("native-subscription-status-") + std::to_string(nativeHandle) + ":" + std::to_string(ordinal)),
+            protocolField(3U, std::string(terminated ? "notificationTerminated" : "notificationLoss")),
+            protocolField(4U, protocolRecordReference(attachmentRecord(runtime->attachmentIdentity()))),
+            protocolField(5U, ordinal),
+            protocolField(6U, monotonicTimestampMilliseconds()),
+            protocolField(9U, protocolRecordReference(requiredProtocolRecord(*command, 4U))),
+            protocolField(10U, protocolRecordReference(requiredProtocolRecord(*command, 2U))),
+            protocolField(11U, id),
+        },
+    };
+    if (!terminated) {
+      event.fields.push_back(protocolField(18U, static_cast<std::uint64_t>(items)));
+      event.fields.push_back(protocolField(19U, static_cast<std::uint64_t>(bytes)));
+    } else {
+      auto error = protocol::ProtocolRecord{
+          .kind = protocol::RecordKind::error,
+          .fields = {
+              protocolField(1U, stringFromJava(environment, code, "termination code")),
+              protocolField(2U, std::string("android")),
+              protocolField(3U, std::string("gatt.notification.source")),
+              protocolField(4U, std::string("notRetryable")),
+              protocolField(5U, std::string("android")),
+              protocolField(7U, stringFromJava(environment, safeMessage, "safe termination message")),
+          },
+      };
+      if (nativeCode != nullptr) {
+        error.fields.push_back(protocolField(6U, stringFromJava(environment, nativeCode, "native code")));
+      }
+      if (hasGattStatus) {
+        error.fields.push_back(protocolField(8U, static_cast<std::int64_t>(gattStatus)));
+      }
+      event.fields.push_back(protocolField(14U, protocolRecordReference(error)));
+    }
+    if (!deliverNativeEvent(state, runtime, event)) {
+      throw std::runtime_error("Android subscription status event ingress is closed");
+    }
+  } catch (const std::exception& error) {
+    __android_log_print(ANDROID_LOG_ERROR, "UnifiedBleProtocol",
+        "subscription status handling failed handle=%lld: %s",
+        static_cast<long long>(nativeHandle), error.what());
+    const auto state = eventSinkState(nativeHandle);
+    if (state) {
+      requestFatalAttachment(state, std::string("Android subscription status delivery failed: ") + error.what());
+    }
+  }
+}
+
 void emitAdvertisementFromJava(
     JNIEnv* environment,
     jlong nativeHandle,
+    jbyteArray encodedCorrelation,
     jstring deviceId,
     jstring name,
     jint rssi,
@@ -1982,14 +2411,9 @@ void emitAdvertisementFromJava(
           static_cast<long long>(nativeHandle));
       return;
     }
-    const auto scanCommand = activeRuntime->activeScanCommand();
-    if (!scanCommand) {
-      __android_log_print(
-          ANDROID_LOG_WARN,
-          "UnifiedBleProtocol",
-          "advertisement dropped because no scan session is active handle=%lld",
-          static_cast<long long>(nativeHandle));
-      return;
+    const auto correlation = protocol::NativeProtocolV2Codec{}.decode(bytesFromJava(environment, encodedCorrelation));
+    if (correlation.kind != protocol::RecordKind::operationCorrelation) {
+      throw std::runtime_error("Android advertisement scan correlation is invalid");
     }
     const auto peerId = stringFromJava(environment, deviceId, "advertisement device identifier");
     const auto localName = optionalStringFromJava(environment, name);
@@ -2134,7 +2558,6 @@ void emitAdvertisementFromJava(
         .kind = protocol::RecordKind::advertisement,
         .fields = std::move(provenance),
     };
-    const auto& correlation = requiredProtocolRecord(*scanCommand, 2U);
     const auto event = protocol::ProtocolRecord{
         .kind = protocol::RecordKind::event,
         .fields = {
@@ -2232,7 +2655,7 @@ jstring requestCancellationFromJava(
     jlong dispatchEpoch,
     jstring nonce) {
   try {
-    if (dispatchEpoch < 0) {
+    if (dispatchEpoch <= 0) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::invalidCorrelation,
           "Native Protocol v2 cancellation dispatch epoch is negative");
@@ -2250,17 +2673,10 @@ jstring requestCancellationFromJava(
           "Native Protocol v2 runtime is closed");
     }
     const auto nativeNonce = stringFromJava(environment, nonce, "cancellation nonce");
-    const auto command = activeRuntime->commandFor(static_cast<std::uint64_t>(dispatchEpoch), nativeNonce);
-    if (!command) {
-      throw protocol::ProtocolException(
-          protocol::ProtocolFailure::alreadyTerminal,
-          "Native Protocol v2 cancellation command is no longer pending");
-    }
-    const auto& correlation = requiredProtocolRecord(*command, 2U);
     const auto operation = protocol::NativeOperationIdentity{
         .attachment = activeRuntime->attachmentIdentity(),
-        .dispatchEpoch = requiredProtocolUnsigned(correlation, 2U),
-        .nonce = requiredProtocolString(correlation, 3U),
+        .dispatchEpoch = static_cast<std::uint64_t>(dispatchEpoch),
+        .nonce = nativeNonce,
     };
     const auto result = environment->NewStringUTF(protocol::cancellationStateName(activeRuntime->cancel(operation)));
     if (result == nullptr) {
@@ -2311,6 +2727,23 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_re
   return requestCancellationFromJava(environment, nativeHandle, dispatchEpoch, nonce);
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_retireScanNative(
+    JNIEnv* environment, jclass, jlong nativeHandle, jlong dispatchEpoch, jstring nonce) {
+  const auto state = eventSinkState(nativeHandle);
+  try {
+    if (!state || dispatchEpoch <= 0) throw std::runtime_error("Android scan retirement has no live owner");
+    const auto runtime = state->runtimeLease.lock();
+    if (!runtime) throw std::runtime_error("Android scan retirement runtime is closed");
+    return runtime->retireActiveScan(static_cast<std::uint64_t>(dispatchEpoch),
+        stringFromJava(environment, nonce, "scan retirement nonce")) ? JNI_TRUE : JNI_FALSE;
+  } catch (const std::exception& error) {
+    if (state) requestFatalAttachment(state, std::string("Android scan retirement failed: ") + error.what());
+    throwJavaIllegalState(environment, error.what());
+    return JNI_FALSE;
+  }
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_emitReadNative(
     JNIEnv* environment,
@@ -2353,10 +2786,25 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_em
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_emitAdvertisementNative(
+Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_emitNotificationLossNative(
+    JNIEnv* environment, jclass, jlong nativeHandle, jstring subscriptionId, jlong items, jlong bytes) {
+  emitSubscriptionStatusFromJava(environment, nativeHandle, subscriptionId, items, bytes, false, nullptr, nullptr, false, 0, nullptr);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_emitNotificationTerminatedNative(
+    JNIEnv* environment, jclass, jlong nativeHandle, jstring subscriptionId, jstring code,
+    jstring nativeCode, jboolean hasGattStatus, jint gattStatus, jstring safeMessage) {
+  emitSubscriptionStatusFromJava(environment, nativeHandle, subscriptionId, 0, 0, true,
+      code, nativeCode, hasGattStatus == JNI_TRUE, gattStatus, safeMessage);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_emitAdvertisementWithScanIdentityNative(
     JNIEnv* environment,
     jclass,
     jlong nativeHandle,
+    jbyteArray encodedCorrelation,
     jstring deviceId,
     jstring name,
     jint rssi,
@@ -2375,6 +2823,7 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_em
   emitAdvertisementFromJava(
       environment,
       nativeHandle,
+      encodedCorrelation,
       deviceId,
       name,
       rssi,
@@ -2390,6 +2839,42 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_em
       serviceDataValues,
       manufacturerCompanyIdentifiers,
       manufacturerDataValues);
+}
+
+// Retain the old JNI entry point, but never assign its untagged callback to a
+// newer scan. A mixed old Java/new native installation fails the attachment.
+extern "C" JNIEXPORT void JNICALL
+Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_emitAdvertisementNative(
+    JNIEnv*, jclass, jlong nativeHandle, jstring, jstring, jint, jint, jboolean, jint,
+    jlong, jboolean, jbyteArray, jobjectArray, jobjectArray, jobjectArray, jobjectArray,
+    jintArray, jobjectArray) {
+  const auto state = eventSinkState(nativeHandle);
+  if (state) requestFatalAttachment(state, "Untagged Android advertisement from an incompatible dispatcher");
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_scanEventIdentityAvailableNative(
+    JNIEnv*, jclass) {
+  return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_registryAdmissionAvailableNative(
+    JNIEnv*, jclass) {
+  return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_emitScanFailureNative(
+    JNIEnv* environment, jclass, jlong nativeHandle, jbyteArray correlation, jstring message) {
+  const auto code = environment->NewStringUTF("scanFailed");
+  if (code == nullptr) {
+    const auto state = eventSinkState(nativeHandle);
+    if (state) requestFatalAttachment(state, "Android scan failure code allocation failed");
+    return;
+  }
+  emitDiagnosticFromJava(environment, nativeHandle, code, message, correlation);
+  environment->DeleteLocalRef(code);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -2449,5 +2934,8 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_un
 }
 
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
-  return jni::initialize(vm, [] { UnifiedBleProtocolJsiBinding::registerNatives(); });
+  return jni::initialize(vm, [] {
+    UnifiedBleProtocolJsiBinding::registerNatives();
+    NativeScanRecoveryJsiBinding::registerNatives();
+  });
 }

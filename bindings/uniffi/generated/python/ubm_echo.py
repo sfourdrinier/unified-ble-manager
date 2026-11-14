@@ -557,15 +557,27 @@ def _uniffi_check_contract_api_version(lib):
 def _uniffi_check_api_checksums(lib):
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json() != 23485:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_configure_terminal_evidence_maximum_bytes() != 43137:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision() != 25256:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current() != 45739:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_has_pending_cleanup() != 58064:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install() != 16863:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install_bound() != 59688:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_retry_pending_cleanup() != 22997:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_ordered_recording_version() != 19889:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory() != 4705:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control() != 47672:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_ordered_offline() != 26936:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision() != 16069:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -601,9 +613,35 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() != 28077:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2() != 37394:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3() != 30989:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4() != 37680:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_v1() != 9837:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_append_notification_failure_v1() != 9905:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3() != 24997:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1() != 39577:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete() != 1326:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v1() != 64794:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v2() != 18154:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4() != 5874:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim() != 49070:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery() != 37134:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v1() != 10765:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v2() != 57379:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration() != 47548:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -617,19 +655,57 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute() != 53239:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_page() != 60134:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_retire() != 61702:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim() != 27863:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim_versioned() != 24695:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_retained_claim_v1() != 1680:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_read_peer_failure_recovery() != 48730:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control() != 50250:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration() != 64088:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_retire_claim_receipt() != 3042:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration() != 3468:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest() != 56427:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest_notification_failure_v1() != 61455:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_ingress_version() != 2922:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_global_v2() != 33826:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_v1() != 26831:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_pending_retirements_v4() != 22464:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_global_v2() != 39494:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_sequence_v1() != 35225:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session() != 1864:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3() != 837:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown() != 30988:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_acknowledge() != 30563:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list() != 11532:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list_with_status() != 19706:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_open_selected() != 48296:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_read() != 59315:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json() != 37308:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -637,7 +713,63 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke() != 36422:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version() != 27757:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version_qualified() != 5818:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_context() != 40511:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_receipt_control() != 32329:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id() != 62933:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_start_ordered_recording() != 43192:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_stop_ordered_recording() != 28332:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1() != 52256:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2() != 53944:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurecleanupreceipt_retire() != 15974:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_owners() != 58165:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_pending_cleanup_receipts() != 45019:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1() != 60078:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2() != 30662:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_acknowledge() != 65058:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_finalize() != 27696:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_info() != 19333:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_read() != 60365:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_release() != 32865:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_retire() != 35437:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_head() != 2101:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_info() != 9650:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_member() != 51370:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_finalize() != 4983:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_info() != 5156:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_member() != 48697:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_release() != 38679:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_retire() != 1583:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_token() != 40119:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
 
 # A ctypes library to expose the extern-C FFI definitions.
@@ -671,21 +803,39 @@ _UniffiLib.ffi_ubm5_uniffi_echo_uniffi_contract_version.restype = ctypes.c_uint3
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_configure_terminal_evidence_maximum_bytes.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_configure_terminal_evidence_maximum_bytes.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_has_pending_cleanup.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_has_pending_cleanup.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install_bound.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install_bound.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_retry_pending_cleanup.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_retry_pending_cleanup.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_ordered_recording_version.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_ordered_recording_version.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_ordered_offline.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_ordered_offline.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision.restype = ctypes.c_uint16
@@ -737,12 +887,51 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step.resty
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_v1.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_append_notification_failure_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_append_notification_failure_v1.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v1.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v2.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v2.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v1.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v2.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v2.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration.restype = ctypes.c_uint16
@@ -761,27 +950,84 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_d
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_page.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_page.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_retire.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_retire.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim_versioned.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim_versioned.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_retained_claim_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_retained_claim_v1.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_read_peer_failure_recovery.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_read_peer_failure_recovery.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_retire_claim_receipt.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_retire_claim_receipt.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest_notification_failure_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest_notification_failure_v1.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_ingress_version.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_ingress_version.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_global_v2.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_global_v2.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_v1.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_pending_retirements_v4.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_pending_retirements_v4.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_global_v2.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_global_v2.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_sequence_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_sequence_v1.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_acknowledge.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_acknowledge.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list_with_status.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list_with_status.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_open_selected.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_open_selected.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_read.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_read.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json.restype = ctypes.c_uint16
@@ -791,13 +1037,102 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_drain.resty
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version_qualified.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version_qualified.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_context.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_context.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_receipt_control.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_receipt_control.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_start_ordered_recording.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_start_ordered_recording.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_stop_ordered_recording.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_stop_ordered_recording.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurecleanupreceipt_retire.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurecleanupreceipt_retire.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_owners.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_owners.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_pending_cleanup_receipts.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_pending_cleanup_receipts.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_acknowledge.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_acknowledge.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_finalize.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_finalize.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_info.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_info.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_read.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_read.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_release.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_release.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_retire.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_retire.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_head.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_head.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_info.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_info.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_member.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_member.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_finalize.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_finalize.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_info.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_info.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_member.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_member.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_release.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_release.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_retire.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_retire.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_token.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_token.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_configure_terminal_evidence_maximum_bytes.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_configure_terminal_evidence_maximum_bytes.restype = None
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_contract_revision.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
@@ -806,6 +1141,10 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_has_pending_cleanup.argtypes = (
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_has_pending_cleanup.restype = ctypes.c_int8
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install.argtypes = (
     ctypes.c_uint64,
     ctypes.c_uint64,
@@ -815,6 +1154,24 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install_bound.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install_bound.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_retry_pending_cleanup.argtypes = (
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_retry_pending_cleanup.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_ordered_recording_version.argtypes = (
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_ordered_recording_version.restype = ctypes.c_uint32
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_configure_directory.argtypes = (
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -829,6 +1186,13 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_control.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_control.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_ordered_offline.argtypes = (
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_ordered_offline.restype = None
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
@@ -925,6 +1289,60 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_constructor_echosession_new.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_constructor_echosession_new.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_v1.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_v1.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_append_notification_failure_v1.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_append_notification_failure_v1.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete.argtypes = (
     ctypes.c_uint64,
     ctypes.c_uint64,
@@ -932,6 +1350,31 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete.argtypes = 
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v1.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v1.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v2.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v2.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -939,6 +1382,27 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowl
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v1.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v1.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v2.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v2.restype = None
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_cancel_declaration.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -977,6 +1441,24 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_page.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_page.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_retire.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_retire.restype = None
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim.argtypes = (
     ctypes.c_uint64,
     ctypes.c_uint32,
@@ -985,6 +1467,31 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim_versioned.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim_versioned.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_retained_claim_v1.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_retained_claim_v1.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_read_peer_failure_recovery.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_read_peer_failure_recovery.restype = None
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_recording_control.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -1001,6 +1508,13 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve_declaration.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_retire_claim_receipt.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_retire_claim_receipt.restype = None
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_seed_declaration.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -1013,6 +1527,55 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest_notification_failure_v1.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest_notification_failure_v1.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_ingress_version.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint32,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_ingress_version.restype = ctypes.c_uint32
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_global_v2.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint32,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_global_v2.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_v1.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint32,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_v1.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_pending_retirements_v4.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint32,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_pending_retirements_v4.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_global_v2.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_global_v2.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_sequence_v1.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_sequence_v1.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -1020,11 +1583,56 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session.argtype
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_acknowledge.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_acknowledge.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint32,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list_with_status.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint32,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list_with_status.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_open_selected.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_open_selected.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_read.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint32,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_read.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_admission_json.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -1045,11 +1653,180 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke.argtypes =
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version_qualified.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version_qualified.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_context.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_context.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_receipt_control.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_receipt_control.restype = None
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_start_ordered_recording.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_start_ordered_recording.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_stop_ordered_recording.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_stop_ordered_recording.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurecleanupreceipt_retire.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurecleanupreceipt_retire.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_owners.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_owners.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_pending_cleanup_receipts.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_pending_cleanup_receipts.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_acknowledge.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_acknowledge.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_finalize.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_finalize.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_info.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_info.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_read.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_read.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_release.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_release.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_retire.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_retire.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_head.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_head.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_info.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_info.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_member.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_member.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_finalize.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_finalize.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_info.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_info.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_member.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_member.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_release.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_release.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_retire.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_retire.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_token.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint32,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_token.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_echosession.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -1080,6 +1857,83 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilecoresession.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilecoresession.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilenotificationfailurespoolconfigurationauthority.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilenotificationfailurespoolconfigurationauthority.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilenotificationfailurespoolconfigurationauthority.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilenotificationfailurespoolconfigurationauthority.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurecleanupreceipt.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurecleanupreceipt.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurecleanupreceipt.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurecleanupreceipt.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecovery.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecovery.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecovery.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecovery.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryconfigurationauthority.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryconfigurationauthority.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryconfigurationauthority.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryconfigurationauthority.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryhead.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryhead.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryhead.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryhead.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryowner.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryowner.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryowner.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryowner.restype = None
+_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_HOST_BINDING_METHOD0 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,ctypes.c_uint64,ctypes.POINTER(ctypes.c_int8),
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UNIFFI_CALLBACK_INTERFACE_CLONE_UBM_ECHO_MOBILE_HOST_BINDING = ctypes.CFUNCTYPE(ctypes.c_uint64,ctypes.c_uint64,
+)
+_UNIFFI_CALLBACK_INTERFACE_FREE_UBM_ECHO_MOBILE_HOST_BINDING = ctypes.CFUNCTYPE(None,ctypes.c_uint64,
+)
+class _UniffiVTableCallbackInterfaceUbmEchoMobileHostBinding(ctypes.Structure):
+    _fields_ = [
+        ("uniffi_free", _UNIFFI_CALLBACK_INTERFACE_FREE_UBM_ECHO_MOBILE_HOST_BINDING),
+        ("uniffi_clone", _UNIFFI_CALLBACK_INTERFACE_CLONE_UBM_ECHO_MOBILE_HOST_BINDING),
+        ("bind", _UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_HOST_BINDING_METHOD0),
+    ]
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilehostbinding.argtypes = (
+    ctypes.POINTER(_UniffiVTableCallbackInterfaceUbmEchoMobileHostBinding),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilehostbinding.restype = None
 _UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_INVOKE_COMPLETION_METHOD0 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,_UniffiRustBuffer,ctypes.c_void_p,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
@@ -1097,10 +1951,13 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileinvokecompletio
     ctypes.POINTER(_UniffiVTableCallbackInterfaceUbmEchoMobileInvokeCompletion),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileinvokecompletion.restype = None
-_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD0 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,_UniffiRustBuffer,ctypes.c_void_p,
+_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD0 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,ctypes.c_uint32,ctypes.POINTER(_UniffiRustBuffer),
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD1 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,ctypes.c_uint64,ctypes.c_void_p,
+_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD1 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,_UniffiRustBuffer,ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD2 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,ctypes.c_uint64,ctypes.c_void_p,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UNIFFI_CALLBACK_INTERFACE_CLONE_UBM_ECHO_MOBILE_PLATFORM_RADIO = ctypes.CFUNCTYPE(ctypes.c_uint64,ctypes.c_uint64,
@@ -1111,8 +1968,9 @@ class _UniffiVTableCallbackInterfaceUbmEchoMobilePlatformRadio(ctypes.Structure)
     _fields_ = [
         ("uniffi_free", _UNIFFI_CALLBACK_INTERFACE_FREE_UBM_ECHO_MOBILE_PLATFORM_RADIO),
         ("uniffi_clone", _UNIFFI_CALLBACK_INTERFACE_CLONE_UBM_ECHO_MOBILE_PLATFORM_RADIO),
-        ("submit", _UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD0),
-        ("cancel", _UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD1),
+        ("ordered_admission_owner", _UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD0),
+        ("submit", _UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD1),
+        ("cancel", _UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD2),
     ]
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileplatformradio.argtypes = (
     ctypes.POINTER(_UniffiVTableCallbackInterfaceUbmEchoMobilePlatformRadio),
@@ -2200,6 +3058,1126 @@ class _UniffiFfiConverterTypeMobileGattService(_UniffiConverterRustBuffer):
         _UniffiFfiConverterSequenceTypeMobileGattCharacteristic.write(value.characteristics, buf)
 
 @dataclass
+class MobileGattSnapshotIdentity:
+    def __init__(self, *, owner:str, attachment:int, revision:int):
+        self.owner = owner
+        self.attachment = attachment
+        self.revision = revision
+
+
+
+
+    def __str__(self):
+        return "MobileGattSnapshotIdentity(owner={}, attachment={}, revision={})".format(self.owner, self.attachment, self.revision)
+    def __eq__(self, other):
+        if self.owner != other.owner:
+            return False
+        if self.attachment != other.attachment:
+            return False
+        if self.revision != other.revision:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileGattSnapshotIdentity(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileGattSnapshotIdentity(
+            owner=_UniffiFfiConverterString.read(buf),
+            attachment=_UniffiFfiConverterUInt64.read(buf),
+            revision=_UniffiFfiConverterUInt64.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.owner)
+        _UniffiFfiConverterUInt64.check_lower(value.attachment)
+        _UniffiFfiConverterUInt64.check_lower(value.revision)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.owner, buf)
+        _UniffiFfiConverterUInt64.write(value.attachment, buf)
+        _UniffiFfiConverterUInt64.write(value.revision, buf)
+
+
+
+
+
+
+class MobileOrderedGeneration:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedGeneration cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class COUNTER:
+
+        def __init__(self, value:int):
+            self.value = value
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedGeneration.COUNTER(value={})".format(self.value)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedGeneration):
+                return NotImplemented
+            if not other.is_COUNTER():
+                return False
+            if self.value != other.value:
+                return False
+            return True
+
+    @dataclass
+    class OPAQUE:
+
+        def __init__(self, value:str):
+            self.value = value
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedGeneration.OPAQUE(value={})".format(self.value)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedGeneration):
+                return NotImplemented
+            if not other.is_OPAQUE():
+                return False
+            if self.value != other.value:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_COUNTER(self) -> bool:
+        return isinstance(self, MobileOrderedGeneration.COUNTER)
+    def is_counter(self) -> bool:
+        return isinstance(self, MobileOrderedGeneration.COUNTER)
+    def is_OPAQUE(self) -> bool:
+        return isinstance(self, MobileOrderedGeneration.OPAQUE)
+    def is_opaque(self) -> bool:
+        return isinstance(self, MobileOrderedGeneration.OPAQUE)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedGeneration.COUNTER = type("MobileOrderedGeneration.COUNTER", (MobileOrderedGeneration.COUNTER, MobileOrderedGeneration,), {})  # type: ignore
+MobileOrderedGeneration.OPAQUE = type("MobileOrderedGeneration.OPAQUE", (MobileOrderedGeneration.OPAQUE, MobileOrderedGeneration,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedGeneration(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedGeneration.COUNTER(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 2:
+            return MobileOrderedGeneration.OPAQUE(
+                _UniffiFfiConverterString.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_COUNTER():
+            _UniffiFfiConverterUInt64.check_lower(value.value)
+            return
+        if value.is_OPAQUE():
+            _UniffiFfiConverterString.check_lower(value.value)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_COUNTER():
+            buf.write_i32(1)
+            _UniffiFfiConverterUInt64.write(value.value, buf)
+        if value.is_OPAQUE():
+            buf.write_i32(2)
+            _UniffiFfiConverterString.write(value.value, buf)
+
+
+
+@dataclass
+class MobileOrderedRegistration:
+    def __init__(self, *, member_id:int, source_member:int, epoch:int):
+        self.member_id = member_id
+        self.source_member = source_member
+        self.epoch = epoch
+
+
+
+
+    def __str__(self):
+        return "MobileOrderedRegistration(member_id={}, source_member={}, epoch={})".format(self.member_id, self.source_member, self.epoch)
+    def __eq__(self, other):
+        if self.member_id != other.member_id:
+            return False
+        if self.source_member != other.source_member:
+            return False
+        if self.epoch != other.epoch:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileOrderedRegistration(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileOrderedRegistration(
+            member_id=_UniffiFfiConverterUInt64.read(buf),
+            source_member=_UniffiFfiConverterUInt64.read(buf),
+            epoch=_UniffiFfiConverterUInt64.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterUInt64.check_lower(value.member_id)
+        _UniffiFfiConverterUInt64.check_lower(value.source_member)
+        _UniffiFfiConverterUInt64.check_lower(value.epoch)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterUInt64.write(value.member_id, buf)
+        _UniffiFfiConverterUInt64.write(value.source_member, buf)
+        _UniffiFfiConverterUInt64.write(value.epoch, buf)
+
+@dataclass
+class MobileOrderedActivation:
+    def __init__(self, *, instance:MobileInstance, connection_generation:str, source_generation:MobileOrderedGeneration, group_id:int, member:MobileOrderedRegistration, activation_epoch:int):
+        self.instance = instance
+        self.connection_generation = connection_generation
+        self.source_generation = source_generation
+        self.group_id = group_id
+        self.member = member
+        self.activation_epoch = activation_epoch
+
+
+
+
+    def __str__(self):
+        return "MobileOrderedActivation(instance={}, connection_generation={}, source_generation={}, group_id={}, member={}, activation_epoch={})".format(self.instance, self.connection_generation, self.source_generation, self.group_id, self.member, self.activation_epoch)
+    def __eq__(self, other):
+        if self.instance != other.instance:
+            return False
+        if self.connection_generation != other.connection_generation:
+            return False
+        if self.source_generation != other.source_generation:
+            return False
+        if self.group_id != other.group_id:
+            return False
+        if self.member != other.member:
+            return False
+        if self.activation_epoch != other.activation_epoch:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileOrderedActivation(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileOrderedActivation(
+            instance=_UniffiFfiConverterTypeMobileInstance.read(buf),
+            connection_generation=_UniffiFfiConverterString.read(buf),
+            source_generation=_UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+            group_id=_UniffiFfiConverterUInt64.read(buf),
+            member=_UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+            activation_epoch=_UniffiFfiConverterUInt64.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterTypeMobileInstance.check_lower(value.instance)
+        _UniffiFfiConverterString.check_lower(value.connection_generation)
+        _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.source_generation)
+        _UniffiFfiConverterUInt64.check_lower(value.group_id)
+        _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+        _UniffiFfiConverterUInt64.check_lower(value.activation_epoch)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
+        _UniffiFfiConverterString.write(value.connection_generation, buf)
+        _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.source_generation, buf)
+        _UniffiFfiConverterUInt64.write(value.group_id, buf)
+        _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+        _UniffiFfiConverterUInt64.write(value.activation_epoch, buf)
+
+class _UniffiFfiConverterInt32(_UniffiConverterPrimitiveInt):
+    CLASS_NAME = "i32"
+    VALUE_MIN = -2**31
+    VALUE_MAX = 2**31
+
+    @staticmethod
+    def read(buf):
+        return buf.read_i32()
+
+    @staticmethod
+    def write(value, buf):
+        buf.write_i32(value)
+
+class _UniffiFfiConverterOptionalInt32(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterInt32.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterInt32.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterInt32.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+class _UniffiFfiConverterOptionalInt64(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterInt64.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterInt64.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterInt64.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+@dataclass
+class MobileOrderedFailureV2:
+    def __init__(self, *, kind:str, gatt_status:typing.Optional[int], native_domain:typing.Optional[str], native_code:typing.Optional[int], native_name:typing.Optional[str], detail:str, dispatched:bool):
+        self.kind = kind
+        self.gatt_status = gatt_status
+        self.native_domain = native_domain
+        self.native_code = native_code
+        self.native_name = native_name
+        self.detail = detail
+        self.dispatched = dispatched
+
+
+
+
+    def __str__(self):
+        return "MobileOrderedFailureV2(kind={}, gatt_status={}, native_domain={}, native_code={}, native_name={}, detail={}, dispatched={})".format(self.kind, self.gatt_status, self.native_domain, self.native_code, self.native_name, self.detail, self.dispatched)
+    def __eq__(self, other):
+        if self.kind != other.kind:
+            return False
+        if self.gatt_status != other.gatt_status:
+            return False
+        if self.native_domain != other.native_domain:
+            return False
+        if self.native_code != other.native_code:
+            return False
+        if self.native_name != other.native_name:
+            return False
+        if self.detail != other.detail:
+            return False
+        if self.dispatched != other.dispatched:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileOrderedFailureV2(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileOrderedFailureV2(
+            kind=_UniffiFfiConverterString.read(buf),
+            gatt_status=_UniffiFfiConverterOptionalInt32.read(buf),
+            native_domain=_UniffiFfiConverterOptionalString.read(buf),
+            native_code=_UniffiFfiConverterOptionalInt64.read(buf),
+            native_name=_UniffiFfiConverterOptionalString.read(buf),
+            detail=_UniffiFfiConverterString.read(buf),
+            dispatched=_UniffiFfiConverterBoolean.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.kind)
+        _UniffiFfiConverterOptionalInt32.check_lower(value.gatt_status)
+        _UniffiFfiConverterOptionalString.check_lower(value.native_domain)
+        _UniffiFfiConverterOptionalInt64.check_lower(value.native_code)
+        _UniffiFfiConverterOptionalString.check_lower(value.native_name)
+        _UniffiFfiConverterString.check_lower(value.detail)
+        _UniffiFfiConverterBoolean.check_lower(value.dispatched)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.kind, buf)
+        _UniffiFfiConverterOptionalInt32.write(value.gatt_status, buf)
+        _UniffiFfiConverterOptionalString.write(value.native_domain, buf)
+        _UniffiFfiConverterOptionalInt64.write(value.native_code, buf)
+        _UniffiFfiConverterOptionalString.write(value.native_name, buf)
+        _UniffiFfiConverterString.write(value.detail, buf)
+        _UniffiFfiConverterBoolean.write(value.dispatched, buf)
+
+@dataclass
+class MobilePlatformFailure:
+    def __init__(self, *, kind:str, gatt_status:typing.Optional[int], native_domain:typing.Optional[str], native_code:typing.Optional[int], detail:str, dispatched:bool):
+        self.kind = kind
+        self.gatt_status = gatt_status
+        self.native_domain = native_domain
+        self.native_code = native_code
+        self.detail = detail
+        self.dispatched = dispatched
+
+
+
+
+    def __str__(self):
+        return "MobilePlatformFailure(kind={}, gatt_status={}, native_domain={}, native_code={}, detail={}, dispatched={})".format(self.kind, self.gatt_status, self.native_domain, self.native_code, self.detail, self.dispatched)
+    def __eq__(self, other):
+        if self.kind != other.kind:
+            return False
+        if self.gatt_status != other.gatt_status:
+            return False
+        if self.native_domain != other.native_domain:
+            return False
+        if self.native_code != other.native_code:
+            return False
+        if self.detail != other.detail:
+            return False
+        if self.dispatched != other.dispatched:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobilePlatformFailure(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobilePlatformFailure(
+            kind=_UniffiFfiConverterString.read(buf),
+            gatt_status=_UniffiFfiConverterOptionalInt32.read(buf),
+            native_domain=_UniffiFfiConverterOptionalString.read(buf),
+            native_code=_UniffiFfiConverterOptionalInt64.read(buf),
+            detail=_UniffiFfiConverterString.read(buf),
+            dispatched=_UniffiFfiConverterBoolean.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.kind)
+        _UniffiFfiConverterOptionalInt32.check_lower(value.gatt_status)
+        _UniffiFfiConverterOptionalString.check_lower(value.native_domain)
+        _UniffiFfiConverterOptionalInt64.check_lower(value.native_code)
+        _UniffiFfiConverterString.check_lower(value.detail)
+        _UniffiFfiConverterBoolean.check_lower(value.dispatched)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.kind, buf)
+        _UniffiFfiConverterOptionalInt32.write(value.gatt_status, buf)
+        _UniffiFfiConverterOptionalString.write(value.native_domain, buf)
+        _UniffiFfiConverterOptionalInt64.write(value.native_code, buf)
+        _UniffiFfiConverterString.write(value.detail, buf)
+        _UniffiFfiConverterBoolean.write(value.dispatched, buf)
+
+
+
+
+
+
+class MobileOrderedMarkerAdmission:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedMarkerAdmission cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class PENDING:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedMarkerAdmission.PENDING()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedMarkerAdmission):
+                return NotImplemented
+            if not other.is_PENDING():
+                return False
+            return True
+
+    @dataclass
+    class NOT_ADMITTED:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedMarkerAdmission.NOT_ADMITTED()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedMarkerAdmission):
+                return NotImplemented
+            if not other.is_NOT_ADMITTED():
+                return False
+            return True
+
+    @dataclass
+    class ADMITTED:
+
+        def __init__(self, ordinal:int):
+            self.ordinal = ordinal
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedMarkerAdmission.ADMITTED(ordinal={})".format(self.ordinal)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedMarkerAdmission):
+                return NotImplemented
+            if not other.is_ADMITTED():
+                return False
+            if self.ordinal != other.ordinal:
+                return False
+            return True
+
+    @dataclass
+    class REJECTED:
+
+        def __init__(self, failure:MobilePlatformFailure):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedMarkerAdmission.REJECTED(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedMarkerAdmission):
+                return NotImplemented
+            if not other.is_REJECTED():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_PENDING(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerAdmission.PENDING)
+    def is_pending(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerAdmission.PENDING)
+    def is_NOT_ADMITTED(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerAdmission.NOT_ADMITTED)
+    def is_not_admitted(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerAdmission.NOT_ADMITTED)
+    def is_ADMITTED(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerAdmission.ADMITTED)
+    def is_admitted(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerAdmission.ADMITTED)
+    def is_REJECTED(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerAdmission.REJECTED)
+    def is_rejected(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerAdmission.REJECTED)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedMarkerAdmission.PENDING = type("MobileOrderedMarkerAdmission.PENDING", (MobileOrderedMarkerAdmission.PENDING, MobileOrderedMarkerAdmission,), {})  # type: ignore
+MobileOrderedMarkerAdmission.NOT_ADMITTED = type("MobileOrderedMarkerAdmission.NOT_ADMITTED", (MobileOrderedMarkerAdmission.NOT_ADMITTED, MobileOrderedMarkerAdmission,), {})  # type: ignore
+MobileOrderedMarkerAdmission.ADMITTED = type("MobileOrderedMarkerAdmission.ADMITTED", (MobileOrderedMarkerAdmission.ADMITTED, MobileOrderedMarkerAdmission,), {})  # type: ignore
+MobileOrderedMarkerAdmission.REJECTED = type("MobileOrderedMarkerAdmission.REJECTED", (MobileOrderedMarkerAdmission.REJECTED, MobileOrderedMarkerAdmission,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedMarkerAdmission(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedMarkerAdmission.PENDING(
+            )
+        if variant == 2:
+            return MobileOrderedMarkerAdmission.NOT_ADMITTED(
+            )
+        if variant == 3:
+            return MobileOrderedMarkerAdmission.ADMITTED(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 4:
+            return MobileOrderedMarkerAdmission.REJECTED(
+                _UniffiFfiConverterTypeMobilePlatformFailure.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_PENDING():
+            return
+        if value.is_NOT_ADMITTED():
+            return
+        if value.is_ADMITTED():
+            _UniffiFfiConverterUInt64.check_lower(value.ordinal)
+            return
+        if value.is_REJECTED():
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_PENDING():
+            buf.write_i32(1)
+        if value.is_NOT_ADMITTED():
+            buf.write_i32(2)
+        if value.is_ADMITTED():
+            buf.write_i32(3)
+            _UniffiFfiConverterUInt64.write(value.ordinal, buf)
+        if value.is_REJECTED():
+            buf.write_i32(4)
+            _UniffiFfiConverterTypeMobilePlatformFailure.write(value.failure, buf)
+
+
+
+class _UniffiFfiConverterOptionalTypeMobilePlatformFailure(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterTypeMobilePlatformFailure.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterTypeMobilePlatformFailure.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+
+
+
+
+
+class MobileOrderedMarkerWriteState:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedMarkerWriteState cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class INITIATING:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedMarkerWriteState.INITIATING()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedMarkerWriteState):
+                return NotImplemented
+            if not other.is_INITIATING():
+                return False
+            return True
+
+    @dataclass
+    class NOT_STARTED:
+
+        def __init__(self, failure:typing.Optional[MobilePlatformFailure]):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedMarkerWriteState.NOT_STARTED(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedMarkerWriteState):
+                return NotImplemented
+            if not other.is_NOT_STARTED():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+    @dataclass
+    class STARTED:
+
+        def __init__(self, failure:typing.Optional[MobilePlatformFailure]):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedMarkerWriteState.STARTED(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedMarkerWriteState):
+                return NotImplemented
+            if not other.is_STARTED():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+    @dataclass
+    class SETTLED:
+
+        def __init__(self, failure:typing.Optional[MobilePlatformFailure]):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedMarkerWriteState.SETTLED(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedMarkerWriteState):
+                return NotImplemented
+            if not other.is_SETTLED():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_INITIATING(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerWriteState.INITIATING)
+    def is_initiating(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerWriteState.INITIATING)
+    def is_NOT_STARTED(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerWriteState.NOT_STARTED)
+    def is_not_started(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerWriteState.NOT_STARTED)
+    def is_STARTED(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerWriteState.STARTED)
+    def is_started(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerWriteState.STARTED)
+    def is_SETTLED(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerWriteState.SETTLED)
+    def is_settled(self) -> bool:
+        return isinstance(self, MobileOrderedMarkerWriteState.SETTLED)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedMarkerWriteState.INITIATING = type("MobileOrderedMarkerWriteState.INITIATING", (MobileOrderedMarkerWriteState.INITIATING, MobileOrderedMarkerWriteState,), {})  # type: ignore
+MobileOrderedMarkerWriteState.NOT_STARTED = type("MobileOrderedMarkerWriteState.NOT_STARTED", (MobileOrderedMarkerWriteState.NOT_STARTED, MobileOrderedMarkerWriteState,), {})  # type: ignore
+MobileOrderedMarkerWriteState.STARTED = type("MobileOrderedMarkerWriteState.STARTED", (MobileOrderedMarkerWriteState.STARTED, MobileOrderedMarkerWriteState,), {})  # type: ignore
+MobileOrderedMarkerWriteState.SETTLED = type("MobileOrderedMarkerWriteState.SETTLED", (MobileOrderedMarkerWriteState.SETTLED, MobileOrderedMarkerWriteState,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedMarkerWriteState(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedMarkerWriteState.INITIATING(
+            )
+        if variant == 2:
+            return MobileOrderedMarkerWriteState.NOT_STARTED(
+                _UniffiFfiConverterOptionalTypeMobilePlatformFailure.read(buf),
+            )
+        if variant == 3:
+            return MobileOrderedMarkerWriteState.STARTED(
+                _UniffiFfiConverterOptionalTypeMobilePlatformFailure.read(buf),
+            )
+        if variant == 4:
+            return MobileOrderedMarkerWriteState.SETTLED(
+                _UniffiFfiConverterOptionalTypeMobilePlatformFailure.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_INITIATING():
+            return
+        if value.is_NOT_STARTED():
+            _UniffiFfiConverterOptionalTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        if value.is_STARTED():
+            _UniffiFfiConverterOptionalTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        if value.is_SETTLED():
+            _UniffiFfiConverterOptionalTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_INITIATING():
+            buf.write_i32(1)
+        if value.is_NOT_STARTED():
+            buf.write_i32(2)
+            _UniffiFfiConverterOptionalTypeMobilePlatformFailure.write(value.failure, buf)
+        if value.is_STARTED():
+            buf.write_i32(3)
+            _UniffiFfiConverterOptionalTypeMobilePlatformFailure.write(value.failure, buf)
+        if value.is_SETTLED():
+            buf.write_i32(4)
+            _UniffiFfiConverterOptionalTypeMobilePlatformFailure.write(value.failure, buf)
+
+
+
+@dataclass
+class MobileOrderedMarkerWriteStatus:
+    def __init__(self, *, admission:MobileOrderedMarkerAdmission, write:MobileOrderedMarkerWriteState):
+        self.admission = admission
+        self.write = write
+
+
+
+
+    def __str__(self):
+        return "MobileOrderedMarkerWriteStatus(admission={}, write={})".format(self.admission, self.write)
+    def __eq__(self, other):
+        if self.admission != other.admission:
+            return False
+        if self.write != other.write:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileOrderedMarkerWriteStatus(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileOrderedMarkerWriteStatus(
+            admission=_UniffiFfiConverterTypeMobileOrderedMarkerAdmission.read(buf),
+            write=_UniffiFfiConverterTypeMobileOrderedMarkerWriteState.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterTypeMobileOrderedMarkerAdmission.check_lower(value.admission)
+        _UniffiFfiConverterTypeMobileOrderedMarkerWriteState.check_lower(value.write)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterTypeMobileOrderedMarkerAdmission.write(value.admission, buf)
+        _UniffiFfiConverterTypeMobileOrderedMarkerWriteState.write(value.write, buf)
+
+@dataclass
+class MobileOrderedMember:
+    def __init__(self, *, member_id:int, instance:MobileInstance):
+        self.member_id = member_id
+        self.instance = instance
+
+
+
+
+    def __str__(self):
+        return "MobileOrderedMember(member_id={}, instance={})".format(self.member_id, self.instance)
+    def __eq__(self, other):
+        if self.member_id != other.member_id:
+            return False
+        if self.instance != other.instance:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileOrderedMember(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileOrderedMember(
+            member_id=_UniffiFfiConverterUInt64.read(buf),
+            instance=_UniffiFfiConverterTypeMobileInstance.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterUInt64.check_lower(value.member_id)
+        _UniffiFfiConverterTypeMobileInstance.check_lower(value.instance)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterUInt64.write(value.member_id, buf)
+        _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
+
+class _UniffiFfiConverterUInt32(_UniffiConverterPrimitiveInt):
+    CLASS_NAME = "u32"
+    VALUE_MIN = 0
+    VALUE_MAX = 2**32
+
+    @staticmethod
+    def read(buf):
+        return buf.read_u32()
+
+    @staticmethod
+    def write(value, buf):
+        buf.write_u32(value)
+
+class _UniffiFfiConverterSequenceTypeMobileOrderedMember(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeMobileOrderedMember.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeMobileOrderedMember.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeMobileOrderedMember.read(buf) for i in range(count)
+        ]
+
+@dataclass
+class MobileOrderedOpenSpec:
+    def __init__(self, *, connection_generation:str, database_generation:str, snapshot_identity:MobileGattSnapshotIdentity, members:typing.List[MobileOrderedMember], item_capacity:int, byte_capacity:int):
+        self.connection_generation = connection_generation
+        self.database_generation = database_generation
+        self.snapshot_identity = snapshot_identity
+        self.members = members
+        self.item_capacity = item_capacity
+        self.byte_capacity = byte_capacity
+
+
+
+
+    def __str__(self):
+        return "MobileOrderedOpenSpec(connection_generation={}, database_generation={}, snapshot_identity={}, members={}, item_capacity={}, byte_capacity={})".format(self.connection_generation, self.database_generation, self.snapshot_identity, self.members, self.item_capacity, self.byte_capacity)
+    def __eq__(self, other):
+        if self.connection_generation != other.connection_generation:
+            return False
+        if self.database_generation != other.database_generation:
+            return False
+        if self.snapshot_identity != other.snapshot_identity:
+            return False
+        if self.members != other.members:
+            return False
+        if self.item_capacity != other.item_capacity:
+            return False
+        if self.byte_capacity != other.byte_capacity:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileOrderedOpenSpec(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileOrderedOpenSpec(
+            connection_generation=_UniffiFfiConverterString.read(buf),
+            database_generation=_UniffiFfiConverterString.read(buf),
+            snapshot_identity=_UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+            members=_UniffiFfiConverterSequenceTypeMobileOrderedMember.read(buf),
+            item_capacity=_UniffiFfiConverterUInt32.read(buf),
+            byte_capacity=_UniffiFfiConverterUInt32.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.connection_generation)
+        _UniffiFfiConverterString.check_lower(value.database_generation)
+        _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+        _UniffiFfiConverterSequenceTypeMobileOrderedMember.check_lower(value.members)
+        _UniffiFfiConverterUInt32.check_lower(value.item_capacity)
+        _UniffiFfiConverterUInt32.check_lower(value.byte_capacity)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.connection_generation, buf)
+        _UniffiFfiConverterString.write(value.database_generation, buf)
+        _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+        _UniffiFfiConverterSequenceTypeMobileOrderedMember.write(value.members, buf)
+        _UniffiFfiConverterUInt32.write(value.item_capacity, buf)
+        _UniffiFfiConverterUInt32.write(value.byte_capacity, buf)
+
+@dataclass
+class MobileOrderedOpenIdentity:
+    def __init__(self, *, version:int, owner_incarnation:str, slot:int, slot_generation:int, original_request_id:int, native_group_id:int, peer_id:str, spec:MobileOrderedOpenSpec):
+        self.version = version
+        self.owner_incarnation = owner_incarnation
+        self.slot = slot
+        self.slot_generation = slot_generation
+        self.original_request_id = original_request_id
+        self.native_group_id = native_group_id
+        self.peer_id = peer_id
+        self.spec = spec
+
+
+
+
+    def __str__(self):
+        return "MobileOrderedOpenIdentity(version={}, owner_incarnation={}, slot={}, slot_generation={}, original_request_id={}, native_group_id={}, peer_id={}, spec={})".format(self.version, self.owner_incarnation, self.slot, self.slot_generation, self.original_request_id, self.native_group_id, self.peer_id, self.spec)
+    def __eq__(self, other):
+        if self.version != other.version:
+            return False
+        if self.owner_incarnation != other.owner_incarnation:
+            return False
+        if self.slot != other.slot:
+            return False
+        if self.slot_generation != other.slot_generation:
+            return False
+        if self.original_request_id != other.original_request_id:
+            return False
+        if self.native_group_id != other.native_group_id:
+            return False
+        if self.peer_id != other.peer_id:
+            return False
+        if self.spec != other.spec:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileOrderedOpenIdentity(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileOrderedOpenIdentity(
+            version=_UniffiFfiConverterUInt32.read(buf),
+            owner_incarnation=_UniffiFfiConverterString.read(buf),
+            slot=_UniffiFfiConverterUInt32.read(buf),
+            slot_generation=_UniffiFfiConverterUInt64.read(buf),
+            original_request_id=_UniffiFfiConverterUInt64.read(buf),
+            native_group_id=_UniffiFfiConverterUInt64.read(buf),
+            peer_id=_UniffiFfiConverterString.read(buf),
+            spec=_UniffiFfiConverterTypeMobileOrderedOpenSpec.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterUInt32.check_lower(value.version)
+        _UniffiFfiConverterString.check_lower(value.owner_incarnation)
+        _UniffiFfiConverterUInt32.check_lower(value.slot)
+        _UniffiFfiConverterUInt64.check_lower(value.slot_generation)
+        _UniffiFfiConverterUInt64.check_lower(value.original_request_id)
+        _UniffiFfiConverterUInt64.check_lower(value.native_group_id)
+        _UniffiFfiConverterString.check_lower(value.peer_id)
+        _UniffiFfiConverterTypeMobileOrderedOpenSpec.check_lower(value.spec)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterUInt32.write(value.version, buf)
+        _UniffiFfiConverterString.write(value.owner_incarnation, buf)
+        _UniffiFfiConverterUInt32.write(value.slot, buf)
+        _UniffiFfiConverterUInt64.write(value.slot_generation, buf)
+        _UniffiFfiConverterUInt64.write(value.original_request_id, buf)
+        _UniffiFfiConverterUInt64.write(value.native_group_id, buf)
+        _UniffiFfiConverterString.write(value.peer_id, buf)
+        _UniffiFfiConverterTypeMobileOrderedOpenSpec.write(value.spec, buf)
+
+@dataclass
+class MobileOrderedSlotIdentity:
+    def __init__(self, *, owner_incarnation:str, slot:int, slot_generation:int):
+        self.owner_incarnation = owner_incarnation
+        self.slot = slot
+        self.slot_generation = slot_generation
+
+
+
+
+    def __str__(self):
+        return "MobileOrderedSlotIdentity(owner_incarnation={}, slot={}, slot_generation={})".format(self.owner_incarnation, self.slot, self.slot_generation)
+    def __eq__(self, other):
+        if self.owner_incarnation != other.owner_incarnation:
+            return False
+        if self.slot != other.slot:
+            return False
+        if self.slot_generation != other.slot_generation:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileOrderedSlotIdentity(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileOrderedSlotIdentity(
+            owner_incarnation=_UniffiFfiConverterString.read(buf),
+            slot=_UniffiFfiConverterUInt32.read(buf),
+            slot_generation=_UniffiFfiConverterUInt64.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.owner_incarnation)
+        _UniffiFfiConverterUInt32.check_lower(value.slot)
+        _UniffiFfiConverterUInt64.check_lower(value.slot_generation)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.owner_incarnation, buf)
+        _UniffiFfiConverterUInt32.write(value.slot, buf)
+        _UniffiFfiConverterUInt64.write(value.slot_generation, buf)
+
+@dataclass
 class MobilePeerName:
     def __init__(self, *, peer_id:str, name:typing.Optional[str]):
         self.peer_id = peer_id
@@ -2276,6 +4254,312 @@ class _UniffiFfiConverterTypeMobileRestoredPeer(_UniffiConverterRustBuffer):
         _UniffiFfiConverterString.write(value.peer_id, buf)
         _UniffiFfiConverterOptionalString.write(value.name, buf)
         _UniffiFfiConverterBoolean.write(value.connected, buf)
+
+@dataclass
+class MobileScanFailureIdentity:
+    def __init__(self, *, host:bytes, scan:bytes, start:bytes, source_generation:bytes, occurrence:bytes):
+        self.host = host
+        self.scan = scan
+        self.start = start
+        self.source_generation = source_generation
+        self.occurrence = occurrence
+
+
+
+
+    def __str__(self):
+        return "MobileScanFailureIdentity(host={}, scan={}, start={}, source_generation={}, occurrence={})".format(self.host, self.scan, self.start, self.source_generation, self.occurrence)
+    def __eq__(self, other):
+        if self.host != other.host:
+            return False
+        if self.scan != other.scan:
+            return False
+        if self.start != other.start:
+            return False
+        if self.source_generation != other.source_generation:
+            return False
+        if self.occurrence != other.occurrence:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileScanFailureIdentity(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileScanFailureIdentity(
+            host=_UniffiFfiConverterBytes.read(buf),
+            scan=_UniffiFfiConverterBytes.read(buf),
+            start=_UniffiFfiConverterBytes.read(buf),
+            source_generation=_UniffiFfiConverterBytes.read(buf),
+            occurrence=_UniffiFfiConverterBytes.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterBytes.check_lower(value.host)
+        _UniffiFfiConverterBytes.check_lower(value.scan)
+        _UniffiFfiConverterBytes.check_lower(value.start)
+        _UniffiFfiConverterBytes.check_lower(value.source_generation)
+        _UniffiFfiConverterBytes.check_lower(value.occurrence)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterBytes.write(value.host, buf)
+        _UniffiFfiConverterBytes.write(value.scan, buf)
+        _UniffiFfiConverterBytes.write(value.start, buf)
+        _UniffiFfiConverterBytes.write(value.source_generation, buf)
+        _UniffiFfiConverterBytes.write(value.occurrence, buf)
+
+@dataclass
+class MobileScanFailureMember:
+    def __init__(self, *, recipient:bytes, delivery:bytes):
+        self.recipient = recipient
+        self.delivery = delivery
+
+
+
+
+    def __str__(self):
+        return "MobileScanFailureMember(recipient={}, delivery={})".format(self.recipient, self.delivery)
+    def __eq__(self, other):
+        if self.recipient != other.recipient:
+            return False
+        if self.delivery != other.delivery:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileScanFailureMember(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileScanFailureMember(
+            recipient=_UniffiFfiConverterBytes.read(buf),
+            delivery=_UniffiFfiConverterBytes.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterBytes.check_lower(value.recipient)
+        _UniffiFfiConverterBytes.check_lower(value.delivery)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterBytes.write(value.recipient, buf)
+        _UniffiFfiConverterBytes.write(value.delivery, buf)
+
+@dataclass
+class MobileScanFailureRawInfo:
+    def __init__(self, *, identity:MobileScanFailureIdentity, member_count:int, token_count:int):
+        self.identity = identity
+        self.member_count = member_count
+        self.token_count = token_count
+
+
+
+
+    def __str__(self):
+        return "MobileScanFailureRawInfo(identity={}, member_count={}, token_count={})".format(self.identity, self.member_count, self.token_count)
+    def __eq__(self, other):
+        if self.identity != other.identity:
+            return False
+        if self.member_count != other.member_count:
+            return False
+        if self.token_count != other.token_count:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileScanFailureRawInfo(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileScanFailureRawInfo(
+            identity=_UniffiFfiConverterTypeMobileScanFailureIdentity.read(buf),
+            member_count=_UniffiFfiConverterUInt64.read(buf),
+            token_count=_UniffiFfiConverterUInt64.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterTypeMobileScanFailureIdentity.check_lower(value.identity)
+        _UniffiFfiConverterUInt64.check_lower(value.member_count)
+        _UniffiFfiConverterUInt64.check_lower(value.token_count)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterTypeMobileScanFailureIdentity.write(value.identity, buf)
+        _UniffiFfiConverterUInt64.write(value.member_count, buf)
+        _UniffiFfiConverterUInt64.write(value.token_count, buf)
+
+@dataclass
+class MobileScanFailureRecoveryHeadInfo:
+    def __init__(self, *, protocol:int, representation:str, identity:MobileScanFailureIdentity, member:MobileScanFailureMember, encoded_length:str, chunk_bytes:int):
+        self.protocol = protocol
+        self.representation = representation
+        self.identity = identity
+        self.member = member
+        self.encoded_length = encoded_length
+        self.chunk_bytes = chunk_bytes
+
+
+
+
+    def __str__(self):
+        return "MobileScanFailureRecoveryHeadInfo(protocol={}, representation={}, identity={}, member={}, encoded_length={}, chunk_bytes={})".format(self.protocol, self.representation, self.identity, self.member, self.encoded_length, self.chunk_bytes)
+    def __eq__(self, other):
+        if self.protocol != other.protocol:
+            return False
+        if self.representation != other.representation:
+            return False
+        if self.identity != other.identity:
+            return False
+        if self.member != other.member:
+            return False
+        if self.encoded_length != other.encoded_length:
+            return False
+        if self.chunk_bytes != other.chunk_bytes:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileScanFailureRecoveryHeadInfo(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileScanFailureRecoveryHeadInfo(
+            protocol=_UniffiFfiConverterUInt32.read(buf),
+            representation=_UniffiFfiConverterString.read(buf),
+            identity=_UniffiFfiConverterTypeMobileScanFailureIdentity.read(buf),
+            member=_UniffiFfiConverterTypeMobileScanFailureMember.read(buf),
+            encoded_length=_UniffiFfiConverterString.read(buf),
+            chunk_bytes=_UniffiFfiConverterUInt32.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterUInt32.check_lower(value.protocol)
+        _UniffiFfiConverterString.check_lower(value.representation)
+        _UniffiFfiConverterTypeMobileScanFailureIdentity.check_lower(value.identity)
+        _UniffiFfiConverterTypeMobileScanFailureMember.check_lower(value.member)
+        _UniffiFfiConverterString.check_lower(value.encoded_length)
+        _UniffiFfiConverterUInt32.check_lower(value.chunk_bytes)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterUInt32.write(value.protocol, buf)
+        _UniffiFfiConverterString.write(value.representation, buf)
+        _UniffiFfiConverterTypeMobileScanFailureIdentity.write(value.identity, buf)
+        _UniffiFfiConverterTypeMobileScanFailureMember.write(value.member, buf)
+        _UniffiFfiConverterString.write(value.encoded_length, buf)
+        _UniffiFfiConverterUInt32.write(value.chunk_bytes, buf)
+
+@dataclass
+class MobileScanFailureRecoveryOwnerInfo:
+    def __init__(self, *, owner_id:str, prepared:bool, producer_finished:bool, raw_retired:bool, raw_released:bool, member_count:int, released:bool):
+        self.owner_id = owner_id
+        self.prepared = prepared
+        self.producer_finished = producer_finished
+        self.raw_retired = raw_retired
+        self.raw_released = raw_released
+        self.member_count = member_count
+        self.released = released
+
+
+
+
+    def __str__(self):
+        return "MobileScanFailureRecoveryOwnerInfo(owner_id={}, prepared={}, producer_finished={}, raw_retired={}, raw_released={}, member_count={}, released={})".format(self.owner_id, self.prepared, self.producer_finished, self.raw_retired, self.raw_released, self.member_count, self.released)
+    def __eq__(self, other):
+        if self.owner_id != other.owner_id:
+            return False
+        if self.prepared != other.prepared:
+            return False
+        if self.producer_finished != other.producer_finished:
+            return False
+        if self.raw_retired != other.raw_retired:
+            return False
+        if self.raw_released != other.raw_released:
+            return False
+        if self.member_count != other.member_count:
+            return False
+        if self.released != other.released:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileScanFailureRecoveryOwnerInfo(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileScanFailureRecoveryOwnerInfo(
+            owner_id=_UniffiFfiConverterString.read(buf),
+            prepared=_UniffiFfiConverterBoolean.read(buf),
+            producer_finished=_UniffiFfiConverterBoolean.read(buf),
+            raw_retired=_UniffiFfiConverterBoolean.read(buf),
+            raw_released=_UniffiFfiConverterBoolean.read(buf),
+            member_count=_UniffiFfiConverterUInt64.read(buf),
+            released=_UniffiFfiConverterBoolean.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.owner_id)
+        _UniffiFfiConverterBoolean.check_lower(value.prepared)
+        _UniffiFfiConverterBoolean.check_lower(value.producer_finished)
+        _UniffiFfiConverterBoolean.check_lower(value.raw_retired)
+        _UniffiFfiConverterBoolean.check_lower(value.raw_released)
+        _UniffiFfiConverterUInt64.check_lower(value.member_count)
+        _UniffiFfiConverterBoolean.check_lower(value.released)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.owner_id, buf)
+        _UniffiFfiConverterBoolean.write(value.prepared, buf)
+        _UniffiFfiConverterBoolean.write(value.producer_finished, buf)
+        _UniffiFfiConverterBoolean.write(value.raw_retired, buf)
+        _UniffiFfiConverterBoolean.write(value.raw_released, buf)
+        _UniffiFfiConverterUInt64.write(value.member_count, buf)
+        _UniffiFfiConverterBoolean.write(value.released, buf)
+
+@dataclass
+class MobileScanFailureRecoveryPage:
+    def __init__(self, *, offset:str, next_offset:str, bytes:bytes, done:bool):
+        self.offset = offset
+        self.next_offset = next_offset
+        self.bytes = bytes
+        self.done = done
+
+
+
+
+    def __str__(self):
+        return "MobileScanFailureRecoveryPage(offset={}, next_offset={}, bytes={}, done={})".format(self.offset, self.next_offset, self.bytes, self.done)
+    def __eq__(self, other):
+        if self.offset != other.offset:
+            return False
+        if self.next_offset != other.next_offset:
+            return False
+        if self.bytes != other.bytes:
+            return False
+        if self.done != other.done:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileScanFailureRecoveryPage(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileScanFailureRecoveryPage(
+            offset=_UniffiFfiConverterString.read(buf),
+            next_offset=_UniffiFfiConverterString.read(buf),
+            bytes=_UniffiFfiConverterBytes.read(buf),
+            done=_UniffiFfiConverterBoolean.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.offset)
+        _UniffiFfiConverterString.check_lower(value.next_offset)
+        _UniffiFfiConverterBytes.check_lower(value.bytes)
+        _UniffiFfiConverterBoolean.check_lower(value.done)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.offset, buf)
+        _UniffiFfiConverterString.write(value.next_offset, buf)
+        _UniffiFfiConverterBytes.write(value.bytes, buf)
+        _UniffiFfiConverterBoolean.write(value.done, buf)
 
 @dataclass
 class MobileSecurityState:
@@ -2399,6 +4683,2692 @@ class _UniffiFfiConverterTypeMobileCoreError(_UniffiConverterRustBuffer):
             _UniffiFfiConverterString.write(value.operation, buf)
             _UniffiFfiConverterOptionalString.write(value.detail, buf)
 
+
+
+
+
+
+class MobileGraphAuthorityStatus:
+    def __init__(self):
+        raise RuntimeError("MobileGraphAuthorityStatus cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class PENDING:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileGraphAuthorityStatus.PENDING()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileGraphAuthorityStatus):
+                return NotImplemented
+            if not other.is_PENDING():
+                return False
+            return True
+
+    @dataclass
+    class NOT_CREATED:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileGraphAuthorityStatus.NOT_CREATED()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileGraphAuthorityStatus):
+                return NotImplemented
+            if not other.is_NOT_CREATED():
+                return False
+            return True
+
+    @dataclass
+    class OPENED:
+
+        def __init__(self, authority_id:int):
+            self.authority_id = authority_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileGraphAuthorityStatus.OPENED(authority_id={})".format(self.authority_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileGraphAuthorityStatus):
+                return NotImplemented
+            if not other.is_OPENED():
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            return True
+
+    @dataclass
+    class CLOSED:
+
+        def __init__(self, authority_id:int):
+            self.authority_id = authority_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileGraphAuthorityStatus.CLOSED(authority_id={})".format(self.authority_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileGraphAuthorityStatus):
+                return NotImplemented
+            if not other.is_CLOSED():
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_PENDING(self) -> bool:
+        return isinstance(self, MobileGraphAuthorityStatus.PENDING)
+    def is_pending(self) -> bool:
+        return isinstance(self, MobileGraphAuthorityStatus.PENDING)
+    def is_NOT_CREATED(self) -> bool:
+        return isinstance(self, MobileGraphAuthorityStatus.NOT_CREATED)
+    def is_not_created(self) -> bool:
+        return isinstance(self, MobileGraphAuthorityStatus.NOT_CREATED)
+    def is_OPENED(self) -> bool:
+        return isinstance(self, MobileGraphAuthorityStatus.OPENED)
+    def is_opened(self) -> bool:
+        return isinstance(self, MobileGraphAuthorityStatus.OPENED)
+    def is_CLOSED(self) -> bool:
+        return isinstance(self, MobileGraphAuthorityStatus.CLOSED)
+    def is_closed(self) -> bool:
+        return isinstance(self, MobileGraphAuthorityStatus.CLOSED)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileGraphAuthorityStatus.PENDING = type("MobileGraphAuthorityStatus.PENDING", (MobileGraphAuthorityStatus.PENDING, MobileGraphAuthorityStatus,), {})  # type: ignore
+MobileGraphAuthorityStatus.NOT_CREATED = type("MobileGraphAuthorityStatus.NOT_CREATED", (MobileGraphAuthorityStatus.NOT_CREATED, MobileGraphAuthorityStatus,), {})  # type: ignore
+MobileGraphAuthorityStatus.OPENED = type("MobileGraphAuthorityStatus.OPENED", (MobileGraphAuthorityStatus.OPENED, MobileGraphAuthorityStatus,), {})  # type: ignore
+MobileGraphAuthorityStatus.CLOSED = type("MobileGraphAuthorityStatus.CLOSED", (MobileGraphAuthorityStatus.CLOSED, MobileGraphAuthorityStatus,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileGraphAuthorityStatus(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileGraphAuthorityStatus.PENDING(
+            )
+        if variant == 2:
+            return MobileGraphAuthorityStatus.NOT_CREATED(
+            )
+        if variant == 3:
+            return MobileGraphAuthorityStatus.OPENED(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 4:
+            return MobileGraphAuthorityStatus.CLOSED(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_PENDING():
+            return
+        if value.is_NOT_CREATED():
+            return
+        if value.is_OPENED():
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            return
+        if value.is_CLOSED():
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_PENDING():
+            buf.write_i32(1)
+        if value.is_NOT_CREATED():
+            buf.write_i32(2)
+        if value.is_OPENED():
+            buf.write_i32(3)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+        if value.is_CLOSED():
+            buf.write_i32(4)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+
+
+
+
+
+
+
+
+class MobileGraphPermitState(enum.Enum):
+
+    ACQUIRED = 0
+
+    STALE = 1
+
+    BUSY = 2
+
+    COMMITTED = 3
+
+    RELEASED = 4
+
+    FORGOTTEN = 5
+
+
+
+class _UniffiFfiConverterTypeMobileGraphPermitState(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileGraphPermitState.ACQUIRED
+        if variant == 2:
+            return MobileGraphPermitState.STALE
+        if variant == 3:
+            return MobileGraphPermitState.BUSY
+        if variant == 4:
+            return MobileGraphPermitState.COMMITTED
+        if variant == 5:
+            return MobileGraphPermitState.RELEASED
+        if variant == 6:
+            return MobileGraphPermitState.FORGOTTEN
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value == MobileGraphPermitState.ACQUIRED:
+            return
+        if value == MobileGraphPermitState.STALE:
+            return
+        if value == MobileGraphPermitState.BUSY:
+            return
+        if value == MobileGraphPermitState.COMMITTED:
+            return
+        if value == MobileGraphPermitState.RELEASED:
+            return
+        if value == MobileGraphPermitState.FORGOTTEN:
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value == MobileGraphPermitState.ACQUIRED:
+            buf.write_i32(1)
+        if value == MobileGraphPermitState.STALE:
+            buf.write_i32(2)
+        if value == MobileGraphPermitState.BUSY:
+            buf.write_i32(3)
+        if value == MobileGraphPermitState.COMMITTED:
+            buf.write_i32(4)
+        if value == MobileGraphPermitState.RELEASED:
+            buf.write_i32(5)
+        if value == MobileGraphPermitState.FORGOTTEN:
+            buf.write_i32(6)
+
+
+
+
+
+
+
+
+class MobileGraphReserveStatus:
+    def __init__(self):
+        raise RuntimeError("MobileGraphReserveStatus cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class PENDING:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileGraphReserveStatus.PENDING()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileGraphReserveStatus):
+                return NotImplemented
+            if not other.is_PENDING():
+                return False
+            return True
+
+    @dataclass
+    class NOT_CREATED:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileGraphReserveStatus.NOT_CREATED()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileGraphReserveStatus):
+                return NotImplemented
+            if not other.is_NOT_CREATED():
+                return False
+            return True
+
+    @dataclass
+    class ISSUED:
+
+        def __init__(self, receipt_id:int):
+            self.receipt_id = receipt_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileGraphReserveStatus.ISSUED(receipt_id={})".format(self.receipt_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileGraphReserveStatus):
+                return NotImplemented
+            if not other.is_ISSUED():
+                return False
+            if self.receipt_id != other.receipt_id:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_PENDING(self) -> bool:
+        return isinstance(self, MobileGraphReserveStatus.PENDING)
+    def is_pending(self) -> bool:
+        return isinstance(self, MobileGraphReserveStatus.PENDING)
+    def is_NOT_CREATED(self) -> bool:
+        return isinstance(self, MobileGraphReserveStatus.NOT_CREATED)
+    def is_not_created(self) -> bool:
+        return isinstance(self, MobileGraphReserveStatus.NOT_CREATED)
+    def is_ISSUED(self) -> bool:
+        return isinstance(self, MobileGraphReserveStatus.ISSUED)
+    def is_issued(self) -> bool:
+        return isinstance(self, MobileGraphReserveStatus.ISSUED)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileGraphReserveStatus.PENDING = type("MobileGraphReserveStatus.PENDING", (MobileGraphReserveStatus.PENDING, MobileGraphReserveStatus,), {})  # type: ignore
+MobileGraphReserveStatus.NOT_CREATED = type("MobileGraphReserveStatus.NOT_CREATED", (MobileGraphReserveStatus.NOT_CREATED, MobileGraphReserveStatus,), {})  # type: ignore
+MobileGraphReserveStatus.ISSUED = type("MobileGraphReserveStatus.ISSUED", (MobileGraphReserveStatus.ISSUED, MobileGraphReserveStatus,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileGraphReserveStatus(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileGraphReserveStatus.PENDING(
+            )
+        if variant == 2:
+            return MobileGraphReserveStatus.NOT_CREATED(
+            )
+        if variant == 3:
+            return MobileGraphReserveStatus.ISSUED(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_PENDING():
+            return
+        if value.is_NOT_CREATED():
+            return
+        if value.is_ISSUED():
+            _UniffiFfiConverterUInt64.check_lower(value.receipt_id)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_PENDING():
+            buf.write_i32(1)
+        if value.is_NOT_CREATED():
+            buf.write_i32(2)
+        if value.is_ISSUED():
+            buf.write_i32(3)
+            _UniffiFfiConverterUInt64.write(value.receipt_id, buf)
+
+
+
+
+
+
+
+
+class MobileOrderedEnableStatus:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedEnableStatus cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class PENDING:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedEnableStatus.PENDING()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedEnableStatus):
+                return NotImplemented
+            if not other.is_PENDING():
+                return False
+            return True
+
+    @dataclass
+    class ENABLED:
+
+        def __init__(self, delivery:str):
+            self.delivery = delivery
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedEnableStatus.ENABLED(delivery={})".format(self.delivery)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedEnableStatus):
+                return NotImplemented
+            if not other.is_ENABLED():
+                return False
+            if self.delivery != other.delivery:
+                return False
+            return True
+
+    @dataclass
+    class RELEASED:
+
+        def __init__(self, failure:typing.Optional[MobilePlatformFailure]):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedEnableStatus.RELEASED(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedEnableStatus):
+                return NotImplemented
+            if not other.is_RELEASED():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+    @dataclass
+    class UNCERTAIN:
+
+        def __init__(self, failure:MobilePlatformFailure):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedEnableStatus.UNCERTAIN(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedEnableStatus):
+                return NotImplemented
+            if not other.is_UNCERTAIN():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_PENDING(self) -> bool:
+        return isinstance(self, MobileOrderedEnableStatus.PENDING)
+    def is_pending(self) -> bool:
+        return isinstance(self, MobileOrderedEnableStatus.PENDING)
+    def is_ENABLED(self) -> bool:
+        return isinstance(self, MobileOrderedEnableStatus.ENABLED)
+    def is_enabled(self) -> bool:
+        return isinstance(self, MobileOrderedEnableStatus.ENABLED)
+    def is_RELEASED(self) -> bool:
+        return isinstance(self, MobileOrderedEnableStatus.RELEASED)
+    def is_released(self) -> bool:
+        return isinstance(self, MobileOrderedEnableStatus.RELEASED)
+    def is_UNCERTAIN(self) -> bool:
+        return isinstance(self, MobileOrderedEnableStatus.UNCERTAIN)
+    def is_uncertain(self) -> bool:
+        return isinstance(self, MobileOrderedEnableStatus.UNCERTAIN)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedEnableStatus.PENDING = type("MobileOrderedEnableStatus.PENDING", (MobileOrderedEnableStatus.PENDING, MobileOrderedEnableStatus,), {})  # type: ignore
+MobileOrderedEnableStatus.ENABLED = type("MobileOrderedEnableStatus.ENABLED", (MobileOrderedEnableStatus.ENABLED, MobileOrderedEnableStatus,), {})  # type: ignore
+MobileOrderedEnableStatus.RELEASED = type("MobileOrderedEnableStatus.RELEASED", (MobileOrderedEnableStatus.RELEASED, MobileOrderedEnableStatus,), {})  # type: ignore
+MobileOrderedEnableStatus.UNCERTAIN = type("MobileOrderedEnableStatus.UNCERTAIN", (MobileOrderedEnableStatus.UNCERTAIN, MobileOrderedEnableStatus,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedEnableStatus(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedEnableStatus.PENDING(
+            )
+        if variant == 2:
+            return MobileOrderedEnableStatus.ENABLED(
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 3:
+            return MobileOrderedEnableStatus.RELEASED(
+                _UniffiFfiConverterOptionalTypeMobilePlatformFailure.read(buf),
+            )
+        if variant == 4:
+            return MobileOrderedEnableStatus.UNCERTAIN(
+                _UniffiFfiConverterTypeMobilePlatformFailure.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_PENDING():
+            return
+        if value.is_ENABLED():
+            _UniffiFfiConverterString.check_lower(value.delivery)
+            return
+        if value.is_RELEASED():
+            _UniffiFfiConverterOptionalTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        if value.is_UNCERTAIN():
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_PENDING():
+            buf.write_i32(1)
+        if value.is_ENABLED():
+            buf.write_i32(2)
+            _UniffiFfiConverterString.write(value.delivery, buf)
+        if value.is_RELEASED():
+            buf.write_i32(3)
+            _UniffiFfiConverterOptionalTypeMobilePlatformFailure.write(value.failure, buf)
+        if value.is_UNCERTAIN():
+            buf.write_i32(4)
+            _UniffiFfiConverterTypeMobilePlatformFailure.write(value.failure, buf)
+
+
+
+
+
+
+
+
+class MobileOrderedIndeterminateReason:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedIndeterminateReason cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class FAILURE:
+
+        def __init__(self, failure:MobileOrderedFailureV2):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedIndeterminateReason.FAILURE(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedIndeterminateReason):
+                return NotImplemented
+            if not other.is_FAILURE():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+    @dataclass
+    class REASON:
+
+        def __init__(self, reason:str):
+            self.reason = reason
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedIndeterminateReason.REASON(reason={})".format(self.reason)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedIndeterminateReason):
+                return NotImplemented
+            if not other.is_REASON():
+                return False
+            if self.reason != other.reason:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_FAILURE(self) -> bool:
+        return isinstance(self, MobileOrderedIndeterminateReason.FAILURE)
+    def is_failure(self) -> bool:
+        return isinstance(self, MobileOrderedIndeterminateReason.FAILURE)
+    def is_REASON(self) -> bool:
+        return isinstance(self, MobileOrderedIndeterminateReason.REASON)
+    def is_reason(self) -> bool:
+        return isinstance(self, MobileOrderedIndeterminateReason.REASON)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedIndeterminateReason.FAILURE = type("MobileOrderedIndeterminateReason.FAILURE", (MobileOrderedIndeterminateReason.FAILURE, MobileOrderedIndeterminateReason,), {})  # type: ignore
+MobileOrderedIndeterminateReason.REASON = type("MobileOrderedIndeterminateReason.REASON", (MobileOrderedIndeterminateReason.REASON, MobileOrderedIndeterminateReason,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedIndeterminateReason(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedIndeterminateReason.FAILURE(
+                _UniffiFfiConverterTypeMobileOrderedFailureV2.read(buf),
+            )
+        if variant == 2:
+            return MobileOrderedIndeterminateReason.REASON(
+                _UniffiFfiConverterString.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_FAILURE():
+            _UniffiFfiConverterTypeMobileOrderedFailureV2.check_lower(value.failure)
+            return
+        if value.is_REASON():
+            _UniffiFfiConverterString.check_lower(value.reason)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_FAILURE():
+            buf.write_i32(1)
+            _UniffiFfiConverterTypeMobileOrderedFailureV2.write(value.failure, buf)
+        if value.is_REASON():
+            buf.write_i32(2)
+            _UniffiFfiConverterString.write(value.reason, buf)
+
+
+
+class _UniffiFfiConverterSequenceTypeMobileOrderedRegistration(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf) for i in range(count)
+        ]
+
+
+
+
+
+
+class MobileOrderedOwnershipV2:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedOwnershipV2 cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class NOT_CREATED:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOwnershipV2.NOT_CREATED()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOwnershipV2):
+                return NotImplemented
+            if not other.is_NOT_CREATED():
+                return False
+            return True
+
+    @dataclass
+    class CREATED:
+
+        def __init__(self, source_generation:MobileOrderedGeneration, members:typing.List[MobileOrderedRegistration]):
+            self.source_generation = source_generation
+
+
+            self.members = members
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOwnershipV2.CREATED(source_generation={}, members={})".format(self.source_generation, self.members)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOwnershipV2):
+                return NotImplemented
+            if not other.is_CREATED():
+                return False
+            if self.source_generation != other.source_generation:
+                return False
+            if self.members != other.members:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_NOT_CREATED(self) -> bool:
+        return isinstance(self, MobileOrderedOwnershipV2.NOT_CREATED)
+    def is_not_created(self) -> bool:
+        return isinstance(self, MobileOrderedOwnershipV2.NOT_CREATED)
+    def is_CREATED(self) -> bool:
+        return isinstance(self, MobileOrderedOwnershipV2.CREATED)
+    def is_created(self) -> bool:
+        return isinstance(self, MobileOrderedOwnershipV2.CREATED)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedOwnershipV2.NOT_CREATED = type("MobileOrderedOwnershipV2.NOT_CREATED", (MobileOrderedOwnershipV2.NOT_CREATED, MobileOrderedOwnershipV2,), {})  # type: ignore
+MobileOrderedOwnershipV2.CREATED = type("MobileOrderedOwnershipV2.CREATED", (MobileOrderedOwnershipV2.CREATED, MobileOrderedOwnershipV2,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedOwnershipV2(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedOwnershipV2.NOT_CREATED(
+            )
+        if variant == 2:
+            return MobileOrderedOwnershipV2.CREATED(
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_NOT_CREATED():
+            return
+        if value.is_CREATED():
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.source_generation)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.check_lower(value.members)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_NOT_CREATED():
+            buf.write_i32(1)
+        if value.is_CREATED():
+            buf.write_i32(2)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.source_generation, buf)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.write(value.members, buf)
+
+
+
+
+
+
+
+
+class MobileOrderedOpenOutcome:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedOpenOutcome cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class PENDING:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOpenOutcome.PENDING()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOpenOutcome):
+                return NotImplemented
+            if not other.is_PENDING():
+                return False
+            return True
+
+    @dataclass
+    class OPENED:
+
+        def __init__(self, source_generation:MobileOrderedGeneration, members:typing.List[MobileOrderedRegistration]):
+            self.source_generation = source_generation
+
+
+            self.members = members
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOpenOutcome.OPENED(source_generation={}, members={})".format(self.source_generation, self.members)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOpenOutcome):
+                return NotImplemented
+            if not other.is_OPENED():
+                return False
+            if self.source_generation != other.source_generation:
+                return False
+            if self.members != other.members:
+                return False
+            return True
+
+    @dataclass
+    class FAILED:
+
+        def __init__(self, original_failure:MobileOrderedFailureV2, ownership:MobileOrderedOwnershipV2):
+            self.original_failure = original_failure
+
+
+            self.ownership = ownership
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOpenOutcome.FAILED(original_failure={}, ownership={})".format(self.original_failure, self.ownership)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOpenOutcome):
+                return NotImplemented
+            if not other.is_FAILED():
+                return False
+            if self.original_failure != other.original_failure:
+                return False
+            if self.ownership != other.ownership:
+                return False
+            return True
+
+    @dataclass
+    class INDETERMINATE:
+
+        def __init__(self, original_failure_or_reason:MobileOrderedIndeterminateReason):
+            self.original_failure_or_reason = original_failure_or_reason
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOpenOutcome.INDETERMINATE(original_failure_or_reason={})".format(self.original_failure_or_reason)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOpenOutcome):
+                return NotImplemented
+            if not other.is_INDETERMINATE():
+                return False
+            if self.original_failure_or_reason != other.original_failure_or_reason:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_PENDING(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOutcome.PENDING)
+    def is_pending(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOutcome.PENDING)
+    def is_OPENED(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOutcome.OPENED)
+    def is_opened(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOutcome.OPENED)
+    def is_FAILED(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOutcome.FAILED)
+    def is_failed(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOutcome.FAILED)
+    def is_INDETERMINATE(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOutcome.INDETERMINATE)
+    def is_indeterminate(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOutcome.INDETERMINATE)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedOpenOutcome.PENDING = type("MobileOrderedOpenOutcome.PENDING", (MobileOrderedOpenOutcome.PENDING, MobileOrderedOpenOutcome,), {})  # type: ignore
+MobileOrderedOpenOutcome.OPENED = type("MobileOrderedOpenOutcome.OPENED", (MobileOrderedOpenOutcome.OPENED, MobileOrderedOpenOutcome,), {})  # type: ignore
+MobileOrderedOpenOutcome.FAILED = type("MobileOrderedOpenOutcome.FAILED", (MobileOrderedOpenOutcome.FAILED, MobileOrderedOpenOutcome,), {})  # type: ignore
+MobileOrderedOpenOutcome.INDETERMINATE = type("MobileOrderedOpenOutcome.INDETERMINATE", (MobileOrderedOpenOutcome.INDETERMINATE, MobileOrderedOpenOutcome,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedOpenOutcome(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedOpenOutcome.PENDING(
+            )
+        if variant == 2:
+            return MobileOrderedOpenOutcome.OPENED(
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 3:
+            return MobileOrderedOpenOutcome.FAILED(
+                _UniffiFfiConverterTypeMobileOrderedFailureV2.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedOwnershipV2.read(buf),
+            )
+        if variant == 4:
+            return MobileOrderedOpenOutcome.INDETERMINATE(
+                _UniffiFfiConverterTypeMobileOrderedIndeterminateReason.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_PENDING():
+            return
+        if value.is_OPENED():
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.source_generation)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.check_lower(value.members)
+            return
+        if value.is_FAILED():
+            _UniffiFfiConverterTypeMobileOrderedFailureV2.check_lower(value.original_failure)
+            _UniffiFfiConverterTypeMobileOrderedOwnershipV2.check_lower(value.ownership)
+            return
+        if value.is_INDETERMINATE():
+            _UniffiFfiConverterTypeMobileOrderedIndeterminateReason.check_lower(value.original_failure_or_reason)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_PENDING():
+            buf.write_i32(1)
+        if value.is_OPENED():
+            buf.write_i32(2)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.source_generation, buf)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.write(value.members, buf)
+        if value.is_FAILED():
+            buf.write_i32(3)
+            _UniffiFfiConverterTypeMobileOrderedFailureV2.write(value.original_failure, buf)
+            _UniffiFfiConverterTypeMobileOrderedOwnershipV2.write(value.ownership, buf)
+        if value.is_INDETERMINATE():
+            buf.write_i32(4)
+            _UniffiFfiConverterTypeMobileOrderedIndeterminateReason.write(value.original_failure_or_reason, buf)
+
+
+
+
+
+
+
+
+class MobileOrderedOpenCompletion:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedOpenCompletion cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class RESULT:
+
+        def __init__(self, slot_identity:MobileOrderedSlotIdentity, outcome:MobileOrderedOpenOutcome):
+            self.slot_identity = slot_identity
+
+
+            self.outcome = outcome
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOpenCompletion.RESULT(slot_identity={}, outcome={})".format(self.slot_identity, self.outcome)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOpenCompletion):
+                return NotImplemented
+            if not other.is_RESULT():
+                return False
+            if self.slot_identity != other.slot_identity:
+                return False
+            if self.outcome != other.outcome:
+                return False
+            return True
+
+    @dataclass
+    class RETIRED:
+
+        def __init__(self, slot_identity:MobileOrderedSlotIdentity):
+            self.slot_identity = slot_identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOpenCompletion.RETIRED(slot_identity={})".format(self.slot_identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOpenCompletion):
+                return NotImplemented
+            if not other.is_RETIRED():
+                return False
+            if self.slot_identity != other.slot_identity:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_RESULT(self) -> bool:
+        return isinstance(self, MobileOrderedOpenCompletion.RESULT)
+    def is_result(self) -> bool:
+        return isinstance(self, MobileOrderedOpenCompletion.RESULT)
+    def is_RETIRED(self) -> bool:
+        return isinstance(self, MobileOrderedOpenCompletion.RETIRED)
+    def is_retired(self) -> bool:
+        return isinstance(self, MobileOrderedOpenCompletion.RETIRED)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedOpenCompletion.RESULT = type("MobileOrderedOpenCompletion.RESULT", (MobileOrderedOpenCompletion.RESULT, MobileOrderedOpenCompletion,), {})  # type: ignore
+MobileOrderedOpenCompletion.RETIRED = type("MobileOrderedOpenCompletion.RETIRED", (MobileOrderedOpenCompletion.RETIRED, MobileOrderedOpenCompletion,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedOpenCompletion(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedOpenCompletion.RESULT(
+                _UniffiFfiConverterTypeMobileOrderedSlotIdentity.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedOpenOutcome.read(buf),
+            )
+        if variant == 2:
+            return MobileOrderedOpenCompletion.RETIRED(
+                _UniffiFfiConverterTypeMobileOrderedSlotIdentity.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_RESULT():
+            _UniffiFfiConverterTypeMobileOrderedSlotIdentity.check_lower(value.slot_identity)
+            _UniffiFfiConverterTypeMobileOrderedOpenOutcome.check_lower(value.outcome)
+            return
+        if value.is_RETIRED():
+            _UniffiFfiConverterTypeMobileOrderedSlotIdentity.check_lower(value.slot_identity)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_RESULT():
+            buf.write_i32(1)
+            _UniffiFfiConverterTypeMobileOrderedSlotIdentity.write(value.slot_identity, buf)
+            _UniffiFfiConverterTypeMobileOrderedOpenOutcome.write(value.outcome, buf)
+        if value.is_RETIRED():
+            buf.write_i32(2)
+            _UniffiFfiConverterTypeMobileOrderedSlotIdentity.write(value.slot_identity, buf)
+
+
+
+
+
+
+
+
+class MobileOrderedOpenOwnership:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedOpenOwnership cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class NOT_CREATED:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOpenOwnership.NOT_CREATED()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOpenOwnership):
+                return NotImplemented
+            if not other.is_NOT_CREATED():
+                return False
+            return True
+
+    @dataclass
+    class CREATED:
+
+        def __init__(self, generation:MobileOrderedGeneration, members:typing.List[MobileOrderedRegistration]):
+            self.generation = generation
+
+
+            self.members = members
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOpenOwnership.CREATED(generation={}, members={})".format(self.generation, self.members)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOpenOwnership):
+                return NotImplemented
+            if not other.is_CREATED():
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.members != other.members:
+                return False
+            return True
+
+    @dataclass
+    class INDETERMINATE:
+
+        def __init__(self, recovery_key:int):
+            self.recovery_key = recovery_key
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedOpenOwnership.INDETERMINATE(recovery_key={})".format(self.recovery_key)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedOpenOwnership):
+                return NotImplemented
+            if not other.is_INDETERMINATE():
+                return False
+            if self.recovery_key != other.recovery_key:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_NOT_CREATED(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOwnership.NOT_CREATED)
+    def is_not_created(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOwnership.NOT_CREATED)
+    def is_CREATED(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOwnership.CREATED)
+    def is_created(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOwnership.CREATED)
+    def is_INDETERMINATE(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOwnership.INDETERMINATE)
+    def is_indeterminate(self) -> bool:
+        return isinstance(self, MobileOrderedOpenOwnership.INDETERMINATE)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedOpenOwnership.NOT_CREATED = type("MobileOrderedOpenOwnership.NOT_CREATED", (MobileOrderedOpenOwnership.NOT_CREATED, MobileOrderedOpenOwnership,), {})  # type: ignore
+MobileOrderedOpenOwnership.CREATED = type("MobileOrderedOpenOwnership.CREATED", (MobileOrderedOpenOwnership.CREATED, MobileOrderedOpenOwnership,), {})  # type: ignore
+MobileOrderedOpenOwnership.INDETERMINATE = type("MobileOrderedOpenOwnership.INDETERMINATE", (MobileOrderedOpenOwnership.INDETERMINATE, MobileOrderedOpenOwnership,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedOpenOwnership(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedOpenOwnership.NOT_CREATED(
+            )
+        if variant == 2:
+            return MobileOrderedOpenOwnership.CREATED(
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 3:
+            return MobileOrderedOpenOwnership.INDETERMINATE(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_NOT_CREATED():
+            return
+        if value.is_CREATED():
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.check_lower(value.members)
+            return
+        if value.is_INDETERMINATE():
+            _UniffiFfiConverterUInt64.check_lower(value.recovery_key)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_NOT_CREATED():
+            buf.write_i32(1)
+        if value.is_CREATED():
+            buf.write_i32(2)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.write(value.members, buf)
+        if value.is_INDETERMINATE():
+            buf.write_i32(3)
+            _UniffiFfiConverterUInt64.write(value.recovery_key, buf)
+
+
+
+class _UniffiFfiConverterOptionalUInt64(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterUInt64.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterUInt64.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterUInt64.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+class _UniffiFfiConverterOptionalTypeMobileOrderedRegistration(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterTypeMobileOrderedRegistration.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+
+
+
+
+
+class MobileOrderedRejected:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedRejected cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class VALUE:
+
+        def __init__(self, member:MobileOrderedRegistration, byte_count:int):
+            self.member = member
+
+
+            self.byte_count = byte_count
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRejected.VALUE(member={}, byte_count={})".format(self.member, self.byte_count)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRejected):
+                return NotImplemented
+            if not other.is_VALUE():
+                return False
+            if self.member != other.member:
+                return False
+            if self.byte_count != other.byte_count:
+                return False
+            return True
+
+    @dataclass
+    class LOSS:
+
+        def __init__(self, scope:str, member_id:typing.Optional[int], unit:str, count:typing.Optional[int], byte_count:typing.Optional[int]):
+            self.scope = scope
+
+
+            self.member_id = member_id
+
+
+            self.unit = unit
+
+
+            self.count = count
+
+
+            self.byte_count = byte_count
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRejected.LOSS(scope={}, member_id={}, unit={}, count={}, byte_count={})".format(self.scope, self.member_id, self.unit, self.count, self.byte_count)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRejected):
+                return NotImplemented
+            if not other.is_LOSS():
+                return False
+            if self.scope != other.scope:
+                return False
+            if self.member_id != other.member_id:
+                return False
+            if self.unit != other.unit:
+                return False
+            if self.count != other.count:
+                return False
+            if self.byte_count != other.byte_count:
+                return False
+            return True
+
+    @dataclass
+    class FENCE:
+
+        def __init__(self, member:MobileOrderedRegistration):
+            self.member = member
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRejected.FENCE(member={})".format(self.member)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRejected):
+                return NotImplemented
+            if not other.is_FENCE():
+                return False
+            if self.member != other.member:
+                return False
+            return True
+
+    @dataclass
+    class BARRIER:
+
+        def __init__(self, barrier_id:int):
+            self.barrier_id = barrier_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRejected.BARRIER(barrier_id={})".format(self.barrier_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRejected):
+                return NotImplemented
+            if not other.is_BARRIER():
+                return False
+            if self.barrier_id != other.barrier_id:
+                return False
+            return True
+
+    @dataclass
+    class MARKER:
+
+        def __init__(self, marker_id:int):
+            self.marker_id = marker_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRejected.MARKER(marker_id={})".format(self.marker_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRejected):
+                return NotImplemented
+            if not other.is_MARKER():
+                return False
+            if self.marker_id != other.marker_id:
+                return False
+            return True
+
+    @dataclass
+    class UNMAPPED:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRejected.UNMAPPED()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRejected):
+                return NotImplemented
+            if not other.is_UNMAPPED():
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_VALUE(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.VALUE)
+    def is_value(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.VALUE)
+    def is_LOSS(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.LOSS)
+    def is_loss(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.LOSS)
+    def is_FENCE(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.FENCE)
+    def is_fence(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.FENCE)
+    def is_BARRIER(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.BARRIER)
+    def is_barrier(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.BARRIER)
+    def is_MARKER(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.MARKER)
+    def is_marker(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.MARKER)
+    def is_UNMAPPED(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.UNMAPPED)
+    def is_unmapped(self) -> bool:
+        return isinstance(self, MobileOrderedRejected.UNMAPPED)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedRejected.VALUE = type("MobileOrderedRejected.VALUE", (MobileOrderedRejected.VALUE, MobileOrderedRejected,), {})  # type: ignore
+MobileOrderedRejected.LOSS = type("MobileOrderedRejected.LOSS", (MobileOrderedRejected.LOSS, MobileOrderedRejected,), {})  # type: ignore
+MobileOrderedRejected.FENCE = type("MobileOrderedRejected.FENCE", (MobileOrderedRejected.FENCE, MobileOrderedRejected,), {})  # type: ignore
+MobileOrderedRejected.BARRIER = type("MobileOrderedRejected.BARRIER", (MobileOrderedRejected.BARRIER, MobileOrderedRejected,), {})  # type: ignore
+MobileOrderedRejected.MARKER = type("MobileOrderedRejected.MARKER", (MobileOrderedRejected.MARKER, MobileOrderedRejected,), {})  # type: ignore
+MobileOrderedRejected.UNMAPPED = type("MobileOrderedRejected.UNMAPPED", (MobileOrderedRejected.UNMAPPED, MobileOrderedRejected,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedRejected(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedRejected.VALUE(
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 2:
+            return MobileOrderedRejected.LOSS(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterOptionalUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterOptionalUInt64.read(buf),
+                _UniffiFfiConverterOptionalUInt64.read(buf),
+            )
+        if variant == 3:
+            return MobileOrderedRejected.FENCE(
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 4:
+            return MobileOrderedRejected.BARRIER(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 5:
+            return MobileOrderedRejected.MARKER(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 6:
+            return MobileOrderedRejected.UNMAPPED(
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_VALUE():
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            _UniffiFfiConverterUInt64.check_lower(value.byte_count)
+            return
+        if value.is_LOSS():
+            _UniffiFfiConverterString.check_lower(value.scope)
+            _UniffiFfiConverterOptionalUInt64.check_lower(value.member_id)
+            _UniffiFfiConverterString.check_lower(value.unit)
+            _UniffiFfiConverterOptionalUInt64.check_lower(value.count)
+            _UniffiFfiConverterOptionalUInt64.check_lower(value.byte_count)
+            return
+        if value.is_FENCE():
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            return
+        if value.is_BARRIER():
+            _UniffiFfiConverterUInt64.check_lower(value.barrier_id)
+            return
+        if value.is_MARKER():
+            _UniffiFfiConverterUInt64.check_lower(value.marker_id)
+            return
+        if value.is_UNMAPPED():
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_VALUE():
+            buf.write_i32(1)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+            _UniffiFfiConverterUInt64.write(value.byte_count, buf)
+        if value.is_LOSS():
+            buf.write_i32(2)
+            _UniffiFfiConverterString.write(value.scope, buf)
+            _UniffiFfiConverterOptionalUInt64.write(value.member_id, buf)
+            _UniffiFfiConverterString.write(value.unit, buf)
+            _UniffiFfiConverterOptionalUInt64.write(value.count, buf)
+            _UniffiFfiConverterOptionalUInt64.write(value.byte_count, buf)
+        if value.is_FENCE():
+            buf.write_i32(3)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+        if value.is_BARRIER():
+            buf.write_i32(4)
+            _UniffiFfiConverterUInt64.write(value.barrier_id, buf)
+        if value.is_MARKER():
+            buf.write_i32(5)
+            _UniffiFfiConverterUInt64.write(value.marker_id, buf)
+        if value.is_UNMAPPED():
+            buf.write_i32(6)
+
+
+
+class _UniffiFfiConverterOptionalTypeMobileOrderedRejected(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterTypeMobileOrderedRejected.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterTypeMobileOrderedRejected.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterTypeMobileOrderedRejected.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+
+
+
+
+
+class MobileOrderedRecord:
+    def __init__(self):
+        raise RuntimeError("MobileOrderedRecord cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class VALUE:
+
+        def __init__(self, member:MobileOrderedRegistration, ordinal:int, value:bytes, delivery:str, provenance:str):
+            self.member = member
+
+
+            self.ordinal = ordinal
+
+
+            self.value = value
+
+
+            self.delivery = delivery
+
+
+            self.provenance = provenance
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.VALUE(member={}, ordinal={}, value={}, delivery={}, provenance={})".format(self.member, self.ordinal, self.value, self.delivery, self.provenance)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_VALUE():
+                return False
+            if self.member != other.member:
+                return False
+            if self.ordinal != other.ordinal:
+                return False
+            if self.value != other.value:
+                return False
+            if self.delivery != other.delivery:
+                return False
+            if self.provenance != other.provenance:
+                return False
+            return True
+
+    @dataclass
+    class LOSS:
+
+        def __init__(self, scope:str, member_id:typing.Optional[int], unit:str, count:typing.Optional[int], byte_count:typing.Optional[int]):
+            self.scope = scope
+
+
+            self.member_id = member_id
+
+
+            self.unit = unit
+
+
+            self.count = count
+
+
+            self.byte_count = byte_count
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.LOSS(scope={}, member_id={}, unit={}, count={}, byte_count={})".format(self.scope, self.member_id, self.unit, self.count, self.byte_count)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_LOSS():
+                return False
+            if self.scope != other.scope:
+                return False
+            if self.member_id != other.member_id:
+                return False
+            if self.unit != other.unit:
+                return False
+            if self.count != other.count:
+                return False
+            if self.byte_count != other.byte_count:
+                return False
+            return True
+
+    @dataclass
+    class FENCE:
+
+        def __init__(self, member:MobileOrderedRegistration, uncertain_tail:bool):
+            self.member = member
+
+
+            self.uncertain_tail = uncertain_tail
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.FENCE(member={}, uncertain_tail={})".format(self.member, self.uncertain_tail)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_FENCE():
+                return False
+            if self.member != other.member:
+                return False
+            if self.uncertain_tail != other.uncertain_tail:
+                return False
+            return True
+
+    @dataclass
+    class BARRIER:
+
+        def __init__(self, barrier_id:int, uncertain_tail:bool):
+            self.barrier_id = barrier_id
+
+
+            self.uncertain_tail = uncertain_tail
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.BARRIER(barrier_id={}, uncertain_tail={})".format(self.barrier_id, self.uncertain_tail)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_BARRIER():
+                return False
+            if self.barrier_id != other.barrier_id:
+                return False
+            if self.uncertain_tail != other.uncertain_tail:
+                return False
+            return True
+
+    @dataclass
+    class MARKER:
+
+        def __init__(self, marker_id:int, ordinal:int):
+            self.marker_id = marker_id
+
+
+            self.ordinal = ordinal
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.MARKER(marker_id={}, ordinal={})".format(self.marker_id, self.ordinal)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_MARKER():
+                return False
+            if self.marker_id != other.marker_id:
+                return False
+            if self.ordinal != other.ordinal:
+                return False
+            return True
+
+    @dataclass
+    class TERMINAL:
+
+        def __init__(self, reason:str, uncertain_tail:bool, native_domain:typing.Optional[str], native_code:typing.Optional[str], failure_member:typing.Optional[MobileOrderedRegistration], rejected:typing.Optional[MobileOrderedRejected]):
+            self.reason = reason
+
+
+            self.uncertain_tail = uncertain_tail
+
+
+            self.native_domain = native_domain
+
+
+            self.native_code = native_code
+
+
+            self.failure_member = failure_member
+
+
+            self.rejected = rejected
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.TERMINAL(reason={}, uncertain_tail={}, native_domain={}, native_code={}, failure_member={}, rejected={})".format(self.reason, self.uncertain_tail, self.native_domain, self.native_code, self.failure_member, self.rejected)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_TERMINAL():
+                return False
+            if self.reason != other.reason:
+                return False
+            if self.uncertain_tail != other.uncertain_tail:
+                return False
+            if self.native_domain != other.native_domain:
+                return False
+            if self.native_code != other.native_code:
+                return False
+            if self.failure_member != other.failure_member:
+                return False
+            if self.rejected != other.rejected:
+                return False
+            return True
+
+    @dataclass
+    class BRIDGE_FAILURE:
+
+        def __init__(self, code:str, detail:str):
+            self.code = code
+
+
+            self.detail = detail
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.BRIDGE_FAILURE(code={}, detail={})".format(self.code, self.detail)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_BRIDGE_FAILURE():
+                return False
+            if self.code != other.code:
+                return False
+            if self.detail != other.detail:
+                return False
+            return True
+
+    @dataclass
+    class SOURCE_FAILED:
+
+        def __init__(self, uncertain_tail:bool, failure:MobilePlatformFailure, native_domain:typing.Optional[str], native_code:typing.Optional[str], failure_member:typing.Optional[MobileOrderedRegistration], rejected:typing.Optional[MobileOrderedRejected]):
+            self.uncertain_tail = uncertain_tail
+
+
+            self.failure = failure
+
+
+            self.native_domain = native_domain
+
+
+            self.native_code = native_code
+
+
+            self.failure_member = failure_member
+
+
+            self.rejected = rejected
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.SOURCE_FAILED(uncertain_tail={}, failure={}, native_domain={}, native_code={}, failure_member={}, rejected={})".format(self.uncertain_tail, self.failure, self.native_domain, self.native_code, self.failure_member, self.rejected)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_SOURCE_FAILED():
+                return False
+            if self.uncertain_tail != other.uncertain_tail:
+                return False
+            if self.failure != other.failure:
+                return False
+            if self.native_domain != other.native_domain:
+                return False
+            if self.native_code != other.native_code:
+                return False
+            if self.failure_member != other.failure_member:
+                return False
+            if self.rejected != other.rejected:
+                return False
+            return True
+
+    @dataclass
+    class SUBSEQUENT_SOURCE_FAILURE:
+
+        def __init__(self, failure:MobilePlatformFailure):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_SUBSEQUENT_SOURCE_FAILURE():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+    @dataclass
+    class FAILURE_OBSERVATIONS_OMITTED:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.FAILURE_OBSERVATIONS_OMITTED()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_FAILURE_OBSERVATIONS_OMITTED():
+                return False
+            return True
+
+    @dataclass
+    class SUBSEQUENT_SOURCE_FAILURE_V2:
+
+        def __init__(self, failure:MobilePlatformFailure, instance:MobileInstance, source_generation:str, source_member:int, epoch:int, batch_id:int, record_index:int):
+            self.failure = failure
+
+
+            self.instance = instance
+
+
+            self.source_generation = source_generation
+
+
+            self.source_member = source_member
+
+
+            self.epoch = epoch
+
+
+            self.batch_id = batch_id
+
+
+            self.record_index = record_index
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE_V2(failure={}, instance={}, source_generation={}, source_member={}, epoch={}, batch_id={}, record_index={})".format(self.failure, self.instance, self.source_generation, self.source_member, self.epoch, self.batch_id, self.record_index)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOrderedRecord):
+                return NotImplemented
+            if not other.is_SUBSEQUENT_SOURCE_FAILURE_V2():
+                return False
+            if self.failure != other.failure:
+                return False
+            if self.instance != other.instance:
+                return False
+            if self.source_generation != other.source_generation:
+                return False
+            if self.source_member != other.source_member:
+                return False
+            if self.epoch != other.epoch:
+                return False
+            if self.batch_id != other.batch_id:
+                return False
+            if self.record_index != other.record_index:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_VALUE(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.VALUE)
+    def is_value(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.VALUE)
+    def is_LOSS(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.LOSS)
+    def is_loss(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.LOSS)
+    def is_FENCE(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.FENCE)
+    def is_fence(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.FENCE)
+    def is_BARRIER(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.BARRIER)
+    def is_barrier(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.BARRIER)
+    def is_MARKER(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.MARKER)
+    def is_marker(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.MARKER)
+    def is_TERMINAL(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.TERMINAL)
+    def is_terminal(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.TERMINAL)
+    def is_BRIDGE_FAILURE(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.BRIDGE_FAILURE)
+    def is_bridge_failure(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.BRIDGE_FAILURE)
+    def is_SOURCE_FAILED(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.SOURCE_FAILED)
+    def is_source_failed(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.SOURCE_FAILED)
+    def is_SUBSEQUENT_SOURCE_FAILURE(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE)
+    def is_subsequent_source_failure(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE)
+    def is_FAILURE_OBSERVATIONS_OMITTED(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.FAILURE_OBSERVATIONS_OMITTED)
+    def is_failure_observations_omitted(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.FAILURE_OBSERVATIONS_OMITTED)
+    def is_SUBSEQUENT_SOURCE_FAILURE_V2(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE_V2)
+    def is_subsequent_source_failure_v2(self) -> bool:
+        return isinstance(self, MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE_V2)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOrderedRecord.VALUE = type("MobileOrderedRecord.VALUE", (MobileOrderedRecord.VALUE, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.LOSS = type("MobileOrderedRecord.LOSS", (MobileOrderedRecord.LOSS, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.FENCE = type("MobileOrderedRecord.FENCE", (MobileOrderedRecord.FENCE, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.BARRIER = type("MobileOrderedRecord.BARRIER", (MobileOrderedRecord.BARRIER, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.MARKER = type("MobileOrderedRecord.MARKER", (MobileOrderedRecord.MARKER, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.TERMINAL = type("MobileOrderedRecord.TERMINAL", (MobileOrderedRecord.TERMINAL, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.BRIDGE_FAILURE = type("MobileOrderedRecord.BRIDGE_FAILURE", (MobileOrderedRecord.BRIDGE_FAILURE, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.SOURCE_FAILED = type("MobileOrderedRecord.SOURCE_FAILED", (MobileOrderedRecord.SOURCE_FAILED, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE = type("MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE", (MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.FAILURE_OBSERVATIONS_OMITTED = type("MobileOrderedRecord.FAILURE_OBSERVATIONS_OMITTED", (MobileOrderedRecord.FAILURE_OBSERVATIONS_OMITTED, MobileOrderedRecord,), {})  # type: ignore
+MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE_V2 = type("MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE_V2", (MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE_V2, MobileOrderedRecord,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOrderedRecord(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOrderedRecord.VALUE(
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterBytes.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 2:
+            return MobileOrderedRecord.LOSS(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterOptionalUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterOptionalUInt64.read(buf),
+                _UniffiFfiConverterOptionalUInt64.read(buf),
+            )
+        if variant == 3:
+            return MobileOrderedRecord.FENCE(
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 4:
+            return MobileOrderedRecord.BARRIER(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 5:
+            return MobileOrderedRecord.MARKER(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 6:
+            return MobileOrderedRecord.TERMINAL(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+                _UniffiFfiConverterOptionalString.read(buf),
+                _UniffiFfiConverterOptionalString.read(buf),
+                _UniffiFfiConverterOptionalTypeMobileOrderedRegistration.read(buf),
+                _UniffiFfiConverterOptionalTypeMobileOrderedRejected.read(buf),
+            )
+        if variant == 7:
+            return MobileOrderedRecord.BRIDGE_FAILURE(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 8:
+            return MobileOrderedRecord.SOURCE_FAILED(
+                _UniffiFfiConverterBoolean.read(buf),
+                _UniffiFfiConverterTypeMobilePlatformFailure.read(buf),
+                _UniffiFfiConverterOptionalString.read(buf),
+                _UniffiFfiConverterOptionalString.read(buf),
+                _UniffiFfiConverterOptionalTypeMobileOrderedRegistration.read(buf),
+                _UniffiFfiConverterOptionalTypeMobileOrderedRejected.read(buf),
+            )
+        if variant == 9:
+            return MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE(
+                _UniffiFfiConverterTypeMobilePlatformFailure.read(buf),
+            )
+        if variant == 10:
+            return MobileOrderedRecord.FAILURE_OBSERVATIONS_OMITTED(
+            )
+        if variant == 11:
+            return MobileOrderedRecord.SUBSEQUENT_SOURCE_FAILURE_V2(
+                _UniffiFfiConverterTypeMobilePlatformFailure.read(buf),
+                _UniffiFfiConverterTypeMobileInstance.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt32.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_VALUE():
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            _UniffiFfiConverterUInt64.check_lower(value.ordinal)
+            _UniffiFfiConverterBytes.check_lower(value.value)
+            _UniffiFfiConverterString.check_lower(value.delivery)
+            _UniffiFfiConverterString.check_lower(value.provenance)
+            return
+        if value.is_LOSS():
+            _UniffiFfiConverterString.check_lower(value.scope)
+            _UniffiFfiConverterOptionalUInt64.check_lower(value.member_id)
+            _UniffiFfiConverterString.check_lower(value.unit)
+            _UniffiFfiConverterOptionalUInt64.check_lower(value.count)
+            _UniffiFfiConverterOptionalUInt64.check_lower(value.byte_count)
+            return
+        if value.is_FENCE():
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            _UniffiFfiConverterBoolean.check_lower(value.uncertain_tail)
+            return
+        if value.is_BARRIER():
+            _UniffiFfiConverterUInt64.check_lower(value.barrier_id)
+            _UniffiFfiConverterBoolean.check_lower(value.uncertain_tail)
+            return
+        if value.is_MARKER():
+            _UniffiFfiConverterUInt64.check_lower(value.marker_id)
+            _UniffiFfiConverterUInt64.check_lower(value.ordinal)
+            return
+        if value.is_TERMINAL():
+            _UniffiFfiConverterString.check_lower(value.reason)
+            _UniffiFfiConverterBoolean.check_lower(value.uncertain_tail)
+            _UniffiFfiConverterOptionalString.check_lower(value.native_domain)
+            _UniffiFfiConverterOptionalString.check_lower(value.native_code)
+            _UniffiFfiConverterOptionalTypeMobileOrderedRegistration.check_lower(value.failure_member)
+            _UniffiFfiConverterOptionalTypeMobileOrderedRejected.check_lower(value.rejected)
+            return
+        if value.is_BRIDGE_FAILURE():
+            _UniffiFfiConverterString.check_lower(value.code)
+            _UniffiFfiConverterString.check_lower(value.detail)
+            return
+        if value.is_SOURCE_FAILED():
+            _UniffiFfiConverterBoolean.check_lower(value.uncertain_tail)
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value.failure)
+            _UniffiFfiConverterOptionalString.check_lower(value.native_domain)
+            _UniffiFfiConverterOptionalString.check_lower(value.native_code)
+            _UniffiFfiConverterOptionalTypeMobileOrderedRegistration.check_lower(value.failure_member)
+            _UniffiFfiConverterOptionalTypeMobileOrderedRejected.check_lower(value.rejected)
+            return
+        if value.is_SUBSEQUENT_SOURCE_FAILURE():
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        if value.is_FAILURE_OBSERVATIONS_OMITTED():
+            return
+        if value.is_SUBSEQUENT_SOURCE_FAILURE_V2():
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value.failure)
+            _UniffiFfiConverterTypeMobileInstance.check_lower(value.instance)
+            _UniffiFfiConverterString.check_lower(value.source_generation)
+            _UniffiFfiConverterUInt64.check_lower(value.source_member)
+            _UniffiFfiConverterUInt64.check_lower(value.epoch)
+            _UniffiFfiConverterUInt64.check_lower(value.batch_id)
+            _UniffiFfiConverterUInt32.check_lower(value.record_index)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_VALUE():
+            buf.write_i32(1)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+            _UniffiFfiConverterUInt64.write(value.ordinal, buf)
+            _UniffiFfiConverterBytes.write(value.value, buf)
+            _UniffiFfiConverterString.write(value.delivery, buf)
+            _UniffiFfiConverterString.write(value.provenance, buf)
+        if value.is_LOSS():
+            buf.write_i32(2)
+            _UniffiFfiConverterString.write(value.scope, buf)
+            _UniffiFfiConverterOptionalUInt64.write(value.member_id, buf)
+            _UniffiFfiConverterString.write(value.unit, buf)
+            _UniffiFfiConverterOptionalUInt64.write(value.count, buf)
+            _UniffiFfiConverterOptionalUInt64.write(value.byte_count, buf)
+        if value.is_FENCE():
+            buf.write_i32(3)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+            _UniffiFfiConverterBoolean.write(value.uncertain_tail, buf)
+        if value.is_BARRIER():
+            buf.write_i32(4)
+            _UniffiFfiConverterUInt64.write(value.barrier_id, buf)
+            _UniffiFfiConverterBoolean.write(value.uncertain_tail, buf)
+        if value.is_MARKER():
+            buf.write_i32(5)
+            _UniffiFfiConverterUInt64.write(value.marker_id, buf)
+            _UniffiFfiConverterUInt64.write(value.ordinal, buf)
+        if value.is_TERMINAL():
+            buf.write_i32(6)
+            _UniffiFfiConverterString.write(value.reason, buf)
+            _UniffiFfiConverterBoolean.write(value.uncertain_tail, buf)
+            _UniffiFfiConverterOptionalString.write(value.native_domain, buf)
+            _UniffiFfiConverterOptionalString.write(value.native_code, buf)
+            _UniffiFfiConverterOptionalTypeMobileOrderedRegistration.write(value.failure_member, buf)
+            _UniffiFfiConverterOptionalTypeMobileOrderedRejected.write(value.rejected, buf)
+        if value.is_BRIDGE_FAILURE():
+            buf.write_i32(7)
+            _UniffiFfiConverterString.write(value.code, buf)
+            _UniffiFfiConverterString.write(value.detail, buf)
+        if value.is_SOURCE_FAILED():
+            buf.write_i32(8)
+            _UniffiFfiConverterBoolean.write(value.uncertain_tail, buf)
+            _UniffiFfiConverterTypeMobilePlatformFailure.write(value.failure, buf)
+            _UniffiFfiConverterOptionalString.write(value.native_domain, buf)
+            _UniffiFfiConverterOptionalString.write(value.native_code, buf)
+            _UniffiFfiConverterOptionalTypeMobileOrderedRegistration.write(value.failure_member, buf)
+            _UniffiFfiConverterOptionalTypeMobileOrderedRejected.write(value.rejected, buf)
+        if value.is_SUBSEQUENT_SOURCE_FAILURE():
+            buf.write_i32(9)
+            _UniffiFfiConverterTypeMobilePlatformFailure.write(value.failure, buf)
+        if value.is_FAILURE_OBSERVATIONS_OMITTED():
+            buf.write_i32(10)
+        if value.is_SUBSEQUENT_SOURCE_FAILURE_V2():
+            buf.write_i32(11)
+            _UniffiFfiConverterTypeMobilePlatformFailure.write(value.failure, buf)
+            _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
+            _UniffiFfiConverterString.write(value.source_generation, buf)
+            _UniffiFfiConverterUInt64.write(value.source_member, buf)
+            _UniffiFfiConverterUInt64.write(value.epoch, buf)
+            _UniffiFfiConverterUInt64.write(value.batch_id, buf)
+            _UniffiFfiConverterUInt32.write(value.record_index, buf)
+
+
+
+
+
+
+
+
+class MobileOwnerOutstandingClass(enum.Enum):
+
+    ATTACHMENTS = 0
+
+    RESERVATIONS = 1
+
+    NATIVE_WORK = 2
+
+    CALLBACKS = 3
+
+    CLEANUP = 4
+
+
+
+class _UniffiFfiConverterTypeMobileOwnerOutstandingClass(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOwnerOutstandingClass.ATTACHMENTS
+        if variant == 2:
+            return MobileOwnerOutstandingClass.RESERVATIONS
+        if variant == 3:
+            return MobileOwnerOutstandingClass.NATIVE_WORK
+        if variant == 4:
+            return MobileOwnerOutstandingClass.CALLBACKS
+        if variant == 5:
+            return MobileOwnerOutstandingClass.CLEANUP
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value == MobileOwnerOutstandingClass.ATTACHMENTS:
+            return
+        if value == MobileOwnerOutstandingClass.RESERVATIONS:
+            return
+        if value == MobileOwnerOutstandingClass.NATIVE_WORK:
+            return
+        if value == MobileOwnerOutstandingClass.CALLBACKS:
+            return
+        if value == MobileOwnerOutstandingClass.CLEANUP:
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value == MobileOwnerOutstandingClass.ATTACHMENTS:
+            buf.write_i32(1)
+        if value == MobileOwnerOutstandingClass.RESERVATIONS:
+            buf.write_i32(2)
+        if value == MobileOwnerOutstandingClass.NATIVE_WORK:
+            buf.write_i32(3)
+        if value == MobileOwnerOutstandingClass.CALLBACKS:
+            buf.write_i32(4)
+        if value == MobileOwnerOutstandingClass.CLEANUP:
+            buf.write_i32(5)
+
+
+
+
+
+
+
+
+class MobileOwnerRejection(enum.Enum):
+
+    WRONG_OWNER = 0
+
+    CONFLICTING_RETIREMENT = 1
+
+    MALFORMED = 2
+
+
+
+class _UniffiFfiConverterTypeMobileOwnerRejection(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOwnerRejection.WRONG_OWNER
+        if variant == 2:
+            return MobileOwnerRejection.CONFLICTING_RETIREMENT
+        if variant == 3:
+            return MobileOwnerRejection.MALFORMED
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value == MobileOwnerRejection.WRONG_OWNER:
+            return
+        if value == MobileOwnerRejection.CONFLICTING_RETIREMENT:
+            return
+        if value == MobileOwnerRejection.MALFORMED:
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value == MobileOwnerRejection.WRONG_OWNER:
+            buf.write_i32(1)
+        if value == MobileOwnerRejection.CONFLICTING_RETIREMENT:
+            buf.write_i32(2)
+        if value == MobileOwnerRejection.MALFORMED:
+            buf.write_i32(3)
+
+
+
+class _UniffiFfiConverterSequenceTypeMobileOwnerOutstandingClass(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeMobileOwnerOutstandingClass.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeMobileOwnerOutstandingClass.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeMobileOwnerOutstandingClass.read(buf) for i in range(count)
+        ]
+
+class _UniffiFfiConverterSequenceTypeMobileOrderedFailureV2(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeMobileOrderedFailureV2.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeMobileOrderedFailureV2.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeMobileOrderedFailureV2.read(buf) for i in range(count)
+        ]
+
+
+
+
+
+
+class MobileOwnerRetirementState:
+    def __init__(self):
+        raise RuntimeError("MobileOwnerRetirementState cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class FENCED_PENDING:
+
+        def __init__(self, outstanding_classes:typing.List[MobileOwnerOutstandingClass], failures:typing.List[MobileOrderedFailureV2]):
+            self.outstanding_classes = outstanding_classes
+
+
+            self.failures = failures
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOwnerRetirementState.FENCED_PENDING(outstanding_classes={}, failures={})".format(self.outstanding_classes, self.failures)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOwnerRetirementState):
+                return NotImplemented
+            if not other.is_FENCED_PENDING():
+                return False
+            if self.outstanding_classes != other.outstanding_classes:
+                return False
+            if self.failures != other.failures:
+                return False
+            return True
+
+    @dataclass
+    class QUIESCENT:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOwnerRetirementState.QUIESCENT()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileOwnerRetirementState):
+                return NotImplemented
+            if not other.is_QUIESCENT():
+                return False
+            return True
+
+    @dataclass
+    class REJECTED:
+
+        def __init__(self, reason:MobileOwnerRejection):
+            self.reason = reason
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileOwnerRetirementState.REJECTED(reason={})".format(self.reason)
+        def __eq__(self, other):
+            if not isinstance(other, MobileOwnerRetirementState):
+                return NotImplemented
+            if not other.is_REJECTED():
+                return False
+            if self.reason != other.reason:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_FENCED_PENDING(self) -> bool:
+        return isinstance(self, MobileOwnerRetirementState.FENCED_PENDING)
+    def is_fenced_pending(self) -> bool:
+        return isinstance(self, MobileOwnerRetirementState.FENCED_PENDING)
+    def is_QUIESCENT(self) -> bool:
+        return isinstance(self, MobileOwnerRetirementState.QUIESCENT)
+    def is_quiescent(self) -> bool:
+        return isinstance(self, MobileOwnerRetirementState.QUIESCENT)
+    def is_REJECTED(self) -> bool:
+        return isinstance(self, MobileOwnerRetirementState.REJECTED)
+    def is_rejected(self) -> bool:
+        return isinstance(self, MobileOwnerRetirementState.REJECTED)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileOwnerRetirementState.FENCED_PENDING = type("MobileOwnerRetirementState.FENCED_PENDING", (MobileOwnerRetirementState.FENCED_PENDING, MobileOwnerRetirementState,), {})  # type: ignore
+MobileOwnerRetirementState.QUIESCENT = type("MobileOwnerRetirementState.QUIESCENT", (MobileOwnerRetirementState.QUIESCENT, MobileOwnerRetirementState,), {})  # type: ignore
+MobileOwnerRetirementState.REJECTED = type("MobileOwnerRetirementState.REJECTED", (MobileOwnerRetirementState.REJECTED, MobileOwnerRetirementState,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileOwnerRetirementState(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileOwnerRetirementState.FENCED_PENDING(
+                _UniffiFfiConverterSequenceTypeMobileOwnerOutstandingClass.read(buf),
+                _UniffiFfiConverterSequenceTypeMobileOrderedFailureV2.read(buf),
+            )
+        if variant == 2:
+            return MobileOwnerRetirementState.QUIESCENT(
+            )
+        if variant == 3:
+            return MobileOwnerRetirementState.REJECTED(
+                _UniffiFfiConverterTypeMobileOwnerRejection.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_FENCED_PENDING():
+            _UniffiFfiConverterSequenceTypeMobileOwnerOutstandingClass.check_lower(value.outstanding_classes)
+            _UniffiFfiConverterSequenceTypeMobileOrderedFailureV2.check_lower(value.failures)
+            return
+        if value.is_QUIESCENT():
+            return
+        if value.is_REJECTED():
+            _UniffiFfiConverterTypeMobileOwnerRejection.check_lower(value.reason)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_FENCED_PENDING():
+            buf.write_i32(1)
+            _UniffiFfiConverterSequenceTypeMobileOwnerOutstandingClass.write(value.outstanding_classes, buf)
+            _UniffiFfiConverterSequenceTypeMobileOrderedFailureV2.write(value.failures, buf)
+        if value.is_QUIESCENT():
+            buf.write_i32(2)
+        if value.is_REJECTED():
+            buf.write_i32(3)
+            _UniffiFfiConverterTypeMobileOwnerRejection.write(value.reason, buf)
+
+
+
 class _UniffiFfiConverterSequenceTypeMobileGattService(_UniffiConverterRustBuffer):
     @classmethod
     def check_lower(cls, value):
@@ -2420,6 +7390,29 @@ class _UniffiFfiConverterSequenceTypeMobileGattService(_UniffiConverterRustBuffe
 
         return [
             _UniffiFfiConverterTypeMobileGattService.read(buf) for i in range(count)
+        ]
+
+class _UniffiFfiConverterSequenceTypeMobileOrderedRecord(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeMobileOrderedRecord.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeMobileOrderedRecord.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeMobileOrderedRecord.read(buf) for i in range(count)
         ]
 
 class _UniffiFfiConverterOptionalUInt16(_UniffiConverterRustBuffer):
@@ -2540,69 +7533,6 @@ class _UniffiFfiConverterSequenceTypeMobileCloseFailure(_UniffiConverterRustBuff
         return [
             _UniffiFfiConverterTypeMobileCloseFailure.read(buf) for i in range(count)
         ]
-
-class _UniffiFfiConverterInt32(_UniffiConverterPrimitiveInt):
-    CLASS_NAME = "i32"
-    VALUE_MIN = -2**31
-    VALUE_MAX = 2**31
-
-    @staticmethod
-    def read(buf):
-        return buf.read_i32()
-
-    @staticmethod
-    def write(value, buf):
-        buf.write_i32(value)
-
-class _UniffiFfiConverterOptionalInt32(_UniffiConverterRustBuffer):
-    @classmethod
-    def check_lower(cls, value):
-        if value is not None:
-            _UniffiFfiConverterInt32.check_lower(value)
-
-    @classmethod
-    def write(cls, value, buf):
-        if value is None:
-            buf.write_u8(0)
-            return
-
-        buf.write_u8(1)
-        _UniffiFfiConverterInt32.write(value, buf)
-
-    @classmethod
-    def read(cls, buf):
-        flag = buf.read_u8()
-        if flag == 0:
-            return None
-        elif flag == 1:
-            return _UniffiFfiConverterInt32.read(buf)
-        else:
-            raise InternalError("Unexpected flag byte for optional type")
-
-class _UniffiFfiConverterOptionalInt64(_UniffiConverterRustBuffer):
-    @classmethod
-    def check_lower(cls, value):
-        if value is not None:
-            _UniffiFfiConverterInt64.check_lower(value)
-
-    @classmethod
-    def write(cls, value, buf):
-        if value is None:
-            buf.write_u8(0)
-            return
-
-        buf.write_u8(1)
-        _UniffiFfiConverterInt64.write(value, buf)
-
-    @classmethod
-    def read(cls, buf):
-        flag = buf.read_u8()
-        if flag == 0:
-            return None
-        elif flag == 1:
-            return _UniffiFfiConverterInt64.read(buf)
-        else:
-            raise InternalError("Unexpected flag byte for optional type")
 
 
 
@@ -2735,6 +7665,35 @@ class MobileRadioCompletion:
             return True
 
     @dataclass
+    class DISCOVERED_SCOPED:
+
+        def __init__(self, services:typing.List[MobileGattService], identity:MobileGattSnapshotIdentity):
+            self.services = services
+
+
+            self.identity = identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.DISCOVERED_SCOPED(services={}, identity={})".format(self.services, self.identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_DISCOVERED_SCOPED():
+                return False
+            if self.services != other.services:
+                return False
+            if self.identity != other.identity:
+                return False
+            return True
+
+    @dataclass
     class NOTIFY_ENABLED:
 
         def __init__(self, delivery:str):
@@ -2755,6 +7714,488 @@ class MobileRadioCompletion:
             if not other.is_NOTIFY_ENABLED():
                 return False
             if self.delivery != other.delivery:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_ENABLE_RELEASED:
+
+        def __init__(self, kind:str, gatt_status:typing.Optional[int], native_domain:typing.Optional[str], native_code:typing.Optional[int], detail:str, dispatched:bool):
+            self.kind = kind
+
+
+            self.gatt_status = gatt_status
+
+
+            self.native_domain = native_domain
+
+
+            self.native_code = native_code
+
+
+            self.detail = detail
+
+
+            self.dispatched = dispatched
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_ENABLE_RELEASED(kind={}, gatt_status={}, native_domain={}, native_code={}, detail={}, dispatched={})".format(self.kind, self.gatt_status, self.native_domain, self.native_code, self.detail, self.dispatched)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_ENABLE_RELEASED():
+                return False
+            if self.kind != other.kind:
+                return False
+            if self.gatt_status != other.gatt_status:
+                return False
+            if self.native_domain != other.native_domain:
+                return False
+            if self.native_code != other.native_code:
+                return False
+            if self.detail != other.detail:
+                return False
+            if self.dispatched != other.dispatched:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_ENABLE_STATUS:
+
+        def __init__(self, status:MobileOrderedEnableStatus):
+            self.status = status
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_ENABLE_STATUS(status={})".format(self.status)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_ENABLE_STATUS():
+                return False
+            if self.status != other.status:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_RESERVED:
+
+        def __init__(self, permit_id:int):
+            self.permit_id = permit_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_GRAPH_PERMIT_RESERVED(permit_id={})".format(self.permit_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_RESERVED():
+                return False
+            if self.permit_id != other.permit_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_RESERVED:
+
+        def __init__(self, receipt_id:int):
+            self.receipt_id = receipt_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_RESERVED(receipt_id={})".format(self.receipt_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_RESERVED():
+                return False
+            if self.receipt_id != other.receipt_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_RESERVE_STATUS:
+
+        def __init__(self, status:MobileGraphReserveStatus):
+            self.status = status
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_GRAPH_RESERVE_STATUS(status={})".format(self.status)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_RESERVE_STATUS():
+                return False
+            if self.status != other.status:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_OPENED:
+
+        def __init__(self, authority_id:int):
+            self.authority_id = authority_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_OPENED(authority_id={})".format(self.authority_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_OPENED():
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_STATUS:
+
+        def __init__(self, status:MobileGraphAuthorityStatus):
+            self.status = status
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_STATUS(status={})".format(self.status)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_STATUS():
+                return False
+            if self.status != other.status:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT:
+
+        def __init__(self, state:MobileGraphPermitState):
+            self.state = state
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_GRAPH_PERMIT(state={})".format(self.state)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT():
+                return False
+            if self.state != other.state:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_INVALIDATED:
+
+        def __init__(self, failure:MobilePlatformFailure):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_GRAPH_PERMIT_INVALIDATED(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_INVALIDATED():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_NOT_ACQUIRED:
+
+        def __init__(self, failure:MobilePlatformFailure):
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_GRAPH_PERMIT_NOT_ACQUIRED(failure={})".format(self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_NOT_ACQUIRED():
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_MARKER_WRITE_STATUS:
+
+        def __init__(self, status:MobileOrderedMarkerWriteStatus):
+            self.status = status
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_MARKER_WRITE_STATUS(status={})".format(self.status)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_MARKER_WRITE_STATUS():
+                return False
+            if self.status != other.status:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_OPEN_RESULT_V2:
+
+        def __init__(self, slot_identity:MobileOrderedSlotIdentity, outcome:MobileOrderedOpenOutcome):
+            self.slot_identity = slot_identity
+
+
+            self.outcome = outcome
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_OPEN_RESULT_V2(slot_identity={}, outcome={})".format(self.slot_identity, self.outcome)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_OPEN_RESULT_V2():
+                return False
+            if self.slot_identity != other.slot_identity:
+                return False
+            if self.outcome != other.outcome:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_OPEN_RETIRED_V2:
+
+        def __init__(self, slot_identity:MobileOrderedSlotIdentity):
+            self.slot_identity = slot_identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_OPEN_RETIRED_V2(slot_identity={})".format(self.slot_identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_OPEN_RETIRED_V2():
+                return False
+            if self.slot_identity != other.slot_identity:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_OPENED:
+
+        def __init__(self, generation:MobileOrderedGeneration, members:typing.List[MobileOrderedRegistration]):
+            self.generation = generation
+
+
+            self.members = members
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_OPENED(generation={}, members={})".format(self.generation, self.members)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_OPENED():
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.members != other.members:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_OPEN_FAILED:
+
+        def __init__(self, failure:MobilePlatformFailure, ownership:MobileOrderedOpenOwnership):
+            self.failure = failure
+
+
+            self.ownership = ownership
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_OPEN_FAILED(failure={}, ownership={})".format(self.failure, self.ownership)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_OPEN_FAILED():
+                return False
+            if self.failure != other.failure:
+                return False
+            if self.ownership != other.ownership:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_REGISTERED:
+
+        def __init__(self, member:MobileOrderedRegistration):
+            self.member = member
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_REGISTERED(member={})".format(self.member)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_REGISTERED():
+                return False
+            if self.member != other.member:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_CLAIM:
+
+        def __init__(self, generation:MobileOrderedGeneration, member:MobileOrderedRegistration):
+            self.generation = generation
+
+
+            self.member = member
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_CLAIM(generation={}, member={})".format(self.generation, self.member)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_CLAIM():
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.member != other.member:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_RECORDS:
+
+        def __init__(self, batch_id:typing.Optional[int], records:typing.List[MobileOrderedRecord]):
+            self.batch_id = batch_id
+
+
+            self.records = records
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.ORDERED_RECORDS(batch_id={}, records={})".format(self.batch_id, self.records)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_ORDERED_RECORDS():
+                return False
+            if self.batch_id != other.batch_id:
+                return False
+            if self.records != other.records:
                 return False
             return True
 
@@ -3202,6 +8643,40 @@ class MobileRadioCompletion:
                 return False
             return True
 
+    @dataclass
+    class OWNER_RETIREMENT:
+
+        def __init__(self, owner_incarnation:str, retirement_id:str, state:MobileOwnerRetirementState):
+            self.owner_incarnation = owner_incarnation
+
+
+            self.retirement_id = retirement_id
+
+
+            self.state = state
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.OWNER_RETIREMENT(owner_incarnation={}, retirement_id={}, state={})".format(self.owner_incarnation, self.retirement_id, self.state)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_OWNER_RETIREMENT():
+                return False
+            if self.owner_incarnation != other.owner_incarnation:
+                return False
+            if self.retirement_id != other.retirement_id:
+                return False
+            if self.state != other.state:
+                return False
+            return True
+
 
 
     # For each variant, we have `is_NAME` and `is_name` methods for easily checking
@@ -3226,10 +8701,86 @@ class MobileRadioCompletion:
         return isinstance(self, MobileRadioCompletion.DISCOVERED)
     def is_discovered(self) -> bool:
         return isinstance(self, MobileRadioCompletion.DISCOVERED)
+    def is_DISCOVERED_SCOPED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.DISCOVERED_SCOPED)
+    def is_discovered_scoped(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.DISCOVERED_SCOPED)
     def is_NOTIFY_ENABLED(self) -> bool:
         return isinstance(self, MobileRadioCompletion.NOTIFY_ENABLED)
     def is_notify_enabled(self) -> bool:
         return isinstance(self, MobileRadioCompletion.NOTIFY_ENABLED)
+    def is_ORDERED_ENABLE_RELEASED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_ENABLE_RELEASED)
+    def is_ordered_enable_released(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_ENABLE_RELEASED)
+    def is_ORDERED_ENABLE_STATUS(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_ENABLE_STATUS)
+    def is_ordered_enable_status(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_ENABLE_STATUS)
+    def is_ORDERED_GRAPH_PERMIT_RESERVED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_PERMIT_RESERVED)
+    def is_ordered_graph_permit_reserved(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_PERMIT_RESERVED)
+    def is_ORDERED_GRAPH_AUTHORITY_RESERVED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_RESERVED)
+    def is_ordered_graph_authority_reserved(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_RESERVED)
+    def is_ORDERED_GRAPH_RESERVE_STATUS(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_RESERVE_STATUS)
+    def is_ordered_graph_reserve_status(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_RESERVE_STATUS)
+    def is_ORDERED_GRAPH_AUTHORITY_OPENED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_OPENED)
+    def is_ordered_graph_authority_opened(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_OPENED)
+    def is_ORDERED_GRAPH_AUTHORITY_STATUS(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_STATUS)
+    def is_ordered_graph_authority_status(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_STATUS)
+    def is_ORDERED_GRAPH_PERMIT(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_PERMIT)
+    def is_ordered_graph_permit(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_PERMIT)
+    def is_ORDERED_GRAPH_PERMIT_INVALIDATED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_PERMIT_INVALIDATED)
+    def is_ordered_graph_permit_invalidated(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_PERMIT_INVALIDATED)
+    def is_ORDERED_GRAPH_PERMIT_NOT_ACQUIRED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_PERMIT_NOT_ACQUIRED)
+    def is_ordered_graph_permit_not_acquired(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_GRAPH_PERMIT_NOT_ACQUIRED)
+    def is_ORDERED_MARKER_WRITE_STATUS(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_MARKER_WRITE_STATUS)
+    def is_ordered_marker_write_status(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_MARKER_WRITE_STATUS)
+    def is_ORDERED_OPEN_RESULT_V2(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_OPEN_RESULT_V2)
+    def is_ordered_open_result_v2(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_OPEN_RESULT_V2)
+    def is_ORDERED_OPEN_RETIRED_V2(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_OPEN_RETIRED_V2)
+    def is_ordered_open_retired_v2(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_OPEN_RETIRED_V2)
+    def is_ORDERED_OPENED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_OPENED)
+    def is_ordered_opened(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_OPENED)
+    def is_ORDERED_OPEN_FAILED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_OPEN_FAILED)
+    def is_ordered_open_failed(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_OPEN_FAILED)
+    def is_ORDERED_REGISTERED(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_REGISTERED)
+    def is_ordered_registered(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_REGISTERED)
+    def is_ORDERED_CLAIM(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_CLAIM)
+    def is_ordered_claim(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_CLAIM)
+    def is_ORDERED_RECORDS(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_RECORDS)
+    def is_ordered_records(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.ORDERED_RECORDS)
     def is_MTU(self) -> bool:
         return isinstance(self, MobileRadioCompletion.MTU)
     def is_mtu(self) -> bool:
@@ -3294,6 +8845,10 @@ class MobileRadioCompletion:
         return isinstance(self, MobileRadioCompletion.FAILED)
     def is_failed(self) -> bool:
         return isinstance(self, MobileRadioCompletion.FAILED)
+    def is_OWNER_RETIREMENT(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.OWNER_RETIREMENT)
+    def is_owner_retirement(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.OWNER_RETIREMENT)
 
 
 # Now, a little trick - we make each nested variant class be a subclass of the main
@@ -3304,7 +8859,26 @@ MobileRadioCompletion.BYTES = type("MobileRadioCompletion.BYTES", (MobileRadioCo
 MobileRadioCompletion.READ = type("MobileRadioCompletion.READ", (MobileRadioCompletion.READ, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.ADAPTER = type("MobileRadioCompletion.ADAPTER", (MobileRadioCompletion.ADAPTER, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.DISCOVERED = type("MobileRadioCompletion.DISCOVERED", (MobileRadioCompletion.DISCOVERED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.DISCOVERED_SCOPED = type("MobileRadioCompletion.DISCOVERED_SCOPED", (MobileRadioCompletion.DISCOVERED_SCOPED, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.NOTIFY_ENABLED = type("MobileRadioCompletion.NOTIFY_ENABLED", (MobileRadioCompletion.NOTIFY_ENABLED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_ENABLE_RELEASED = type("MobileRadioCompletion.ORDERED_ENABLE_RELEASED", (MobileRadioCompletion.ORDERED_ENABLE_RELEASED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_ENABLE_STATUS = type("MobileRadioCompletion.ORDERED_ENABLE_STATUS", (MobileRadioCompletion.ORDERED_ENABLE_STATUS, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_GRAPH_PERMIT_RESERVED = type("MobileRadioCompletion.ORDERED_GRAPH_PERMIT_RESERVED", (MobileRadioCompletion.ORDERED_GRAPH_PERMIT_RESERVED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_RESERVED = type("MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_RESERVED", (MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_RESERVED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_GRAPH_RESERVE_STATUS = type("MobileRadioCompletion.ORDERED_GRAPH_RESERVE_STATUS", (MobileRadioCompletion.ORDERED_GRAPH_RESERVE_STATUS, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_OPENED = type("MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_OPENED", (MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_OPENED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_STATUS = type("MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_STATUS", (MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_STATUS, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_GRAPH_PERMIT = type("MobileRadioCompletion.ORDERED_GRAPH_PERMIT", (MobileRadioCompletion.ORDERED_GRAPH_PERMIT, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_GRAPH_PERMIT_INVALIDATED = type("MobileRadioCompletion.ORDERED_GRAPH_PERMIT_INVALIDATED", (MobileRadioCompletion.ORDERED_GRAPH_PERMIT_INVALIDATED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_GRAPH_PERMIT_NOT_ACQUIRED = type("MobileRadioCompletion.ORDERED_GRAPH_PERMIT_NOT_ACQUIRED", (MobileRadioCompletion.ORDERED_GRAPH_PERMIT_NOT_ACQUIRED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_MARKER_WRITE_STATUS = type("MobileRadioCompletion.ORDERED_MARKER_WRITE_STATUS", (MobileRadioCompletion.ORDERED_MARKER_WRITE_STATUS, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_OPEN_RESULT_V2 = type("MobileRadioCompletion.ORDERED_OPEN_RESULT_V2", (MobileRadioCompletion.ORDERED_OPEN_RESULT_V2, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_OPEN_RETIRED_V2 = type("MobileRadioCompletion.ORDERED_OPEN_RETIRED_V2", (MobileRadioCompletion.ORDERED_OPEN_RETIRED_V2, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_OPENED = type("MobileRadioCompletion.ORDERED_OPENED", (MobileRadioCompletion.ORDERED_OPENED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_OPEN_FAILED = type("MobileRadioCompletion.ORDERED_OPEN_FAILED", (MobileRadioCompletion.ORDERED_OPEN_FAILED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_REGISTERED = type("MobileRadioCompletion.ORDERED_REGISTERED", (MobileRadioCompletion.ORDERED_REGISTERED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_CLAIM = type("MobileRadioCompletion.ORDERED_CLAIM", (MobileRadioCompletion.ORDERED_CLAIM, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.ORDERED_RECORDS = type("MobileRadioCompletion.ORDERED_RECORDS", (MobileRadioCompletion.ORDERED_RECORDS, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.MTU = type("MobileRadioCompletion.MTU", (MobileRadioCompletion.MTU, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.WRITE_LIMITS = type("MobileRadioCompletion.WRITE_LIMITS", (MobileRadioCompletion.WRITE_LIMITS, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.READY = type("MobileRadioCompletion.READY", (MobileRadioCompletion.READY, MobileRadioCompletion,), {})  # type: ignore
@@ -3321,6 +8895,7 @@ MobileRadioCompletion.COMPANION = type("MobileRadioCompletion.COMPANION", (Mobil
 MobileRadioCompletion.COMPANION_LIST = type("MobileRadioCompletion.COMPANION_LIST", (MobileRadioCompletion.COMPANION_LIST, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.CLOSED = type("MobileRadioCompletion.CLOSED", (MobileRadioCompletion.CLOSED, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.FAILED = type("MobileRadioCompletion.FAILED", (MobileRadioCompletion.FAILED, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.OWNER_RETIREMENT = type("MobileRadioCompletion.OWNER_RETIREMENT", (MobileRadioCompletion.OWNER_RETIREMENT, MobileRadioCompletion,), {})  # type: ignore
 
 
 
@@ -3350,77 +8925,164 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterSequenceTypeMobileGattService.read(buf),
             )
         if variant == 6:
+            return MobileRadioCompletion.DISCOVERED_SCOPED(
+                _UniffiFfiConverterSequenceTypeMobileGattService.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+            )
+        if variant == 7:
             return MobileRadioCompletion.NOTIFY_ENABLED(
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 7:
+        if variant == 8:
+            return MobileRadioCompletion.ORDERED_ENABLE_RELEASED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterOptionalInt32.read(buf),
+                _UniffiFfiConverterOptionalString.read(buf),
+                _UniffiFfiConverterOptionalInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 9:
+            return MobileRadioCompletion.ORDERED_ENABLE_STATUS(
+                _UniffiFfiConverterTypeMobileOrderedEnableStatus.read(buf),
+            )
+        if variant == 10:
+            return MobileRadioCompletion.ORDERED_GRAPH_PERMIT_RESERVED(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 11:
+            return MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_RESERVED(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 12:
+            return MobileRadioCompletion.ORDERED_GRAPH_RESERVE_STATUS(
+                _UniffiFfiConverterTypeMobileGraphReserveStatus.read(buf),
+            )
+        if variant == 13:
+            return MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_OPENED(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 14:
+            return MobileRadioCompletion.ORDERED_GRAPH_AUTHORITY_STATUS(
+                _UniffiFfiConverterTypeMobileGraphAuthorityStatus.read(buf),
+            )
+        if variant == 15:
+            return MobileRadioCompletion.ORDERED_GRAPH_PERMIT(
+                _UniffiFfiConverterTypeMobileGraphPermitState.read(buf),
+            )
+        if variant == 16:
+            return MobileRadioCompletion.ORDERED_GRAPH_PERMIT_INVALIDATED(
+                _UniffiFfiConverterTypeMobilePlatformFailure.read(buf),
+            )
+        if variant == 17:
+            return MobileRadioCompletion.ORDERED_GRAPH_PERMIT_NOT_ACQUIRED(
+                _UniffiFfiConverterTypeMobilePlatformFailure.read(buf),
+            )
+        if variant == 18:
+            return MobileRadioCompletion.ORDERED_MARKER_WRITE_STATUS(
+                _UniffiFfiConverterTypeMobileOrderedMarkerWriteStatus.read(buf),
+            )
+        if variant == 19:
+            return MobileRadioCompletion.ORDERED_OPEN_RESULT_V2(
+                _UniffiFfiConverterTypeMobileOrderedSlotIdentity.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedOpenOutcome.read(buf),
+            )
+        if variant == 20:
+            return MobileRadioCompletion.ORDERED_OPEN_RETIRED_V2(
+                _UniffiFfiConverterTypeMobileOrderedSlotIdentity.read(buf),
+            )
+        if variant == 21:
+            return MobileRadioCompletion.ORDERED_OPENED(
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 22:
+            return MobileRadioCompletion.ORDERED_OPEN_FAILED(
+                _UniffiFfiConverterTypeMobilePlatformFailure.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedOpenOwnership.read(buf),
+            )
+        if variant == 23:
+            return MobileRadioCompletion.ORDERED_REGISTERED(
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 24:
+            return MobileRadioCompletion.ORDERED_CLAIM(
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 25:
+            return MobileRadioCompletion.ORDERED_RECORDS(
+                _UniffiFfiConverterOptionalUInt64.read(buf),
+                _UniffiFfiConverterSequenceTypeMobileOrderedRecord.read(buf),
+            )
+        if variant == 26:
             return MobileRadioCompletion.MTU(
                 _UniffiFfiConverterOptionalUInt16.read(buf),
             )
-        if variant == 8:
+        if variant == 27:
             return MobileRadioCompletion.WRITE_LIMITS(
                 _UniffiFfiConverterUInt16.read(buf),
                 _UniffiFfiConverterUInt16.read(buf),
             )
-        if variant == 9:
+        if variant == 28:
             return MobileRadioCompletion.READY(
                 _UniffiFfiConverterBoolean.read(buf),
             )
-        if variant == 10:
+        if variant == 29:
             return MobileRadioCompletion.RSSI(
                 _UniffiFfiConverterInt16.read(buf),
             )
-        if variant == 11:
+        if variant == 30:
             return MobileRadioCompletion.ACCEPTED(
                 _UniffiFfiConverterBoolean.read(buf),
             )
-        if variant == 12:
+        if variant == 31:
             return MobileRadioCompletion.PHY(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 13:
+        if variant == 32:
             return MobileRadioCompletion.PHY_REQUEST(
                 _UniffiFfiConverterBoolean.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 14:
+        if variant == 33:
             return MobileRadioCompletion.SECURITY(
                 _UniffiFfiConverterTypeMobileSecurityState.read(buf),
             )
-        if variant == 15:
+        if variant == 34:
             return MobileRadioCompletion.BONDED_PEERS(
                 _UniffiFfiConverterSequenceTypeMobilePeerName.read(buf),
             )
-        if variant == 16:
+        if variant == 35:
             return MobileRadioCompletion.CONNECTED_PEERS(
                 _UniffiFfiConverterSequenceTypeMobilePeerName.read(buf),
             )
-        if variant == 17:
+        if variant == 36:
             return MobileRadioCompletion.RESOLVED_PEER(
                 _UniffiFfiConverterOptionalTypeMobilePeerName.read(buf),
             )
-        if variant == 18:
+        if variant == 37:
             return MobileRadioCompletion.LEASE(
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 19:
+        if variant == 38:
             return MobileRadioCompletion.COMPANION(
                 _UniffiFfiConverterInt64.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterBoolean.read(buf),
             )
-        if variant == 20:
+        if variant == 39:
             return MobileRadioCompletion.COMPANION_LIST(
                 _UniffiFfiConverterSequenceTypeMobileCompanionRecord.read(buf),
             )
-        if variant == 21:
+        if variant == 40:
             return MobileRadioCompletion.CLOSED(
                 _UniffiFfiConverterSequenceTypeMobileCloseFailure.read(buf),
             )
-        if variant == 22:
+        if variant == 41:
             return MobileRadioCompletion.FAILED(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterOptionalInt32.read(buf),
@@ -3428,6 +9090,12 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterOptionalInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 42:
+            return MobileRadioCompletion.OWNER_RETIREMENT(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileOwnerRetirementState.read(buf),
             )
         raise InternalError("Raw enum value doesn't match any cases")
 
@@ -3448,8 +9116,76 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
         if value.is_DISCOVERED():
             _UniffiFfiConverterSequenceTypeMobileGattService.check_lower(value.services)
             return
+        if value.is_DISCOVERED_SCOPED():
+            _UniffiFfiConverterSequenceTypeMobileGattService.check_lower(value.services)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.identity)
+            return
         if value.is_NOTIFY_ENABLED():
             _UniffiFfiConverterString.check_lower(value.delivery)
+            return
+        if value.is_ORDERED_ENABLE_RELEASED():
+            _UniffiFfiConverterString.check_lower(value.kind)
+            _UniffiFfiConverterOptionalInt32.check_lower(value.gatt_status)
+            _UniffiFfiConverterOptionalString.check_lower(value.native_domain)
+            _UniffiFfiConverterOptionalInt64.check_lower(value.native_code)
+            _UniffiFfiConverterString.check_lower(value.detail)
+            _UniffiFfiConverterBoolean.check_lower(value.dispatched)
+            return
+        if value.is_ORDERED_ENABLE_STATUS():
+            _UniffiFfiConverterTypeMobileOrderedEnableStatus.check_lower(value.status)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_RESERVED():
+            _UniffiFfiConverterUInt64.check_lower(value.permit_id)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVED():
+            _UniffiFfiConverterUInt64.check_lower(value.receipt_id)
+            return
+        if value.is_ORDERED_GRAPH_RESERVE_STATUS():
+            _UniffiFfiConverterTypeMobileGraphReserveStatus.check_lower(value.status)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_OPENED():
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_STATUS():
+            _UniffiFfiConverterTypeMobileGraphAuthorityStatus.check_lower(value.status)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT():
+            _UniffiFfiConverterTypeMobileGraphPermitState.check_lower(value.state)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_INVALIDATED():
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_NOT_ACQUIRED():
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        if value.is_ORDERED_MARKER_WRITE_STATUS():
+            _UniffiFfiConverterTypeMobileOrderedMarkerWriteStatus.check_lower(value.status)
+            return
+        if value.is_ORDERED_OPEN_RESULT_V2():
+            _UniffiFfiConverterTypeMobileOrderedSlotIdentity.check_lower(value.slot_identity)
+            _UniffiFfiConverterTypeMobileOrderedOpenOutcome.check_lower(value.outcome)
+            return
+        if value.is_ORDERED_OPEN_RETIRED_V2():
+            _UniffiFfiConverterTypeMobileOrderedSlotIdentity.check_lower(value.slot_identity)
+            return
+        if value.is_ORDERED_OPENED():
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.check_lower(value.members)
+            return
+        if value.is_ORDERED_OPEN_FAILED():
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value.failure)
+            _UniffiFfiConverterTypeMobileOrderedOpenOwnership.check_lower(value.ownership)
+            return
+        if value.is_ORDERED_REGISTERED():
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            return
+        if value.is_ORDERED_CLAIM():
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            return
+        if value.is_ORDERED_RECORDS():
+            _UniffiFfiConverterOptionalUInt64.check_lower(value.batch_id)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRecord.check_lower(value.records)
             return
         if value.is_MTU():
             _UniffiFfiConverterOptionalUInt16.check_lower(value.mtu)
@@ -3511,6 +9247,11 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
             _UniffiFfiConverterString.check_lower(value.detail)
             _UniffiFfiConverterBoolean.check_lower(value.dispatched)
             return
+        if value.is_OWNER_RETIREMENT():
+            _UniffiFfiConverterString.check_lower(value.owner_incarnation)
+            _UniffiFfiConverterString.check_lower(value.retirement_id)
+            _UniffiFfiConverterTypeMobileOwnerRetirementState.check_lower(value.state)
+            return
         raise ValueError(value)
 
     @staticmethod
@@ -3530,69 +9271,142 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
         if value.is_DISCOVERED():
             buf.write_i32(5)
             _UniffiFfiConverterSequenceTypeMobileGattService.write(value.services, buf)
-        if value.is_NOTIFY_ENABLED():
+        if value.is_DISCOVERED_SCOPED():
             buf.write_i32(6)
-            _UniffiFfiConverterString.write(value.delivery, buf)
-        if value.is_MTU():
+            _UniffiFfiConverterSequenceTypeMobileGattService.write(value.services, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.identity, buf)
+        if value.is_NOTIFY_ENABLED():
             buf.write_i32(7)
-            _UniffiFfiConverterOptionalUInt16.write(value.mtu, buf)
-        if value.is_WRITE_LIMITS():
+            _UniffiFfiConverterString.write(value.delivery, buf)
+        if value.is_ORDERED_ENABLE_RELEASED():
             buf.write_i32(8)
-            _UniffiFfiConverterUInt16.write(value.with_response, buf)
-            _UniffiFfiConverterUInt16.write(value.without_response, buf)
-        if value.is_READY():
-            buf.write_i32(9)
-            _UniffiFfiConverterBoolean.write(value.ready, buf)
-        if value.is_RSSI():
-            buf.write_i32(10)
-            _UniffiFfiConverterInt16.write(value.rssi, buf)
-        if value.is_ACCEPTED():
-            buf.write_i32(11)
-            _UniffiFfiConverterBoolean.write(value.accepted, buf)
-        if value.is_PHY():
-            buf.write_i32(12)
-            _UniffiFfiConverterString.write(value.tx, buf)
-            _UniffiFfiConverterString.write(value.rx, buf)
-        if value.is_PHY_REQUEST():
-            buf.write_i32(13)
-            _UniffiFfiConverterBoolean.write(value.accepted, buf)
-            _UniffiFfiConverterOptionalString.write(value.tx, buf)
-            _UniffiFfiConverterOptionalString.write(value.rx, buf)
-        if value.is_SECURITY():
-            buf.write_i32(14)
-            _UniffiFfiConverterTypeMobileSecurityState.write(value.state, buf)
-        if value.is_BONDED_PEERS():
-            buf.write_i32(15)
-            _UniffiFfiConverterSequenceTypeMobilePeerName.write(value.peers, buf)
-        if value.is_CONNECTED_PEERS():
-            buf.write_i32(16)
-            _UniffiFfiConverterSequenceTypeMobilePeerName.write(value.peers, buf)
-        if value.is_RESOLVED_PEER():
-            buf.write_i32(17)
-            _UniffiFfiConverterOptionalTypeMobilePeerName.write(value.peer, buf)
-        if value.is_LEASE():
-            buf.write_i32(18)
-            _UniffiFfiConverterString.write(value.lease_id, buf)
-        if value.is_COMPANION():
-            buf.write_i32(19)
-            _UniffiFfiConverterInt64.write(value.association_id, buf)
-            _UniffiFfiConverterOptionalString.write(value.peer_id, buf)
-            _UniffiFfiConverterOptionalString.write(value.display_name, buf)
-            _UniffiFfiConverterBoolean.write(value.already_associated, buf)
-        if value.is_COMPANION_LIST():
-            buf.write_i32(20)
-            _UniffiFfiConverterSequenceTypeMobileCompanionRecord.write(value.records, buf)
-        if value.is_CLOSED():
-            buf.write_i32(21)
-            _UniffiFfiConverterSequenceTypeMobileCloseFailure.write(value.failures, buf)
-        if value.is_FAILED():
-            buf.write_i32(22)
             _UniffiFfiConverterString.write(value.kind, buf)
             _UniffiFfiConverterOptionalInt32.write(value.gatt_status, buf)
             _UniffiFfiConverterOptionalString.write(value.native_domain, buf)
             _UniffiFfiConverterOptionalInt64.write(value.native_code, buf)
             _UniffiFfiConverterString.write(value.detail, buf)
             _UniffiFfiConverterBoolean.write(value.dispatched, buf)
+        if value.is_ORDERED_ENABLE_STATUS():
+            buf.write_i32(9)
+            _UniffiFfiConverterTypeMobileOrderedEnableStatus.write(value.status, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_RESERVED():
+            buf.write_i32(10)
+            _UniffiFfiConverterUInt64.write(value.permit_id, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVED():
+            buf.write_i32(11)
+            _UniffiFfiConverterUInt64.write(value.receipt_id, buf)
+        if value.is_ORDERED_GRAPH_RESERVE_STATUS():
+            buf.write_i32(12)
+            _UniffiFfiConverterTypeMobileGraphReserveStatus.write(value.status, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_OPENED():
+            buf.write_i32(13)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_STATUS():
+            buf.write_i32(14)
+            _UniffiFfiConverterTypeMobileGraphAuthorityStatus.write(value.status, buf)
+        if value.is_ORDERED_GRAPH_PERMIT():
+            buf.write_i32(15)
+            _UniffiFfiConverterTypeMobileGraphPermitState.write(value.state, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_INVALIDATED():
+            buf.write_i32(16)
+            _UniffiFfiConverterTypeMobilePlatformFailure.write(value.failure, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_NOT_ACQUIRED():
+            buf.write_i32(17)
+            _UniffiFfiConverterTypeMobilePlatformFailure.write(value.failure, buf)
+        if value.is_ORDERED_MARKER_WRITE_STATUS():
+            buf.write_i32(18)
+            _UniffiFfiConverterTypeMobileOrderedMarkerWriteStatus.write(value.status, buf)
+        if value.is_ORDERED_OPEN_RESULT_V2():
+            buf.write_i32(19)
+            _UniffiFfiConverterTypeMobileOrderedSlotIdentity.write(value.slot_identity, buf)
+            _UniffiFfiConverterTypeMobileOrderedOpenOutcome.write(value.outcome, buf)
+        if value.is_ORDERED_OPEN_RETIRED_V2():
+            buf.write_i32(20)
+            _UniffiFfiConverterTypeMobileOrderedSlotIdentity.write(value.slot_identity, buf)
+        if value.is_ORDERED_OPENED():
+            buf.write_i32(21)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRegistration.write(value.members, buf)
+        if value.is_ORDERED_OPEN_FAILED():
+            buf.write_i32(22)
+            _UniffiFfiConverterTypeMobilePlatformFailure.write(value.failure, buf)
+            _UniffiFfiConverterTypeMobileOrderedOpenOwnership.write(value.ownership, buf)
+        if value.is_ORDERED_REGISTERED():
+            buf.write_i32(23)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+        if value.is_ORDERED_CLAIM():
+            buf.write_i32(24)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+        if value.is_ORDERED_RECORDS():
+            buf.write_i32(25)
+            _UniffiFfiConverterOptionalUInt64.write(value.batch_id, buf)
+            _UniffiFfiConverterSequenceTypeMobileOrderedRecord.write(value.records, buf)
+        if value.is_MTU():
+            buf.write_i32(26)
+            _UniffiFfiConverterOptionalUInt16.write(value.mtu, buf)
+        if value.is_WRITE_LIMITS():
+            buf.write_i32(27)
+            _UniffiFfiConverterUInt16.write(value.with_response, buf)
+            _UniffiFfiConverterUInt16.write(value.without_response, buf)
+        if value.is_READY():
+            buf.write_i32(28)
+            _UniffiFfiConverterBoolean.write(value.ready, buf)
+        if value.is_RSSI():
+            buf.write_i32(29)
+            _UniffiFfiConverterInt16.write(value.rssi, buf)
+        if value.is_ACCEPTED():
+            buf.write_i32(30)
+            _UniffiFfiConverterBoolean.write(value.accepted, buf)
+        if value.is_PHY():
+            buf.write_i32(31)
+            _UniffiFfiConverterString.write(value.tx, buf)
+            _UniffiFfiConverterString.write(value.rx, buf)
+        if value.is_PHY_REQUEST():
+            buf.write_i32(32)
+            _UniffiFfiConverterBoolean.write(value.accepted, buf)
+            _UniffiFfiConverterOptionalString.write(value.tx, buf)
+            _UniffiFfiConverterOptionalString.write(value.rx, buf)
+        if value.is_SECURITY():
+            buf.write_i32(33)
+            _UniffiFfiConverterTypeMobileSecurityState.write(value.state, buf)
+        if value.is_BONDED_PEERS():
+            buf.write_i32(34)
+            _UniffiFfiConverterSequenceTypeMobilePeerName.write(value.peers, buf)
+        if value.is_CONNECTED_PEERS():
+            buf.write_i32(35)
+            _UniffiFfiConverterSequenceTypeMobilePeerName.write(value.peers, buf)
+        if value.is_RESOLVED_PEER():
+            buf.write_i32(36)
+            _UniffiFfiConverterOptionalTypeMobilePeerName.write(value.peer, buf)
+        if value.is_LEASE():
+            buf.write_i32(37)
+            _UniffiFfiConverterString.write(value.lease_id, buf)
+        if value.is_COMPANION():
+            buf.write_i32(38)
+            _UniffiFfiConverterInt64.write(value.association_id, buf)
+            _UniffiFfiConverterOptionalString.write(value.peer_id, buf)
+            _UniffiFfiConverterOptionalString.write(value.display_name, buf)
+            _UniffiFfiConverterBoolean.write(value.already_associated, buf)
+        if value.is_COMPANION_LIST():
+            buf.write_i32(39)
+            _UniffiFfiConverterSequenceTypeMobileCompanionRecord.write(value.records, buf)
+        if value.is_CLOSED():
+            buf.write_i32(40)
+            _UniffiFfiConverterSequenceTypeMobileCloseFailure.write(value.failures, buf)
+        if value.is_FAILED():
+            buf.write_i32(41)
+            _UniffiFfiConverterString.write(value.kind, buf)
+            _UniffiFfiConverterOptionalInt32.write(value.gatt_status, buf)
+            _UniffiFfiConverterOptionalString.write(value.native_domain, buf)
+            _UniffiFfiConverterOptionalInt64.write(value.native_code, buf)
+            _UniffiFfiConverterString.write(value.detail, buf)
+            _UniffiFfiConverterBoolean.write(value.dispatched, buf)
+        if value.is_OWNER_RETIREMENT():
+            buf.write_i32(42)
+            _UniffiFfiConverterString.write(value.owner_incarnation, buf)
+            _UniffiFfiConverterString.write(value.retirement_id, buf)
+            _UniffiFfiConverterTypeMobileOwnerRetirementState.write(value.state, buf)
 
 
 
@@ -3785,6 +9599,103 @@ class MobileRadioIngress:
             return True
 
     @dataclass
+    class NOTIFICATION_SOURCE_FAILED:
+
+        def __init__(self, version:int, instance:MobileInstance, epoch:int, failure:MobilePlatformFailure):
+            self.version = version
+
+
+            self.instance = instance
+
+
+            self.epoch = epoch
+
+
+            self.failure = failure
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioIngress.NOTIFICATION_SOURCE_FAILED(version={}, instance={}, epoch={}, failure={})".format(self.version, self.instance, self.epoch, self.failure)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioIngress):
+                return NotImplemented
+            if not other.is_NOTIFICATION_SOURCE_FAILED():
+                return False
+            if self.version != other.version:
+                return False
+            if self.instance != other.instance:
+                return False
+            if self.epoch != other.epoch:
+                return False
+            if self.failure != other.failure:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_WAKE:
+
+        def __init__(self, generation:MobileOrderedGeneration, group_id:int):
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioIngress.ORDERED_WAKE(generation={}, group_id={})".format(self.generation, self.group_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioIngress):
+                return NotImplemented
+            if not other.is_ORDERED_WAKE():
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_WAKE_FAILURE:
+
+        def __init__(self, generation:MobileOrderedGeneration, group_id:int):
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioIngress.ORDERED_WAKE_FAILURE(generation={}, group_id={})".format(self.generation, self.group_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioIngress):
+                return NotImplemented
+            if not other.is_ORDERED_WAKE_FAILURE():
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            return True
+
+    @dataclass
     class ADAPTER_STATE:
 
         def __init__(self, snapshot:MobileAdapterSnapshot):
@@ -3967,6 +9878,18 @@ class MobileRadioIngress:
         return isinstance(self, MobileRadioIngress.NOTIFICATION)
     def is_notification(self) -> bool:
         return isinstance(self, MobileRadioIngress.NOTIFICATION)
+    def is_NOTIFICATION_SOURCE_FAILED(self) -> bool:
+        return isinstance(self, MobileRadioIngress.NOTIFICATION_SOURCE_FAILED)
+    def is_notification_source_failed(self) -> bool:
+        return isinstance(self, MobileRadioIngress.NOTIFICATION_SOURCE_FAILED)
+    def is_ORDERED_WAKE(self) -> bool:
+        return isinstance(self, MobileRadioIngress.ORDERED_WAKE)
+    def is_ordered_wake(self) -> bool:
+        return isinstance(self, MobileRadioIngress.ORDERED_WAKE)
+    def is_ORDERED_WAKE_FAILURE(self) -> bool:
+        return isinstance(self, MobileRadioIngress.ORDERED_WAKE_FAILURE)
+    def is_ordered_wake_failure(self) -> bool:
+        return isinstance(self, MobileRadioIngress.ORDERED_WAKE_FAILURE)
     def is_ADAPTER_STATE(self) -> bool:
         return isinstance(self, MobileRadioIngress.ADAPTER_STATE)
     def is_adapter_state(self) -> bool:
@@ -4001,6 +9924,9 @@ MobileRadioIngress.CONNECTION = type("MobileRadioIngress.CONNECTION", (MobileRad
 MobileRadioIngress.CONNECTION_SCOPED = type("MobileRadioIngress.CONNECTION_SCOPED", (MobileRadioIngress.CONNECTION_SCOPED, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.SERVICES_CHANGED = type("MobileRadioIngress.SERVICES_CHANGED", (MobileRadioIngress.SERVICES_CHANGED, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.NOTIFICATION = type("MobileRadioIngress.NOTIFICATION", (MobileRadioIngress.NOTIFICATION, MobileRadioIngress,), {})  # type: ignore
+MobileRadioIngress.NOTIFICATION_SOURCE_FAILED = type("MobileRadioIngress.NOTIFICATION_SOURCE_FAILED", (MobileRadioIngress.NOTIFICATION_SOURCE_FAILED, MobileRadioIngress,), {})  # type: ignore
+MobileRadioIngress.ORDERED_WAKE = type("MobileRadioIngress.ORDERED_WAKE", (MobileRadioIngress.ORDERED_WAKE, MobileRadioIngress,), {})  # type: ignore
+MobileRadioIngress.ORDERED_WAKE_FAILURE = type("MobileRadioIngress.ORDERED_WAKE_FAILURE", (MobileRadioIngress.ORDERED_WAKE_FAILURE, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.ADAPTER_STATE = type("MobileRadioIngress.ADAPTER_STATE", (MobileRadioIngress.ADAPTER_STATE, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.SCAN_FAILED = type("MobileRadioIngress.SCAN_FAILED", (MobileRadioIngress.SCAN_FAILED, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.SECURITY_CHANGED = type("MobileRadioIngress.SECURITY_CHANGED", (MobileRadioIngress.SECURITY_CHANGED, MobileRadioIngress,), {})  # type: ignore
@@ -4043,28 +9969,45 @@ class _UniffiFfiConverterTypeMobileRadioIngress(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterBytes.read(buf),
             )
         if variant == 6:
+            return MobileRadioIngress.NOTIFICATION_SOURCE_FAILED(
+                _UniffiFfiConverterUInt32.read(buf),
+                _UniffiFfiConverterTypeMobileInstance.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobilePlatformFailure.read(buf),
+            )
+        if variant == 7:
+            return MobileRadioIngress.ORDERED_WAKE(
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 8:
+            return MobileRadioIngress.ORDERED_WAKE_FAILURE(
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 9:
             return MobileRadioIngress.ADAPTER_STATE(
                 _UniffiFfiConverterTypeMobileAdapterSnapshot.read(buf),
             )
-        if variant == 7:
+        if variant == 10:
             return MobileRadioIngress.SCAN_FAILED(
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 8:
+        if variant == 11:
             return MobileRadioIngress.SECURITY_CHANGED(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterTypeMobileSecurityState.read(buf),
             )
-        if variant == 9:
+        if variant == 12:
             return MobileRadioIngress.WRITE_READINESS(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterBoolean.read(buf),
             )
-        if variant == 10:
+        if variant == 13:
             return MobileRadioIngress.RESTORED(
                 _UniffiFfiConverterSequenceTypeMobileRestoredPeer.read(buf),
             )
-        if variant == 11:
+        if variant == 14:
             return MobileRadioIngress.DROPPED(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
@@ -4094,6 +10037,20 @@ class _UniffiFfiConverterTypeMobileRadioIngress(_UniffiConverterRustBuffer):
             _UniffiFfiConverterTypeMobileInstance.check_lower(value.instance)
             _UniffiFfiConverterUInt64.check_lower(value.epoch)
             _UniffiFfiConverterBytes.check_lower(value.value)
+            return
+        if value.is_NOTIFICATION_SOURCE_FAILED():
+            _UniffiFfiConverterUInt32.check_lower(value.version)
+            _UniffiFfiConverterTypeMobileInstance.check_lower(value.instance)
+            _UniffiFfiConverterUInt64.check_lower(value.epoch)
+            _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(value.failure)
+            return
+        if value.is_ORDERED_WAKE():
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            return
+        if value.is_ORDERED_WAKE_FAILURE():
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
             return
         if value.is_ADAPTER_STATE():
             _UniffiFfiConverterTypeMobileAdapterSnapshot.check_lower(value.snapshot)
@@ -4142,42 +10099,43 @@ class _UniffiFfiConverterTypeMobileRadioIngress(_UniffiConverterRustBuffer):
             _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
             _UniffiFfiConverterUInt64.write(value.epoch, buf)
             _UniffiFfiConverterBytes.write(value.value, buf)
-        if value.is_ADAPTER_STATE():
+        if value.is_NOTIFICATION_SOURCE_FAILED():
             buf.write_i32(6)
+            _UniffiFfiConverterUInt32.write(value.version, buf)
+            _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
+            _UniffiFfiConverterUInt64.write(value.epoch, buf)
+            _UniffiFfiConverterTypeMobilePlatformFailure.write(value.failure, buf)
+        if value.is_ORDERED_WAKE():
+            buf.write_i32(7)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+        if value.is_ORDERED_WAKE_FAILURE():
+            buf.write_i32(8)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+        if value.is_ADAPTER_STATE():
+            buf.write_i32(9)
             _UniffiFfiConverterTypeMobileAdapterSnapshot.write(value.snapshot, buf)
         if value.is_SCAN_FAILED():
-            buf.write_i32(7)
+            buf.write_i32(10)
             _UniffiFfiConverterString.write(value.detail, buf)
         if value.is_SECURITY_CHANGED():
-            buf.write_i32(8)
+            buf.write_i32(11)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterTypeMobileSecurityState.write(value.state, buf)
         if value.is_WRITE_READINESS():
-            buf.write_i32(9)
+            buf.write_i32(12)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterBoolean.write(value.ready, buf)
         if value.is_RESTORED():
-            buf.write_i32(10)
+            buf.write_i32(13)
             _UniffiFfiConverterSequenceTypeMobileRestoredPeer.write(value.peers, buf)
         if value.is_DROPPED():
-            buf.write_i32(11)
+            buf.write_i32(14)
             _UniffiFfiConverterString.write(value.ingress_class, buf)
             _UniffiFfiConverterString.write(value.detail, buf)
 
 
-
-class _UniffiFfiConverterUInt32(_UniffiConverterPrimitiveInt):
-    CLASS_NAME = "u32"
-    VALUE_MIN = 0
-    VALUE_MAX = 2**32
-
-    @staticmethod
-    def read(buf):
-        return buf.read_u32()
-
-    @staticmethod
-    def write(value, buf):
-        buf.write_u32(value)
 
 class _UniffiFfiConverterOptionalUInt32(_UniffiConverterRustBuffer):
     @classmethod
@@ -4619,13 +10577,19 @@ class MobileRadioRequest:
             return True
 
     @dataclass
-    class DISABLE_NOTIFICATIONS:
+    class ORDERED_ENABLE_NOTIFICATIONS:
 
-        def __init__(self, id:int, instance:MobileInstance):
+        def __init__(self, id:int, activation:MobileOrderedActivation, requested:typing.Optional[str], preferred:typing.Optional[str]):
             self.id = id
 
 
-            self.instance = instance
+            self.activation = activation
+
+
+            self.requested = requested
+
+
+            self.preferred = preferred
 
 
             pass
@@ -4635,7 +10599,130 @@ class MobileRadioRequest:
 
 
         def __str__(self):
-            return "MobileRadioRequest.DISABLE_NOTIFICATIONS(id={}, instance={})".format(self.id, self.instance)
+            return "MobileRadioRequest.ORDERED_ENABLE_NOTIFICATIONS(id={}, activation={}, requested={}, preferred={})".format(self.id, self.activation, self.requested, self.preferred)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_ENABLE_NOTIFICATIONS():
+                return False
+            if self.id != other.id:
+                return False
+            if self.activation != other.activation:
+                return False
+            if self.requested != other.requested:
+                return False
+            if self.preferred != other.preferred:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_DISABLE_NOTIFICATIONS:
+
+        def __init__(self, id:int, activation:MobileOrderedActivation):
+            self.id = id
+
+
+            self.activation = activation
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_DISABLE_NOTIFICATIONS(id={}, activation={})".format(self.id, self.activation)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_DISABLE_NOTIFICATIONS():
+                return False
+            if self.id != other.id:
+                return False
+            if self.activation != other.activation:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_ENABLE_SETTLEMENT:
+
+        def __init__(self, id:int, activation:MobileOrderedActivation):
+            self.id = id
+
+
+            self.activation = activation
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_ENABLE_SETTLEMENT(id={}, activation={})".format(self.id, self.activation)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_ENABLE_SETTLEMENT():
+                return False
+            if self.id != other.id:
+                return False
+            if self.activation != other.activation:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_FORGET_ENABLE_RECEIPT:
+
+        def __init__(self, id:int, activation:MobileOrderedActivation):
+            self.id = id
+
+
+            self.activation = activation
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_FORGET_ENABLE_RECEIPT(id={}, activation={})".format(self.id, self.activation)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_FORGET_ENABLE_RECEIPT():
+                return False
+            if self.id != other.id:
+                return False
+            if self.activation != other.activation:
+                return False
+            return True
+
+    @dataclass
+    class DISABLE_NOTIFICATIONS:
+
+        def __init__(self, id:int, instance:MobileInstance, epoch:int):
+            self.id = id
+
+
+            self.instance = instance
+
+
+            self.epoch = epoch
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.DISABLE_NOTIFICATIONS(id={}, instance={}, epoch={})".format(self.id, self.instance, self.epoch)
         def __eq__(self, other):
             if not isinstance(other, MobileRadioRequest):
                 return NotImplemented
@@ -4644,6 +10731,1504 @@ class MobileRadioRequest:
             if self.id != other.id:
                 return False
             if self.instance != other.instance:
+                return False
+            if self.epoch != other.epoch:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_OPEN_V2:
+
+        def __init__(self, id:int, identity:MobileOrderedOpenIdentity):
+            self.id = id
+
+
+            self.identity = identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_OPEN_V2(id={}, identity={})".format(self.id, self.identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_OPEN_V2():
+                return False
+            if self.id != other.id:
+                return False
+            if self.identity != other.identity:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_RECOVER_OPEN_V2:
+
+        def __init__(self, id:int, identity:MobileOrderedOpenIdentity):
+            self.id = id
+
+
+            self.identity = identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_RECOVER_OPEN_V2(id={}, identity={})".format(self.id, self.identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_RECOVER_OPEN_V2():
+                return False
+            if self.id != other.id:
+                return False
+            if self.identity != other.identity:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_ACKNOWLEDGE_OPEN_V2:
+
+        def __init__(self, id:int, identity:MobileOrderedOpenIdentity):
+            self.id = id
+
+
+            self.identity = identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN_V2(id={}, identity={})".format(self.id, self.identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_ACKNOWLEDGE_OPEN_V2():
+                return False
+            if self.id != other.id:
+                return False
+            if self.identity != other.identity:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_OPEN:
+
+        def __init__(self, id:int, group_id:int, connection_generation:str, database_generation:str, snapshot_identity:MobileGattSnapshotIdentity, members:typing.List[MobileOrderedMember], item_capacity:int, byte_capacity:int):
+            self.id = id
+
+
+            self.group_id = group_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.database_generation = database_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            self.members = members
+
+
+            self.item_capacity = item_capacity
+
+
+            self.byte_capacity = byte_capacity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_OPEN(id={}, group_id={}, connection_generation={}, database_generation={}, snapshot_identity={}, members={}, item_capacity={}, byte_capacity={})".format(self.id, self.group_id, self.connection_generation, self.database_generation, self.snapshot_identity, self.members, self.item_capacity, self.byte_capacity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_OPEN():
+                return False
+            if self.id != other.id:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.database_generation != other.database_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            if self.members != other.members:
+                return False
+            if self.item_capacity != other.item_capacity:
+                return False
+            if self.byte_capacity != other.byte_capacity:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_RECOVER_OPEN:
+
+        def __init__(self, id:int, group_id:int, open_request_id:int, peer_id:str):
+            self.id = id
+
+
+            self.group_id = group_id
+
+
+            self.open_request_id = open_request_id
+
+
+            self.peer_id = peer_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_RECOVER_OPEN(id={}, group_id={}, open_request_id={}, peer_id={})".format(self.id, self.group_id, self.open_request_id, self.peer_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_RECOVER_OPEN():
+                return False
+            if self.id != other.id:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.open_request_id != other.open_request_id:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_ACKNOWLEDGE_OPEN:
+
+        def __init__(self, id:int, version:int, group_id:int, open_request_id:int, peer_id:str):
+            self.id = id
+
+
+            self.version = version
+
+
+            self.group_id = group_id
+
+
+            self.open_request_id = open_request_id
+
+
+            self.peer_id = peer_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN(id={}, version={}, group_id={}, open_request_id={}, peer_id={})".format(self.id, self.version, self.group_id, self.open_request_id, self.peer_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_ACKNOWLEDGE_OPEN():
+                return False
+            if self.id != other.id:
+                return False
+            if self.version != other.version:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.open_request_id != other.open_request_id:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_REGISTER:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, member:MobileOrderedRegistration):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.member = member
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_REGISTER(id={}, generation={}, group_id={}, member={})".format(self.id, self.generation, self.group_id, self.member)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_REGISTER():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.member != other.member:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_RETIRE:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, member:MobileOrderedRegistration):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.member = member
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_RETIRE(id={}, generation={}, group_id={}, member={})".format(self.id, self.generation, self.group_id, self.member)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_RETIRE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.member != other.member:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_DRAIN:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_DRAIN(id={}, generation={}, group_id={})".format(self.id, self.generation, self.group_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_DRAIN():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_BARRIER:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, barrier_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.barrier_id = barrier_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_BARRIER(id={}, generation={}, group_id={}, barrier_id={})".format(self.id, self.generation, self.group_id, self.barrier_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_BARRIER():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.barrier_id != other.barrier_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_RESERVE:
+
+        def __init__(self, id:int, request:int):
+            self.id = id
+
+
+            self.request = request
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE(id={}, request={})".format(self.id, self.request)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_RESERVE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.request != other.request:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS:
+
+        def __init__(self, id:int, request:int):
+            self.id = id
+
+
+            self.request = request
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS(id={}, request={})".format(self.id, self.request)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS():
+                return False
+            if self.id != other.id:
+                return False
+            if self.request != other.request:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE:
+
+        def __init__(self, id:int, request:int):
+            self.id = id
+
+
+            self.request = request
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE(id={}, request={})".format(self.id, self.request)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.request != other.request:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET:
+
+        def __init__(self, id:int, request:int):
+            self.id = id
+
+
+            self.request = request
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET(id={}, request={})".format(self.id, self.request)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET():
+                return False
+            if self.id != other.id:
+                return False
+            if self.request != other.request:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_OPEN:
+
+        def __init__(self, id:int, receipt_id:int):
+            self.id = id
+
+
+            self.receipt_id = receipt_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_OPEN(id={}, receipt_id={})".format(self.id, self.receipt_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_OPEN():
+                return False
+            if self.id != other.id:
+                return False
+            if self.receipt_id != other.receipt_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_STATUS:
+
+        def __init__(self, id:int, receipt_id:int):
+            self.id = id
+
+
+            self.receipt_id = receipt_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_STATUS(id={}, receipt_id={})".format(self.id, self.receipt_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_STATUS():
+                return False
+            if self.id != other.id:
+                return False
+            if self.receipt_id != other.receipt_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_FENCE_OPEN:
+
+        def __init__(self, id:int, receipt_id:int):
+            self.id = id
+
+
+            self.receipt_id = receipt_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FENCE_OPEN(id={}, receipt_id={})".format(self.id, self.receipt_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_FENCE_OPEN():
+                return False
+            if self.id != other.id:
+                return False
+            if self.receipt_id != other.receipt_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_FORGET_OPEN:
+
+        def __init__(self, id:int, receipt_id:int):
+            self.id = id
+
+
+            self.receipt_id = receipt_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET_OPEN(id={}, receipt_id={})".format(self.id, self.receipt_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_FORGET_OPEN():
+                return False
+            if self.id != other.id:
+                return False
+            if self.receipt_id != other.receipt_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_CLOSE:
+
+        def __init__(self, id:int, authority_id:int):
+            self.id = id
+
+
+            self.authority_id = authority_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_CLOSE(id={}, authority_id={})".format(self.id, self.authority_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_CLOSE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_AUTHORITY_FORGET:
+
+        def __init__(self, id:int, authority_id:int):
+            self.id = id
+
+
+            self.authority_id = authority_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET(id={}, authority_id={})".format(self.id, self.authority_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_AUTHORITY_FORGET():
+                return False
+            if self.id != other.id:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_RESERVE:
+
+        def __init__(self, id:int, authority_id:int, request:int, peer_id:str, connection_generation:str, snapshot_identity:MobileGattSnapshotIdentity):
+            self.id = id
+
+
+            self.authority_id = authority_id
+
+
+            self.request = request
+
+
+            self.peer_id = peer_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE(id={}, authority_id={}, request={}, peer_id={}, connection_generation={}, snapshot_identity={})".format(self.id, self.authority_id, self.request, self.peer_id, self.connection_generation, self.snapshot_identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_RESERVE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            if self.request != other.request:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_RESERVE_STATUS:
+
+        def __init__(self, id:int, authority_id:int, request:int, peer_id:str, connection_generation:str, snapshot_identity:MobileGattSnapshotIdentity):
+            self.id = id
+
+
+            self.authority_id = authority_id
+
+
+            self.request = request
+
+
+            self.peer_id = peer_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_STATUS(id={}, authority_id={}, request={}, peer_id={}, connection_generation={}, snapshot_identity={})".format(self.id, self.authority_id, self.request, self.peer_id, self.connection_generation, self.snapshot_identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_RESERVE_STATUS():
+                return False
+            if self.id != other.id:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            if self.request != other.request:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_RESERVE_FENCE:
+
+        def __init__(self, id:int, authority_id:int, request:int, peer_id:str, connection_generation:str, snapshot_identity:MobileGattSnapshotIdentity):
+            self.id = id
+
+
+            self.authority_id = authority_id
+
+
+            self.request = request
+
+
+            self.peer_id = peer_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_FENCE(id={}, authority_id={}, request={}, peer_id={}, connection_generation={}, snapshot_identity={})".format(self.id, self.authority_id, self.request, self.peer_id, self.connection_generation, self.snapshot_identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_RESERVE_FENCE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            if self.request != other.request:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_FORGET_REQUEST:
+
+        def __init__(self, id:int, authority_id:int, request:int, peer_id:str, connection_generation:str, snapshot_identity:MobileGattSnapshotIdentity):
+            self.id = id
+
+
+            self.authority_id = authority_id
+
+
+            self.request = request
+
+
+            self.peer_id = peer_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET_REQUEST(id={}, authority_id={}, request={}, peer_id={}, connection_generation={}, snapshot_identity={})".format(self.id, self.authority_id, self.request, self.peer_id, self.connection_generation, self.snapshot_identity)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_FORGET_REQUEST():
+                return False
+            if self.id != other.id:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            if self.request != other.request:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_ACQUIRE:
+
+        def __init__(self, id:int, peer_id:str, connection_generation:str, snapshot_identity:MobileGattSnapshotIdentity, authority_id:int, permit_id:int):
+            self.id = id
+
+
+            self.peer_id = peer_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            self.authority_id = authority_id
+
+
+            self.permit_id = permit_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_PERMIT_ACQUIRE(id={}, peer_id={}, connection_generation={}, snapshot_identity={}, authority_id={}, permit_id={})".format(self.id, self.peer_id, self.connection_generation, self.snapshot_identity, self.authority_id, self.permit_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_ACQUIRE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            if self.permit_id != other.permit_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_RELEASE:
+
+        def __init__(self, id:int, peer_id:str, connection_generation:str, snapshot_identity:MobileGattSnapshotIdentity, authority_id:int, permit_id:int):
+            self.id = id
+
+
+            self.peer_id = peer_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            self.authority_id = authority_id
+
+
+            self.permit_id = permit_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_PERMIT_RELEASE(id={}, peer_id={}, connection_generation={}, snapshot_identity={}, authority_id={}, permit_id={})".format(self.id, self.peer_id, self.connection_generation, self.snapshot_identity, self.authority_id, self.permit_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_RELEASE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            if self.permit_id != other.permit_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_COMMIT:
+
+        def __init__(self, id:int, peer_id:str, connection_generation:str, snapshot_identity:MobileGattSnapshotIdentity, authority_id:int, permit_id:int):
+            self.id = id
+
+
+            self.peer_id = peer_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            self.authority_id = authority_id
+
+
+            self.permit_id = permit_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_PERMIT_COMMIT(id={}, peer_id={}, connection_generation={}, snapshot_identity={}, authority_id={}, permit_id={})".format(self.id, self.peer_id, self.connection_generation, self.snapshot_identity, self.authority_id, self.permit_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_COMMIT():
+                return False
+            if self.id != other.id:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            if self.permit_id != other.permit_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_GRAPH_PERMIT_FORGET:
+
+        def __init__(self, id:int, peer_id:str, connection_generation:str, snapshot_identity:MobileGattSnapshotIdentity, authority_id:int, permit_id:int):
+            self.id = id
+
+
+            self.peer_id = peer_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            self.authority_id = authority_id
+
+
+            self.permit_id = permit_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET(id={}, peer_id={}, connection_generation={}, snapshot_identity={}, authority_id={}, permit_id={})".format(self.id, self.peer_id, self.connection_generation, self.snapshot_identity, self.authority_id, self.permit_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_GRAPH_PERMIT_FORGET():
+                return False
+            if self.id != other.id:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            if self.authority_id != other.authority_id:
+                return False
+            if self.permit_id != other.permit_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_MARKER_WRITE:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, marker_id:int, connection_generation:str, snapshot_identity:MobileGattSnapshotIdentity, instance:MobileInstance, value:bytes, with_response:bool):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.marker_id = marker_id
+
+
+            self.connection_generation = connection_generation
+
+
+            self.snapshot_identity = snapshot_identity
+
+
+            self.instance = instance
+
+
+            self.value = value
+
+
+            self.with_response = with_response
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_MARKER_WRITE(id={}, generation={}, group_id={}, marker_id={}, connection_generation={}, snapshot_identity={}, instance={}, value={}, with_response={})".format(self.id, self.generation, self.group_id, self.marker_id, self.connection_generation, self.snapshot_identity, self.instance, self.value, self.with_response)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_MARKER_WRITE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.marker_id != other.marker_id:
+                return False
+            if self.connection_generation != other.connection_generation:
+                return False
+            if self.snapshot_identity != other.snapshot_identity:
+                return False
+            if self.instance != other.instance:
+                return False
+            if self.value != other.value:
+                return False
+            if self.with_response != other.with_response:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_MARKER_WRITE_SETTLEMENT:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, marker_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.marker_id = marker_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_MARKER_WRITE_SETTLEMENT(id={}, generation={}, group_id={}, marker_id={})".format(self.id, self.generation, self.group_id, self.marker_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_MARKER_WRITE_SETTLEMENT():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.marker_id != other.marker_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_CANCEL_MARKER_WRITE:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, marker_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.marker_id = marker_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_CANCEL_MARKER_WRITE(id={}, generation={}, group_id={}, marker_id={})".format(self.id, self.generation, self.group_id, self.marker_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_CANCEL_MARKER_WRITE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.marker_id != other.marker_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_FORGET_MARKER_WRITE_RECEIPT:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, marker_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.marker_id = marker_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_FORGET_MARKER_WRITE_RECEIPT(id={}, generation={}, group_id={}, marker_id={})".format(self.id, self.generation, self.group_id, self.marker_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_FORGET_MARKER_WRITE_RECEIPT():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.marker_id != other.marker_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_ACKNOWLEDGE_BATCH:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, batch_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.batch_id = batch_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH(id={}, generation={}, group_id={}, batch_id={})".format(self.id, self.generation, self.group_id, self.batch_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_ACKNOWLEDGE_BATCH():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.batch_id != other.batch_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_CLOSE:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_CLOSE(id={}, generation={}, group_id={})".format(self.id, self.generation, self.group_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_CLOSE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_SEAL:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_SEAL(id={}, generation={}, group_id={})".format(self.id, self.generation, self.group_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_SEAL():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_RETAIN_CLAIM:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, member:MobileOrderedRegistration):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.member = member
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_RETAIN_CLAIM(id={}, generation={}, group_id={}, member={})".format(self.id, self.generation, self.group_id, self.member)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_RETAIN_CLAIM():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.member != other.member:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_CONFIRM_CLEANUP:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int, member:MobileOrderedRegistration):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.member = member
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_CONFIRM_CLEANUP(id={}, generation={}, group_id={}, member={})".format(self.id, self.generation, self.group_id, self.member)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_CONFIRM_CLEANUP():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.member != other.member:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_REMOVE:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_REMOVE(id={}, generation={}, group_id={})".format(self.id, self.generation, self.group_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_REMOVE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_FORGET_REMOVAL_RECEIPT:
+
+        def __init__(self, id:int, generation:MobileOrderedGeneration, group_id:int):
+            self.id = id
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_FORGET_REMOVAL_RECEIPT(id={}, generation={}, group_id={})".format(self.id, self.generation, self.group_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_FORGET_REMOVAL_RECEIPT():
+                return False
+            if self.id != other.id:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
                 return False
             return True
 
@@ -5383,6 +12968,157 @@ class MobileRadioRequest:
                 return False
             return True
 
+    @dataclass
+    class OWNER_FENCE:
+
+        def __init__(self, id:int, owner_incarnation:str, retirement_id:str):
+            self.id = id
+
+
+            self.owner_incarnation = owner_incarnation
+
+
+            self.retirement_id = retirement_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.OWNER_FENCE(id={}, owner_incarnation={}, retirement_id={})".format(self.id, self.owner_incarnation, self.retirement_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_OWNER_FENCE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.owner_incarnation != other.owner_incarnation:
+                return False
+            if self.retirement_id != other.retirement_id:
+                return False
+            return True
+
+    @dataclass
+    class OWNER_STATUS:
+
+        def __init__(self, id:int, owner_incarnation:str, retirement_id:str):
+            self.id = id
+
+
+            self.owner_incarnation = owner_incarnation
+
+
+            self.retirement_id = retirement_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.OWNER_STATUS(id={}, owner_incarnation={}, retirement_id={})".format(self.id, self.owner_incarnation, self.retirement_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_OWNER_STATUS():
+                return False
+            if self.id != other.id:
+                return False
+            if self.owner_incarnation != other.owner_incarnation:
+                return False
+            if self.retirement_id != other.retirement_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_DRAIN_V2:
+
+        def __init__(self, id:int, version:int, generation:MobileOrderedGeneration, group_id:int):
+            self.id = id
+
+
+            self.version = version
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_DRAIN_V2(id={}, version={}, generation={}, group_id={})".format(self.id, self.version, self.generation, self.group_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_DRAIN_V2():
+                return False
+            if self.id != other.id:
+                return False
+            if self.version != other.version:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            return True
+
+    @dataclass
+    class ORDERED_ACKNOWLEDGE_BATCH_V2:
+
+        def __init__(self, id:int, version:int, generation:MobileOrderedGeneration, group_id:int, batch_id:int):
+            self.id = id
+
+
+            self.version = version
+
+
+            self.generation = generation
+
+
+            self.group_id = group_id
+
+
+            self.batch_id = batch_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH_V2(id={}, version={}, generation={}, group_id={}, batch_id={})".format(self.id, self.version, self.generation, self.group_id, self.batch_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_ORDERED_ACKNOWLEDGE_BATCH_V2():
+                return False
+            if self.id != other.id:
+                return False
+            if self.version != other.version:
+                return False
+            if self.generation != other.generation:
+                return False
+            if self.group_id != other.group_id:
+                return False
+            if self.batch_id != other.batch_id:
+                return False
+            return True
+
 
 
     # For each variant, we have `is_NAME` and `is_name` methods for easily checking
@@ -5431,10 +13167,182 @@ class MobileRadioRequest:
         return isinstance(self, MobileRadioRequest.ENABLE_NOTIFICATIONS)
     def is_enable_notifications(self) -> bool:
         return isinstance(self, MobileRadioRequest.ENABLE_NOTIFICATIONS)
+    def is_ORDERED_ENABLE_NOTIFICATIONS(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ENABLE_NOTIFICATIONS)
+    def is_ordered_enable_notifications(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ENABLE_NOTIFICATIONS)
+    def is_ORDERED_DISABLE_NOTIFICATIONS(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_DISABLE_NOTIFICATIONS)
+    def is_ordered_disable_notifications(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_DISABLE_NOTIFICATIONS)
+    def is_ORDERED_ENABLE_SETTLEMENT(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ENABLE_SETTLEMENT)
+    def is_ordered_enable_settlement(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ENABLE_SETTLEMENT)
+    def is_ORDERED_FORGET_ENABLE_RECEIPT(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_FORGET_ENABLE_RECEIPT)
+    def is_ordered_forget_enable_receipt(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_FORGET_ENABLE_RECEIPT)
     def is_DISABLE_NOTIFICATIONS(self) -> bool:
         return isinstance(self, MobileRadioRequest.DISABLE_NOTIFICATIONS)
     def is_disable_notifications(self) -> bool:
         return isinstance(self, MobileRadioRequest.DISABLE_NOTIFICATIONS)
+    def is_ORDERED_OPEN_V2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_OPEN_V2)
+    def is_ordered_open_v2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_OPEN_V2)
+    def is_ORDERED_RECOVER_OPEN_V2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_RECOVER_OPEN_V2)
+    def is_ordered_recover_open_v2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_RECOVER_OPEN_V2)
+    def is_ORDERED_ACKNOWLEDGE_OPEN_V2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN_V2)
+    def is_ordered_acknowledge_open_v2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN_V2)
+    def is_ORDERED_OPEN(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_OPEN)
+    def is_ordered_open(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_OPEN)
+    def is_ORDERED_RECOVER_OPEN(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_RECOVER_OPEN)
+    def is_ordered_recover_open(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_RECOVER_OPEN)
+    def is_ORDERED_ACKNOWLEDGE_OPEN(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN)
+    def is_ordered_acknowledge_open(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN)
+    def is_ORDERED_REGISTER(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_REGISTER)
+    def is_ordered_register(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_REGISTER)
+    def is_ORDERED_RETIRE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_RETIRE)
+    def is_ordered_retire(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_RETIRE)
+    def is_ORDERED_DRAIN(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_DRAIN)
+    def is_ordered_drain(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_DRAIN)
+    def is_ORDERED_BARRIER(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_BARRIER)
+    def is_ordered_barrier(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_BARRIER)
+    def is_ORDERED_GRAPH_AUTHORITY_RESERVE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE)
+    def is_ordered_graph_authority_reserve(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE)
+    def is_ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS)
+    def is_ordered_graph_authority_reserve_status(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS)
+    def is_ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE)
+    def is_ordered_graph_authority_reserve_fence(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE)
+    def is_ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET)
+    def is_ordered_graph_authority_reserve_forget(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET)
+    def is_ORDERED_GRAPH_AUTHORITY_OPEN(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_OPEN)
+    def is_ordered_graph_authority_open(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_OPEN)
+    def is_ORDERED_GRAPH_AUTHORITY_STATUS(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_STATUS)
+    def is_ordered_graph_authority_status(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_STATUS)
+    def is_ORDERED_GRAPH_AUTHORITY_FENCE_OPEN(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FENCE_OPEN)
+    def is_ordered_graph_authority_fence_open(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FENCE_OPEN)
+    def is_ORDERED_GRAPH_AUTHORITY_FORGET_OPEN(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET_OPEN)
+    def is_ordered_graph_authority_forget_open(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET_OPEN)
+    def is_ORDERED_GRAPH_AUTHORITY_CLOSE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_CLOSE)
+    def is_ordered_graph_authority_close(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_CLOSE)
+    def is_ORDERED_GRAPH_AUTHORITY_FORGET(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET)
+    def is_ordered_graph_authority_forget(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET)
+    def is_ORDERED_GRAPH_PERMIT_RESERVE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE)
+    def is_ordered_graph_permit_reserve(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE)
+    def is_ORDERED_GRAPH_PERMIT_RESERVE_STATUS(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_STATUS)
+    def is_ordered_graph_permit_reserve_status(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_STATUS)
+    def is_ORDERED_GRAPH_PERMIT_RESERVE_FENCE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_FENCE)
+    def is_ordered_graph_permit_reserve_fence(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_FENCE)
+    def is_ORDERED_GRAPH_PERMIT_FORGET_REQUEST(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET_REQUEST)
+    def is_ordered_graph_permit_forget_request(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET_REQUEST)
+    def is_ORDERED_GRAPH_PERMIT_ACQUIRE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_ACQUIRE)
+    def is_ordered_graph_permit_acquire(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_ACQUIRE)
+    def is_ORDERED_GRAPH_PERMIT_RELEASE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_RELEASE)
+    def is_ordered_graph_permit_release(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_RELEASE)
+    def is_ORDERED_GRAPH_PERMIT_COMMIT(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_COMMIT)
+    def is_ordered_graph_permit_commit(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_COMMIT)
+    def is_ORDERED_GRAPH_PERMIT_FORGET(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET)
+    def is_ordered_graph_permit_forget(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET)
+    def is_ORDERED_MARKER_WRITE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_MARKER_WRITE)
+    def is_ordered_marker_write(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_MARKER_WRITE)
+    def is_ORDERED_MARKER_WRITE_SETTLEMENT(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_MARKER_WRITE_SETTLEMENT)
+    def is_ordered_marker_write_settlement(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_MARKER_WRITE_SETTLEMENT)
+    def is_ORDERED_CANCEL_MARKER_WRITE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_CANCEL_MARKER_WRITE)
+    def is_ordered_cancel_marker_write(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_CANCEL_MARKER_WRITE)
+    def is_ORDERED_FORGET_MARKER_WRITE_RECEIPT(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_FORGET_MARKER_WRITE_RECEIPT)
+    def is_ordered_forget_marker_write_receipt(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_FORGET_MARKER_WRITE_RECEIPT)
+    def is_ORDERED_ACKNOWLEDGE_BATCH(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH)
+    def is_ordered_acknowledge_batch(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH)
+    def is_ORDERED_CLOSE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_CLOSE)
+    def is_ordered_close(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_CLOSE)
+    def is_ORDERED_SEAL(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_SEAL)
+    def is_ordered_seal(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_SEAL)
+    def is_ORDERED_RETAIN_CLAIM(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_RETAIN_CLAIM)
+    def is_ordered_retain_claim(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_RETAIN_CLAIM)
+    def is_ORDERED_CONFIRM_CLEANUP(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_CONFIRM_CLEANUP)
+    def is_ordered_confirm_cleanup(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_CONFIRM_CLEANUP)
+    def is_ORDERED_REMOVE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_REMOVE)
+    def is_ordered_remove(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_REMOVE)
+    def is_ORDERED_FORGET_REMOVAL_RECEIPT(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_FORGET_REMOVAL_RECEIPT)
+    def is_ordered_forget_removal_receipt(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_FORGET_REMOVAL_RECEIPT)
     def is_READ_MTU(self) -> bool:
         return isinstance(self, MobileRadioRequest.READ_MTU)
     def is_read_mtu(self) -> bool:
@@ -5531,6 +13439,22 @@ class MobileRadioRequest:
         return isinstance(self, MobileRadioRequest.CLOSE)
     def is_close(self) -> bool:
         return isinstance(self, MobileRadioRequest.CLOSE)
+    def is_OWNER_FENCE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.OWNER_FENCE)
+    def is_owner_fence(self) -> bool:
+        return isinstance(self, MobileRadioRequest.OWNER_FENCE)
+    def is_OWNER_STATUS(self) -> bool:
+        return isinstance(self, MobileRadioRequest.OWNER_STATUS)
+    def is_owner_status(self) -> bool:
+        return isinstance(self, MobileRadioRequest.OWNER_STATUS)
+    def is_ORDERED_DRAIN_V2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_DRAIN_V2)
+    def is_ordered_drain_v2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_DRAIN_V2)
+    def is_ORDERED_ACKNOWLEDGE_BATCH_V2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH_V2)
+    def is_ordered_acknowledge_batch_v2(self) -> bool:
+        return isinstance(self, MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH_V2)
 
 
 # Now, a little trick - we make each nested variant class be a subclass of the main
@@ -5547,7 +13471,50 @@ MobileRadioRequest.WRITE = type("MobileRadioRequest.WRITE", (MobileRadioRequest.
 MobileRadioRequest.READ_DESCRIPTOR = type("MobileRadioRequest.READ_DESCRIPTOR", (MobileRadioRequest.READ_DESCRIPTOR, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.WRITE_DESCRIPTOR = type("MobileRadioRequest.WRITE_DESCRIPTOR", (MobileRadioRequest.WRITE_DESCRIPTOR, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.ENABLE_NOTIFICATIONS = type("MobileRadioRequest.ENABLE_NOTIFICATIONS", (MobileRadioRequest.ENABLE_NOTIFICATIONS, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_ENABLE_NOTIFICATIONS = type("MobileRadioRequest.ORDERED_ENABLE_NOTIFICATIONS", (MobileRadioRequest.ORDERED_ENABLE_NOTIFICATIONS, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_DISABLE_NOTIFICATIONS = type("MobileRadioRequest.ORDERED_DISABLE_NOTIFICATIONS", (MobileRadioRequest.ORDERED_DISABLE_NOTIFICATIONS, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_ENABLE_SETTLEMENT = type("MobileRadioRequest.ORDERED_ENABLE_SETTLEMENT", (MobileRadioRequest.ORDERED_ENABLE_SETTLEMENT, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_FORGET_ENABLE_RECEIPT = type("MobileRadioRequest.ORDERED_FORGET_ENABLE_RECEIPT", (MobileRadioRequest.ORDERED_FORGET_ENABLE_RECEIPT, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.DISABLE_NOTIFICATIONS = type("MobileRadioRequest.DISABLE_NOTIFICATIONS", (MobileRadioRequest.DISABLE_NOTIFICATIONS, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_OPEN_V2 = type("MobileRadioRequest.ORDERED_OPEN_V2", (MobileRadioRequest.ORDERED_OPEN_V2, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_RECOVER_OPEN_V2 = type("MobileRadioRequest.ORDERED_RECOVER_OPEN_V2", (MobileRadioRequest.ORDERED_RECOVER_OPEN_V2, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN_V2 = type("MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN_V2", (MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN_V2, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_OPEN = type("MobileRadioRequest.ORDERED_OPEN", (MobileRadioRequest.ORDERED_OPEN, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_RECOVER_OPEN = type("MobileRadioRequest.ORDERED_RECOVER_OPEN", (MobileRadioRequest.ORDERED_RECOVER_OPEN, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN = type("MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN", (MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_REGISTER = type("MobileRadioRequest.ORDERED_REGISTER", (MobileRadioRequest.ORDERED_REGISTER, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_RETIRE = type("MobileRadioRequest.ORDERED_RETIRE", (MobileRadioRequest.ORDERED_RETIRE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_DRAIN = type("MobileRadioRequest.ORDERED_DRAIN", (MobileRadioRequest.ORDERED_DRAIN, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_BARRIER = type("MobileRadioRequest.ORDERED_BARRIER", (MobileRadioRequest.ORDERED_BARRIER, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_OPEN = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_OPEN", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_OPEN, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_STATUS = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_STATUS", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_STATUS, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FENCE_OPEN = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FENCE_OPEN", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FENCE_OPEN, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET_OPEN = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET_OPEN", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET_OPEN, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_CLOSE = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_CLOSE", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_CLOSE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET = type("MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET", (MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE = type("MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE", (MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_STATUS = type("MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_STATUS", (MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_STATUS, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_FENCE = type("MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_FENCE", (MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_FENCE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET_REQUEST = type("MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET_REQUEST", (MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET_REQUEST, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_PERMIT_ACQUIRE = type("MobileRadioRequest.ORDERED_GRAPH_PERMIT_ACQUIRE", (MobileRadioRequest.ORDERED_GRAPH_PERMIT_ACQUIRE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_PERMIT_RELEASE = type("MobileRadioRequest.ORDERED_GRAPH_PERMIT_RELEASE", (MobileRadioRequest.ORDERED_GRAPH_PERMIT_RELEASE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_PERMIT_COMMIT = type("MobileRadioRequest.ORDERED_GRAPH_PERMIT_COMMIT", (MobileRadioRequest.ORDERED_GRAPH_PERMIT_COMMIT, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET = type("MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET", (MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_MARKER_WRITE = type("MobileRadioRequest.ORDERED_MARKER_WRITE", (MobileRadioRequest.ORDERED_MARKER_WRITE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_MARKER_WRITE_SETTLEMENT = type("MobileRadioRequest.ORDERED_MARKER_WRITE_SETTLEMENT", (MobileRadioRequest.ORDERED_MARKER_WRITE_SETTLEMENT, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_CANCEL_MARKER_WRITE = type("MobileRadioRequest.ORDERED_CANCEL_MARKER_WRITE", (MobileRadioRequest.ORDERED_CANCEL_MARKER_WRITE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_FORGET_MARKER_WRITE_RECEIPT = type("MobileRadioRequest.ORDERED_FORGET_MARKER_WRITE_RECEIPT", (MobileRadioRequest.ORDERED_FORGET_MARKER_WRITE_RECEIPT, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH = type("MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH", (MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_CLOSE = type("MobileRadioRequest.ORDERED_CLOSE", (MobileRadioRequest.ORDERED_CLOSE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_SEAL = type("MobileRadioRequest.ORDERED_SEAL", (MobileRadioRequest.ORDERED_SEAL, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_RETAIN_CLAIM = type("MobileRadioRequest.ORDERED_RETAIN_CLAIM", (MobileRadioRequest.ORDERED_RETAIN_CLAIM, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_CONFIRM_CLEANUP = type("MobileRadioRequest.ORDERED_CONFIRM_CLEANUP", (MobileRadioRequest.ORDERED_CONFIRM_CLEANUP, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_REMOVE = type("MobileRadioRequest.ORDERED_REMOVE", (MobileRadioRequest.ORDERED_REMOVE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_FORGET_REMOVAL_RECEIPT = type("MobileRadioRequest.ORDERED_FORGET_REMOVAL_RECEIPT", (MobileRadioRequest.ORDERED_FORGET_REMOVAL_RECEIPT, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.READ_MTU = type("MobileRadioRequest.READ_MTU", (MobileRadioRequest.READ_MTU, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.READ_WRITE_LIMITS = type("MobileRadioRequest.READ_WRITE_LIMITS", (MobileRadioRequest.READ_WRITE_LIMITS, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.READ_WRITE_READINESS = type("MobileRadioRequest.READ_WRITE_READINESS", (MobileRadioRequest.READ_WRITE_READINESS, MobileRadioRequest,), {})  # type: ignore
@@ -5572,6 +13539,10 @@ MobileRadioRequest.DISASSOCIATE_COMPANION = type("MobileRadioRequest.DISASSOCIAT
 MobileRadioRequest.OBSERVE_PRESENCE = type("MobileRadioRequest.OBSERVE_PRESENCE", (MobileRadioRequest.OBSERVE_PRESENCE, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.STOP_PRESENCE = type("MobileRadioRequest.STOP_PRESENCE", (MobileRadioRequest.STOP_PRESENCE, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.CLOSE = type("MobileRadioRequest.CLOSE", (MobileRadioRequest.CLOSE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.OWNER_FENCE = type("MobileRadioRequest.OWNER_FENCE", (MobileRadioRequest.OWNER_FENCE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.OWNER_STATUS = type("MobileRadioRequest.OWNER_STATUS", (MobileRadioRequest.OWNER_STATUS, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_DRAIN_V2 = type("MobileRadioRequest.ORDERED_DRAIN_V2", (MobileRadioRequest.ORDERED_DRAIN_V2, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH_V2 = type("MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH_V2", (MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH_V2, MobileRadioRequest,), {})  # type: ignore
 
 
 
@@ -5653,136 +13624,454 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterOptionalString.read(buf),
             )
         if variant == 12:
+            return MobileRadioRequest.ORDERED_ENABLE_NOTIFICATIONS(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedActivation.read(buf),
+                _UniffiFfiConverterOptionalString.read(buf),
+                _UniffiFfiConverterOptionalString.read(buf),
+            )
+        if variant == 13:
+            return MobileRadioRequest.ORDERED_DISABLE_NOTIFICATIONS(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedActivation.read(buf),
+            )
+        if variant == 14:
+            return MobileRadioRequest.ORDERED_ENABLE_SETTLEMENT(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedActivation.read(buf),
+            )
+        if variant == 15:
+            return MobileRadioRequest.ORDERED_FORGET_ENABLE_RECEIPT(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedActivation.read(buf),
+            )
+        if variant == 16:
             return MobileRadioRequest.DISABLE_NOTIFICATIONS(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterTypeMobileInstance.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
             )
-        if variant == 13:
+        if variant == 17:
+            return MobileRadioRequest.ORDERED_OPEN_V2(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedOpenIdentity.read(buf),
+            )
+        if variant == 18:
+            return MobileRadioRequest.ORDERED_RECOVER_OPEN_V2(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedOpenIdentity.read(buf),
+            )
+        if variant == 19:
+            return MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN_V2(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedOpenIdentity.read(buf),
+            )
+        if variant == 20:
+            return MobileRadioRequest.ORDERED_OPEN(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                _UniffiFfiConverterSequenceTypeMobileOrderedMember.read(buf),
+                _UniffiFfiConverterUInt32.read(buf),
+                _UniffiFfiConverterUInt32.read(buf),
+            )
+        if variant == 21:
+            return MobileRadioRequest.ORDERED_RECOVER_OPEN(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 22:
+            return MobileRadioRequest.ORDERED_ACKNOWLEDGE_OPEN(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt32.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 23:
+            return MobileRadioRequest.ORDERED_REGISTER(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 24:
+            return MobileRadioRequest.ORDERED_RETIRE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 25:
+            return MobileRadioRequest.ORDERED_DRAIN(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 26:
+            return MobileRadioRequest.ORDERED_BARRIER(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 27:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 28:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 29:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 30:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 31:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_OPEN(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 32:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_STATUS(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 33:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FENCE_OPEN(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 34:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET_OPEN(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 35:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_CLOSE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 36:
+            return MobileRadioRequest.ORDERED_GRAPH_AUTHORITY_FORGET(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 37:
+            return MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+            )
+        if variant == 38:
+            return MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_STATUS(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+            )
+        if variant == 39:
+            return MobileRadioRequest.ORDERED_GRAPH_PERMIT_RESERVE_FENCE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+            )
+        if variant == 40:
+            return MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET_REQUEST(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+            )
+        if variant == 41:
+            return MobileRadioRequest.ORDERED_GRAPH_PERMIT_ACQUIRE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 42:
+            return MobileRadioRequest.ORDERED_GRAPH_PERMIT_RELEASE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 43:
+            return MobileRadioRequest.ORDERED_GRAPH_PERMIT_COMMIT(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 44:
+            return MobileRadioRequest.ORDERED_GRAPH_PERMIT_FORGET(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 45:
+            return MobileRadioRequest.ORDERED_MARKER_WRITE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeMobileGattSnapshotIdentity.read(buf),
+                _UniffiFfiConverterTypeMobileInstance.read(buf),
+                _UniffiFfiConverterBytes.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 46:
+            return MobileRadioRequest.ORDERED_MARKER_WRITE_SETTLEMENT(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 47:
+            return MobileRadioRequest.ORDERED_CANCEL_MARKER_WRITE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 48:
+            return MobileRadioRequest.ORDERED_FORGET_MARKER_WRITE_RECEIPT(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 49:
+            return MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 50:
+            return MobileRadioRequest.ORDERED_CLOSE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 51:
+            return MobileRadioRequest.ORDERED_SEAL(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 52:
+            return MobileRadioRequest.ORDERED_RETAIN_CLAIM(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 53:
+            return MobileRadioRequest.ORDERED_CONFIRM_CLEANUP(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedRegistration.read(buf),
+            )
+        if variant == 54:
+            return MobileRadioRequest.ORDERED_REMOVE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 55:
+            return MobileRadioRequest.ORDERED_FORGET_REMOVAL_RECEIPT(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 56:
             return MobileRadioRequest.READ_MTU(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 14:
+        if variant == 57:
             return MobileRadioRequest.READ_WRITE_LIMITS(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 15:
+        if variant == 58:
             return MobileRadioRequest.READ_WRITE_READINESS(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 16:
+        if variant == 59:
             return MobileRadioRequest.REQUEST_MTU(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterUInt16.read(buf),
             )
-        if variant == 17:
+        if variant == 60:
             return MobileRadioRequest.READ_RSSI(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 18:
+        if variant == 61:
             return MobileRadioRequest.REQUEST_CONNECTION_PRIORITY(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 19:
+        if variant == 62:
             return MobileRadioRequest.REQUEST_SUBRATE(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 20:
+        if variant == 63:
             return MobileRadioRequest.READ_PHY(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 21:
+        if variant == 64:
             return MobileRadioRequest.REQUEST_PHY(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 22:
+        if variant == 65:
             return MobileRadioRequest.SECURITY_STATE(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 23:
+        if variant == 66:
             return MobileRadioRequest.CREATE_BOND(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 24:
+        if variant == 67:
             return MobileRadioRequest.CANCEL_BOND(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 25:
+        if variant == 68:
             return MobileRadioRequest.BONDED_PEERS(
                 _UniffiFfiConverterUInt64.read(buf),
             )
-        if variant == 26:
+        if variant == 69:
             return MobileRadioRequest.CONNECTED_PEERS(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterSequenceString.read(buf),
             )
-        if variant == 27:
+        if variant == 70:
             return MobileRadioRequest.RESOLVE_PEER(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 28:
+        if variant == 71:
             return MobileRadioRequest.ACQUIRE_BACKGROUND(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 29:
+        if variant == 72:
             return MobileRadioRequest.RELEASE_BACKGROUND(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 30:
+        if variant == 73:
             return MobileRadioRequest.UPDATE_BACKGROUND_NOTIFICATION(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 31:
+        if variant == 74:
             return MobileRadioRequest.ASSOCIATE_COMPANION(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 32:
+        if variant == 75:
             return MobileRadioRequest.LIST_COMPANION(
                 _UniffiFfiConverterUInt64.read(buf),
             )
-        if variant == 33:
+        if variant == 76:
             return MobileRadioRequest.DISASSOCIATE_COMPANION(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterInt64.read(buf),
             )
-        if variant == 34:
+        if variant == 77:
             return MobileRadioRequest.OBSERVE_PRESENCE(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 35:
+        if variant == 78:
             return MobileRadioRequest.STOP_PRESENCE(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 36:
+        if variant == 79:
             return MobileRadioRequest.CLOSE(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 80:
+            return MobileRadioRequest.OWNER_FENCE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 81:
+            return MobileRadioRequest.OWNER_STATUS(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 82:
+            return MobileRadioRequest.ORDERED_DRAIN_V2(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt32.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 83:
+            return MobileRadioRequest.ORDERED_ACKNOWLEDGE_BATCH_V2(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterUInt32.read(buf),
+                _UniffiFfiConverterTypeMobileOrderedGeneration.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterUInt64.read(buf),
             )
         raise InternalError("Raw enum value doesn't match any cases")
@@ -5850,9 +14139,257 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterOptionalString.check_lower(value.requested)
             _UniffiFfiConverterOptionalString.check_lower(value.preferred)
             return
+        if value.is_ORDERED_ENABLE_NOTIFICATIONS():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedActivation.check_lower(value.activation)
+            _UniffiFfiConverterOptionalString.check_lower(value.requested)
+            _UniffiFfiConverterOptionalString.check_lower(value.preferred)
+            return
+        if value.is_ORDERED_DISABLE_NOTIFICATIONS():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedActivation.check_lower(value.activation)
+            return
+        if value.is_ORDERED_ENABLE_SETTLEMENT():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedActivation.check_lower(value.activation)
+            return
+        if value.is_ORDERED_FORGET_ENABLE_RECEIPT():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedActivation.check_lower(value.activation)
+            return
         if value.is_DISABLE_NOTIFICATIONS():
             _UniffiFfiConverterUInt64.check_lower(value.id)
             _UniffiFfiConverterTypeMobileInstance.check_lower(value.instance)
+            _UniffiFfiConverterUInt64.check_lower(value.epoch)
+            return
+        if value.is_ORDERED_OPEN_V2():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedOpenIdentity.check_lower(value.identity)
+            return
+        if value.is_ORDERED_RECOVER_OPEN_V2():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedOpenIdentity.check_lower(value.identity)
+            return
+        if value.is_ORDERED_ACKNOWLEDGE_OPEN_V2():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedOpenIdentity.check_lower(value.identity)
+            return
+        if value.is_ORDERED_OPEN():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterString.check_lower(value.database_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            _UniffiFfiConverterSequenceTypeMobileOrderedMember.check_lower(value.members)
+            _UniffiFfiConverterUInt32.check_lower(value.item_capacity)
+            _UniffiFfiConverterUInt32.check_lower(value.byte_capacity)
+            return
+        if value.is_ORDERED_RECOVER_OPEN():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterUInt64.check_lower(value.open_request_id)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            return
+        if value.is_ORDERED_ACKNOWLEDGE_OPEN():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt32.check_lower(value.version)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterUInt64.check_lower(value.open_request_id)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            return
+        if value.is_ORDERED_REGISTER():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            return
+        if value.is_ORDERED_RETIRE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            return
+        if value.is_ORDERED_DRAIN():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            return
+        if value.is_ORDERED_BARRIER():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterUInt64.check_lower(value.barrier_id)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.request)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.request)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.request)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.request)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_OPEN():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.receipt_id)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_STATUS():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.receipt_id)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_FENCE_OPEN():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.receipt_id)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_FORGET_OPEN():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.receipt_id)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_CLOSE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            return
+        if value.is_ORDERED_GRAPH_AUTHORITY_FORGET():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_RESERVE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            _UniffiFfiConverterUInt64.check_lower(value.request)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_RESERVE_STATUS():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            _UniffiFfiConverterUInt64.check_lower(value.request)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_RESERVE_FENCE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            _UniffiFfiConverterUInt64.check_lower(value.request)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_FORGET_REQUEST():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            _UniffiFfiConverterUInt64.check_lower(value.request)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_ACQUIRE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            _UniffiFfiConverterUInt64.check_lower(value.permit_id)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_RELEASE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            _UniffiFfiConverterUInt64.check_lower(value.permit_id)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_COMMIT():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            _UniffiFfiConverterUInt64.check_lower(value.permit_id)
+            return
+        if value.is_ORDERED_GRAPH_PERMIT_FORGET():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            _UniffiFfiConverterUInt64.check_lower(value.authority_id)
+            _UniffiFfiConverterUInt64.check_lower(value.permit_id)
+            return
+        if value.is_ORDERED_MARKER_WRITE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterUInt64.check_lower(value.marker_id)
+            _UniffiFfiConverterString.check_lower(value.connection_generation)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.check_lower(value.snapshot_identity)
+            _UniffiFfiConverterTypeMobileInstance.check_lower(value.instance)
+            _UniffiFfiConverterBytes.check_lower(value.value)
+            _UniffiFfiConverterBoolean.check_lower(value.with_response)
+            return
+        if value.is_ORDERED_MARKER_WRITE_SETTLEMENT():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterUInt64.check_lower(value.marker_id)
+            return
+        if value.is_ORDERED_CANCEL_MARKER_WRITE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterUInt64.check_lower(value.marker_id)
+            return
+        if value.is_ORDERED_FORGET_MARKER_WRITE_RECEIPT():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterUInt64.check_lower(value.marker_id)
+            return
+        if value.is_ORDERED_ACKNOWLEDGE_BATCH():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterUInt64.check_lower(value.batch_id)
+            return
+        if value.is_ORDERED_CLOSE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            return
+        if value.is_ORDERED_SEAL():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            return
+        if value.is_ORDERED_RETAIN_CLAIM():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            return
+        if value.is_ORDERED_CONFIRM_CLEANUP():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.check_lower(value.member)
+            return
+        if value.is_ORDERED_REMOVE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            return
+        if value.is_ORDERED_FORGET_REMOVAL_RECEIPT():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
             return
         if value.is_READ_MTU():
             _UniffiFfiConverterUInt64.check_lower(value.id)
@@ -5958,6 +14495,29 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
         if value.is_CLOSE():
             _UniffiFfiConverterUInt64.check_lower(value.id)
             return
+        if value.is_OWNER_FENCE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterString.check_lower(value.owner_incarnation)
+            _UniffiFfiConverterString.check_lower(value.retirement_id)
+            return
+        if value.is_OWNER_STATUS():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterString.check_lower(value.owner_incarnation)
+            _UniffiFfiConverterString.check_lower(value.retirement_id)
+            return
+        if value.is_ORDERED_DRAIN_V2():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt32.check_lower(value.version)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            return
+        if value.is_ORDERED_ACKNOWLEDGE_BATCH_V2():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterUInt32.check_lower(value.version)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.check_lower(value.generation)
+            _UniffiFfiConverterUInt64.check_lower(value.group_id)
+            _UniffiFfiConverterUInt64.check_lower(value.batch_id)
+            return
         raise ValueError(value)
 
     @staticmethod
@@ -6023,114 +14583,782 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterUInt64.write(value.epoch, buf)
             _UniffiFfiConverterOptionalString.write(value.requested, buf)
             _UniffiFfiConverterOptionalString.write(value.preferred, buf)
-        if value.is_DISABLE_NOTIFICATIONS():
+        if value.is_ORDERED_ENABLE_NOTIFICATIONS():
             buf.write_i32(12)
             _UniffiFfiConverterUInt64.write(value.id, buf)
-            _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
-        if value.is_READ_MTU():
+            _UniffiFfiConverterTypeMobileOrderedActivation.write(value.activation, buf)
+            _UniffiFfiConverterOptionalString.write(value.requested, buf)
+            _UniffiFfiConverterOptionalString.write(value.preferred, buf)
+        if value.is_ORDERED_DISABLE_NOTIFICATIONS():
             buf.write_i32(13)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedActivation.write(value.activation, buf)
+        if value.is_ORDERED_ENABLE_SETTLEMENT():
+            buf.write_i32(14)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedActivation.write(value.activation, buf)
+        if value.is_ORDERED_FORGET_ENABLE_RECEIPT():
+            buf.write_i32(15)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedActivation.write(value.activation, buf)
+        if value.is_DISABLE_NOTIFICATIONS():
+            buf.write_i32(16)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
+            _UniffiFfiConverterUInt64.write(value.epoch, buf)
+        if value.is_ORDERED_OPEN_V2():
+            buf.write_i32(17)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedOpenIdentity.write(value.identity, buf)
+        if value.is_ORDERED_RECOVER_OPEN_V2():
+            buf.write_i32(18)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedOpenIdentity.write(value.identity, buf)
+        if value.is_ORDERED_ACKNOWLEDGE_OPEN_V2():
+            buf.write_i32(19)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedOpenIdentity.write(value.identity, buf)
+        if value.is_ORDERED_OPEN():
+            buf.write_i32(20)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterString.write(value.database_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+            _UniffiFfiConverterSequenceTypeMobileOrderedMember.write(value.members, buf)
+            _UniffiFfiConverterUInt32.write(value.item_capacity, buf)
+            _UniffiFfiConverterUInt32.write(value.byte_capacity, buf)
+        if value.is_ORDERED_RECOVER_OPEN():
+            buf.write_i32(21)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterUInt64.write(value.open_request_id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+        if value.is_ORDERED_ACKNOWLEDGE_OPEN():
+            buf.write_i32(22)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt32.write(value.version, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterUInt64.write(value.open_request_id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+        if value.is_ORDERED_REGISTER():
+            buf.write_i32(23)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+        if value.is_ORDERED_RETIRE():
+            buf.write_i32(24)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+        if value.is_ORDERED_DRAIN():
+            buf.write_i32(25)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+        if value.is_ORDERED_BARRIER():
+            buf.write_i32(26)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterUInt64.write(value.barrier_id, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVE():
+            buf.write_i32(27)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.request, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVE_STATUS():
+            buf.write_i32(28)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.request, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVE_FENCE():
+            buf.write_i32(29)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.request, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_RESERVE_FORGET():
+            buf.write_i32(30)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.request, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_OPEN():
+            buf.write_i32(31)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.receipt_id, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_STATUS():
+            buf.write_i32(32)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.receipt_id, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_FENCE_OPEN():
+            buf.write_i32(33)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.receipt_id, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_FORGET_OPEN():
+            buf.write_i32(34)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.receipt_id, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_CLOSE():
+            buf.write_i32(35)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+        if value.is_ORDERED_GRAPH_AUTHORITY_FORGET():
+            buf.write_i32(36)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_RESERVE():
+            buf.write_i32(37)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+            _UniffiFfiConverterUInt64.write(value.request, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_RESERVE_STATUS():
+            buf.write_i32(38)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+            _UniffiFfiConverterUInt64.write(value.request, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_RESERVE_FENCE():
+            buf.write_i32(39)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+            _UniffiFfiConverterUInt64.write(value.request, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_FORGET_REQUEST():
+            buf.write_i32(40)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+            _UniffiFfiConverterUInt64.write(value.request, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_ACQUIRE():
+            buf.write_i32(41)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+            _UniffiFfiConverterUInt64.write(value.permit_id, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_RELEASE():
+            buf.write_i32(42)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+            _UniffiFfiConverterUInt64.write(value.permit_id, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_COMMIT():
+            buf.write_i32(43)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+            _UniffiFfiConverterUInt64.write(value.permit_id, buf)
+        if value.is_ORDERED_GRAPH_PERMIT_FORGET():
+            buf.write_i32(44)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+            _UniffiFfiConverterUInt64.write(value.authority_id, buf)
+            _UniffiFfiConverterUInt64.write(value.permit_id, buf)
+        if value.is_ORDERED_MARKER_WRITE():
+            buf.write_i32(45)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterUInt64.write(value.marker_id, buf)
+            _UniffiFfiConverterString.write(value.connection_generation, buf)
+            _UniffiFfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshot_identity, buf)
+            _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
+            _UniffiFfiConverterBytes.write(value.value, buf)
+            _UniffiFfiConverterBoolean.write(value.with_response, buf)
+        if value.is_ORDERED_MARKER_WRITE_SETTLEMENT():
+            buf.write_i32(46)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterUInt64.write(value.marker_id, buf)
+        if value.is_ORDERED_CANCEL_MARKER_WRITE():
+            buf.write_i32(47)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterUInt64.write(value.marker_id, buf)
+        if value.is_ORDERED_FORGET_MARKER_WRITE_RECEIPT():
+            buf.write_i32(48)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterUInt64.write(value.marker_id, buf)
+        if value.is_ORDERED_ACKNOWLEDGE_BATCH():
+            buf.write_i32(49)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterUInt64.write(value.batch_id, buf)
+        if value.is_ORDERED_CLOSE():
+            buf.write_i32(50)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+        if value.is_ORDERED_SEAL():
+            buf.write_i32(51)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+        if value.is_ORDERED_RETAIN_CLAIM():
+            buf.write_i32(52)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+        if value.is_ORDERED_CONFIRM_CLEANUP():
+            buf.write_i32(53)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterTypeMobileOrderedRegistration.write(value.member, buf)
+        if value.is_ORDERED_REMOVE():
+            buf.write_i32(54)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+        if value.is_ORDERED_FORGET_REMOVAL_RECEIPT():
+            buf.write_i32(55)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+        if value.is_READ_MTU():
+            buf.write_i32(56)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_READ_WRITE_LIMITS():
-            buf.write_i32(14)
+            buf.write_i32(57)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_READ_WRITE_READINESS():
-            buf.write_i32(15)
+            buf.write_i32(58)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_REQUEST_MTU():
-            buf.write_i32(16)
+            buf.write_i32(59)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterUInt16.write(value.mtu, buf)
         if value.is_READ_RSSI():
-            buf.write_i32(17)
+            buf.write_i32(60)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_REQUEST_CONNECTION_PRIORITY():
-            buf.write_i32(18)
+            buf.write_i32(61)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterString.write(value.priority, buf)
         if value.is_REQUEST_SUBRATE():
-            buf.write_i32(19)
+            buf.write_i32(62)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterString.write(value.mode, buf)
         if value.is_READ_PHY():
-            buf.write_i32(20)
+            buf.write_i32(63)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_REQUEST_PHY():
-            buf.write_i32(21)
+            buf.write_i32(64)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterOptionalString.write(value.tx, buf)
             _UniffiFfiConverterOptionalString.write(value.rx, buf)
         if value.is_SECURITY_STATE():
-            buf.write_i32(22)
+            buf.write_i32(65)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_CREATE_BOND():
-            buf.write_i32(23)
+            buf.write_i32(66)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterString.write(value.transport, buf)
         if value.is_CANCEL_BOND():
-            buf.write_i32(24)
+            buf.write_i32(67)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_BONDED_PEERS():
-            buf.write_i32(25)
+            buf.write_i32(68)
             _UniffiFfiConverterUInt64.write(value.id, buf)
         if value.is_CONNECTED_PEERS():
-            buf.write_i32(26)
+            buf.write_i32(69)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterSequenceString.write(value.services, buf)
         if value.is_RESOLVE_PEER():
-            buf.write_i32(27)
+            buf.write_i32(70)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_ACQUIRE_BACKGROUND():
-            buf.write_i32(28)
+            buf.write_i32(71)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.kind, buf)
             _UniffiFfiConverterString.write(value.reason, buf)
         if value.is_RELEASE_BACKGROUND():
-            buf.write_i32(29)
+            buf.write_i32(72)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.lease_id, buf)
         if value.is_UPDATE_BACKGROUND_NOTIFICATION():
-            buf.write_i32(30)
+            buf.write_i32(73)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.lease_id, buf)
             _UniffiFfiConverterString.write(value.title, buf)
             _UniffiFfiConverterOptionalString.write(value.body, buf)
         if value.is_ASSOCIATE_COMPANION():
-            buf.write_i32(31)
+            buf.write_i32(74)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterOptionalString.write(value.name, buf)
             _UniffiFfiConverterOptionalString.write(value.service_uuid, buf)
             _UniffiFfiConverterOptionalString.write(value.filters_json, buf)
         if value.is_LIST_COMPANION():
-            buf.write_i32(32)
+            buf.write_i32(75)
             _UniffiFfiConverterUInt64.write(value.id, buf)
         if value.is_DISASSOCIATE_COMPANION():
-            buf.write_i32(33)
+            buf.write_i32(76)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterInt64.write(value.association_id, buf)
         if value.is_OBSERVE_PRESENCE():
-            buf.write_i32(34)
+            buf.write_i32(77)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_STOP_PRESENCE():
-            buf.write_i32(35)
+            buf.write_i32(78)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_CLOSE():
-            buf.write_i32(36)
+            buf.write_i32(79)
             _UniffiFfiConverterUInt64.write(value.id, buf)
+        if value.is_OWNER_FENCE():
+            buf.write_i32(80)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.owner_incarnation, buf)
+            _UniffiFfiConverterString.write(value.retirement_id, buf)
+        if value.is_OWNER_STATUS():
+            buf.write_i32(81)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.owner_incarnation, buf)
+            _UniffiFfiConverterString.write(value.retirement_id, buf)
+        if value.is_ORDERED_DRAIN_V2():
+            buf.write_i32(82)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt32.write(value.version, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+        if value.is_ORDERED_ACKNOWLEDGE_BATCH_V2():
+            buf.write_i32(83)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterUInt32.write(value.version, buf)
+            _UniffiFfiConverterTypeMobileOrderedGeneration.write(value.generation, buf)
+            _UniffiFfiConverterUInt64.write(value.group_id, buf)
+            _UniffiFfiConverterUInt64.write(value.batch_id, buf)
+
+
+
+
+
+
+
+
+class MobileScanFailureRawToken:
+    def __init__(self):
+        raise RuntimeError("MobileScanFailureRawToken cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class NULL:
+
+        def __init__(self, ):
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileScanFailureRawToken.NULL()".format()
+        def __eq__(self, other):
+            if not isinstance(other, MobileScanFailureRawToken):
+                return NotImplemented
+            if not other.is_NULL():
+                return False
+            return True
+
+    @dataclass
+    class BOOL:
+
+        def __init__(self, value:bool):
+            self.value = value
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileScanFailureRawToken.BOOL(value={})".format(self.value)
+        def __eq__(self, other):
+            if not isinstance(other, MobileScanFailureRawToken):
+                return NotImplemented
+            if not other.is_BOOL():
+                return False
+            if self.value != other.value:
+                return False
+            return True
+
+    @dataclass
+    class I64:
+
+        def __init__(self, value:int):
+            self.value = value
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileScanFailureRawToken.I64(value={})".format(self.value)
+        def __eq__(self, other):
+            if not isinstance(other, MobileScanFailureRawToken):
+                return NotImplemented
+            if not other.is_I64():
+                return False
+            if self.value != other.value:
+                return False
+            return True
+
+    @dataclass
+    class U64:
+
+        def __init__(self, value:str):
+            self.value = value
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileScanFailureRawToken.U64(value={})".format(self.value)
+        def __eq__(self, other):
+            if not isinstance(other, MobileScanFailureRawToken):
+                return NotImplemented
+            if not other.is_U64():
+                return False
+            if self.value != other.value:
+                return False
+            return True
+
+    @dataclass
+    class F64_BITS:
+
+        def __init__(self, value:str):
+            self.value = value
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileScanFailureRawToken.F64_BITS(value={})".format(self.value)
+        def __eq__(self, other):
+            if not isinstance(other, MobileScanFailureRawToken):
+                return NotImplemented
+            if not other.is_F64_BITS():
+                return False
+            if self.value != other.value:
+                return False
+            return True
+
+    @dataclass
+    class TEXT:
+
+        def __init__(self, total:str, bytes:bytes):
+            self.total = total
+
+
+            self.bytes = bytes
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileScanFailureRawToken.TEXT(total={}, bytes={})".format(self.total, self.bytes)
+        def __eq__(self, other):
+            if not isinstance(other, MobileScanFailureRawToken):
+                return NotImplemented
+            if not other.is_TEXT():
+                return False
+            if self.total != other.total:
+                return False
+            if self.bytes != other.bytes:
+                return False
+            return True
+
+    @dataclass
+    class BYTES:
+
+        def __init__(self, total:str, bytes:bytes):
+            self.total = total
+
+
+            self.bytes = bytes
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileScanFailureRawToken.BYTES(total={}, bytes={})".format(self.total, self.bytes)
+        def __eq__(self, other):
+            if not isinstance(other, MobileScanFailureRawToken):
+                return NotImplemented
+            if not other.is_BYTES():
+                return False
+            if self.total != other.total:
+                return False
+            if self.bytes != other.bytes:
+                return False
+            return True
+
+    @dataclass
+    class MAP:
+
+        def __init__(self, entries:str):
+            self.entries = entries
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileScanFailureRawToken.MAP(entries={})".format(self.entries)
+        def __eq__(self, other):
+            if not isinstance(other, MobileScanFailureRawToken):
+                return NotImplemented
+            if not other.is_MAP():
+                return False
+            if self.entries != other.entries:
+                return False
+            return True
+
+    @dataclass
+    class ARRAY:
+
+        def __init__(self, entries:str):
+            self.entries = entries
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileScanFailureRawToken.ARRAY(entries={})".format(self.entries)
+        def __eq__(self, other):
+            if not isinstance(other, MobileScanFailureRawToken):
+                return NotImplemented
+            if not other.is_ARRAY():
+                return False
+            if self.entries != other.entries:
+                return False
+            return True
+
+
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_NULL(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.NULL)
+    def is_null(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.NULL)
+    def is_BOOL(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.BOOL)
+    def is_bool(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.BOOL)
+    def is_I64(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.I64)
+    def is_i64(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.I64)
+    def is_U64(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.U64)
+    def is_u64(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.U64)
+    def is_F64_BITS(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.F64_BITS)
+    def is_f64_bits(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.F64_BITS)
+    def is_TEXT(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.TEXT)
+    def is_text(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.TEXT)
+    def is_BYTES(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.BYTES)
+    def is_bytes(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.BYTES)
+    def is_MAP(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.MAP)
+    def is_map(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.MAP)
+    def is_ARRAY(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.ARRAY)
+    def is_array(self) -> bool:
+        return isinstance(self, MobileScanFailureRawToken.ARRAY)
+
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+MobileScanFailureRawToken.NULL = type("MobileScanFailureRawToken.NULL", (MobileScanFailureRawToken.NULL, MobileScanFailureRawToken,), {})  # type: ignore
+MobileScanFailureRawToken.BOOL = type("MobileScanFailureRawToken.BOOL", (MobileScanFailureRawToken.BOOL, MobileScanFailureRawToken,), {})  # type: ignore
+MobileScanFailureRawToken.I64 = type("MobileScanFailureRawToken.I64", (MobileScanFailureRawToken.I64, MobileScanFailureRawToken,), {})  # type: ignore
+MobileScanFailureRawToken.U64 = type("MobileScanFailureRawToken.U64", (MobileScanFailureRawToken.U64, MobileScanFailureRawToken,), {})  # type: ignore
+MobileScanFailureRawToken.F64_BITS = type("MobileScanFailureRawToken.F64_BITS", (MobileScanFailureRawToken.F64_BITS, MobileScanFailureRawToken,), {})  # type: ignore
+MobileScanFailureRawToken.TEXT = type("MobileScanFailureRawToken.TEXT", (MobileScanFailureRawToken.TEXT, MobileScanFailureRawToken,), {})  # type: ignore
+MobileScanFailureRawToken.BYTES = type("MobileScanFailureRawToken.BYTES", (MobileScanFailureRawToken.BYTES, MobileScanFailureRawToken,), {})  # type: ignore
+MobileScanFailureRawToken.MAP = type("MobileScanFailureRawToken.MAP", (MobileScanFailureRawToken.MAP, MobileScanFailureRawToken,), {})  # type: ignore
+MobileScanFailureRawToken.ARRAY = type("MobileScanFailureRawToken.ARRAY", (MobileScanFailureRawToken.ARRAY, MobileScanFailureRawToken,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeMobileScanFailureRawToken(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return MobileScanFailureRawToken.NULL(
+            )
+        if variant == 2:
+            return MobileScanFailureRawToken.BOOL(
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 3:
+            return MobileScanFailureRawToken.I64(
+                _UniffiFfiConverterInt64.read(buf),
+            )
+        if variant == 4:
+            return MobileScanFailureRawToken.U64(
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 5:
+            return MobileScanFailureRawToken.F64_BITS(
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 6:
+            return MobileScanFailureRawToken.TEXT(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterBytes.read(buf),
+            )
+        if variant == 7:
+            return MobileScanFailureRawToken.BYTES(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterBytes.read(buf),
+            )
+        if variant == 8:
+            return MobileScanFailureRawToken.MAP(
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 9:
+            return MobileScanFailureRawToken.ARRAY(
+                _UniffiFfiConverterString.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_NULL():
+            return
+        if value.is_BOOL():
+            _UniffiFfiConverterBoolean.check_lower(value.value)
+            return
+        if value.is_I64():
+            _UniffiFfiConverterInt64.check_lower(value.value)
+            return
+        if value.is_U64():
+            _UniffiFfiConverterString.check_lower(value.value)
+            return
+        if value.is_F64_BITS():
+            _UniffiFfiConverterString.check_lower(value.value)
+            return
+        if value.is_TEXT():
+            _UniffiFfiConverterString.check_lower(value.total)
+            _UniffiFfiConverterBytes.check_lower(value.bytes)
+            return
+        if value.is_BYTES():
+            _UniffiFfiConverterString.check_lower(value.total)
+            _UniffiFfiConverterBytes.check_lower(value.bytes)
+            return
+        if value.is_MAP():
+            _UniffiFfiConverterString.check_lower(value.entries)
+            return
+        if value.is_ARRAY():
+            _UniffiFfiConverterString.check_lower(value.entries)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_NULL():
+            buf.write_i32(1)
+        if value.is_BOOL():
+            buf.write_i32(2)
+            _UniffiFfiConverterBoolean.write(value.value, buf)
+        if value.is_I64():
+            buf.write_i32(3)
+            _UniffiFfiConverterInt64.write(value.value, buf)
+        if value.is_U64():
+            buf.write_i32(4)
+            _UniffiFfiConverterString.write(value.value, buf)
+        if value.is_F64_BITS():
+            buf.write_i32(5)
+            _UniffiFfiConverterString.write(value.value, buf)
+        if value.is_TEXT():
+            buf.write_i32(6)
+            _UniffiFfiConverterString.write(value.total, buf)
+            _UniffiFfiConverterBytes.write(value.bytes, buf)
+        if value.is_BYTES():
+            buf.write_i32(7)
+            _UniffiFfiConverterString.write(value.total, buf)
+            _UniffiFfiConverterBytes.write(value.bytes, buf)
+        if value.is_MAP():
+            buf.write_i32(8)
+            _UniffiFfiConverterString.write(value.entries, buf)
+        if value.is_ARRAY():
+            buf.write_i32(9)
+            _UniffiFfiConverterString.write(value.entries, buf)
 
 
 
@@ -6450,6 +15678,822 @@ class _UniffiFfiConverterTypeEchoSession:
         buf.write_u64(cls.lower(value))
 
 
+class MobileNotificationFailureSpoolConfigurationAuthorityProtocol(typing.Protocol):
+
+    def configure_v1(self, recording_id: str) -> str:
+        raise NotImplementedError
+    def configure_v2(self, recording_id: str,max_bytes: str,max_records: str) -> str:
+        raise NotImplementedError
+
+class MobileNotificationFailureSpoolConfigurationAuthority(MobileNotificationFailureSpoolConfigurationAuthorityProtocol):
+
+    _handle: ctypes.c_uint64
+
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilenotificationfailurespoolconfigurationauthority, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilenotificationfailurespoolconfigurationauthority, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    def configure_v1(self, recording_id: str) -> str:
+
+        _UniffiFfiConverterString.check_lower(recording_id)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(recording_id),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def configure_v2(self, recording_id: str,max_bytes: str,max_records: str) -> str:
+
+        _UniffiFfiConverterString.check_lower(recording_id)
+
+        _UniffiFfiConverterString.check_lower(max_bytes)
+
+        _UniffiFfiConverterString.check_lower(max_records)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(recording_id),
+            _UniffiFfiConverterString.lower(max_bytes),
+            _UniffiFfiConverterString.lower(max_records),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+
+
+
+
+
+class _UniffiFfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority:
+    @staticmethod
+    def lift(value: int) -> MobileNotificationFailureSpoolConfigurationAuthority:
+        return MobileNotificationFailureSpoolConfigurationAuthority._uniffi_make_instance(value)
+
+    @staticmethod
+    def check_lower(value: MobileNotificationFailureSpoolConfigurationAuthority):
+        if not isinstance(value, MobileNotificationFailureSpoolConfigurationAuthority):
+            raise TypeError("Expected MobileNotificationFailureSpoolConfigurationAuthority instance, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: MobileNotificationFailureSpoolConfigurationAuthority) -> ctypes.c_uint64:
+        return value._uniffi_clone_handle()
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer) -> MobileNotificationFailureSpoolConfigurationAuthority:
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: MobileNotificationFailureSpoolConfigurationAuthority, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+
+class _UniffiFfiConverterOptionalTypeMobileNotificationFailureSpoolConfigurationAuthority(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+
+class MobileScanFailureCleanupReceiptProtocol(typing.Protocol):
+
+    def retire(self, ) -> None:
+        raise NotImplementedError
+
+class MobileScanFailureCleanupReceipt(MobileScanFailureCleanupReceiptProtocol):
+
+    _handle: ctypes.c_uint64
+
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurecleanupreceipt, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurecleanupreceipt, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    def retire(self, ) -> None:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurecleanupreceipt_retire,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+
+
+
+
+
+class _UniffiFfiConverterTypeMobileScanFailureCleanupReceipt:
+    @staticmethod
+    def lift(value: int) -> MobileScanFailureCleanupReceipt:
+        return MobileScanFailureCleanupReceipt._uniffi_make_instance(value)
+
+    @staticmethod
+    def check_lower(value: MobileScanFailureCleanupReceipt):
+        if not isinstance(value, MobileScanFailureCleanupReceipt):
+            raise TypeError("Expected MobileScanFailureCleanupReceipt instance, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: MobileScanFailureCleanupReceipt) -> ctypes.c_uint64:
+        return value._uniffi_clone_handle()
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer) -> MobileScanFailureCleanupReceipt:
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: MobileScanFailureCleanupReceipt, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+
+
+class MobileScanFailureRecoveryHeadProtocol(typing.Protocol):
+
+    def acknowledge(self, ) -> None:
+        raise NotImplementedError
+    def finalize(self, ) -> MobileScanFailureCleanupReceipt:
+        raise NotImplementedError
+    def info(self, ) -> MobileScanFailureRecoveryHeadInfo:
+        raise NotImplementedError
+    def read(self, offset: str) -> MobileScanFailureRecoveryPage:
+        raise NotImplementedError
+    def release(self, ) -> None:
+        raise NotImplementedError
+    def retire(self, ) -> None:
+        raise NotImplementedError
+
+class MobileScanFailureRecoveryHead(MobileScanFailureRecoveryHeadProtocol):
+
+    _handle: ctypes.c_uint64
+
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryhead, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryhead, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    def acknowledge(self, ) -> None:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_acknowledge,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def finalize(self, ) -> MobileScanFailureCleanupReceipt:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureCleanupReceipt.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_finalize,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def info(self, ) -> MobileScanFailureRecoveryHeadInfo:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureRecoveryHeadInfo.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_info,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def read(self, offset: str) -> MobileScanFailureRecoveryPage:
+
+        _UniffiFfiConverterString.check_lower(offset)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(offset),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureRecoveryPage.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_read,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def release(self, ) -> None:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_release,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def retire(self, ) -> None:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_retire,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+
+
+
+
+
+class _UniffiFfiConverterTypeMobileScanFailureRecoveryHead:
+    @staticmethod
+    def lift(value: int) -> MobileScanFailureRecoveryHead:
+        return MobileScanFailureRecoveryHead._uniffi_make_instance(value)
+
+    @staticmethod
+    def check_lower(value: MobileScanFailureRecoveryHead):
+        if not isinstance(value, MobileScanFailureRecoveryHead):
+            raise TypeError("Expected MobileScanFailureRecoveryHead instance, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: MobileScanFailureRecoveryHead) -> ctypes.c_uint64:
+        return value._uniffi_clone_handle()
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer) -> MobileScanFailureRecoveryHead:
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: MobileScanFailureRecoveryHead, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+
+class _UniffiFfiConverterOptionalTypeMobileScanFailureRecoveryHead(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterTypeMobileScanFailureRecoveryHead.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterTypeMobileScanFailureRecoveryHead.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterTypeMobileScanFailureRecoveryHead.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+
+class MobileScanFailureRecoveryOwnerProtocol(typing.Protocol):
+
+    def head(self, member_index: int) -> typing.Optional[MobileScanFailureRecoveryHead]:
+        raise NotImplementedError
+    def info(self, ) -> MobileScanFailureRecoveryOwnerInfo:
+        raise NotImplementedError
+    def member(self, index: int) -> MobileScanFailureMember:
+        raise NotImplementedError
+    def raw_finalize(self, ) -> MobileScanFailureCleanupReceipt:
+        raise NotImplementedError
+    def raw_info(self, ) -> MobileScanFailureRawInfo:
+        raise NotImplementedError
+    def raw_member(self, index: int) -> MobileScanFailureMember:
+        raise NotImplementedError
+    def raw_release(self, ) -> None:
+        raise NotImplementedError
+    def raw_retire(self, ) -> None:
+        raise NotImplementedError
+    def raw_token(self, index: int,offset: str,max_bytes: int) -> MobileScanFailureRawToken:
+        raise NotImplementedError
+
+class MobileScanFailureRecoveryOwner(MobileScanFailureRecoveryOwnerProtocol):
+
+    _handle: ctypes.c_uint64
+
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryowner, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryowner, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    def head(self, member_index: int) -> typing.Optional[MobileScanFailureRecoveryHead]:
+
+        _UniffiFfiConverterUInt64.check_lower(member_index)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(member_index),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterOptionalTypeMobileScanFailureRecoveryHead.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_head,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def info(self, ) -> MobileScanFailureRecoveryOwnerInfo:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureRecoveryOwnerInfo.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_info,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def member(self, index: int) -> MobileScanFailureMember:
+
+        _UniffiFfiConverterUInt64.check_lower(index)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(index),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureMember.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_member,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def raw_finalize(self, ) -> MobileScanFailureCleanupReceipt:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureCleanupReceipt.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_finalize,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def raw_info(self, ) -> MobileScanFailureRawInfo:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureRawInfo.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_info,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def raw_member(self, index: int) -> MobileScanFailureMember:
+
+        _UniffiFfiConverterUInt64.check_lower(index)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(index),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureMember.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_member,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def raw_release(self, ) -> None:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_release,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def raw_retire(self, ) -> None:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_retire,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def raw_token(self, index: int,offset: str,max_bytes: int) -> MobileScanFailureRawToken:
+
+        _UniffiFfiConverterUInt64.check_lower(index)
+
+        _UniffiFfiConverterString.check_lower(offset)
+
+        _UniffiFfiConverterUInt32.check_lower(max_bytes)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(index),
+            _UniffiFfiConverterString.lower(offset),
+            _UniffiFfiConverterUInt32.lower(max_bytes),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureRawToken.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_token,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+
+
+
+
+
+class _UniffiFfiConverterTypeMobileScanFailureRecoveryOwner:
+    @staticmethod
+    def lift(value: int) -> MobileScanFailureRecoveryOwner:
+        return MobileScanFailureRecoveryOwner._uniffi_make_instance(value)
+
+    @staticmethod
+    def check_lower(value: MobileScanFailureRecoveryOwner):
+        if not isinstance(value, MobileScanFailureRecoveryOwner):
+            raise TypeError("Expected MobileScanFailureRecoveryOwner instance, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: MobileScanFailureRecoveryOwner) -> ctypes.c_uint64:
+        return value._uniffi_clone_handle()
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer) -> MobileScanFailureRecoveryOwner:
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: MobileScanFailureRecoveryOwner, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+
+class _UniffiFfiConverterSequenceTypeMobileScanFailureRecoveryOwner(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeMobileScanFailureRecoveryOwner.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeMobileScanFailureRecoveryOwner.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeMobileScanFailureRecoveryOwner.read(buf) for i in range(count)
+        ]
+
+class _UniffiFfiConverterSequenceTypeMobileScanFailureCleanupReceipt(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeMobileScanFailureCleanupReceipt.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeMobileScanFailureCleanupReceipt.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeMobileScanFailureCleanupReceipt.read(buf) for i in range(count)
+        ]
+
+
+class MobileScanFailureRecoveryProtocol(typing.Protocol):
+
+    def owners(self, ) -> typing.List[MobileScanFailureRecoveryOwner]:
+        raise NotImplementedError
+    def pending_cleanup_receipts(self, ) -> typing.List[MobileScanFailureCleanupReceipt]:
+        raise NotImplementedError
+
+class MobileScanFailureRecovery(MobileScanFailureRecoveryProtocol):
+
+    _handle: ctypes.c_uint64
+
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecovery, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecovery, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    def owners(self, ) -> typing.List[MobileScanFailureRecoveryOwner]:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterSequenceTypeMobileScanFailureRecoveryOwner.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_owners,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def pending_cleanup_receipts(self, ) -> typing.List[MobileScanFailureCleanupReceipt]:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterSequenceTypeMobileScanFailureCleanupReceipt.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_pending_cleanup_receipts,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+
+
+
+
+
+class _UniffiFfiConverterTypeMobileScanFailureRecovery:
+    @staticmethod
+    def lift(value: int) -> MobileScanFailureRecovery:
+        return MobileScanFailureRecovery._uniffi_make_instance(value)
+
+    @staticmethod
+    def check_lower(value: MobileScanFailureRecovery):
+        if not isinstance(value, MobileScanFailureRecovery):
+            raise TypeError("Expected MobileScanFailureRecovery instance, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: MobileScanFailureRecovery) -> ctypes.c_uint64:
+        return value._uniffi_clone_handle()
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer) -> MobileScanFailureRecovery:
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: MobileScanFailureRecovery, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+
+
+class MobileScanFailureRecoveryConfigurationAuthorityProtocol(typing.Protocol):
+
+    def attach_recording_v1(self, recording_id: str) -> str:
+        raise NotImplementedError
+    def attach_recording_v2(self, recording_id: str) -> MobileScanFailureRecovery:
+        raise NotImplementedError
+
+class MobileScanFailureRecoveryConfigurationAuthority(MobileScanFailureRecoveryConfigurationAuthorityProtocol):
+
+    _handle: ctypes.c_uint64
+
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryconfigurationauthority, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryconfigurationauthority, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    def attach_recording_v1(self, recording_id: str) -> str:
+
+        _UniffiFfiConverterString.check_lower(recording_id)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(recording_id),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def attach_recording_v2(self, recording_id: str) -> MobileScanFailureRecovery:
+
+        _UniffiFfiConverterString.check_lower(recording_id)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(recording_id),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeMobileScanFailureRecovery.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+
+
+
+
+
+class _UniffiFfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority:
+    @staticmethod
+    def lift(value: int) -> MobileScanFailureRecoveryConfigurationAuthority:
+        return MobileScanFailureRecoveryConfigurationAuthority._uniffi_make_instance(value)
+
+    @staticmethod
+    def check_lower(value: MobileScanFailureRecoveryConfigurationAuthority):
+        if not isinstance(value, MobileScanFailureRecoveryConfigurationAuthority):
+            raise TypeError("Expected MobileScanFailureRecoveryConfigurationAuthority instance, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: MobileScanFailureRecoveryConfigurationAuthority) -> ctypes.c_uint64:
+        return value._uniffi_clone_handle()
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer) -> MobileScanFailureRecoveryConfigurationAuthority:
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: MobileScanFailureRecoveryConfigurationAuthority, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+
+class _UniffiFfiConverterOptionalTypeMobileScanFailureRecoveryConfigurationAuthority(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+
 
 
 class MobileInvokeCompletion(typing.Protocol):
@@ -6509,7 +16553,19 @@ class MobileCoreSessionProtocol(typing.Protocol):
         raise NotImplementedError
     def invoke(self, op: str,args_json: str,completion: MobileInvokeCompletion) -> None:
         raise NotImplementedError
+    def negotiate_scan_end_version(self, offered_json: str) -> str:
+        raise NotImplementedError
+    def negotiate_scan_end_version_qualified(self, offered_json: str) -> str:
+        raise NotImplementedError
+    def ordered_recording_context(self, id: str,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def ordered_recording_receipt_control(self, operation: str,id: str,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
     def session_id(self, ) -> int:
+        raise NotImplementedError
+    def start_ordered_recording(self, handle: str,recording_id: str,max_bytes: str,max_records: str,declaration_json: str,budget_ms: int,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def stop_ordered_recording(self, id: str,completion: MobileInvokeCompletion) -> None:
         raise NotImplementedError
 
 class MobileCoreSession(MobileCoreSessionProtocol):
@@ -6587,6 +16643,75 @@ class MobileCoreSession(MobileCoreSessionProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def negotiate_scan_end_version(self, offered_json: str) -> str:
+
+        _UniffiFfiConverterString.check_lower(offered_json)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(offered_json),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def negotiate_scan_end_version_qualified(self, offered_json: str) -> str:
+
+        _UniffiFfiConverterString.check_lower(offered_json)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(offered_json),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version_qualified,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def ordered_recording_context(self, id: str,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(id)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(id),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_context,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def ordered_recording_receipt_control(self, operation: str,id: str,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(operation)
+
+        _UniffiFfiConverterString.check_lower(id)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(operation),
+            _UniffiFfiConverterString.lower(id),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_receipt_control,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def session_id(self, ) -> int:
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -6596,6 +16721,57 @@ class MobileCoreSession(MobileCoreSessionProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def start_ordered_recording(self, handle: str,recording_id: str,max_bytes: str,max_records: str,declaration_json: str,budget_ms: int,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(handle)
+
+        _UniffiFfiConverterString.check_lower(recording_id)
+
+        _UniffiFfiConverterString.check_lower(max_bytes)
+
+        _UniffiFfiConverterString.check_lower(max_records)
+
+        _UniffiFfiConverterString.check_lower(declaration_json)
+
+        _UniffiFfiConverterUInt64.check_lower(budget_ms)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(handle),
+            _UniffiFfiConverterString.lower(recording_id),
+            _UniffiFfiConverterString.lower(max_bytes),
+            _UniffiFfiConverterString.lower(max_records),
+            _UniffiFfiConverterString.lower(declaration_json),
+            _UniffiFfiConverterUInt64.lower(budget_ms),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_start_ordered_recording,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def stop_ordered_recording(self, id: str,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(id)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(id),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_stop_ordered_recording,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -6632,9 +16808,35 @@ class _UniffiFfiConverterTypeMobileCoreSession:
 
 class MobileCoreHostProtocol(typing.Protocol):
 
+    def acknowledge_notification_failure_spool_global_v2(self, capture_ordinal: int) -> str:
+        raise NotImplementedError
+    def acknowledge_notification_failure_spool_global_v3(self, capture_ordinal: int,source_sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+        raise NotImplementedError
+    def acknowledge_notification_failure_spool_global_v4(self, capture_ordinal: int,source_sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+        raise NotImplementedError
+    def acknowledge_notification_failure_spool_v1(self, sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+        raise NotImplementedError
+    def append_notification_failure_v1(self, sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+        raise NotImplementedError
+    def claim_notification_failure_spool_configuration_authority_v3(self, ) -> typing.Optional[MobileNotificationFailureSpoolConfigurationAuthority]:
+        raise NotImplementedError
+    def claim_scan_failure_recovery_configuration_authority_v1(self, ) -> typing.Optional[MobileScanFailureRecoveryConfigurationAuthority]:
+        raise NotImplementedError
     def complete(self, request_id: int,completion: MobileRadioCompletion) -> str:
         raise NotImplementedError
+    def configure_notification_failure_spool_v1(self, recording_id: str) -> str:
+        raise NotImplementedError
+    def configure_notification_failure_spool_v2(self, recording_id: str,max_bytes: str,max_records: str) -> str:
+        raise NotImplementedError
+    def confirm_notification_failure_spool_acknowledgement_retirement_v4(self, capture_ordinal: int,source_sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure,retirement_capability: str) -> str:
+        raise NotImplementedError
     def continuation_acknowledge_claim(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_acknowledge_peer_failure_recovery(self, recovery_record: str,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_acknowledge_retained_claim_v1(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_acknowledge_retained_claim_v2(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
         raise NotImplementedError
     def continuation_cancel_declaration(self, reservation_token: str) -> str:
         raise NotImplementedError
@@ -6648,19 +16850,57 @@ class MobileCoreHostProtocol(typing.Protocol):
         raise NotImplementedError
     def continuation_execute(self, peer_id: str,declaration_json: str,completion: MobileInvokeCompletion) -> None:
         raise NotImplementedError
+    def continuation_legacy_evidence_page(self, claim_token: str,after_ordinal: int,max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_legacy_evidence_retire(self, claim_token: str,ordinal: int,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
     def continuation_prepare_claim(self, max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_prepare_claim_versioned(self, version: int,max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_prepare_retained_claim_v1(self, max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_read_peer_failure_recovery(self, recovery_record: str,offset: str,completion: MobileInvokeCompletion) -> None:
         raise NotImplementedError
     def continuation_recording_control(self, operation: str,id: str,token: str,max_items: int,max_bytes: int) -> str:
         raise NotImplementedError
     def continuation_reserve_declaration(self, declaration_json: str) -> str:
         raise NotImplementedError
+    def continuation_retire_claim_receipt(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
     def continuation_seed_declaration(self, declaration_json: str) -> str:
         raise NotImplementedError
     def ingest(self, ingress: MobileRadioIngress) -> str:
         raise NotImplementedError
+    def ingest_notification_failure_v1(self, sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+        raise NotImplementedError
+    def notification_failure_ingress_version(self, offered: int) -> int:
+        raise NotImplementedError
+    def notification_failure_spool_page_global_v2(self, after_capture_ordinal: int,max_items: int) -> str:
+        raise NotImplementedError
+    def notification_failure_spool_page_v1(self, instance: MobileInstance,epoch: int,after_sequence: int,max_items: int) -> str:
+        raise NotImplementedError
+    def notification_failure_spool_pending_retirements_v4(self, max_items: int) -> str:
+        raise NotImplementedError
+    def notification_failure_spool_resume_global_v2(self, ) -> str:
+        raise NotImplementedError
+    def notification_failure_spool_resume_sequence_v1(self, instance: MobileInstance,epoch: int) -> str:
+        raise NotImplementedError
     def open_session(self, owner: str,expected_wire_revision: str) -> MobileCoreSession:
         raise NotImplementedError
+    def retire_notification_failure_spool_acknowledgement_v3(self, capture_ordinal: int,source_sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+        raise NotImplementedError
     def shutdown(self, ) -> str:
+        raise NotImplementedError
+    def terminal_evidence_recovery_acknowledge(self, handle: str) -> str:
+        raise NotImplementedError
+    def terminal_evidence_recovery_list(self, lease_id: str,max_items: int,max_bytes: int) -> str:
+        raise NotImplementedError
+    def terminal_evidence_recovery_list_with_status(self, lease_id: str,max_items: int,max_bytes: int) -> str:
+        raise NotImplementedError
+    def terminal_evidence_recovery_open_selected(self, ) -> str:
+        raise NotImplementedError
+    def terminal_evidence_recovery_read(self, handle: str,offset: str,max_bytes: int) -> str:
         raise NotImplementedError
 
 class MobileCoreHost(MobileCoreHostProtocol):
@@ -6687,6 +16927,147 @@ class MobileCoreHost(MobileCoreHostProtocol):
         inst = cls.__new__(cls)
         inst._handle = handle
         return inst
+    def acknowledge_notification_failure_spool_global_v2(self, capture_ordinal: int) -> str:
+
+        _UniffiFfiConverterUInt64.check_lower(capture_ordinal)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(capture_ordinal),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def acknowledge_notification_failure_spool_global_v3(self, capture_ordinal: int,source_sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+
+        _UniffiFfiConverterUInt64.check_lower(capture_ordinal)
+
+        _UniffiFfiConverterUInt64.check_lower(source_sequence)
+
+        _UniffiFfiConverterTypeMobileInstance.check_lower(instance)
+
+        _UniffiFfiConverterUInt64.check_lower(epoch)
+
+        _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(failure)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(capture_ordinal),
+            _UniffiFfiConverterUInt64.lower(source_sequence),
+            _UniffiFfiConverterTypeMobileInstance.lower(instance),
+            _UniffiFfiConverterUInt64.lower(epoch),
+            _UniffiFfiConverterTypeMobilePlatformFailure.lower(failure),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def acknowledge_notification_failure_spool_global_v4(self, capture_ordinal: int,source_sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+
+        _UniffiFfiConverterUInt64.check_lower(capture_ordinal)
+
+        _UniffiFfiConverterUInt64.check_lower(source_sequence)
+
+        _UniffiFfiConverterTypeMobileInstance.check_lower(instance)
+
+        _UniffiFfiConverterUInt64.check_lower(epoch)
+
+        _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(failure)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(capture_ordinal),
+            _UniffiFfiConverterUInt64.lower(source_sequence),
+            _UniffiFfiConverterTypeMobileInstance.lower(instance),
+            _UniffiFfiConverterUInt64.lower(epoch),
+            _UniffiFfiConverterTypeMobilePlatformFailure.lower(failure),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def acknowledge_notification_failure_spool_v1(self, sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+
+        _UniffiFfiConverterUInt64.check_lower(sequence)
+
+        _UniffiFfiConverterTypeMobileInstance.check_lower(instance)
+
+        _UniffiFfiConverterUInt64.check_lower(epoch)
+
+        _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(failure)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(sequence),
+            _UniffiFfiConverterTypeMobileInstance.lower(instance),
+            _UniffiFfiConverterUInt64.lower(epoch),
+            _UniffiFfiConverterTypeMobilePlatformFailure.lower(failure),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def append_notification_failure_v1(self, sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+
+        _UniffiFfiConverterUInt64.check_lower(sequence)
+
+        _UniffiFfiConverterTypeMobileInstance.check_lower(instance)
+
+        _UniffiFfiConverterUInt64.check_lower(epoch)
+
+        _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(failure)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(sequence),
+            _UniffiFfiConverterTypeMobileInstance.lower(instance),
+            _UniffiFfiConverterUInt64.lower(epoch),
+            _UniffiFfiConverterTypeMobilePlatformFailure.lower(failure),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_append_notification_failure_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def claim_notification_failure_spool_configuration_authority_v3(self, ) -> typing.Optional[MobileNotificationFailureSpoolConfigurationAuthority]:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterOptionalTypeMobileNotificationFailureSpoolConfigurationAuthority.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def claim_scan_failure_recovery_configuration_authority_v1(self, ) -> typing.Optional[MobileScanFailureRecoveryConfigurationAuthority]:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterOptionalTypeMobileScanFailureRecoveryConfigurationAuthority.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def complete(self, request_id: int,completion: MobileRadioCompletion) -> str:
 
         _UniffiFfiConverterUInt64.check_lower(request_id)
@@ -6705,6 +17086,72 @@ class MobileCoreHost(MobileCoreHostProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def configure_notification_failure_spool_v1(self, recording_id: str) -> str:
+
+        _UniffiFfiConverterString.check_lower(recording_id)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(recording_id),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def configure_notification_failure_spool_v2(self, recording_id: str,max_bytes: str,max_records: str) -> str:
+
+        _UniffiFfiConverterString.check_lower(recording_id)
+
+        _UniffiFfiConverterString.check_lower(max_bytes)
+
+        _UniffiFfiConverterString.check_lower(max_records)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(recording_id),
+            _UniffiFfiConverterString.lower(max_bytes),
+            _UniffiFfiConverterString.lower(max_records),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v2,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def confirm_notification_failure_spool_acknowledgement_retirement_v4(self, capture_ordinal: int,source_sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure,retirement_capability: str) -> str:
+
+        _UniffiFfiConverterUInt64.check_lower(capture_ordinal)
+
+        _UniffiFfiConverterUInt64.check_lower(source_sequence)
+
+        _UniffiFfiConverterTypeMobileInstance.check_lower(instance)
+
+        _UniffiFfiConverterUInt64.check_lower(epoch)
+
+        _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(failure)
+
+        _UniffiFfiConverterString.check_lower(retirement_capability)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(capture_ordinal),
+            _UniffiFfiConverterUInt64.lower(source_sequence),
+            _UniffiFfiConverterTypeMobileInstance.lower(instance),
+            _UniffiFfiConverterUInt64.lower(epoch),
+            _UniffiFfiConverterTypeMobilePlatformFailure.lower(failure),
+            _UniffiFfiConverterString.lower(retirement_capability),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_acknowledge_claim(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
 
         _UniffiFfiConverterString.check_lower(claim_token)
@@ -6720,6 +17167,60 @@ class MobileCoreHost(MobileCoreHostProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_acknowledge_peer_failure_recovery(self, recovery_record: str,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(recovery_record)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(recovery_record),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_acknowledge_retained_claim_v1(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(claim_token)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(claim_token),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_acknowledge_retained_claim_v2(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(claim_token)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(claim_token),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v2,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -6819,6 +17320,54 @@ class MobileCoreHost(MobileCoreHostProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_legacy_evidence_page(self, claim_token: str,after_ordinal: int,max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(claim_token)
+
+        _UniffiFfiConverterUInt64.check_lower(after_ordinal)
+
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+
+        _UniffiFfiConverterUInt32.check_lower(max_bytes)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(claim_token),
+            _UniffiFfiConverterUInt64.lower(after_ordinal),
+            _UniffiFfiConverterUInt32.lower(max_items),
+            _UniffiFfiConverterUInt32.lower(max_bytes),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_page,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_legacy_evidence_retire(self, claim_token: str,ordinal: int,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(claim_token)
+
+        _UniffiFfiConverterUInt64.check_lower(ordinal)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(claim_token),
+            _UniffiFfiConverterUInt64.lower(ordinal),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_retire,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_prepare_claim(self, max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
 
         _UniffiFfiConverterUInt32.check_lower(max_items)
@@ -6837,6 +17386,72 @@ class MobileCoreHost(MobileCoreHostProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_prepare_claim_versioned(self, version: int,max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterUInt32.check_lower(version)
+
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+
+        _UniffiFfiConverterUInt32.check_lower(max_bytes)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt32.lower(version),
+            _UniffiFfiConverterUInt32.lower(max_items),
+            _UniffiFfiConverterUInt32.lower(max_bytes),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim_versioned,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_prepare_retained_claim_v1(self, max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+
+        _UniffiFfiConverterUInt32.check_lower(max_bytes)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt32.lower(max_items),
+            _UniffiFfiConverterUInt32.lower(max_bytes),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_retained_claim_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_read_peer_failure_recovery(self, recovery_record: str,offset: str,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(recovery_record)
+
+        _UniffiFfiConverterString.check_lower(offset)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(recovery_record),
+            _UniffiFfiConverterString.lower(offset),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_read_peer_failure_recovery,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -6882,6 +17497,24 @@ class MobileCoreHost(MobileCoreHostProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_retire_claim_receipt(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
+
+        _UniffiFfiConverterString.check_lower(claim_token)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(claim_token),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_retire_claim_receipt,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_seed_declaration(self, declaration_json: str) -> str:
 
         _UniffiFfiConverterString.check_lower(declaration_json)
@@ -6912,6 +17545,132 @@ class MobileCoreHost(MobileCoreHostProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def ingest_notification_failure_v1(self, sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+
+        _UniffiFfiConverterUInt64.check_lower(sequence)
+
+        _UniffiFfiConverterTypeMobileInstance.check_lower(instance)
+
+        _UniffiFfiConverterUInt64.check_lower(epoch)
+
+        _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(failure)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(sequence),
+            _UniffiFfiConverterTypeMobileInstance.lower(instance),
+            _UniffiFfiConverterUInt64.lower(epoch),
+            _UniffiFfiConverterTypeMobilePlatformFailure.lower(failure),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest_notification_failure_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def notification_failure_ingress_version(self, offered: int) -> int:
+
+        _UniffiFfiConverterUInt32.check_lower(offered)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt32.lower(offered),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterUInt32.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_ingress_version,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def notification_failure_spool_page_global_v2(self, after_capture_ordinal: int,max_items: int) -> str:
+
+        _UniffiFfiConverterUInt64.check_lower(after_capture_ordinal)
+
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(after_capture_ordinal),
+            _UniffiFfiConverterUInt32.lower(max_items),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_global_v2,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def notification_failure_spool_page_v1(self, instance: MobileInstance,epoch: int,after_sequence: int,max_items: int) -> str:
+
+        _UniffiFfiConverterTypeMobileInstance.check_lower(instance)
+
+        _UniffiFfiConverterUInt64.check_lower(epoch)
+
+        _UniffiFfiConverterUInt64.check_lower(after_sequence)
+
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterTypeMobileInstance.lower(instance),
+            _UniffiFfiConverterUInt64.lower(epoch),
+            _UniffiFfiConverterUInt64.lower(after_sequence),
+            _UniffiFfiConverterUInt32.lower(max_items),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def notification_failure_spool_pending_retirements_v4(self, max_items: int) -> str:
+
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt32.lower(max_items),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_pending_retirements_v4,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def notification_failure_spool_resume_global_v2(self, ) -> str:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_global_v2,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def notification_failure_spool_resume_sequence_v1(self, instance: MobileInstance,epoch: int) -> str:
+
+        _UniffiFfiConverterTypeMobileInstance.check_lower(instance)
+
+        _UniffiFfiConverterUInt64.check_lower(epoch)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterTypeMobileInstance.lower(instance),
+            _UniffiFfiConverterUInt64.lower(epoch),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_sequence_v1,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def open_session(self, owner: str,expected_wire_revision: str) -> MobileCoreSession:
 
         _UniffiFfiConverterString.check_lower(owner)
@@ -6930,6 +17689,33 @@ class MobileCoreHost(MobileCoreHostProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def retire_notification_failure_spool_acknowledgement_v3(self, capture_ordinal: int,source_sequence: int,instance: MobileInstance,epoch: int,failure: MobilePlatformFailure) -> str:
+
+        _UniffiFfiConverterUInt64.check_lower(capture_ordinal)
+
+        _UniffiFfiConverterUInt64.check_lower(source_sequence)
+
+        _UniffiFfiConverterTypeMobileInstance.check_lower(instance)
+
+        _UniffiFfiConverterUInt64.check_lower(epoch)
+
+        _UniffiFfiConverterTypeMobilePlatformFailure.check_lower(failure)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt64.lower(capture_ordinal),
+            _UniffiFfiConverterUInt64.lower(source_sequence),
+            _UniffiFfiConverterTypeMobileInstance.lower(instance),
+            _UniffiFfiConverterUInt64.lower(epoch),
+            _UniffiFfiConverterTypeMobilePlatformFailure.lower(failure),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def shutdown(self, ) -> str:
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -6939,6 +17725,96 @@ class MobileCoreHost(MobileCoreHostProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def terminal_evidence_recovery_acknowledge(self, handle: str) -> str:
+
+        _UniffiFfiConverterString.check_lower(handle)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(handle),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_acknowledge,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def terminal_evidence_recovery_list(self, lease_id: str,max_items: int,max_bytes: int) -> str:
+
+        _UniffiFfiConverterString.check_lower(lease_id)
+
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+
+        _UniffiFfiConverterUInt64.check_lower(max_bytes)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(lease_id),
+            _UniffiFfiConverterUInt32.lower(max_items),
+            _UniffiFfiConverterUInt64.lower(max_bytes),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def terminal_evidence_recovery_list_with_status(self, lease_id: str,max_items: int,max_bytes: int) -> str:
+
+        _UniffiFfiConverterString.check_lower(lease_id)
+
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+
+        _UniffiFfiConverterUInt64.check_lower(max_bytes)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(lease_id),
+            _UniffiFfiConverterUInt32.lower(max_items),
+            _UniffiFfiConverterUInt64.lower(max_bytes),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list_with_status,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def terminal_evidence_recovery_open_selected(self, ) -> str:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_open_selected,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def terminal_evidence_recovery_read(self, handle: str,offset: str,max_bytes: int) -> str:
+
+        _UniffiFfiConverterString.check_lower(handle)
+
+        _UniffiFfiConverterString.check_lower(offset)
+
+        _UniffiFfiConverterUInt32.check_lower(max_bytes)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(handle),
+            _UniffiFfiConverterString.lower(offset),
+            _UniffiFfiConverterUInt32.lower(max_bytes),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_read,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -6975,8 +17851,62 @@ class _UniffiFfiConverterTypeMobileCoreHost:
 
 
 
+class MobileHostBinding(typing.Protocol):
+
+    def bind(self, host: MobileCoreHost) -> bool:
+        raise NotImplementedError
+# Put all the bits inside a class to keep the top-level namespace clean
+class _UniffiTraitImplMobileHostBindingImpl:
+    # For each method, generate a callback function to pass to Rust
+
+    @_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_HOST_BINDING_METHOD0
+    def bind(
+            uniffi_handle,
+            host,
+            uniffi_out_return,
+            uniffi_call_status_ptr,
+        ):
+        uniffi_obj = _UniffiFfiConverterTypeMobileHostBinding._handle_map.get(uniffi_handle)
+        def make_call():
+            uniffi_args = (_UniffiFfiConverterTypeMobileCoreHost.lift(host), )
+            uniffi_method = uniffi_obj.bind
+            return uniffi_method(*uniffi_args)
+        def write_return_value(v):
+            uniffi_out_return[0] = _UniffiFfiConverterBoolean.lower(v)
+        _uniffi_trait_interface_call(
+                uniffi_call_status_ptr.contents,
+                make_call,
+                write_return_value,
+        )
+
+    @_UNIFFI_CALLBACK_INTERFACE_FREE_UBM_ECHO_MOBILE_HOST_BINDING
+    def _uniffi_free(uniffi_handle):
+        _UniffiFfiConverterTypeMobileHostBinding._handle_map.remove(uniffi_handle)
+
+    @_UNIFFI_CALLBACK_INTERFACE_CLONE_UBM_ECHO_MOBILE_HOST_BINDING
+    def _uniffi_clone(uniffi_handle):
+        return _UniffiFfiConverterTypeMobileHostBinding._handle_map.clone(uniffi_handle)
+
+    # Generate the FFI VTable.  This has a field for each callback interface method.
+    _uniffi_vtable = _UniffiVTableCallbackInterfaceUbmEchoMobileHostBinding(
+        _uniffi_free,
+        _uniffi_clone,
+        bind,
+    )
+    # Send Rust a pointer to the VTable.  Note: this means we need to keep the struct alive forever,
+    # or else bad things will happen when Rust tries to access it.
+    _UniffiLib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilehostbinding(ctypes.byref(_uniffi_vtable))
+
+# The _UniffiConverter which transforms the Callbacks in to Handles to pass to Rust.
+_UniffiFfiConverterTypeMobileHostBinding = _UniffiCallbackInterfaceFfiConverter()
+
+
+
+
 class MobilePlatformRadio(typing.Protocol):
 
+    def ordered_admission_owner(self, version: int) -> str:
+        raise NotImplementedError
     def submit(self, request: MobileRadioRequest) -> None:
         raise NotImplementedError
     def cancel(self, request_id: int) -> None:
@@ -6986,6 +17916,26 @@ class _UniffiTraitImplMobilePlatformRadioImpl:
     # For each method, generate a callback function to pass to Rust
 
     @_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD0
+    def ordered_admission_owner(
+            uniffi_handle,
+            version,
+            uniffi_out_return,
+            uniffi_call_status_ptr,
+        ):
+        uniffi_obj = _UniffiFfiConverterTypeMobilePlatformRadio._handle_map.get(uniffi_handle)
+        def make_call():
+            uniffi_args = (_UniffiFfiConverterUInt32.lift(version), )
+            uniffi_method = uniffi_obj.ordered_admission_owner
+            return uniffi_method(*uniffi_args)
+        def write_return_value(v):
+            uniffi_out_return[0] = _UniffiFfiConverterString.lower(v)
+        _uniffi_trait_interface_call(
+                uniffi_call_status_ptr.contents,
+                make_call,
+                write_return_value,
+        )
+
+    @_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD1
     def submit(
             uniffi_handle,
             request,
@@ -7004,7 +17954,7 @@ class _UniffiTraitImplMobilePlatformRadioImpl:
                 write_return_value,
         )
 
-    @_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD1
+    @_UNIFFI_CALLBACK_INTERFACE_UBM_ECHO_MOBILE_PLATFORM_RADIO_METHOD2
     def cancel(
             uniffi_handle,
             request_id,
@@ -7035,6 +17985,7 @@ class _UniffiTraitImplMobilePlatformRadioImpl:
     _uniffi_vtable = _UniffiVTableCallbackInterfaceUbmEchoMobilePlatformRadio(
         _uniffi_free,
         _uniffi_clone,
+        ordered_admission_owner,
         submit,
         cancel,
     )
@@ -7131,6 +18082,20 @@ def mobile_build_identity_json() -> str:
         *_uniffi_lowered_args,
     )
     return _uniffi_lift_return(_uniffi_ffi_result)
+def mobile_configure_terminal_evidence_maximum_bytes(maximum_bytes: int) -> None:
+
+    _UniffiFfiConverterUInt64.check_lower(maximum_bytes)
+    _uniffi_lowered_args = (
+        _UniffiFfiConverterUInt64.lower(maximum_bytes),
+    )
+    _uniffi_lift_return = lambda val: None
+    _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+    _uniffi_ffi_result = _uniffi_rust_call_with_error(
+        _uniffi_error_converter,
+        _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_configure_terminal_evidence_maximum_bytes,
+        *_uniffi_lowered_args,
+    )
+    return _uniffi_lift_return(_uniffi_ffi_result)
 def mobile_contract_revision() -> str:
     _uniffi_lowered_args = (
     )
@@ -7150,6 +18115,17 @@ def mobile_host_current() -> typing.Optional[MobileCoreHost]:
     _uniffi_ffi_result = _uniffi_rust_call_with_error(
         _uniffi_error_converter,
         _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current,
+        *_uniffi_lowered_args,
+    )
+    return _uniffi_lift_return(_uniffi_ffi_result)
+def mobile_host_has_pending_cleanup() -> bool:
+    _uniffi_lowered_args = (
+    )
+    _uniffi_lift_return = _UniffiFfiConverterBoolean.lift
+    _uniffi_error_converter = None
+    _uniffi_ffi_result = _uniffi_rust_call_with_error(
+        _uniffi_error_converter,
+        _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_has_pending_cleanup,
         *_uniffi_lowered_args,
     )
     return _uniffi_lift_return(_uniffi_ffi_result)
@@ -7176,6 +18152,57 @@ def mobile_host_install(radio: MobilePlatformRadio,wake: MobileWakeSink,platform
     _uniffi_ffi_result = _uniffi_rust_call_with_error(
         _uniffi_error_converter,
         _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install,
+        *_uniffi_lowered_args,
+    )
+    return _uniffi_lift_return(_uniffi_ffi_result)
+def mobile_host_install_bound(radio: MobilePlatformRadio,wake: MobileWakeSink,binding: MobileHostBinding,platform: str,owner: str,adapter_label: str) -> MobileCoreHost:
+
+    _UniffiFfiConverterTypeMobilePlatformRadio.check_lower(radio)
+
+    _UniffiFfiConverterTypeMobileWakeSink.check_lower(wake)
+
+    _UniffiFfiConverterTypeMobileHostBinding.check_lower(binding)
+
+    _UniffiFfiConverterString.check_lower(platform)
+
+    _UniffiFfiConverterString.check_lower(owner)
+
+    _UniffiFfiConverterString.check_lower(adapter_label)
+    _uniffi_lowered_args = (
+        _UniffiFfiConverterTypeMobilePlatformRadio.lower(radio),
+        _UniffiFfiConverterTypeMobileWakeSink.lower(wake),
+        _UniffiFfiConverterTypeMobileHostBinding.lower(binding),
+        _UniffiFfiConverterString.lower(platform),
+        _UniffiFfiConverterString.lower(owner),
+        _UniffiFfiConverterString.lower(adapter_label),
+    )
+    _uniffi_lift_return = _UniffiFfiConverterTypeMobileCoreHost.lift
+    _uniffi_error_converter = _UniffiFfiConverterTypeMobileCoreError
+    _uniffi_ffi_result = _uniffi_rust_call_with_error(
+        _uniffi_error_converter,
+        _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install_bound,
+        *_uniffi_lowered_args,
+    )
+    return _uniffi_lift_return(_uniffi_ffi_result)
+def mobile_host_retry_pending_cleanup() -> str:
+    _uniffi_lowered_args = (
+    )
+    _uniffi_lift_return = _UniffiFfiConverterString.lift
+    _uniffi_error_converter = None
+    _uniffi_ffi_result = _uniffi_rust_call_with_error(
+        _uniffi_error_converter,
+        _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_retry_pending_cleanup,
+        *_uniffi_lowered_args,
+    )
+    return _uniffi_lift_return(_uniffi_ffi_result)
+def mobile_ordered_recording_version() -> int:
+    _uniffi_lowered_args = (
+    )
+    _uniffi_lift_return = _UniffiFfiConverterUInt32.lift
+    _uniffi_error_converter = None
+    _uniffi_ffi_result = _uniffi_rust_call_with_error(
+        _uniffi_error_converter,
+        _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_ordered_recording_version,
         *_uniffi_lowered_args,
     )
     return _uniffi_lift_return(_uniffi_ffi_result)
@@ -7219,6 +18246,26 @@ def mobile_recording_control(operation: str,id: str,token: str,max_items: int,ma
         *_uniffi_lowered_args,
     )
     return _uniffi_lift_return(_uniffi_ffi_result)
+def mobile_recording_ordered_offline(operation: str,id: str,completion: MobileInvokeCompletion) -> None:
+
+    _UniffiFfiConverterString.check_lower(operation)
+
+    _UniffiFfiConverterString.check_lower(id)
+
+    _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+    _uniffi_lowered_args = (
+        _UniffiFfiConverterString.lower(operation),
+        _UniffiFfiConverterString.lower(id),
+        _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+    )
+    _uniffi_lift_return = lambda val: None
+    _uniffi_error_converter = None
+    _uniffi_ffi_result = _uniffi_rust_call_with_error(
+        _uniffi_error_converter,
+        _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_ordered_offline,
+        *_uniffi_lowered_args,
+    )
+    return _uniffi_lift_return(_uniffi_ffi_result)
 def mobile_wire_revision() -> str:
     _uniffi_lowered_args = (
     )
@@ -7233,10 +18280,28 @@ def mobile_wire_revision() -> str:
 
 __all__ = [
     "InternalError",
+    "MobileOrderedGeneration",
+    "MobileOrderedMarkerAdmission",
+    "MobileOrderedMarkerWriteState",
     "MobileCoreError",
+    "MobileGraphAuthorityStatus",
+    "MobileGraphPermitState",
+    "MobileGraphReserveStatus",
+    "MobileOrderedEnableStatus",
+    "MobileOrderedIndeterminateReason",
+    "MobileOrderedOwnershipV2",
+    "MobileOrderedOpenOutcome",
+    "MobileOrderedOpenCompletion",
+    "MobileOrderedOpenOwnership",
+    "MobileOrderedRejected",
+    "MobileOrderedRecord",
+    "MobileOwnerOutstandingClass",
+    "MobileOwnerRejection",
+    "MobileOwnerRetirementState",
     "MobileRadioCompletion",
     "MobileRadioIngress",
     "MobileRadioRequest",
+    "MobileScanFailureRawToken",
     "EchoBytesResult",
     "EchoCounterResult",
     "EchoStatus",
@@ -7251,23 +18316,58 @@ __all__ = [
     "MobileGattDescriptor",
     "MobileGattCharacteristic",
     "MobileGattService",
+    "MobileGattSnapshotIdentity",
+    "MobileOrderedRegistration",
+    "MobileOrderedActivation",
+    "MobileOrderedFailureV2",
+    "MobilePlatformFailure",
+    "MobileOrderedMarkerWriteStatus",
+    "MobileOrderedMember",
+    "MobileOrderedOpenSpec",
+    "MobileOrderedOpenIdentity",
+    "MobileOrderedSlotIdentity",
     "MobilePeerName",
     "MobileRestoredPeer",
+    "MobileScanFailureIdentity",
+    "MobileScanFailureMember",
+    "MobileScanFailureRawInfo",
+    "MobileScanFailureRecoveryHeadInfo",
+    "MobileScanFailureRecoveryOwnerInfo",
+    "MobileScanFailureRecoveryPage",
     "MobileSecurityState",
     "mobile_build_identity_json",
+    "mobile_configure_terminal_evidence_maximum_bytes",
     "mobile_contract_revision",
     "mobile_host_current",
+    "mobile_host_has_pending_cleanup",
     "mobile_host_install",
+    "mobile_host_install_bound",
+    "mobile_host_retry_pending_cleanup",
+    "mobile_ordered_recording_version",
     "mobile_recording_configure_directory",
     "mobile_recording_control",
+    "mobile_recording_ordered_offline",
     "mobile_wire_revision",
     "EchoSession",
     "EchoSessionProtocol",
+    "MobileNotificationFailureSpoolConfigurationAuthority",
+    "MobileNotificationFailureSpoolConfigurationAuthorityProtocol",
+    "MobileScanFailureCleanupReceipt",
+    "MobileScanFailureCleanupReceiptProtocol",
+    "MobileScanFailureRecoveryHead",
+    "MobileScanFailureRecoveryHeadProtocol",
+    "MobileScanFailureRecoveryOwner",
+    "MobileScanFailureRecoveryOwnerProtocol",
+    "MobileScanFailureRecovery",
+    "MobileScanFailureRecoveryProtocol",
+    "MobileScanFailureRecoveryConfigurationAuthority",
+    "MobileScanFailureRecoveryConfigurationAuthorityProtocol",
     "MobileCoreSession",
     "MobileCoreSessionProtocol",
     "MobileCoreHost",
     "MobileCoreHostProtocol",
     "MobileInvokeCompletion",
+    "MobileHostBinding",
     "MobilePlatformRadio",
     "MobileWakeSink",
 ]

@@ -639,11 +639,18 @@ function legFor(central: SyntheticCentral): { readonly central: DesktopRustCoreC
     await central.stageNotification(input)
     stagedNotifications += 1
   }
-  const pollNotification: DesktopRustCoreCentral['pollNotification'] = async pollOptions => {
-    const poll = await central.pollNotification(pollOptions)
+  const recordNotificationPoll = <Poll extends { readonly kind: string }>(poll: Poll): Poll => {
     if (poll.kind === 'value') completedNotificationValuePolls += 1
     return poll
   }
+  const pollNotification: DesktopRustCoreCentral['pollNotification'] = async pollOptions =>
+    recordNotificationPoll(await central.pollNotification(pollOptions))
+  const pollNotificationV2Method = central.pollNotificationV2
+  const pollNotificationV2 =
+    pollNotificationV2Method === undefined
+      ? undefined
+      : async (...args: Parameters<NonNullable<DesktopRustCoreCentral['pollNotificationV2']>>) =>
+          recordNotificationPoll(await pollNotificationV2Method.call(central, ...args))
   const notificationIngress: NotificationIngressBarrier = Object.freeze({
     flush: async () => {
       const expectedValuePolls = stagedNotifications
@@ -656,6 +663,7 @@ function legFor(central: SyntheticCentral): { readonly central: DesktopRustCoreC
       if (property === 'cancelPairing') return cancelPairing
       if (property === 'stageNotification') return stageNotification
       if (property === 'pollNotification') return pollNotification
+      if (property === 'pollNotificationV2' && pollNotificationV2 !== undefined) return pollNotificationV2
       const value: unknown = Reflect.get(target, property)
       return typeof value === 'function' ? (...args: unknown[]) => Reflect.apply(value, target, args) : value
     }

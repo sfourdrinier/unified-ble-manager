@@ -10,7 +10,7 @@
 namespace unified_ble::native_protocol::v2 {
 
 inline constexpr std::uint32_t kProtocolVersion = 2U;
-inline constexpr std::uint32_t kAbiVersion = 7U;
+inline constexpr std::uint32_t kAbiVersion = 8U;
 inline constexpr std::uint32_t kControlSurfaceVersion = 2U;
 inline constexpr std::size_t kMaximumControlRecordBytes = 262144U;
 inline constexpr std::size_t kMaximumBinaryPayloadBytes = 524288U;
@@ -101,7 +101,9 @@ enum class EventKinds : std::uint16_t {
   backendRestarted = 6U,
   restorationAvailable = 7U,
   diagnostic = 8U,
-  securityStateChanged = 9U
+  securityStateChanged = 9U,
+  notificationLoss = 10U,
+  notificationTerminated = 11U
 };
 
 enum class TerminalOutcomes : std::uint16_t {
@@ -129,6 +131,13 @@ enum class WriteModes : std::uint16_t {
 enum class NotificationDeliveryModes : std::uint16_t {
   notification = 1U,
   indication = 2U
+};
+
+enum class NotificationDeliveryConstraints : std::uint16_t {
+  preferNotification = 1U,
+  preferIndication = 2U,
+  requireNotification = 3U,
+  requireIndication = 4U
 };
 
 enum class ConnectionPriorities : std::uint16_t {
@@ -245,7 +254,7 @@ inline constexpr std::array<RecordKindDescriptor, 24> kRecordKindDescriptors{{
   RecordKindDescriptor{RecordKind::bondedPeerSnapshot, "bondedPeerSnapshot"}
 }};
 
-inline constexpr std::array<FieldDescriptor, 174> kFieldDescriptors{{
+inline constexpr std::array<FieldDescriptor, 177> kFieldDescriptors{{
   FieldDescriptor{RecordKind::attachment, 1U, "attachmentId", "string", true},
   FieldDescriptor{RecordKind::attachment, 2U, "backendInstanceId", "string", true},
   FieldDescriptor{RecordKind::attachment, 3U, "backendGeneration", "string", true},
@@ -321,6 +330,7 @@ inline constexpr std::array<FieldDescriptor, 174> kFieldDescriptors{{
   FieldDescriptor{RecordKind::command, 19U, "pairTransport", "enum:pairTransports", false},
   FieldDescriptor{RecordKind::command, 20U, "connectionIntent", "enum:connectionIntents", false},
   FieldDescriptor{RecordKind::command, 21U, "notificationDeliveryMode", "enum:notificationDeliveryModes", false},
+  FieldDescriptor{RecordKind::command, 22U, "notificationDeliveryConstraint", "enum:notificationDeliveryConstraints", false},
   FieldDescriptor{RecordKind::terminal, 1U, "correlation", "record:operationCorrelation", true},
   FieldDescriptor{RecordKind::terminal, 2U, "outcome", "enum:terminalOutcomes", true},
   FieldDescriptor{RecordKind::terminal, 3U, "cause", "string", false},
@@ -381,6 +391,8 @@ inline constexpr std::array<FieldDescriptor, 174> kFieldDescriptors{{
   FieldDescriptor{RecordKind::event, 15U, "adapterState", "record:adapterStateSnapshot", false},
   FieldDescriptor{RecordKind::event, 16U, "peerId", "string", false},
   FieldDescriptor{RecordKind::event, 17U, "bondState", "enum:securityBondStates", false},
+  FieldDescriptor{RecordKind::event, 18U, "lostItems", "uint64", false},
+  FieldDescriptor{RecordKind::event, 19U, "lostBytes", "uint64", false},
   FieldDescriptor{RecordKind::error, 1U, "code", "string", true},
   FieldDescriptor{RecordKind::error, 2U, "domain", "string", true},
   FieldDescriptor{RecordKind::error, 3U, "operation", "string", true},
@@ -422,7 +434,7 @@ inline constexpr std::array<FieldDescriptor, 174> kFieldDescriptors{{
   FieldDescriptor{RecordKind::bondedPeerSnapshot, 2U, "displayName", "string", false}
 }};
 
-inline constexpr std::array<EnumValueDescriptor, 104> kEnumValueDescriptors{{
+inline constexpr std::array<EnumValueDescriptor, 110> kEnumValueDescriptors{{
   EnumValueDescriptor{"commandKinds", "scanStart"},
   EnumValueDescriptor{"commandKinds", "scanStop"},
   EnumValueDescriptor{"commandKinds", "connect"},
@@ -476,6 +488,8 @@ inline constexpr std::array<EnumValueDescriptor, 104> kEnumValueDescriptors{{
   EnumValueDescriptor{"eventKinds", "restorationAvailable"},
   EnumValueDescriptor{"eventKinds", "diagnostic"},
   EnumValueDescriptor{"eventKinds", "securityStateChanged"},
+  EnumValueDescriptor{"eventKinds", "notificationLoss"},
+  EnumValueDescriptor{"eventKinds", "notificationTerminated"},
   EnumValueDescriptor{"terminalOutcomes", "succeeded"},
   EnumValueDescriptor{"terminalOutcomes", "failed"},
   EnumValueDescriptor{"cancellationStates", "cancellationRequested"},
@@ -488,6 +502,10 @@ inline constexpr std::array<EnumValueDescriptor, 104> kEnumValueDescriptors{{
   EnumValueDescriptor{"writeModes", "withoutResponse"},
   EnumValueDescriptor{"notificationDeliveryModes", "notification"},
   EnumValueDescriptor{"notificationDeliveryModes", "indication"},
+  EnumValueDescriptor{"notificationDeliveryConstraints", "preferNotification"},
+  EnumValueDescriptor{"notificationDeliveryConstraints", "preferIndication"},
+  EnumValueDescriptor{"notificationDeliveryConstraints", "requireNotification"},
+  EnumValueDescriptor{"notificationDeliveryConstraints", "requireIndication"},
   EnumValueDescriptor{"connectionPriorities", "lowPower"},
   EnumValueDescriptor{"connectionPriorities", "balanced"},
   EnumValueDescriptor{"connectionPriorities", "highThroughput"},

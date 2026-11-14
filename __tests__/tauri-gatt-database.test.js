@@ -307,7 +307,7 @@ describe('Tauri/Electron H10 GATT database (finding 182)', () => {
           capabilitySchema: negotiated('capability-schema'),
           eventSchema: negotiated('event-schema'),
           traceFormat: negotiated('trace-format'),
-          ipcProtocol: negotiated('ipc-protocol', 6)
+          ipcProtocol: negotiated('ipc-protocol', 10)
         },
         capabilities: {
           schemaVersion: 2,

@@ -285,6 +285,18 @@ class RustRadioHostAdapterTest {
   }
 
   @Test
+  fun disconnectCleanupMapsTheOriginalFailureInsideTheMultipleFailureWrapper() {
+    val primary = SecurityException("close permission denied")
+    val secondary = UnsupportedOperationException("receiver cleanup unavailable")
+    // This is the shape produced by OwnedAndroidGattRadio.combineCleanupFailures.
+    radio.disconnectAnswer = IllegalStateException(primary.message, primary).apply {
+      addSuppressed(secondary)
+    }
+    adapter.disconnect(2, peer)
+    assertEquals(RadioFailureKind.PERMISSION_DENIED, core.failures.getValue(2).kind)
+  }
+
+  @Test
   fun discoveryEncodesPreOrderTreeWithDuplicateOccurrences() {
     connect()
     adapter.discover(3, peer)
@@ -459,25 +471,81 @@ class RustRadioHostAdapterTest {
   }
 
   @Test
+  fun oldCleanupPreservesNewSamePathEnablement() {
+    connect()
+    radio.characteristics[heartRate] = CharacteristicFacts(0x10, true)
+    adapter.enableNotifications(1, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 41, null, null)
+    radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.success(Unit))
+    adapter.enableNotifications(2, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42, null, null)
+    radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.success(Unit))
+    adapter.disableNotifications(3, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 41)
+    radio.answer("notify:$HR_MEASUREMENT:false:null", Result.success(Unit))
+    adapter.close(4)
+    assertEquals(listOf(true to 41L, true to 42L, false to 41L, false to 42L), radio.notificationEpochs)
+    radio.answer("notify:$HR_MEASUREMENT:false:null", Result.success(Unit))
+    assertTrue(core.calls.contains("closed:4:[]"))
+  }
+
+  @Test
+  fun removedPathCleanupWaitsForOldConnectionRetirementAndPreservesReplacement() {
+    connect()
+    radio.characteristics[heartRate] = CharacteristicFacts(0x10, true)
+    adapter.enableNotifications(1, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 41, null, null)
+    radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.success(Unit))
+    radio.characteristics.remove(heartRate)
+    events().onServicesChanged(peer)
+    adapter.disableNotifications(2, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 41)
+    assertTrue(core.calls.contains("failure:2:path-stale:null"))
+    assertEquals(listOf(true to 41L), radio.notificationEpochs)
+
+    observe(peer, false, 8)
+    connect(3)
+    radio.characteristics[heartRate] = CharacteristicFacts(0x10, true)
+    adapter.enableNotifications(4, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42, null, null)
+    radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.success(Unit))
+    adapter.disableNotifications(5, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 41)
+    assertTrue(core.calls.contains("unit:5"))
+    assertEquals(listOf(true to 41L, true to 42L), radio.notificationEpochs)
+    adapter.disableNotifications(6, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42)
+    radio.answer("notify:$HR_MEASUREMENT:false:null", Result.success(Unit))
+    assertTrue(core.calls.contains("unit:6"))
+  }
+
+  @Test
   fun notificationsCarryTheEnableEpochAndStrayValuesAreSurfaced() {
     connect()
     radio.characteristics[heartRate] = CharacteristicFacts(0x10, true)
     adapter.enableNotifications(1, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42, null, null)
     // A value Android staged while the CCCD write was in flight.
-    events().onNotification(heartRate.copy(peerId = peer.lowercase(), characteristicUuid = HR_MEASUREMENT.uppercase()), byteArrayOf(0, 60))
+    events().onNotification(heartRate.copy(peerId = peer.lowercase(), characteristicUuid = HR_MEASUREMENT.uppercase()), 42, byteArrayOf(0, 60))
     radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.success(Unit))
-    events().onNotification(heartRate, byteArrayOf(0, 61))
-    adapter.disableNotifications(2, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0)
+    events().onNotification(heartRate, 42, byteArrayOf(0, 61))
+    adapter.disableNotifications(2, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42)
     radio.answer("notify:$HR_MEASUREMENT:false:null", Result.success(Unit))
-    events().onNotification(heartRate, byteArrayOf(0, 62))
+    events().onNotification(heartRate, 42, byteArrayOf(0, 62))
     assertEquals(
       listOf(
         "value:$peer:$HR_MEASUREMENT#0:42:[0, 60]",
         "notify:1:notification",
         "value:$peer:$HR_MEASUREMENT#0:42:[0, 61]",
         "unit:2",
-        "dropped:notification"
+        "value:$peer:$HR_MEASUREMENT#0:42:[0, 62]"
       ),
+      core.calls
+    )
+  }
+
+  @Test
+  fun sourceFailurePreservesItsOriginalEpoch() {
+    connect()
+    radio.characteristics[heartRate] = CharacteristicFacts(0x10, true)
+    adapter.enableNotifications(1, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42, null, null)
+    radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.success(Unit))
+    val failure = RadioFailure(RadioFailureKind.GATT_STATUS, 133, "notification delivery uncertain", nativeCode = "NOTIFICATION_DELIVERY_UNCERTAIN")
+    events().onNotificationSourceFailed(heartRate, 41, failure)
+    events().onNotificationSourceFailed(heartRate, 42, failure)
+    assertEquals(
+      listOf("notify:1:notification", "notification-source-failed:$peer:$HR_MEASUREMENT#0:41:gatt-status:133:NOTIFICATION_DELIVERY_UNCERTAIN", "notification-source-failed:$peer:$HR_MEASUREMENT#0:42:gatt-status:133:NOTIFICATION_DELIVERY_UNCERTAIN"),
       core.calls
     )
   }
@@ -488,8 +556,8 @@ class RustRadioHostAdapterTest {
     radio.characteristics[heartRate] = CharacteristicFacts(0x10, true)
     adapter.enableNotifications(1, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42, null, null)
     radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.failure(AndroidGattOperationFailure("cccd-write", 3)))
-    events().onNotification(heartRate, byteArrayOf(1))
-    assertEquals(listOf("failure:1:gatt-status:3", "dropped:notification"), core.calls)
+    events().onNotification(heartRate, 42, byteArrayOf(1))
+    assertEquals(listOf("failure:1:gatt-status:3", "value:$peer:$HR_MEASUREMENT#0:42:[1]"), core.calls)
   }
 
   @Test
@@ -510,8 +578,8 @@ class RustRadioHostAdapterTest {
     radio.characteristics[heartRate] = CharacteristicFacts(0x10, true)
     adapter.enableNotifications(1, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42, null, null)
     radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.failure(AndroidGattOperationFailure("cccd-write", 129)))
-    events().onNotification(heartRate, byteArrayOf(1))
-    assertEquals(listOf("failure:1:gatt-status:129", "dropped:notification"), core.calls)
+    events().onNotification(heartRate, 42, byteArrayOf(1))
+    assertEquals(listOf("failure:1:gatt-status:129", "value:$peer:$HR_MEASUREMENT#0:42:[1]"), core.calls)
   }
 
   @Test
@@ -521,10 +589,10 @@ class RustRadioHostAdapterTest {
     adapter.enableNotifications(1, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42, null, null)
     radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.success(Unit))
     events().onServicesChanged(peer)
-    events().onNotification(heartRate, byteArrayOf(1))
+    events().onNotification(heartRate, 42, byteArrayOf(1))
     observe(peer, false, 8)
     assertEquals(
-      listOf("notify:1:notification", "services-changed:$peer", "dropped:notification", "link:$peer:false:8"),
+      listOf("notify:1:notification", "services-changed:$peer", "value:$peer:$HR_MEASUREMENT#0:42:[1]", "link:$peer:false:8"),
       core.calls
     )
   }
@@ -792,8 +860,8 @@ class RustRadioHostAdapterTest {
     events().onAdvertisement(
       AdvertisementFacts(peer, peer, "Polar H10", -60, null, listOf(HR_SERVICE), listOf(0x006b to byteArrayOf(1)), emptyList(), true, null)
     )
-    events().onDropped("notification", "orphan")
-    assertEquals(listOf("adv:$peer", "dropped:notification"), core.calls)
+    events().onDropped("notification", "orphan", 1_000_000)
+    assertEquals(listOf("adv:$peer", "dropped:notification:1000000"), core.calls)
   }
 
   @Test

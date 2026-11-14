@@ -24,7 +24,7 @@ import {
 } from './backends/reactnative/react-native-rust-core-provider'
 import type { ReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core'
 import { createReactNativeContinuationRecordings } from './react-native-continuation-recording'
-import type { ContinuationRecordingController } from './core/continuation-recording'
+import type { ReactNativeContinuationRecordingController } from './react-native-continuation-recording'
 import { createReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core-binding'
 import { createReactNativeRustCoreManager } from './backends/reactnative/react-native-rust-core-manager'
 import {
@@ -34,6 +34,7 @@ import {
 import { hostAndroidApiLevel } from './backends/reactnative/react-native-providers'
 import { rehydratePublicPromise } from './public/error-bridge'
 import type { DiagnosticsOptions } from './public/host-identity'
+import type { BleManagerCreateOptions } from './public/host-identity'
 import { createReactNativeAccessoryChooser } from './backends/reactnative/react-native-accessory-chooser'
 import { createReactNativeCompanionChooser } from './backends/reactnative/react-native-companion-chooser'
 import type { ChooseOptions, BlePeer } from './public/ble-manager'
@@ -57,6 +58,8 @@ export interface ReactNativeBleManagerOptions {
   readonly hostSessionScope: string
   readonly adapterId?: string
   readonly diagnostics?: DiagnosticsOptions
+  /** Opt-in source-native terminal evidence; no in-memory substitute exists. */
+  readonly terminalEvidence?: BleManagerCreateOptions['terminalEvidence']
   readonly createOwnerId?: () => string
   /**
    * Substitute native Rust core binding. When absent (the ordinary case), the
@@ -88,7 +91,7 @@ export interface ReactNativeBleManagerOptions {
 /** What an Expo host reaches besides the public manager. */
 export interface ReactNativeManagerHost {
   readonly chooseAccessory?: (options: ChooseOptions) => Promise<BlePeer>
-  readonly recordings: ContinuationRecordingController
+  readonly recordings: ReactNativeContinuationRecordingController
   readonly manager: BleManager<string, NativeBackendIdentity<string>>
   readonly services: ReactNativeRustCoreHostServices
   /** Adopts restoration with the configured authority (Expo `restoration.claim`). */
@@ -179,6 +182,7 @@ export async function createReactNativeManagerHost(
       }),
       now: options.now,
       trace,
+      ...(options.terminalEvidence === undefined ? {} : { terminalEvidence: options.terminalEvidence }),
       maximumValueBytes:
         options.diagnostics?.maximumValueBytes === undefined
           ? DEFAULT_CORE_MAXIMUM_VALUE_BYTES

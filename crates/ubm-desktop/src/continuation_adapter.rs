@@ -1,7 +1,9 @@
 //! Continuation session adapter over the host's existing central. This owns
 //! only a lease, consumer routes and their shared bounded outbox, never a radio.
 use crate::continuation::{ContinuationFuture, ContinuationHost, ContinuationSession, Result};
-use crate::continuation_outbox::{IngressClass, Outbox, WakeSink, encode_base64};
+use crate::continuation_outbox::{
+    IngressClass, LegacyEvidenceOwner, Outbox, WakeSink, encode_base64,
+};
 use crate::{
     ConnectionState, DatabaseState, DesktopCentral, DesktopError, NotificationPoll, OpControl,
     PathSelector, RadioBoundary,
@@ -16,8 +18,59 @@ use tokio::sync::Mutex;
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(test)]
+fn open_scan_fixture(
+    path: &std::path::Path,
+    recording_id: &str,
+    declaration: &Value,
+    quota: crate::continuation_journal::JournalQuota,
+) -> std::result::Result<
+    crate::continuation_journal::ContinuationJournal,
+    crate::continuation_journal::JournalError,
+> {
+    #[cfg(windows)]
+    {
+        use crate::continuation_journal::{
+            ScanRecoveryStorageProtector, WindowsCurrentUserScanRecoveryStorageProtector,
+        };
+
+        let protector: Arc<dyn ScanRecoveryStorageProtector> =
+            Arc::new(WindowsCurrentUserScanRecoveryStorageProtector::new());
+        protector.provision_directory(path.parent().expect("scan fixture parent"))?;
+        crate::continuation_journal::ContinuationJournal::open_with_scan_recovery_storage(
+            path,
+            recording_id,
+            declaration,
+            quota,
+            Some(protector),
+        )
+    }
+
+    #[cfg(not(windows))]
+    crate::continuation_journal::ContinuationJournal::open(path, recording_id, declaration, quota)
+}
+
+#[cfg(test)]
 mod ingress_tests {
     use super::*;
+    #[test]
+    fn provenance_record_preserves_source_order_without_inventing_receipt() {
+        let record =
+            value_record_with_provenance("c", "unknown", &[1], None, "read-or-notification", 9, 42);
+        assert_eq!(record["provenance"], "read-or-notification");
+        assert_eq!(record["sourceGeneration"], "9");
+        assert_eq!(record["sourceOrdinal"], "42");
+        assert!(record.get("receipt").is_none());
+        let receipt = ubm_core::central::NotificationReceipt {
+            received_at_utc_ms: 1.0,
+            received_at_monotonic_ms: 2.0,
+            clock_id: "clock".into(),
+        };
+        let record =
+            value_record_with_provenance("c", "unknown", &[1], Some(receipt), "unknown", 9, 43);
+        assert_eq!(record["receipt"]["clockId"], "clock");
+        assert_eq!(record["provenance"], "unknown");
+    }
+
     struct ThreadWake(std::sync::Mutex<Vec<std::thread::ThreadId>>);
     impl WakeSink for ThreadWake {
         fn wake(&self, _: u64) {
@@ -65,9 +118,9 @@ mod ingress_tests {
             std::process::id(),
             NEXT_SESSION.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir(&directory).unwrap();
+        crate::continuation_journal::private_fixture_directory(&directory);
         let journal = Arc::new(
-            crate::continuation_journal::ContinuationJournal::open(
+            super::open_scan_fixture(
                 &directory.join("recording.sqlite"),
                 "race",
                 &json!({}),
@@ -101,7 +154,7 @@ mod group_commit_tests {
     //! The production `Session` over a `FakeRadio` central, driven without the
     //! background collector so each backlog and every pass is deterministic.
     use super::*;
-    use crate::continuation_journal::{ContinuationJournal, JournalQuota};
+    use crate::continuation_journal::JournalQuota;
     use crate::{CharacteristicSnapshot, FakeRadio, PropertyFlags, RadioEvent, ServiceSnapshot};
     use std::path::PathBuf;
     use std::time::Duration;
@@ -160,10 +213,10 @@ mod group_commit_tests {
                 Some(max_records) => {
                     let directory = std::env::temp_dir()
                         .join(format!("ubm-adapter-group-{}-{id}", std::process::id()));
-                    std::fs::create_dir(&directory).unwrap();
+                    crate::continuation_journal::private_fixture_directory(&directory);
                     let path = directory.join("recording.sqlite");
                     let journal = Arc::new(
-                        ContinuationJournal::open(
+                        super::open_scan_fixture(
                             &path,
                             "group",
                             &json!({}),
@@ -255,7 +308,8 @@ mod group_commit_tests {
                     characteristic_occurrence: 0,
                     value: index.to_be_bytes().to_vec(),
                     epoch: self.central.routing_epoch(PEER).await,
-                });
+                })
+                .expect("synthetic event admission failed");
             tokio::time::timeout(Duration::from_secs(2), wake.recv())
                 .await
                 .expect("central admitted the notification")
@@ -1007,6 +1061,66 @@ fn value_record_with_receipt(
         "receipt": {"receivedAtUtcMs":receipt.received_at_utc_ms, "receivedAtMonotonicMs":receipt.received_at_monotonic_ms, "clockId":receipt.clock_id, "origin":"native"}})
 }
 
+fn value_record_with_provenance(
+    consumer: &str,
+    delivery: &str,
+    bytes: &[u8],
+    receipt: Option<ubm_core::central::NotificationReceipt>,
+    provenance: &str,
+    source_generation: u64,
+    source_ordinal: u64,
+) -> Value {
+    let mut record = match receipt {
+        Some(receipt) => value_record_with_receipt(consumer, delivery, bytes, receipt),
+        None => value_record(consumer, delivery, bytes),
+    };
+    record["provenance"] = json!(provenance);
+    record["sourceGeneration"] = json!(source_generation.to_string());
+    record["sourceOrdinal"] = json!(source_ordinal.to_string());
+    record
+}
+
+fn peer_source_loss_record(
+    consumer: &str,
+    peer_id: &str,
+    generation: u64,
+    skipped_records: Option<u64>,
+) -> Value {
+    json!({"t":"peer-source-loss", "consumer":consumer, "peerId":peer_id,
+        "generation":generation.to_string(), "skippedRecords":skipped_records.map(|count| count.to_string())})
+}
+
+fn hex_identity(value: [u8; 16]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The descriptor is an immutable capability, not an error summary. Keep every
+/// identity component and recovery bound in the continuation record so the
+/// consumer can page the owning central and ACK only after the complete source
+/// evidence is durably accepted.
+fn peer_source_failure_recovery_record(
+    consumer: &str,
+    descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+) -> Value {
+    json!({
+        "t":"peer-source-failure-recovery",
+        "v":2,
+        "consumer":consumer,
+        "descriptor": {
+            "protocol":descriptor.protocol,
+            "representation":descriptor.representation,
+            "host":hex_identity(descriptor.identity.host),
+            "peer":hex_identity(descriptor.identity.peer),
+            "sourceGenerationIdentity":hex_identity(descriptor.identity.source_generation),
+            "nativeGroup":hex_identity(descriptor.identity.native_group),
+            "transfer":hex_identity(descriptor.identity.transfer),
+            "recovery":hex_identity(descriptor.identity.recovery),
+            "encodedLength":descriptor.encoded_length.to_string(),
+            "chunkBytes":descriptor.chunk_bytes,
+        }
+    })
+}
+
 fn value_record(consumer: &str, delivery: &str, bytes: &[u8]) -> Value {
     json!({"t":"value","consumer":consumer,"valueB64":encode_base64(bytes),"delivery":delivery})
 }
@@ -1272,12 +1386,64 @@ impl<B: RadioBoundary> Session<B> {
                             receipt,
                         ));
                     }
+                    Ok(NotificationPoll::ValueWithProvenance {
+                        value,
+                        receipt,
+                        provenance,
+                        source_generation,
+                        source_ordinal,
+                    }) => {
+                        records.push(value_record_with_provenance(
+                            &route.consumer,
+                            route.delivery,
+                            &value,
+                            receipt,
+                            provenance.as_str(),
+                            source_generation,
+                            source_ordinal,
+                        ));
+                    }
+                    Ok(NotificationPoll::PeerSourceLoss {
+                        peer_id,
+                        generation,
+                        skipped_records,
+                    }) => {
+                        records.push(peer_source_loss_record(
+                            &route.consumer,
+                            &peer_id,
+                            generation,
+                            skipped_records,
+                        ));
+                    }
                     Ok(NotificationPoll::Empty) => break true,
                     Ok(NotificationPoll::Terminal(terminal)) => {
                         core = Some(Ending {
                             reason: terminal.reason(),
                             items: terminal.dropped_items(),
                             bytes: terminal.dropped_bytes(),
+                        });
+                        break true;
+                    }
+                    Ok(NotificationPoll::SourceFailed(error)) => {
+                        poll_failure = Some(self::error(error));
+                        core = Some(Ending {
+                            reason: "source-failed",
+                            ..Ending::CLOSED
+                        });
+                        break true;
+                    }
+                    Ok(NotificationPoll::SourceFailureRecovery(descriptor)) => {
+                        records.push(peer_source_failure_recovery_record(
+                            &route.consumer,
+                            descriptor.descriptor,
+                        ));
+                        // The central reports this exactly once and then the
+                        // consumer is closed. Preserve the descriptor as its
+                        // own control before ending the route; it is never
+                        // collapsed into a lossy ordinary SourceFailed error.
+                        core = Some(Ending {
+                            reason: "source-failed",
+                            ..Ending::CLOSED
                         });
                         break true;
                     }
@@ -1576,6 +1742,41 @@ impl<'a, B: RadioBoundary> DisposalTail<'a, B> {
                     self.commit(&mut state, None);
                 }
             }
+            NotificationPoll::ValueWithProvenance {
+                value,
+                receipt,
+                provenance,
+                source_generation,
+                source_ordinal,
+            } => {
+                state.held.push(value_record_with_provenance(
+                    self.consumer,
+                    self.delivery,
+                    &value,
+                    receipt,
+                    provenance.as_str(),
+                    source_generation,
+                    source_ordinal,
+                ));
+                if state.held.len() == VALUE_GROUP {
+                    self.commit(&mut state, None);
+                }
+            }
+            NotificationPoll::PeerSourceLoss {
+                peer_id,
+                generation,
+                skipped_records,
+            } => {
+                state.held.push(peer_source_loss_record(
+                    self.consumer,
+                    &peer_id,
+                    generation,
+                    skipped_records,
+                ));
+                if state.held.len() == VALUE_GROUP {
+                    self.commit(&mut state, None);
+                }
+            }
             NotificationPoll::Terminal(terminal) => self.commit(
                 &mut state,
                 Some(Ending {
@@ -1594,14 +1795,25 @@ impl<'a, B: RadioBoundary> DisposalTail<'a, B> {
             // An unsealed refusal already ended this tail's admission: every
             // later value and the core's own terminal loss ride that one
             // terminal, counted once and not offered to the outbox again.
+            self.session.outbox.note_control_loss(
+                records
+                    .iter()
+                    .filter(|record| record["t"] == "peer-source-loss")
+                    .count() as u64,
+            );
             let held_bytes: u64 = records
                 .iter()
+                .filter(|record| record["t"] != "peer-source-loss")
                 .map(|record| record.to_string().len() as u64)
                 .sum();
             let (core_items, core_bytes) = core.map_or((0, 0), |core| (core.items, core.bytes));
             state.ending = state.ending.map(|ending| {
                 ending.with_loss(
-                    (records.len() as u64).saturating_add(core_items),
+                    (records
+                        .iter()
+                        .filter(|record| record["t"] != "peer-source-loss")
+                        .count() as u64)
+                        .saturating_add(core_items),
                     held_bytes.saturating_add(core_bytes),
                 )
             });
@@ -1670,6 +1882,9 @@ impl<B: RadioBoundary> Drop for DisposalTail<'_, B> {
 }
 
 impl<B: RadioBoundary> ContinuationSession for Session<B> {
+    fn legacy_claim_compatible(&self) -> bool {
+        true
+    }
     fn seal_collection(&self) -> Result<()> {
         self.outbox.seal();
         Ok(())
@@ -1729,11 +1944,62 @@ impl<B: RadioBoundary> ContinuationSession for Session<B> {
             match result { Ok(value) => json!({"ok":true,"value":value}), Err(error) => json!({"ok":false,"retryability":error.get("retryability").cloned().unwrap_or(json!("never")),"error":error}) }.to_string()
         })
     }
-    fn drain(&self, max_items: u32, max_bytes: u32) -> ContinuationFuture<'_> {
-        Box::pin(async move {
+    fn legacy_drain(
+        &self,
+        evidence: &LegacyEvidenceOwner,
+        items: u32,
+        bytes: u32,
+    ) -> Option<Result<Value>> {
+        Some(
             self.outbox
-                .drain(max_items as usize, max_bytes as usize)
-                .to_string()
-        })
+                .drain_legacy_preserving(
+                    evidence,
+                    items as usize,
+                    bytes as usize,
+                    crate::continuation::project_521_record,
+                )
+                .map_err(crate::continuation::legacy_evidence_error),
+        )
+    }
+    fn claim_drain_v1(
+        &self,
+        evidence: &LegacyEvidenceOwner,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Option<Result<Option<crate::continuation_outbox::DrainClaim>>> {
+        Some(
+            self.outbox
+                .claim_drain_projected(
+                    evidence,
+                    max_items as usize,
+                    max_bytes as usize,
+                    crate::continuation::project_521_record,
+                )
+                .map_err(crate::continuation::legacy_evidence_error),
+        )
+    }
+    fn claim_drain(
+        &self,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Result<Option<crate::continuation_outbox::DrainClaim>> {
+        self.outbox
+            .claim_drain(max_items as usize, max_bytes as usize)
+            .map_err(crate::continuation::continuation_drain_error)
+    }
+    fn has_retained_tail(&self) -> Result<bool> {
+        self.outbox
+            .has_retained_tail()
+            .map_err(crate::continuation::continuation_drain_error)
+    }
+    fn acknowledge_drain(&self, id: u64) -> Result<()> {
+        if self.outbox.acknowledge_drain(id) {
+            Ok(())
+        } else {
+            Err(failure(
+                "lifecycle.invalid-state",
+                "continuation outbox claim mismatch",
+            ))
+        }
     }
 }

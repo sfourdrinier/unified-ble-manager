@@ -455,7 +455,7 @@ void validateCommandSemantics(const ProtocolRecord& record) {
   } else if (*kind == "writeDescriptor") {
     requireFieldSet(record, {1U, 2U, 3U, 5U, 6U}, {});
   } else if (*kind == "subscribe") {
-    requireFieldSet(record, {1U, 2U, 3U, 4U, 7U}, {21U});
+    requireFieldSet(record, {1U, 2U, 3U, 4U, 7U}, {21U, 22U});
   } else if (*kind == "unsubscribe") {
     requireFieldSet(record, {1U, 2U, 3U, 4U, 7U}, {});
   } else if (*kind == "cancel") {
@@ -528,6 +528,10 @@ void validateEventSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 8U}, {});
   } else if (*kind == "notification") {
     requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 9U, 11U, 13U}, {10U});
+  } else if (*kind == "notificationLoss") {
+    requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 9U, 10U, 11U, 18U, 19U}, {});
+  } else if (*kind == "notificationTerminated") {
+    requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 9U, 10U, 11U, 14U}, {});
   } else if (*kind == "diagnostic") {
     requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 14U}, {10U});
   } else if (*kind == "securityStateChanged") {

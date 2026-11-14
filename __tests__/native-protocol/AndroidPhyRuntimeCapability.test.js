@@ -87,7 +87,7 @@ class PhyCapabilityControl {
     this.handshakes.push(request)
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 7,
+      abi: 8,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
@@ -95,6 +95,7 @@ class PhyCapabilityControl {
       traceFormat: 1,
       maximumControlRecordBytes: 65536,
       maximumBinaryPayloadBytes: 524288,
+      scanEventIdentityAvailable: true,
       ...(this.capability === 'absent' ? {} : { phyAvailable: this.capability })
     })
   }
@@ -142,6 +143,15 @@ class PhyCapabilityRuntime {
       return
     }
     throw new Error(`Unexpected test command ${kind}`)
+  }
+
+  submitWithAdmission(bytes) {
+    try {
+      this.submit(bytes)
+      return { state: 'submitted' }
+    } catch (error) {
+      return { state: 'notAdmitted', message: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   emitResult(command, kind, additions = []) {

@@ -22,6 +22,10 @@
 //! is evicted on connect, disconnect, OS link loss, services-changed and
 //! close.
 
+mod marker;
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+mod reclaim;
+
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::{
@@ -363,6 +367,7 @@ pub async fn list_adapters_on(
 
 /// The btleplug manager on the chosen bus: the session bus only through
 /// the vendored patch (callers check [`crate::bluez_bus_supported`] first).
+#[cfg(not(target_os = "windows"))]
 async fn open_manager(bus: crate::boundary::BluezBus) -> Result<Manager, btleplug::Error> {
     match bus {
         crate::boundary::BluezBus::System => Manager::new().await,
@@ -481,6 +486,7 @@ fn platform_detail(error: &btleplug::Error) -> Option<crate::errors::PlatformDet
             crate::errors::PlatformValue::Text(cleanup.to_string()),
         );
         if let Some(native) = platform_detail(cleanup) {
+            detail.cleanup.push(native.clone());
             detail = detail
                 .with_metadata(
                     "cleanup.platform.domain",
@@ -505,15 +511,23 @@ fn platform_detail(error: &btleplug::Error) -> Option<crate::errors::PlatformDet
     let btleplug::Error::Platform(platform) = error else {
         return None;
     };
-    Some(
-        platform.metadata.iter().fold(
-            crate::errors::PlatformDetail::new(platform.domain, platform.code.clone())
-                .with_message(platform.message.clone()),
-            |detail, (key, value)| {
-                detail.with_metadata(*key, crate::errors::PlatformValue::Text(value.clone()))
-            },
-        ),
-    )
+    let mut detail = crate::errors::PlatformDetail::new(platform.domain, platform.code.clone())
+        .with_message(platform.message.clone());
+    let entries = platform
+        .metadata
+        .iter()
+        .map(|(key, value)| crate::errors::PlatformMetadataEntry {
+            key: (*key).to_owned(),
+            value: crate::errors::PlatformValue::Text(value.clone()),
+        })
+        .collect::<Vec<_>>();
+    for entry in &entries {
+        detail
+            .metadata
+            .insert(entry.key.clone(), entry.value.clone());
+    }
+    detail.metadata_entries = Some(entries);
+    Some(detail)
 }
 
 /// Attach the platform's answer behind `cause` (finding 113).
@@ -751,7 +765,10 @@ impl<P: Clone> GattCache<P> {
                 }
             }
         };
-        gate.lock_owned().await
+        crate::op_control::notification_cleanup_waiting_for_lock();
+        let guard = gate.lock_owned().await;
+        crate::op_control::notification_cleanup_passed_lock();
+        guard
     }
 
     #[cfg(any(target_os = "linux", test))]
@@ -917,6 +934,7 @@ pub fn close_receipt(
     }
 }
 
+#[cfg(test)]
 async fn close_scope_debt<F, Fut>(
     debt: &StdMutex<HashSet<InstanceKey>>,
     mut release: F,
@@ -1020,14 +1038,91 @@ pub const NOTIFICATION_CAP: usize = ubm_core::contracts::MAX_STREAM_ITEM_CAPACIT
 /// [`NOTIFICATION_CAP`].
 pub const NOTIFICATION_BYTES: u64 = ubm_core::contracts::BACKEND_INGRESS_AGGREGATE_BYTES;
 
+/// The adapter event stream can only end once, but `next_event` may be
+/// polled again after that end has been observed. Keep the source-close
+/// result separate from the stream itself so a refused close reaches the
+/// central exactly once instead of being retried forever (or silently lost).
+#[derive(Debug, Default)]
+enum ScanIngressSourceClose {
+    #[default]
+    Open,
+    Closing,
+    Closed,
+    Failed(DesktopError),
+}
+
+impl ScanIngressSourceClose {
+    /// Claims the single adapter-side close attempt. A concurrent or later
+    /// event-loop poll must not invent another close attempt after EOF.
+    fn begin(&mut self) -> bool {
+        if matches!(self, Self::Open) {
+            *self = Self::Closing;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Records the exact mapped failure for diagnostics and emits it once.
+    /// The adapter owns the retryable platform state: a later lifecycle fence
+    /// must ask that same adapter and receive its retained refusal.
+    fn complete(&mut self, outcome: Result<(), DesktopError>) -> Option<DesktopError> {
+        debug_assert!(matches!(self, Self::Closing));
+        match outcome {
+            Ok(()) => {
+                *self = Self::Closed;
+                None
+            }
+            Err(error) => {
+                *self = Self::Failed(error.clone());
+                Some(error)
+            }
+        }
+    }
+
+    /// A typed source-close refusal is a cleanup blocker, not EOF evidence.
+    /// Keeping the event loop pending after it is reported once prevents a
+    /// second poll from converting that refusal into successful source-close
+    /// settlement before the lifecycle's explicit fence retry runs.
+    fn has_failed(&self) -> bool {
+        match self {
+            Self::Failed(error) => {
+                let _ = error;
+                true
+            }
+            Self::Open | Self::Closing | Self::Closed => false,
+        }
+    }
+
+    #[cfg(test)]
+    fn retained_failure(&self) -> Option<&DesktopError> {
+        match self {
+            Self::Failed(error) => Some(error),
+            Self::Open | Self::Closing | Self::Closed => None,
+        }
+    }
+}
+
 /// Production radio backend over one btleplug adapter.
 pub struct BtleplugRadio {
     adapter: Adapter,
     adapter_label: String,
     spawn: tokio::runtime::Handle,
     events: Mutex<Option<EventStream>>,
+    scan_ingress_source_close: Mutex<ScanIngressSourceClose>,
     notifications: mpsc::Sender<RadioEvent>,
     notification_rx: Mutex<mpsc::Receiver<RadioEvent>>,
+    peer_groups:
+        StdMutex<HashMap<String, Arc<Mutex<crate::peer_notification_ingress::PeerGroupState>>>>,
+    next_peer_source: AtomicU64,
+    next_peer_group: AtomicU64,
+    peer_failure_recoveries: Arc<crate::peer_notification_ingress::PeerFailureRecoveryStore>,
+    ordered_groups: Arc<StdMutex<crate::ordered_notification_groups::OrderedGroupRegistry>>,
+    ordered_sources:
+        StdMutex<HashMap<u64, Arc<crate::peer_notification_ingress::OrderedSourceOwner>>>,
+    marker_requests: StdMutex<HashMap<(u64, u64), marker::MarkerOwner>>,
+    next_peer_member: AtomicU64,
+    next_peer_barrier: AtomicU64,
     ingress_bytes: Arc<AtomicU64>,
     ingress_dropped: Arc<AtomicU64>,
     /// Link and database events held until the notifications queued ahead
@@ -1044,19 +1139,34 @@ pub struct BtleplugRadio {
     #[cfg(target_os = "linux")]
     gatt_peer_failures: Arc<StdMutex<HashMap<String, DesktopError>>>,
     closing_forwarders: Mutex<Vec<tokio::task::JoinHandle<u64>>>,
+    closing_group_failures: StdMutex<Vec<DesktopError>>,
     /// Cleanup debt (F13): scopes whose native CCCD may be live without
     /// an installed forwarder — a failed setup rollback or a failed
     /// consumer-less teardown. Retry and dispose keep attempting the
     /// native release until it succeeds; the ambiguity check (F09)
     /// treats debt as live because the CCCD may still emit.
     cleanup_debt: Arc<StdMutex<HashSet<InstanceKey>>>,
-    notification_targets: NotificationTargets<Peripheral>,
+    notification_targets: NotificationTargets<DesktopNotificationTransport>,
     /// Close-time release failures retained by the last [`RadioBoundary::close`]
     /// (F14 receipts): one entry per scope whose native unsubscribe did not
     /// complete. Drained by `take_close_failures` into the shutdown report.
     close_failures: StdMutex<Vec<RadioCloseFailure>>,
     /// Per-peer GATT cache (PR210-25).
     gatt: Arc<GattCache<Peripheral>>,
+    /// Opaque source-owned connection/graph binding captured at discovery.
+    reclaim_bindings: StdMutex<
+        HashMap<
+            String,
+            (
+                String,
+                GattSnapshotIdentity,
+                btleplug::ubm_reclaim_graph_binding::GraphBinding,
+                Peripheral,
+            ),
+        >,
+    >,
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    reclaim_state: StdMutex<reclaim::ReclaimState>,
     /// OS control events from the narrow adapters (bond changes), a
     /// separate bounded source so a notification flood never starves them.
     /// The radio keeps one sender so the source never closes under it; the
@@ -1101,9 +1211,11 @@ pub struct BtleplugRadio {
     /// The WinRT watcher-stopped forwarder (vendored patch 5), aborted with
     /// the radio.
     scan_stopped_watch: Option<tokio::task::JoinHandle<()>>,
-    /// Watcher stops this radio requested and has not seen yet: the OS
-    /// reports those too, and they must not end a later scan.
-    expected_scan_stops: Arc<AtomicU64>,
+    /// WinRT `Stop` returns before its `Stopped` callback. This fence keeps
+    /// that callback attached to the retiring scan, so the central cannot
+    /// admit a replacement that a delayed callback could terminate.
+    #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+    winrt_scan_stop_fence: Arc<WinRtScanStopFence>,
 }
 
 /// Bound of the OS control-event queue. Bond changes are rare; the
@@ -1162,7 +1274,140 @@ impl Drop for BtleplugRadio {
     }
 }
 
+fn validate_source_claim_binding(
+    owner: &crate::peer_notification_ingress::OrderedSourceOwner,
+    lease: &crate::boundary::OrderedSourceLease,
+    member_id: u64,
+    membership: ubm_core::ordered_notifications::Membership,
+    activation: &crate::boundary::PreparedNotificationActivation,
+) -> Result<(), DesktopError> {
+    let actual = owner.lease.lock().expect("ordered source lease");
+    let valid_lease = actual.as_ref().is_some_and(|actual| {
+        actual.ingress == lease.ingress
+            && actual.connection_generation == lease.connection_generation
+            && actual.source_generation == lease.source_generation
+            && actual.native_group == lease.native_group
+            && actual.members.contains(&(member_id, membership))
+            && lease.members.contains(&(member_id, membership))
+    });
+    let valid_claim = owner
+        .claims
+        .lock()
+        .expect("ordered source claims")
+        .get(&member_id)
+        .is_some_and(|(stored_membership, stored_activation)| {
+            *stored_membership == membership && stored_activation == activation
+        });
+    if valid_lease && valid_claim {
+        Ok(())
+    } else {
+        Err(DesktopError::new(
+            BleErrorCode::LifecycleInvalidState,
+            BleErrorDomain::Cleanup,
+            "gatt.ordered.claim",
+        )
+        .with_detail("ordered source claim is stale"))
+    }
+}
+
 impl BtleplugRadio {
+    #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+    async fn recover_stalled_winrt_scan_stop(&self) -> Result<(), DesktopError> {
+        let recovered = self.winrt_scan_stop_fence.recover_stalled(|generation| {
+            match self
+                .adapter
+                .recover_stalled_scan_watcher(generation)
+                .map_err(|error| {
+                    DesktopError::scan_start_failed(format!(
+                        "could not inspect or replace the WinRT advertisement watcher: {error}"
+                    ))
+                    .with_os(&error)
+                })?
+            {
+                btleplug::platform::StalledScanWatcher::Replaced => {
+                    Ok(WinRtRecovery::Stopped)
+                }
+                btleplug::platform::StalledScanWatcher::Aborted => {
+                    Ok(WinRtRecovery::Failed(
+                        "the WinRT advertisement watcher entered Aborted after its Stopped callback was not delivered"
+                            .to_owned(),
+                    ))
+                }
+                btleplug::platform::StalledScanWatcher::StillStopping => {
+                    Err(DesktopError::scan_start_failed(
+                        "the WinRT advertisement watcher is still stopping after its callback was not delivered; retry when Windows reaches a terminal state",
+                    ))
+                }
+            }
+        })?;
+        if let Some(recovery) = recovered {
+            eprintln!(
+                "ubm-desktop: replaced a terminal WinRT advertisement watcher after its Stopped callback was not delivered"
+            );
+            if let WinRtRecovery::Failed(detail) = recovery {
+                self.notifications
+                    .send(RadioEvent::ScanTerminated {
+                        aborted: true,
+                        detail,
+                    })
+                    .await
+                    .map_err(|_| {
+                        DesktopError::scan_stop_failed(
+                            "the WinRT terminal scan-abort event receiver closed",
+                        )
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_ordered_origin(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        id: u64,
+        m: ubm_core::ordered_notifications::Membership,
+        prepared: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        if self
+            .validate_ordered_source_claim(lease, id, m, prepared)
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        let valid_lease = owner
+            .lease
+            .lock()
+            .expect("ordered source lease")
+            .as_ref()
+            .is_some_and(|a| {
+                a.peer_id == lease.peer_id
+                    && a.connection_generation == lease.connection_generation
+                    && a.source_generation == lease.source_generation
+                    && a.native_group == lease.native_group
+            });
+        let valid_origin = owner
+            .origins
+            .lock()
+            .expect("ordered physical origins")
+            .get(&(id, m))
+            == Some(prepared);
+        if valid_lease && valid_origin {
+            Ok(())
+        } else {
+            Err(DesktopError::subscribe_failed("stale physical origin"))
+        }
+    }
+    fn validate_ordered_source_claim(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        member_id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        activation: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        validate_source_claim_binding(&owner, lease, member_id, membership, activation)
+    }
     /// Open the default btleplug adapter. When `adapter_id` is `Some`, it
     /// must equal `Adapter::adapter_info()` exactly; otherwise
     /// `adapter.unavailable` fails the open without touching another
@@ -1196,6 +1441,29 @@ impl BtleplugRadio {
         bus: crate::boundary::BluezBus,
         connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
     ) -> Result<Self, DesktopError> {
+        Self::open_on_with_policy_and_failure_evidence_store(
+            spawn,
+            adapter_id,
+            bus,
+            connection_policy,
+            None,
+        )
+        .await
+    }
+
+    /// Open a production radio with an explicitly host-owned retained native
+    /// failure-evidence store. The store is portable across every btleplug
+    /// desktop backend; a storage open or write failure remains an explicit
+    /// source failure and is never replaced with volatile retention.
+    pub async fn open_on_with_policy_and_failure_evidence_store(
+        spawn: tokio::runtime::Handle,
+        adapter_id: Option<String>,
+        bus: crate::boundary::BluezBus,
+        connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
+        failure_evidence_store: Option<
+            Arc<dyn btleplug::ubm_peer_notification_ingress::FailureEvidenceStore>,
+        >,
+    ) -> Result<Self, DesktopError> {
         if let Some(policy) = &connection_policy {
             policy.validate()?;
         }
@@ -1208,7 +1476,38 @@ impl BtleplugRadio {
             .with_detail("a BlueZ connection policy applies to Linux only"));
         }
         crate::boundary::bluez_bus_supported(bus)?;
-        let manager = open_manager(bus).await.map_err(|error| {
+        #[cfg(target_os = "windows")]
+        let manager = match failure_evidence_store {
+            Some(store) => Manager::new_with_failure_evidence_store(store).await,
+            None => Manager::new().await,
+        }
+        .map_err(|error| {
+            DesktopError::adapter_unavailable("adapter.open")
+                .with_detail(error.to_string())
+                .with_os(&error)
+        })?;
+        #[cfg(target_os = "linux")]
+        let manager = match failure_evidence_store {
+            Some(store) => {
+                Manager::new_with_failure_evidence_store(
+                    store,
+                    matches!(bus, crate::boundary::BluezBus::Session),
+                )
+                .await
+            }
+            None => open_manager(bus).await,
+        }
+        .map_err(|error| {
+            DesktopError::adapter_unavailable("adapter.open")
+                .with_detail(error.to_string())
+                .with_os(&error)
+        })?;
+        #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
+        let manager = match failure_evidence_store {
+            Some(store) => Manager::new_with_failure_evidence_store(store).await,
+            None => open_manager(bus).await,
+        }
+        .map_err(|error| {
             DesktopError::adapter_unavailable("adapter.open")
                 .with_detail(error.to_string())
                 .with_os(&error)
@@ -1284,20 +1583,38 @@ impl BtleplugRadio {
         #[cfg(target_os = "windows")]
         let winrt =
             crate::os::windows::WinRt::open(&adapter_label, adapter.clone(), os_events_tx.clone())?;
-        let expected_scan_stops = Arc::new(AtomicU64::new(0));
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+        let winrt_scan_stop_fence = Arc::new(WinRtScanStopFence::new());
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
         let scan_stopped_watch = watch_scan_stopped(
             &adapter,
             &spawn,
             os_events_tx.clone(),
-            Arc::clone(&expected_scan_stops),
+            Arc::clone(&winrt_scan_stop_fence),
         );
+        #[cfg(not(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+        let scan_stopped_watch = None;
         Ok(Self {
             adapter,
             adapter_label,
             spawn,
             events: Mutex::new(Some(events)),
+            scan_ingress_source_close: Mutex::new(ScanIngressSourceClose::default()),
             notifications,
             notification_rx: Mutex::new(notification_rx),
+            peer_groups: StdMutex::new(HashMap::new()),
+            next_peer_source: AtomicU64::new(1),
+            next_peer_group: AtomicU64::new(1),
+            peer_failure_recoveries: Arc::new(
+                crate::peer_notification_ingress::PeerFailureRecoveryStore::new(1),
+            ),
+            ordered_groups: Arc::new(StdMutex::new(
+                crate::ordered_notification_groups::OrderedGroupRegistry::default(),
+            )),
+            ordered_sources: StdMutex::new(HashMap::new()),
+            marker_requests: StdMutex::new(HashMap::new()),
+            next_peer_member: AtomicU64::new(1),
+            next_peer_barrier: AtomicU64::new(1),
             ingress_bytes: Arc::new(AtomicU64::new(0)),
             ingress_dropped: Arc::new(AtomicU64::new(0)),
             deferred: Arc::new(Mutex::new(VecDeque::new())),
@@ -1315,7 +1632,11 @@ impl BtleplugRadio {
             notification_targets: NotificationTargets::default(),
             close_failures: StdMutex::new(Vec::new()),
             closing_forwarders: Mutex::new(Vec::new()),
+            closing_group_failures: StdMutex::new(Vec::new()),
             gatt: Arc::new(GattCache::new()),
+            reclaim_bindings: StdMutex::new(HashMap::new()),
+            #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+            reclaim_state: StdMutex::new(reclaim::ReclaimState::default()),
             _os_events_tx: os_events_tx,
             os_events: Mutex::new(os_events),
             #[cfg(target_os = "windows")]
@@ -1343,7 +1664,8 @@ impl BtleplugRadio {
             readiness_watchers: StdMutex::new(HashMap::new()),
             parameter_watchers: StdMutex::new(HashMap::new()),
             scan_stopped_watch,
-            expected_scan_stops,
+            #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+            winrt_scan_stop_fence,
         })
     }
 
@@ -1538,15 +1860,36 @@ impl BtleplugRadio {
                 },
             )
             .await?;
-        let graph = service_snapshots(&peripheral.services(), &peripheral.service_restrictions())?;
-        let identity = match self.gatt_snapshot_identity(peer_id) {
-            Ok(identity) => identity,
-            Err(error) => {
-                self.gatt.evict(peer_id);
-                return Err(error);
-            }
-        };
         #[cfg(target_os = "linux")]
+        let (graph, identity) = {
+            let graph =
+                service_snapshots(&peripheral.services(), &peripheral.service_restrictions())?;
+            let identity = match self.gatt_snapshot_identity(peer_id) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    self.gatt.evict(peer_id);
+                    return Err(error);
+                }
+            };
+            (graph, identity)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (graph, identity) = {
+            let (services, restrictions, (owner, attachment, revision)) =
+                peripheral.gatt_graph_snapshot().map_err(map_radio(
+                    "discovery.complete",
+                    BleErrorCode::GattDiscoveryRequired,
+                    BleErrorDomain::Gatt,
+                ))?;
+            (
+                service_snapshots(&services, &restrictions)?,
+                Some(GattSnapshotIdentity {
+                    owner,
+                    attachment,
+                    revision,
+                }),
+            )
+        };
         if identity.is_none() {
             self.gatt.evict(peer_id);
             return Err(DesktopError::new(
@@ -1850,32 +2193,418 @@ impl<P: GattObservationSource> GattObservationState<P> {
     }
 }
 
+fn desktop_source_generation(
+    source: &ubm_core::ordered_notifications::SourceGeneration,
+) -> Result<u64, DesktopError> {
+    match source {
+        ubm_core::ordered_notifications::SourceGeneration::Counter(generation) => Ok(*generation),
+        ubm_core::ordered_notifications::SourceGeneration::Opaque(_) => Err(DesktopError::new(
+            BleErrorCode::LifecycleInvalidState,
+            BleErrorDomain::Gatt,
+            "gatt.ordered.source",
+        )
+        .with_detail("source generation does not belong to the desktop radio")),
+    }
+}
+
 impl BtleplugRadio {
-    /// Release the original immutable native target, without a new graph lookup.
-    async fn release_scope(&self, scope: &InstanceKey) -> Result<(), ScopeRelease> {
-        let _gate = self.gatt.lock_peer(&scope.0).await;
-        let target = self.notification_targets.get(scope).ok_or_else(|| {
-            ScopeRelease::Failed("original native notification cleanup target is absent".to_owned())
-        })?;
-        release_original_notification_target(&target)
-            .await
-            .map_err(|error| ScopeRelease::Failed(error.to_string()))?;
-        self.notification_targets.remove_if(scope, &target);
+    fn ordered_source_owner(
+        &self,
+        peer_id: &str,
+        collection_id: u64,
+    ) -> Result<Arc<crate::peer_notification_ingress::OrderedSourceOwner>, DesktopError> {
+        let owner = self
+            .ordered_sources
+            .lock()
+            .expect("ordered source owners")
+            .get(&collection_id)
+            .cloned()
+            .ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.ordered.source",
+                )
+                .with_detail("ordered source owner is absent")
+            })?;
+        if owner.peer_id != peer_id || owner.collection_id != collection_id {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.source",
+            )
+            .with_detail("ordered source owner identity is stale"));
+        }
+        Ok(owner)
+    }
+
+    fn peer_group_state(
+        &self,
+        peer_id: &str,
+    ) -> Arc<Mutex<crate::peer_notification_ingress::PeerGroupState>> {
+        self.peer_groups
+            .lock()
+            .expect("peer notification groups")
+            .entry(peer_id.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    fn next_notification_id(counter: &AtomicU64) -> Result<u64, DesktopError> {
+        counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.notification.source",
+                )
+                .with_detail("peer notification identity exhausted")
+            })
+    }
+
+    /// Obtain one source FIFO per peer; an open failure leaves its successfully
+    /// started native generation retained for retry.
+    async fn peer_group(
+        &self,
+        peer_id: &str,
+        peripheral: &Peripheral,
+    ) -> Result<Arc<Mutex<crate::peer_notification_ingress::Group>>, DesktopError> {
+        let owner = self.peer_group_state(peer_id);
+        let mut state = owner.lock().await;
+        loop {
+            let observed = peripheral
+                .current_notification_source_generation()
+                .map_err(|error| {
+                    DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Gatt,
+                        "gatt.notification.source",
+                    )
+                    .with_detail(format!("cannot observe peer source generation: {error:?}"))
+                })?;
+            let owned = state.source.current();
+            let changed = owned.is_some() && owned != observed;
+            if let Some(group) = state.group.clone() {
+                let mut group_guard = group.lock().await;
+                let finished = group_guard
+                    .task
+                    .as_ref()
+                    .is_none_or(|task| task.is_finished());
+                if !changed && !finished {
+                    return Ok(group.clone());
+                }
+                // A source change is native evidence that this pump must end.
+                // Keep its handle in the group across cancellation of this wait.
+                let pump_outcome = group_guard.settle().await;
+                let detach = group_guard
+                    .peripheral
+                    .detach_notification_source_group(&group_guard.handle);
+                if let Err(error) = detach {
+                    let retired = changed
+                        && matches!(
+                            error,
+                            btleplug::platform::SourceGroupError::StaleGeneration
+                                | btleplug::platform::SourceGroupError::UnknownGroup
+                        );
+                    if !retired {
+                        return Err(DesktopError::new(
+                            BleErrorCode::PlatformFailure,
+                            BleErrorDomain::Cleanup,
+                            "gatt.notification.source",
+                        )
+                        .with_detail(format!("cannot detach peer notification group: {error:?}")));
+                    }
+                }
+                drop(group_guard);
+                state.group = None;
+                // Surface the old pump failure once, after its group was
+                // actually detached, so a later call can establish a new one.
+                if let Some(error) = pump_outcome? {
+                    return Err(error);
+                }
+                // Source state may have changed while the pump drained.
+                continue;
+            }
+            if changed {
+                state
+                    .source
+                    .retire(owned.expect("checked source generation"));
+                continue;
+            }
+            if state.source.current().is_none()
+                && let Some(generation) = observed
+            {
+                state.source.adopt_observed(generation);
+            }
+            break;
+        }
+        let generation = match state.source.current() {
+            Some(generation) => generation,
+            None => Self::next_notification_id(&self.next_peer_source)?,
+        };
+        let group = crate::peer_notification_ingress::open_group(
+            &mut state.source,
+            peripheral.clone(),
+            peer_id.to_owned(),
+            generation,
+            Self::next_notification_id(&self.next_peer_group)?,
+            true,
+            None,
+            Arc::clone(&self.ordered_groups),
+            self.notifications.clone(),
+            Arc::clone(&self.ingress_bytes),
+            Arc::clone(&self.ingress_dropped),
+            Arc::clone(&self.peer_failure_recoveries),
+        )
+        .await?;
+        let group = Arc::new(Mutex::new(group));
+        state.group = Some(group.clone());
+        Ok(group)
+    }
+
+    async fn current_peer_group(
+        &self,
+        peer_id: &str,
+    ) -> Option<Arc<Mutex<crate::peer_notification_ingress::Group>>> {
+        let owner = self
+            .peer_groups
+            .lock()
+            .expect("peer notification groups")
+            .get(peer_id)
+            .cloned()?;
+        let state = owner.lock().await;
+        state.group.clone()
+    }
+
+    async fn retire_peer_membership(
+        &self,
+        group: Arc<Mutex<crate::peer_notification_ingress::Group>>,
+        scope: &InstanceKey,
+        epoch: u64,
+    ) -> Result<(), DesktopError> {
+        let waiter = {
+            let mut guard = group.lock().await;
+            let finished = guard.task.as_ref().is_none_or(|task| task.is_finished());
+            if finished {
+                guard.settle().await?;
+                guard.finalize_retire(scope, epoch);
+                return Ok(());
+            }
+            match guard.retire(scope, epoch) {
+                Ok(waiter) => waiter,
+                Err(error) => {
+                    if guard.task.as_ref().is_some_and(|task| task.is_finished()) {
+                        guard.settle().await?;
+                        guard.finalize_retire(scope, epoch);
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
+            }
+        };
+        if let Some(waiter) = waiter {
+            waiter.await.map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "gatt.notification.source",
+                )
+                .with_detail("peer notification membership fence was not acknowledged")
+            })?;
+            group.lock().await.finalize_retire(scope, epoch);
+        }
         Ok(())
     }
 
-    /// No replacement graph/enable may reuse a native path while an older
-    /// sender-owned notify client at that path still needs retirement.
+    async fn close_peer_group(&self, peer_id: &str) -> Result<(), DesktopError> {
+        let state = self
+            .peer_groups
+            .lock()
+            .expect("peer notification groups")
+            .get(peer_id)
+            .cloned();
+        let Some(state) = state else {
+            return Ok(());
+        };
+        let mut state = state.lock().await;
+        let Some(group) = state.group.clone() else {
+            return Ok(());
+        };
+        let mut group = group.lock().await;
+        if !group.routes.is_empty() {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.notification.source",
+            )
+            .with_detail("peer notification memberships remain owned"));
+        }
+        if !group.detached && group.task.as_ref().is_some_and(|task| task.is_finished()) {
+            group.settle().await?;
+            let observed = group
+                .peripheral
+                .current_notification_source_generation()
+                .map_err(|error| {
+                    DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Cleanup,
+                        "gatt.notification.source",
+                    )
+                    .with_detail(format!("cannot observe peer source generation: {error:?}"))
+                })?;
+            if state.source.current() == observed {
+                group
+                    .peripheral
+                    .detach_notification_source_group(&group.handle)
+                    .map_err(|error| {
+                        DesktopError::new(
+                            BleErrorCode::PlatformFailure,
+                            BleErrorDomain::Cleanup,
+                            "gatt.notification.source",
+                        )
+                        .with_detail(format!(
+                            "cannot detach terminated notification group: {error:?}"
+                        ))
+                    })?;
+            }
+            group.detached = true;
+        }
+        if !group.detached {
+            let observed = group
+                .peripheral
+                .current_notification_source_generation()
+                .map_err(|error| {
+                    DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Cleanup,
+                        "gatt.notification.source",
+                    )
+                    .with_detail(format!("cannot observe peer source generation: {error:?}"))
+                })?;
+            let source_ended =
+                state.source.current().is_some() && state.source.current() != observed;
+            if !source_ended {
+                let id = Self::next_notification_id(&self.next_peer_barrier)?;
+                let received = group.barrier(id)?;
+                received.await.map_err(|_| {
+                    DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Cleanup,
+                        "gatt.notification.source",
+                    )
+                    .with_detail("peer notification close fence was not acknowledged")
+                })?;
+                group
+                    .peripheral
+                    .detach_notification_source_group_after_barrier(&group.handle, id)
+                    .map_err(|error| {
+                        DesktopError::new(
+                            BleErrorCode::PlatformFailure,
+                            BleErrorDomain::Cleanup,
+                            "gatt.notification.source",
+                        )
+                        .with_detail(format!("cannot detach peer notification group: {error:?}"))
+                    })?;
+                group.detached = true;
+            }
+        }
+        group.settle().await?;
+        drop(group);
+        state.group = None;
+        Ok(())
+    }
+
+    /// Retain the exact owner until both native stop and its ordered source
+    /// fence have completed. A failed fence remains retryable on the same epoch.
+    async fn release_epoch(&self, scope: &InstanceKey, epoch: u64) -> Result<(), DesktopError> {
+        let key = epoch_forwarder_key(scope, epoch);
+        let Some(target) = self.notification_targets.get_epoch(scope, epoch) else {
+            return Ok(());
+        };
+        let stopped = self.stop_notification_target(scope, epoch, &target).await;
+        if stopped.is_err() {
+            apply_unsubscribe_outcome(
+                &mut self.forwarders.lock().expect("forwarder table"),
+                &mut self.cleanup_debt.lock().expect("cleanup debt"),
+                &key,
+                scope,
+                false,
+            );
+        }
+        stopped?;
+        apply_unsubscribe_outcome(
+            &mut self.forwarders.lock().expect("forwarder table"),
+            &mut self.cleanup_debt.lock().expect("cleanup debt"),
+            &key,
+            scope,
+            true,
+        );
+        self.notification_targets
+            .remove_if_epoch(scope, epoch, &target);
+        Ok(())
+    }
+
+    async fn stop_notification_target(
+        &self,
+        scope: &InstanceKey,
+        epoch: u64,
+        target: &Arc<NotificationTarget<DesktopNotificationTransport>>,
+    ) -> Result<(), DesktopError> {
+        release_original_notification_target(target).await?;
+        let group = target
+            .group
+            .lock()
+            .expect("notification target group")
+            .clone();
+        if let Some(group) = group {
+            self.retire_peer_membership(group, scope, epoch).await?;
+        }
+        Ok(())
+    }
+
+    async fn release_scope(&self, scope: &InstanceKey, epoch: u64) -> Result<(), ScopeRelease> {
+        let _gate = self.gatt.lock_peer(&scope.0).await;
+        self.release_epoch(scope, epoch)
+            .await
+            .map_err(|error| ScopeRelease::Failed(error.to_string()))
+    }
+
+    /// Retire stale routing and retain exact native claims for cleanup.
     async fn retire_notifications_for_discovery(&self, peer_id: &str) -> Result<(), DesktopError> {
-        self.drain_peer_forwarders(peer_id, PeerRetirement::DatabaseChanged)
+        #[cfg(target_os = "windows")]
+        {
+            // Keep forwarders and exact claims owned while stopping native
+            // callbacks. A cancelled or failed stop remains retryable.
+            release_peer_target_claims(
+                &self.notification_targets,
+                peer_id,
+                |scope, epoch| async move {
+                    if let Some(target) = self.notification_targets.get_epoch(&scope, epoch) {
+                        self.stop_notification_target(&scope, epoch, &target)
+                            .await?;
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
+            self.drain_peer_forwarders(peer_id, PeerRetirement::DatabaseChanged)
+                .await;
+            return release_peer_target_claims(
+                &self.notification_targets,
+                peer_id,
+                |scope, epoch| async move { self.release_epoch(&scope, epoch).await },
+            )
             .await;
-        retire_notification_debt_for_peer(
-            &self.notification_targets,
-            &self.forwarders,
-            &self.cleanup_debt,
-            peer_id,
-        )
-        .await
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.drain_peer_forwarders(peer_id, PeerRetirement::DatabaseChanged)
+                .await;
+            Ok(())
+        }
     }
 
     /// A known peripheral's merged OS state (labelled
@@ -2002,7 +2731,9 @@ impl BtleplugRadio {
     async fn recv_notification(&self) -> Option<RadioEvent> {
         let mut queue = self.notification_rx.lock().await;
         let event = queue.recv().await?;
-        if let RadioEvent::Notification { ref value, .. } = event {
+        if let RadioEvent::Notification { ref value, .. }
+        | RadioEvent::NotificationWithProvenance { ref value, .. } = event
+        {
             ingress_release(&self.ingress_bytes, value.len() as u64);
         }
         Some(event)
@@ -2084,7 +2815,9 @@ impl BtleplugRadio {
         }
         let mut queue = self.notification_rx.lock().await;
         if let Ok(event) = queue.try_recv() {
-            if let RadioEvent::Notification { ref value, .. } = event {
+            if let RadioEvent::Notification { ref value, .. }
+            | RadioEvent::NotificationWithProvenance { ref value, .. } = event
+            {
                 ingress_release(&self.ingress_bytes, value.len() as u64);
             }
             return Some(event);
@@ -2336,6 +3069,13 @@ pub fn forwarder_key(
     )
 }
 
+fn epoch_forwarder_key(scope: &InstanceKey, epoch: u64) -> String {
+    format!(
+        "{}:{epoch}",
+        forwarder_key(&scope.0, &scope.1, scope.2, &scope.3, scope.4)
+    )
+}
+
 /// Identity one notification forwarder routes by (F09): the owning
 /// service and the characteristic, each as UUID plus the vendored
 /// attribute instance ([`ValueNotification`] carries both, UBM_PATCHES.md
@@ -2488,6 +3228,12 @@ pub trait NotificationTransport: Send + Sync {
         &self,
     ) -> impl Future<Output = Result<NotificationStream, btleplug::Error>> + Send + '_;
 
+    /// Exact owners determine cleanup themselves and allow retrying uncertainty.
+    /// Path-based BlueZ cleanup has a narrower, platform-specific receipt.
+    fn owns_exact_cleanup(&self) -> bool {
+        false
+    }
+
     /// Disable the native CCCD for `characteristic`.
     fn transport_unsubscribe<'a>(
         &'a self,
@@ -2495,9 +3241,74 @@ pub trait NotificationTransport: Send + Sync {
     ) -> impl Future<Output = Result<(), btleplug::Error>> + Send + 'a;
 }
 
+// Enable and cleanup use the same retained native characteristic object.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[derive(Clone)]
+struct DesktopNotificationTransport {
+    peripheral: Peripheral,
+    owner: btleplug::platform::NotificationActivationOwner,
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+type DesktopNotificationTransport = Peripheral;
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+impl NotificationTransport for DesktopNotificationTransport {
+    async fn transport_subscribe(
+        &self,
+        _characteristic: &Characteristic,
+        selected: Option<DeliveryMode>,
+    ) -> Result<(), btleplug::Error> {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = selected;
+            self.owner.subscribe().await
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            self.owner
+                .subscribe_selecting(selected.map(|mode| mode == DeliveryMode::Notification))
+                .await
+        }
+    }
+
+    async fn transport_notifications(&self) -> Result<NotificationStream, btleplug::Error> {
+        self.peripheral.notifications().await
+    }
+
+    fn owns_exact_cleanup(&self) -> bool {
+        true
+    }
+
+    async fn transport_unsubscribe(
+        &self,
+        _characteristic: &Characteristic,
+    ) -> Result<(), btleplug::Error> {
+        self.owner.unsubscribe().await
+    }
+}
+
+#[derive(Clone)]
+struct PreparedPlan {
+    activation: u64,
+    source_generation: u64,
+    handle: crate::boundary::PreparedNotificationActivation,
+    selected: Option<DeliveryMode>,
+    observed: ObservedDelivery,
+}
+
 struct NotificationTarget<T> {
     transport: T,
     characteristic: Characteristic,
+    prepared: StdMutex<Option<PreparedPlan>>,
+    group: StdMutex<Option<Arc<Mutex<crate::peer_notification_ingress::Group>>>>,
+    enable: StdMutex<
+        Option<
+            futures_util::future::Shared<
+                futures_util::future::BoxFuture<'static, NativeNotificationEnable>,
+            >,
+        >,
+    >,
     release: StdMutex<
         Option<
             futures_util::future::Shared<
@@ -2505,6 +3316,12 @@ struct NotificationTarget<T> {
             >,
         >,
     >,
+}
+
+#[derive(Clone)]
+struct NativeNotificationEnable {
+    outcome: Result<ObservedDelivery, DesktopError>,
+    no_effect: bool,
 }
 
 #[derive(Clone)]
@@ -2532,13 +3349,34 @@ async fn release_original_notification_target<T: NotificationTransport + Clone +
             .get_or_insert_with(|| {
                 let transport = target.transport.clone();
                 let characteristic = target.characteristic.clone();
+                let exact_cleanup = transport.owns_exact_cleanup();
                 async move {
-                    let result = transport.transport_unsubscribe(&characteristic).await;
+                    // The native effect must outlive a cancelled cleanup waiter.
+                    // The retained shared future observes this task on the next retry.
+                    let task = tokio::spawn(async move {
+                        transport.transport_unsubscribe(&characteristic).await
+                    });
+                    let result = match task.await {
+                        Ok(result) => result,
+                        Err(error) => {
+                            return NativeNotificationRelease {
+                                outcome: Err(DesktopError::subscribe_failed(format!(
+                                    "notification cleanup task failed: {error}"
+                                ))),
+                                indeterminate: true,
+                            };
+                        }
+                    };
                     let indeterminate = result
                         .as_ref()
-                        .is_err_and(notification_error_is_indeterminate);
+                        .is_err_and(notification_error_is_indeterminate)
+                        && !exact_cleanup;
                     let outcome = match result {
-                        Err(error) if notification_error_confirms_retired(&error) => Ok(()),
+                        Err(error)
+                            if !exact_cleanup && notification_error_confirms_retired(&error) =>
+                        {
+                            Ok(())
+                        }
                         other => other.map_err(|error| {
                             DesktopError::subscribe_failed(error.to_string()).with_os(&error)
                         }),
@@ -2556,10 +3394,97 @@ async fn release_original_notification_target<T: NotificationTransport + Clone +
     release.await.outcome
 }
 
-/// A sidecar of exact native targets, not a second obligation ledger. Live
-/// forwarders or cleanup_debt own each entry until confirmed retirement.
+fn settle_notification_target<T>(
+    target: &NotificationTarget<T>,
+) -> Result<crate::boundary::OrderedNotificationSettlement, DesktopError> {
+    use crate::boundary::OrderedNotificationSettlement::{Enabled, Pending, Released};
+    let operation = target.enable.lock().expect("notification enable").clone();
+    match operation.and_then(|operation| operation.now_or_never()) {
+        None if target.enable.lock().expect("notification enable").is_some() => Ok(Pending),
+        None => Ok(Released),
+        Some(NativeNotificationEnable { outcome: Ok(_), .. }) => Ok(Enabled),
+        Some(NativeNotificationEnable {
+            outcome: Err(_),
+            no_effect: true,
+        }) => Ok(Released),
+        Some(NativeNotificationEnable {
+            outcome: Err(error),
+            no_effect: false,
+        }) => Err(error),
+    }
+}
+
+async fn dispatch_prepared_target<T: NotificationTransport + Clone + 'static>(
+    target: &Arc<NotificationTarget<T>>,
+    prepared: &crate::boundary::PreparedNotificationActivation,
+) -> Result<ObservedDelivery, DesktopError> {
+    let plan = target
+        .prepared
+        .lock()
+        .expect("prepared notification")
+        .clone()
+        .filter(|plan| plan.handle == *prepared)
+        .ok_or_else(|| {
+            DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.notification.enable",
+            )
+            .with_detail("prepared notification identity is stale")
+        })?;
+    let operation = {
+        let mut retained = target.enable.lock().expect("notification enable");
+        if retained.as_ref().is_some_and(|operation| {
+            operation
+                .peek()
+                .is_some_and(|result| result.outcome.is_err() && result.no_effect)
+        }) {
+            *retained = None;
+        }
+        retained
+            .get_or_insert_with(|| {
+                let transport = target.transport.clone();
+                let characteristic = target.characteristic.clone();
+                async move {
+                    let task = tokio::spawn(async move {
+                        transport
+                            .transport_subscribe(&characteristic, plan.selected)
+                            .await
+                    });
+                    match task.await {
+                        Ok(Ok(())) => NativeNotificationEnable {
+                            outcome: Ok(plan.observed),
+                            no_effect: false,
+                        },
+                        Ok(Err(error)) => NativeNotificationEnable {
+                            no_effect: notification_enable_confirms_no_effect(&error),
+                            outcome: Err(
+                                DesktopError::subscribe_failed(error.to_string()).with_os(&error)
+                            ),
+                        },
+                        Err(error) => NativeNotificationEnable {
+                            outcome: Err(DesktopError::subscribe_failed(format!(
+                                "notification enable task failed: {error}"
+                            ))),
+                            no_effect: false,
+                        },
+                    }
+                }
+                .boxed()
+                .shared()
+            })
+            .clone()
+    };
+    operation.await.outcome
+}
+
+/// Exact activation claims own their native targets until confirmed retirement.
+/// A path may hold several epochs while old cleanup and a replacement overlap.
+type NotificationTargetEpoch = (InstanceKey, u64);
+type NotificationTargetEntries<T> = HashMap<NotificationTargetEpoch, Arc<NotificationTarget<T>>>;
+
 struct NotificationTargets<T> {
-    entries: StdMutex<HashMap<InstanceKey, Arc<NotificationTarget<T>>>>,
+    entries: StdMutex<NotificationTargetEntries<T>>,
 }
 
 impl<T> Default for NotificationTargets<T> {
@@ -2571,14 +3496,15 @@ impl<T> Default for NotificationTargets<T> {
 }
 
 impl<T> NotificationTargets<T> {
-    fn retain(
+    fn retain_epoch(
         &self,
         scope: &InstanceKey,
+        epoch: u64,
         transport: T,
         characteristic: Characteristic,
     ) -> Result<Arc<NotificationTarget<T>>, DesktopError> {
         let mut entries = self.entries.lock().expect("notification targets");
-        if entries.contains_key(scope) {
+        if entries.contains_key(&(scope.clone(), epoch)) {
             return Err(DesktopError::new(
                 BleErrorCode::LifecycleInvalidState,
                 BleErrorDomain::Cleanup,
@@ -2589,37 +3515,118 @@ impl<T> NotificationTargets<T> {
         let target = Arc::new(NotificationTarget {
             transport,
             characteristic,
+            prepared: StdMutex::new(None),
+            group: StdMutex::new(None),
+            enable: StdMutex::new(None),
             release: StdMutex::new(None),
         });
-        entries.insert(scope.clone(), target.clone());
+        entries.insert((scope.clone(), epoch), target.clone());
         Ok(target)
     }
+    #[cfg(test)]
     fn get(&self, scope: &InstanceKey) -> Option<Arc<NotificationTarget<T>>> {
+        self.get_epoch(scope, 0)
+    }
+    fn get_epoch(&self, scope: &InstanceKey, epoch: u64) -> Option<Arc<NotificationTarget<T>>> {
         self.entries
             .lock()
             .expect("notification targets")
-            .get(scope)
+            .get(&(scope.clone(), epoch))
             .cloned()
     }
-    fn remove_if(&self, scope: &InstanceKey, target: &Arc<NotificationTarget<T>>) -> bool {
+    fn remove_if_epoch(
+        &self,
+        scope: &InstanceKey,
+        epoch: u64,
+        target: &Arc<NotificationTarget<T>>,
+    ) -> bool {
         let mut entries = self.entries.lock().expect("notification targets");
+        let key = (scope.clone(), epoch);
         if entries
-            .get(scope)
+            .get(&key)
             .is_some_and(|held| Arc::ptr_eq(held, target))
         {
-            entries.remove(scope);
+            entries.remove(&key);
             return true;
         }
         false
+    }
+    fn claims(&self) -> Vec<(InstanceKey, u64)> {
+        self.entries
+            .lock()
+            .expect("notification targets")
+            .keys()
+            .cloned()
+            .collect()
     }
     fn retire_peer(&self, peer_id: &str) {
         self.entries
             .lock()
             .expect("notification targets")
-            .retain(|scope, _| scope.0 != peer_id);
+            .retain(|(scope, _), _| scope.0 != peer_id);
     }
 }
 
+#[cfg(any(test, target_os = "windows"))]
+async fn release_peer_target_claims<T, F, Fut>(
+    targets: &NotificationTargets<T>,
+    peer_id: &str,
+    mut release: F,
+) -> Result<(), DesktopError>
+where
+    F: FnMut(InstanceKey, u64) -> Fut,
+    Fut: Future<Output = Result<(), DesktopError>>,
+{
+    let mut claims: Vec<_> = targets
+        .claims()
+        .into_iter()
+        .filter(|(scope, _)| scope.0 == peer_id)
+        .collect();
+    claims.sort();
+    for (scope, epoch) in claims {
+        release(scope, epoch).await?;
+    }
+    Ok(())
+}
+
+async fn close_target_claims<T, F, Fut>(
+    targets: &NotificationTargets<T>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    mut release: F,
+) -> Vec<RadioCloseFailure>
+where
+    F: FnMut(InstanceKey, u64) -> Fut,
+    Fut: Future<Output = Result<Result<(), ScopeRelease>, CloseScopeElapsed>>,
+{
+    let mut claims = targets.claims();
+    claims.sort();
+    let scopes_with_targets: HashSet<_> = claims.iter().map(|(scope, _)| scope.clone()).collect();
+    let mut failures = Vec::new();
+    for scope in debt.lock().expect("cleanup debt").iter() {
+        if !scopes_with_targets.contains(scope) {
+            failures.push(RadioCloseFailure::new(
+                scope.clone(),
+                "original native notification cleanup target is absent".to_owned(),
+            ));
+        }
+    }
+    for (scope, epoch) in claims {
+        if let Some(failure) = close_receipt(&scope, release(scope.clone(), epoch).await) {
+            failures.push(failure);
+        }
+    }
+    let remaining: HashSet<_> = targets
+        .claims()
+        .into_iter()
+        .map(|(scope, _)| scope)
+        .collect();
+    debt.lock()
+        .expect("cleanup debt")
+        .retain(|scope| !scopes_with_targets.contains(scope) || remaining.contains(scope));
+    failures
+}
+
+#[cfg(test)]
 async fn subscribe_and_stream_owned<T: NotificationTransport + Clone>(
     transport: &T,
     characteristic: &Characteristic,
@@ -2631,6 +3638,7 @@ async fn subscribe_and_stream_owned<T: NotificationTransport + Clone>(
         .await
 }
 
+#[cfg(test)]
 async fn subscribe_and_stream_owned_selecting<T: NotificationTransport + Clone>(
     transport: &T,
     characteristic: &Characteristic,
@@ -2639,13 +3647,28 @@ async fn subscribe_and_stream_owned_selecting<T: NotificationTransport + Clone>(
     scope: &InstanceKey,
     selected: Option<DeliveryMode>,
 ) -> Result<NotificationStream, EnableStreamError> {
+    subscribe_and_stream_owned_epoch(transport, characteristic, targets, debt, scope, 0, selected)
+        .await
+}
+
+#[cfg(test)]
+async fn subscribe_and_stream_owned_epoch<T: NotificationTransport + Clone>(
+    transport: &T,
+    characteristic: &Characteristic,
+    targets: &NotificationTargets<T>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    scope: &InstanceKey,
+    epoch: u64,
+    selected: Option<DeliveryMode>,
+) -> Result<NotificationStream, EnableStreamError> {
     let admitted = StdMutex::new(None);
     subscribe_and_stream_admitted(
         transport,
         characteristic,
         selected,
         || {
-            let target = targets.retain(scope, transport.clone(), characteristic.clone())?;
+            let target =
+                targets.retain_epoch(scope, epoch, transport.clone(), characteristic.clone())?;
             *admitted.lock().expect("admitted notification target") = Some(target);
             debt.lock().expect("cleanup debt").insert(scope.clone());
             Ok(())
@@ -2659,7 +3682,7 @@ async fn subscribe_and_stream_owned_selecting<T: NotificationTransport + Clone>(
                     .lock()
                     .expect("admitted notification target")
                     .as_ref()
-                && targets.remove_if(scope, target)
+                && targets.remove_if_epoch(scope, epoch, target)
             {
                 debt.lock().expect("cleanup debt").remove(scope);
             }
@@ -2668,6 +3691,7 @@ async fn subscribe_and_stream_owned_selecting<T: NotificationTransport + Clone>(
     .await
 }
 
+#[cfg(test)]
 async fn release_notification_target<T: NotificationTransport + Clone + 'static>(
     targets: &NotificationTargets<T>,
     forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
@@ -2675,8 +3699,22 @@ async fn release_notification_target<T: NotificationTransport + Clone + 'static>
     key: &str,
     scope: &InstanceKey,
 ) -> Result<(), DesktopError> {
-    let Some(target) = targets.get(scope) else {
-        if debt.lock().expect("cleanup debt").contains(scope)
+    release_notification_target_epoch(targets, forwarders, debt, key, scope, 0).await
+}
+
+#[cfg(test)]
+async fn release_notification_target_epoch<T: NotificationTransport + Clone + 'static>(
+    targets: &NotificationTargets<T>,
+    forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    key: &str,
+    scope: &InstanceKey,
+    epoch: u64,
+) -> Result<(), DesktopError> {
+    let Some(target) = targets.get_epoch(scope, epoch) else {
+        if (epoch == 0
+            && debt.lock().expect("cleanup debt").contains(scope)
+            && !targets.claims().iter().any(|(other, _)| other == scope))
             || forwarders
                 .lock()
                 .expect("forwarder table")
@@ -2699,33 +3737,27 @@ async fn release_notification_target<T: NotificationTransport + Clone + 'static>
         result.is_ok(),
     );
     result?;
-    targets.remove_if(scope, &target);
+    targets.remove_if_epoch(scope, epoch, &target);
     Ok(())
 }
 
+#[cfg(test)]
 async fn retire_notification_debt_for_peer<T: NotificationTransport + Clone + 'static>(
     targets: &NotificationTargets<T>,
     forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
     debt: &StdMutex<HashSet<InstanceKey>>,
     peer: &str,
 ) -> Result<(), DesktopError> {
-    let scopes: Vec<_> = debt
-        .lock()
-        .expect("cleanup debt")
-        .iter()
-        .filter(|scope| scope.0 == peer)
-        .cloned()
+    let claims: Vec<_> = targets
+        .claims()
+        .into_iter()
+        .filter(|(scope, _)| scope.0 == peer)
         .collect();
-    for scope in scopes {
+    for (scope, epoch) in claims {
+        let key = epoch_forwarder_key(&scope, epoch);
         tokio::time::timeout(
             CLOSE_SCOPE_BOUND,
-            release_notification_target(
-                targets,
-                forwarders,
-                debt,
-                &forwarder_key(&scope.0, &scope.1, scope.2, &scope.3, scope.4),
-                &scope,
-            ),
+            release_notification_target_epoch(targets, forwarders, debt, &key, &scope, epoch),
         )
         .await
         .map_err(|_| {
@@ -3112,7 +4144,13 @@ fn forward_one(
         }
     }
     let global_fault = note.source_failure.as_ref().is_some_and(|error| {
-        error.domain == "ubm-native" && error.code == "notification-fault-quota"
+        error.domain == "ubm-native"
+            && matches!(
+                error.code.as_str(),
+                "notification-fault-quota"
+                    | "notification-broadcast-overflow"
+                    | "notification-overflow-evidence-omitted"
+            )
     });
     if !global_fault && !route.matches(&note) {
         return Forwarded::Open;
@@ -3650,6 +4688,1702 @@ fn sorted_service_data(sections: &HashMap<uuid::Uuid, Vec<u8>>) -> Vec<ServiceDa
 }
 
 impl RadioBoundary for BtleplugRadio {
+    fn ordered_source_requires_snapshot_identity(&self) -> bool {
+        true
+    }
+
+    async fn flush_peer_notification_source(&self, peer_id: &str) -> Result<(), DesktopError> {
+        let Some(group) = self.current_peer_group(peer_id).await else {
+            return Ok(());
+        };
+        let id = Self::next_notification_id(&self.next_peer_barrier)?;
+        let received = group.lock().await.barrier(id)?;
+        received.await.map_err(|_| {
+            DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Cleanup,
+                "gatt.notification.source",
+            )
+            .with_detail("peer notification barrier was not acknowledged")
+        })
+    }
+
+    fn read_peer_notification_failure_recovery(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        offset: u64,
+    ) -> impl std::future::Future<
+        Output = Result<ubm_core::oversized_evidence::PeerSourceFailureChunk, DesktopError>,
+    > + Send
+    + '_ {
+        let result = self.peer_failure_recoveries.read(descriptor, offset);
+        async move { result }
+    }
+
+    fn ack_peer_notification_failure_recovery(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> impl std::future::Future<Output = Result<(), DesktopError>> + Send + '_ {
+        let result = self.peer_failure_recoveries.acknowledge(descriptor);
+        async move { result }
+    }
+
+    fn begin_peer_notification_failure_recovery_ack(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        source_ack_id: &str,
+    ) -> impl std::future::Future<Output = Result<String, DesktopError>> + Send + '_ {
+        let result = self
+            .peer_failure_recoveries
+            .begin_ack_with_receipt(descriptor, source_ack_id);
+        async move { result }
+    }
+
+    fn prepare_peer_notification_failure_recovery_ack(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    ) -> impl std::future::Future<Output = Result<String, DesktopError>> + Send + '_ {
+        let result = self.peer_failure_recoveries.prepare_ack(descriptor);
+        async move { result }
+    }
+
+    fn retire_peer_notification_failure_recovery_ack(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        source_ack_id: &str,
+    ) -> impl std::future::Future<Output = Result<(), DesktopError>> + Send + '_ {
+        let result = self
+            .peer_failure_recoveries
+            .retire_ack(descriptor, source_ack_id);
+        async move { result }
+    }
+
+    async fn prepare_ordered_source(
+        &self,
+        request: crate::boundary::OrderedSourceRequest,
+    ) -> Result<crate::boundary::OrderedSourceLease, crate::boundary::OrderedSourceFailure> {
+        use crate::boundary::{OrderedSourceCleanup, OrderedSourceFailure, OrderedSourceLease};
+        let failure = |error| OrderedSourceFailure {
+            error,
+            cleanup: None,
+        };
+        let _gate = self.gatt.lock_peer(&request.peer_id).await;
+        let current_snapshot = self
+            .gatt_snapshot_identity(&request.peer_id)
+            .map_err(failure)?;
+        if current_snapshot != request.snapshot_identity {
+            return Err(failure(
+                DesktopError::new(
+                    BleErrorCode::GattDiscoveryRequired,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.source",
+                )
+                .with_detail("GATT snapshot identity changed"),
+            ));
+        }
+        if request.members.is_empty()
+            || request
+                .members
+                .iter()
+                .any(|member| member.activation.scope.0 != request.peer_id)
+        {
+            return Err(failure(
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.source",
+                )
+                .with_detail("ordered source members must belong to one peer"),
+            ));
+        }
+        let mut selected = Vec::new();
+        let mut seen = HashSet::new();
+        for member in &request.members {
+            let handle = &member.activation;
+            if !seen.insert((handle.scope.clone(), handle.activation_epoch)) {
+                return Err(failure(
+                    DesktopError::new(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.source",
+                    )
+                    .with_detail("ordered collection repeats one activation"),
+                ));
+            }
+            let target = self
+                .notification_targets
+                .get_epoch(&handle.scope, handle.activation_epoch)
+                .ok_or_else(|| {
+                    failure(
+                        DesktopError::new(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "gatt.ordered.source",
+                        )
+                        .with_detail("prepared notification owner is absent"),
+                    )
+                })?;
+            let plan = target
+                .prepared
+                .lock()
+                .expect("prepared notification")
+                .clone()
+                .filter(|plan| plan.handle == *handle)
+                .ok_or_else(|| {
+                    failure(
+                        DesktopError::new(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "gatt.ordered.source",
+                        )
+                        .with_detail("prepared notification identity is stale"),
+                    )
+                })?;
+            if selected.first().is_some_and(
+                |(_, _, first): &(crate::boundary::OrderedSourceMember, _, PreparedPlan)| {
+                    first.source_generation != plan.source_generation
+                },
+            ) {
+                return Err(failure(
+                    DesktopError::new(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.source",
+                    )
+                    .with_detail("ordered members belong to different source generations"),
+                ));
+            }
+            selected.push((member.clone(), target, plan));
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            let owner = Arc::new(crate::peer_notification_ingress::OrderedSourceOwner {
+                peer_id: request.peer_id.clone(),
+                collection_id: request.collection_id,
+                group: StdMutex::new(None),
+                lease: StdMutex::new(None),
+                claims: StdMutex::new(HashMap::new()),
+                renewals: StdMutex::new(HashMap::new()),
+                origins: StdMutex::new(HashMap::new()),
+            });
+            {
+                use std::collections::hash_map::Entry;
+                match self
+                    .ordered_sources
+                    .lock()
+                    .expect("ordered source owners")
+                    .entry(request.collection_id)
+                {
+                    Entry::Vacant(slot) => {
+                        slot.insert(owner.clone());
+                    }
+                    Entry::Occupied(_) => {
+                        return Err(failure(
+                            DesktopError::new(
+                                BleErrorCode::LifecycleInvalidState,
+                                BleErrorDomain::Gatt,
+                                "gatt.ordered.source",
+                            )
+                            .with_detail("ordered collection identity is already owned"),
+                        ));
+                    }
+                }
+            }
+            let cleanup = || {
+                Some(OrderedSourceCleanup::Indeterminate {
+                    peer_id: request.peer_id.clone(),
+                    collection_id: request.collection_id,
+                })
+            };
+            let peripheral = selected[0].1.transport.peripheral.clone();
+            let generation = selected[0].2.source_generation;
+            let state = self.peer_group_state(&request.peer_id);
+            let mut state = state.lock().await;
+            let native_group =
+                Self::next_notification_id(&self.next_peer_group).map_err(failure)?;
+            let group = crate::peer_notification_ingress::open_group(
+                &mut state.source,
+                peripheral,
+                request.peer_id.clone(),
+                generation,
+                native_group,
+                false,
+                request.snapshot_identity.clone(),
+                Arc::clone(&self.ordered_groups),
+                self.notifications.clone(),
+                Arc::clone(&self.ingress_bytes),
+                Arc::clone(&self.ingress_dropped),
+                Arc::clone(&self.peer_failure_recoveries),
+            )
+            .await
+            .map_err(|error| OrderedSourceFailure {
+                error,
+                cleanup: cleanup(),
+            })?;
+            drop(state);
+            let group = Arc::new(Mutex::new(group));
+            *owner.group.lock().expect("ordered source group") = Some(group.clone());
+            let mut member_ids = Vec::with_capacity(selected.len());
+            for _ in &selected {
+                member_ids.push(Self::next_notification_id(&self.next_peer_member).map_err(
+                    |error| OrderedSourceFailure {
+                        error,
+                        cleanup: cleanup(),
+                    },
+                )?);
+            }
+            let source = crate::ordered_notification_groups::SourceKey {
+                peer_id: request.peer_id.clone(),
+                generation: ubm_core::ordered_notifications::SourceGeneration::Counter(generation),
+                native_group,
+            };
+            let mut guard = group.lock().await;
+            let installed = guard
+                .batch(|batch, peripheral, handle, routes| {
+                    let mut registered = Vec::new();
+                    let mut error = None;
+                    for ((member, target, plan), source_member) in
+                        selected.iter().zip(member_ids.iter().copied())
+                    {
+                        let route = crate::peer_notification_ingress::native_route(
+                            NotificationRoute::of(&target.characteristic),
+                        );
+                        let scope = member.activation.scope.clone();
+                        let epoch = member.activation.activation_epoch;
+                        let target = ForwardTarget {
+                            peer_id: scope.0.clone(),
+                            service_uuid: scope.1.clone(),
+                            service_occurrence: scope.2,
+                            characteristic_uuid: scope.3.clone(),
+                            characteristic_occurrence: scope.4,
+                            epoch,
+                        };
+                        match batch.register(target, || {
+                            peripheral.register_notification_source_route_for_activation(
+                                handle,
+                                route,
+                                source_member,
+                                plan.activation,
+                            )
+                        }) {
+                            Ok(membership) => {
+                                routes.insert((scope.clone(), epoch), (route, membership));
+                                registered.push((
+                                    scope,
+                                    epoch,
+                                    route,
+                                    membership,
+                                    member.member_id,
+                                    member.delivery,
+                                ));
+                            }
+                            Err(reason) => {
+                                error = Some(
+                                    DesktopError::new(
+                                        BleErrorCode::PlatformFailure,
+                                        BleErrorDomain::Gatt,
+                                        "gatt.ordered.source",
+                                    )
+                                    .with_detail(format!(
+                                        "source member registration failed: {reason:?}"
+                                    )),
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    if error.is_none() {
+                        let members = registered
+                            .iter()
+                            .map(|(_, _, _, membership, id, delivery)| {
+                                ubm_core::ordered_notifications::Member {
+                                    id: *id,
+                                    source: ubm_core::ordered_notifications::Membership {
+                                        member: membership.member,
+                                        epoch: membership.epoch,
+                                    },
+                                    delivery: *delivery,
+                                }
+                            })
+                            .collect();
+                        match ubm_core::ordered_notifications::OrderedCollection::new(
+                            request.connection_generation.clone(),
+                            request.database_generation.clone(),
+                            ubm_core::ordered_notifications::SourceGeneration::Counter(generation),
+                            request.collection_id,
+                            members,
+                            request.max_items,
+                            request.max_bytes,
+                            request.max_controls,
+                        ) {
+                            Ok(collection) => {
+                                if let Err(reason) = self
+                                    .ordered_groups
+                                    .lock()
+                                    .expect("ordered notification groups")
+                                    .install(request.collection_id, source.clone(), collection)
+                                {
+                                    error =
+                                        Some(
+                                            DesktopError::new(
+                                                BleErrorCode::LifecycleInvalidState,
+                                                BleErrorDomain::Gatt,
+                                                "gatt.ordered.source",
+                                            )
+                                            .with_detail(format!(
+                                                "ordered collection install failed: {reason:?}"
+                                            )),
+                                        );
+                                }
+                            }
+                            Err(reason) => {
+                                error = Some(
+                                    DesktopError::new(
+                                        BleErrorCode::LifecycleInvalidState,
+                                        BleErrorDomain::Gatt,
+                                        "gatt.ordered.source",
+                                    )
+                                    .with_detail(format!(
+                                        "ordered collection configuration invalid: {reason:?}"
+                                    )),
+                                )
+                            }
+                        }
+                    }
+                    if let Some(error) = error {
+                        let mut failures = vec![error];
+                        for (_, _, route, membership, _, _) in &registered {
+                            // Rollback ownership remains in routes even when fence enqueue fails.
+                            if let Err(reason) = batch.retire(*membership, || {
+                                peripheral.retire_notification_source_route(
+                                    handle,
+                                    *route,
+                                    *membership,
+                                )
+                            }) {
+                                failures.push(
+                                    DesktopError::new(
+                                        BleErrorCode::PlatformFailure,
+                                        BleErrorDomain::Cleanup,
+                                        "gatt.ordered.source",
+                                    )
+                                    .with_detail(format!(
+                                        "source member rollback failed: {reason:?}"
+                                    )),
+                                );
+                            }
+                        }
+                        return match crate::errors::cleanup_result(
+                            "ordered-source-prepare",
+                            failures,
+                        ) {
+                            Err(error) => Err(error),
+                            Ok(()) => unreachable!("nonempty preparation failures"),
+                        };
+                    }
+                    Ok(OrderedSourceLease {
+                        ingress: crate::boundary::OrderedSourceIngress::BackendOwned,
+                        peer_id: request.peer_id.clone(),
+                        collection_id: request.collection_id,
+                        connection_generation: request.connection_generation.clone(),
+                        source_generation:
+                            ubm_core::ordered_notifications::SourceGeneration::Counter(generation),
+                        native_group,
+                        members: registered
+                            .into_iter()
+                            .map(|(_, _, _, membership, id, _)| {
+                                (
+                                    id,
+                                    ubm_core::ordered_notifications::Membership {
+                                        member: membership.member,
+                                        epoch: membership.epoch,
+                                    },
+                                )
+                            })
+                            .collect(),
+                    })
+                })
+                .map_err(|error| OrderedSourceFailure {
+                    error,
+                    cleanup: cleanup(),
+                })?;
+            drop(guard);
+            let lease = installed.map_err(|error| OrderedSourceFailure {
+                error,
+                cleanup: cleanup(),
+            })?;
+            {
+                let mut claims = owner.claims.lock().expect("ordered source claims");
+                for (member_id, membership) in &lease.members {
+                    let activation = request
+                        .members
+                        .iter()
+                        .find(|member| member.member_id == *member_id)
+                        .expect("registered request member")
+                        .activation
+                        .clone();
+                    claims.insert(*member_id, (*membership, activation));
+                }
+            }
+            *owner.lease.lock().expect("ordered source lease") = Some(lease.clone());
+            Ok(lease)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            let _ = selected;
+            Err(failure(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "gatt.ordered.source",
+            )))
+        }
+    }
+
+    async fn retain_ordered_source_claim(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        member_id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        activation: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        self.validate_ordered_source_claim(lease, member_id, membership, activation)
+    }
+
+    async fn confirm_ordered_source_cleanup(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        member_id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        activation: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        self.validate_ordered_source_claim(lease, member_id, membership, activation)
+    }
+
+    async fn retire_ordered_member(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        id: u64,
+        old: ubm_core::ordered_notifications::Membership,
+    ) -> Result<(), DesktopError> {
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        let activation = owner
+            .claims
+            .lock()
+            .expect("ordered source claims")
+            .get(&id)
+            .cloned()
+            .filter(|(m, _)| *m == old)
+            .map(|(_, a)| a)
+            .ok_or_else(|| DesktopError::subscribe_failed("stale member"))?;
+        self.validate_ordered_source_claim(lease, id, old, &activation)?;
+        {
+            let mut renewals = owner.renewals.lock().expect("member renewals");
+            match renewals.get(&id) {
+                Some(r) if r.old == old && r.retired => return Ok(()),
+                Some(r) if r.old != old && !r.resumed => {
+                    return Err(DesktopError::subscribe_failed(
+                        "another member renewal is pending",
+                    ));
+                }
+                Some(r) if r.old == old => {}
+                _ => {
+                    renewals.insert(
+                        id,
+                        crate::peer_notification_ingress::MemberRenewal {
+                            old,
+                            new: None,
+                            retired: false,
+                            rebound: false,
+                            resumed: false,
+                        },
+                    );
+                }
+            }
+        }
+        let group = owner
+            .group
+            .lock()
+            .expect("ordered source group")
+            .clone()
+            .ok_or_else(|| DesktopError::subscribe_failed("source group absent"))?;
+        let received = {
+            let group = group.lock().await;
+            let received = group.retire(&activation.scope, activation.activation_epoch)?;
+            if received.is_none() && group.members.is_closed() {
+                return Err(DesktopError::subscribe_failed(
+                    "source closed before member fence",
+                ));
+            }
+            received
+        };
+        if let Some(received) = received {
+            received
+                .await
+                .map_err(|_| DesktopError::subscribe_failed("member fence was not acknowledged"))?;
+        }
+        group.lock().await.pause(id).await?;
+        owner
+            .renewals
+            .lock()
+            .expect("member renewals")
+            .get_mut(&id)
+            .expect("retained renewal")
+            .retired = true;
+        Ok(())
+    }
+    async fn reregister_ordered_member(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        id: u64,
+        old: ubm_core::ordered_notifications::Membership,
+    ) -> Result<ubm_core::ordered_notifications::Membership, DesktopError> {
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        let renewal = owner
+            .renewals
+            .lock()
+            .expect("member renewals")
+            .get(&id)
+            .cloned()
+            .filter(|r| r.old == old && r.retired && !r.resumed)
+            .ok_or_else(|| DesktopError::subscribe_failed("member was not retired"))?;
+        if let Some(new) = renewal.new {
+            return Ok(new);
+        }
+        let activation = owner
+            .claims
+            .lock()
+            .expect("ordered source claims")
+            .get(&id)
+            .cloned()
+            .filter(|(m, _)| *m == old)
+            .map(|(_, a)| a)
+            .ok_or_else(|| DesktopError::subscribe_failed("stale member"))?;
+        self.validate_ordered_source_claim(lease, id, old, &activation)?;
+        let target = self
+            .notification_targets
+            .get_epoch(&activation.scope, activation.activation_epoch)
+            .ok_or_else(|| DesktopError::subscribe_failed("physical activation absent"))?;
+        let plan = target
+            .prepared
+            .lock()
+            .expect("prepared notification")
+            .clone()
+            .filter(|p| p.handle == activation)
+            .ok_or_else(|| DesktopError::subscribe_failed("stale activation"))?;
+        let group = owner
+            .group
+            .lock()
+            .expect("ordered source group")
+            .clone()
+            .ok_or_else(|| DesktopError::subscribe_failed("source group absent"))?;
+        let mut group = group.lock().await;
+        if let Some(new) = owner
+            .renewals
+            .lock()
+            .expect("member renewals")
+            .get(&id)
+            .and_then(|r| r.new)
+        {
+            return Ok(new);
+        }
+        let route = crate::peer_notification_ingress::native_route(NotificationRoute::of(
+            &target.characteristic,
+        ));
+        let member = Self::next_notification_id(&self.next_peer_member)?;
+        group.finalize_retire(&activation.scope, activation.activation_epoch);
+        let native = group.register(
+            activation.scope.clone(),
+            activation.activation_epoch,
+            route,
+            member,
+            plan.activation,
+        )?;
+        let new = ubm_core::ordered_notifications::Membership {
+            member: native.member,
+            epoch: native.epoch,
+        };
+        owner
+            .renewals
+            .lock()
+            .expect("member renewals")
+            .get_mut(&id)
+            .expect("retained renewal")
+            .new = Some(new);
+        Ok(new)
+    }
+    async fn abandon_ordered_renewal(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        id: u64,
+        old: ubm_core::ordered_notifications::Membership,
+        new: Option<ubm_core::ordered_notifications::Membership>,
+    ) -> Result<crate::boundary::OrderedRenewalAbandon, DesktopError> {
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        let Some(state) = owner
+            .renewals
+            .lock()
+            .expect("member renewals")
+            .get(&id)
+            .cloned()
+        else {
+            return Ok(crate::boundary::OrderedRenewalAbandon::Retired {
+                tail_uncertain: false,
+            });
+        };
+        if state.old != old
+            || new.is_some_and(|expected| state.new.is_some_and(|actual| actual != expected))
+        {
+            return Err(DesktopError::subscribe_failed("stale member renewal"));
+        }
+        if state.resumed {
+            return Ok(crate::boundary::OrderedRenewalAbandon::Retired {
+                tail_uncertain: true,
+            });
+        }
+        let Some(current) = new else {
+            return Ok(crate::boundary::OrderedRenewalAbandon::Pending);
+        };
+        if state.new != Some(current) || !state.rebound {
+            return Ok(crate::boundary::OrderedRenewalAbandon::Pending);
+        }
+        self.resume_ordered_member(lease, id, current).await?;
+        Ok(crate::boundary::OrderedRenewalAbandon::Retired {
+            tail_uncertain: true,
+        })
+    }
+    fn rebind_ordered_member(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        id: u64,
+        old: ubm_core::ordered_notifications::Membership,
+        new: ubm_core::ordered_notifications::Membership,
+    ) -> Result<(), DesktopError> {
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        let mut renewals = owner.renewals.lock().expect("member renewals");
+        let renewal = renewals
+            .get_mut(&id)
+            .filter(|r| r.old == old && r.new == Some(new) && r.retired)
+            .ok_or_else(|| DesktopError::subscribe_failed("stale member renewal"))?;
+        if renewal.rebound {
+            return Ok(());
+        }
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: lease.peer_id.clone(),
+            generation: lease.source_generation.clone(),
+            native_group: lease.native_group,
+        };
+        self.ordered_groups
+            .lock()
+            .expect("ordered notification groups")
+            .rebind_member(lease.collection_id, &source, id, old, new)
+            .map_err(|e| DesktopError::subscribe_failed(format!("member rebind: {e:?}")))?;
+        owner
+            .claims
+            .lock()
+            .expect("ordered source claims")
+            .get_mut(&id)
+            .ok_or_else(|| DesktopError::subscribe_failed("member claim absent"))?
+            .0 = new;
+        let mut stored = owner.lease.lock().expect("ordered source lease");
+        let member = stored
+            .as_mut()
+            .and_then(|l| l.members.iter_mut().find(|(member, _)| *member == id))
+            .ok_or_else(|| DesktopError::subscribe_failed("source lease member absent"))?;
+        member.1 = new;
+        renewal.rebound = true;
+        Ok(())
+    }
+    async fn resume_ordered_member(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        id: u64,
+        new: ubm_core::ordered_notifications::Membership,
+    ) -> Result<(), DesktopError> {
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        {
+            let renewals = owner.renewals.lock().expect("member renewals");
+            let r = renewals
+                .get(&id)
+                .filter(|r| r.new == Some(new) && r.rebound)
+                .ok_or_else(|| DesktopError::subscribe_failed("member not rebound"))?;
+            if r.resumed {
+                return Ok(());
+            }
+        }
+        let group = owner
+            .group
+            .lock()
+            .expect("ordered source group")
+            .clone()
+            .ok_or_else(|| DesktopError::subscribe_failed("source group absent"))?;
+        group.lock().await.resume(id).await?;
+        owner
+            .renewals
+            .lock()
+            .expect("member renewals")
+            .get_mut(&id)
+            .expect("retained renewal")
+            .resumed = true;
+        Ok(())
+    }
+
+    async fn recover_ordered_source(
+        &self,
+        peer_id: &str,
+        collection_id: u64,
+    ) -> Result<crate::boundary::OrderedSourceRecovery, DesktopError> {
+        let owner = match self
+            .ordered_sources
+            .lock()
+            .expect("ordered source owners")
+            .get(&collection_id)
+            .cloned()
+        {
+            Some(owner) => owner,
+            None => return Ok(crate::boundary::OrderedSourceRecovery::NotStarted),
+        };
+        if owner.peer_id != peer_id {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.recover",
+            )
+            .with_detail("ordered source peer is stale"));
+        }
+        let lease = owner.lease.lock().expect("ordered source lease").clone();
+        Ok(match lease {
+            Some(lease) => crate::boundary::OrderedSourceRecovery::Ready(lease),
+            None => crate::boundary::OrderedSourceRecovery::Pending,
+        })
+    }
+
+    async fn start_ordered_marker_write(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        request: &crate::boundary::OrderedMarkerWriteRequest,
+    ) -> Result<crate::boundary::OrderedMarkerWriteStatus, DesktopError> {
+        self.start_native_marker_write(lease, request).await
+    }
+    async fn cancel_ordered_marker_write(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        request: &crate::boundary::OrderedMarkerWriteRequest,
+    ) -> Result<crate::boundary::OrderedMarkerWriteStatus, DesktopError> {
+        self.cancel_native_marker_write(lease, request).await
+    }
+    async fn ordered_marker_write_status(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        request: &crate::boundary::OrderedMarkerWriteRequest,
+    ) -> Result<crate::boundary::OrderedMarkerWriteStatus, DesktopError> {
+        self.native_marker_write_status(lease, request)
+    }
+    async fn forget_ordered_marker_write(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        request: &crate::boundary::OrderedMarkerWriteRequest,
+    ) -> Result<(), DesktopError> {
+        self.forget_native_marker_write(lease, request)
+    }
+    fn reserve_ordered_marker(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        marker_id: u64,
+    ) -> Result<(), DesktopError> {
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: lease.peer_id.clone(),
+            generation: lease.source_generation.clone(),
+            native_group: lease.native_group,
+        };
+        self.ordered_groups
+            .lock()
+            .expect("ordered notification groups")
+            .reserve_marker(lease.collection_id, &source, marker_id)
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::CapabilityLimited,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.marker-credit",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+    fn ordered_marker_credit_pending(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        marker_id: u64,
+    ) -> Result<bool, DesktopError> {
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: lease.peer_id.clone(),
+            generation: lease.source_generation.clone(),
+            native_group: lease.native_group,
+        };
+        self.ordered_groups
+            .lock()
+            .expect("ordered notification groups")
+            .marker_reserved(lease.collection_id, &source, marker_id)
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.marker-credit",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+    fn release_ordered_marker(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        marker_id: u64,
+    ) -> Result<(), DesktopError> {
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: lease.peer_id.clone(),
+            generation: lease.source_generation.clone(),
+            native_group: lease.native_group,
+        };
+        self.ordered_groups
+            .lock()
+            .expect("ordered notification groups")
+            .release_marker(lease.collection_id, &source, marker_id)
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.marker-credit",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+
+    async fn fence_ordered_source(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+    ) -> Result<(), DesktopError> {
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        let actual = owner.lease.lock().expect("ordered source lease").clone();
+        if !actual.as_ref().is_some_and(|actual| {
+            actual.source_generation == lease.source_generation
+                && actual.native_group == lease.native_group
+        }) {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.fence",
+            )
+            .with_detail("ordered source lease is stale"));
+        }
+        let group = owner
+            .group
+            .lock()
+            .expect("ordered source group")
+            .clone()
+            .ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.ordered.fence",
+                )
+                .with_detail("ordered source group is absent")
+            })?;
+        let id = Self::next_notification_id(&self.next_peer_barrier)?;
+        let barrier = group.lock().await.barrier_native(id);
+        match barrier {
+            Ok(received) => received.await.map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "gatt.ordered.fence",
+                )
+                .with_detail("ordered source fence was not acknowledged")
+            }),
+            Err(
+                btleplug::platform::SourceGroupError::StaleGeneration
+                | btleplug::platform::SourceGroupError::Ingress(
+                    crate::peer_notification_ingress::IngressError::Terminated,
+                ),
+            ) => {
+                // No synthetic barrier is admitted after a source terminal.
+                // The exact pump only settles after central acknowledges that
+                // terminal and every earlier source record.
+                match group.lock().await.settle().await? {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                }
+            }
+            Err(error) => Err(DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.fence",
+            )
+            .with_detail(format!("cannot enqueue ordered source barrier: {error:?}"))),
+        }
+    }
+
+    async fn retire_ordered_source(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        reason: ubm_core::ordered_notifications::EndReason,
+    ) -> Result<(), DesktopError> {
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        let actual = owner.lease.lock().expect("ordered source lease").clone();
+        if !actual.as_ref().is_some_and(|actual| {
+            actual.peer_id == lease.peer_id
+                && actual.collection_id == lease.collection_id
+                && actual.source_generation == lease.source_generation
+                && actual.native_group == lease.native_group
+                && actual.connection_generation == lease.connection_generation
+                && actual.ingress == lease.ingress
+        }) {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.retire",
+            )
+            .with_detail("ordered source lease is stale"));
+        }
+        let group = owner
+            .group
+            .lock()
+            .expect("ordered source group")
+            .clone()
+            .ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.ordered.retire",
+                )
+                .with_detail("ordered source group is absent")
+            })?;
+
+        group.lock().await.members.set_retirement_reason(reason)?;
+
+        // Each source-serialized membership fence follows its accepted values.
+        // The pump retains the route until central acknowledges that fence.
+        let routes: Vec<_> = group.lock().await.routes.keys().cloned().collect();
+        for (scope, epoch) in routes {
+            self.retire_peer_membership(group.clone(), &scope, epoch)
+                .await?;
+        }
+        let mut guard = group.lock().await;
+        if !guard.detached {
+            let current = guard
+                .peripheral
+                .current_notification_source_generation()
+                .map_err(|error| {
+                    DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Cleanup,
+                        "gatt.ordered.retire",
+                    )
+                    .with_detail(format!("cannot observe source generation: {error:?}"))
+                })?;
+            if current == Some(guard.generation) {
+                // The OS may still have callbacks queued outside our source.
+                // Forced detach records that uncertain tail in the terminal;
+                // it does not unsubscribe any independently owned CCCD.
+                guard
+                    .peripheral
+                    .detach_notification_source_group(&guard.handle)
+                    .map_err(|error| {
+                        DesktopError::new(
+                            BleErrorCode::PlatformFailure,
+                            BleErrorDomain::Cleanup,
+                            "gatt.ordered.retire",
+                        )
+                        .with_detail(format!("cannot detach ordered source group: {error:?}"))
+                    })?;
+            }
+            guard.detached = true;
+        }
+        // The retained join handle makes cancellation and retry safe. Settle
+        // only completes once central has acknowledged the terminal record.
+        if let Some(error) = guard.settle().await? {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn seal_ordered_source(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+    ) -> Result<crate::boundary::OrderedSourceSeal, DesktopError> {
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        let actual = owner.lease.lock().expect("ordered source lease").clone();
+        if !actual.as_ref().is_some_and(|a| {
+            a.peer_id == lease.peer_id
+                && a.collection_id == lease.collection_id
+                && a.connection_generation == lease.connection_generation
+                && a.source_generation == lease.source_generation
+                && a.native_group == lease.native_group
+                && a.ingress == lease.ingress
+        }) {
+            return Err(DesktopError::subscribe_failed("stale source lease"));
+        }
+        let group = owner
+            .group
+            .lock()
+            .expect("ordered source group")
+            .clone()
+            .ok_or_else(|| DesktopError::subscribe_failed("source group absent"))?;
+        let mut group = group.lock().await;
+        if !group.detached {
+            return Ok(crate::boundary::OrderedSourceSeal::Pending);
+        }
+        group.settle().await?;
+        Ok(crate::boundary::OrderedSourceSeal::Sealed)
+    }
+
+    async fn release_ordered_source(
+        &self,
+        cleanup: &crate::boundary::OrderedSourceCleanup,
+    ) -> Result<crate::boundary::OrderedSourceRelease, DesktopError> {
+        let (peer_id, collection_id, expected) = match cleanup {
+            crate::boundary::OrderedSourceCleanup::Lease(lease) => {
+                (&lease.peer_id, lease.collection_id, Some(lease))
+            }
+            crate::boundary::OrderedSourceCleanup::Indeterminate {
+                peer_id,
+                collection_id,
+            } => (peer_id, *collection_id, None),
+        };
+        let owner = match self
+            .ordered_sources
+            .lock()
+            .expect("ordered source owners")
+            .get(&collection_id)
+            .cloned()
+        {
+            Some(owner) => owner,
+            None => return Ok(crate::boundary::OrderedSourceRelease::Released),
+        };
+        if owner.peer_id != *peer_id {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.source-release",
+            )
+            .with_detail("ordered source peer is stale"));
+        }
+        let actual = owner.lease.lock().expect("ordered source lease").clone();
+        if let Some(expected) = expected
+            && !actual.as_ref().is_some_and(|actual| {
+                actual.source_generation == expected.source_generation
+                    && actual.native_group == expected.native_group
+            })
+        {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.source-release",
+            )
+            .with_detail("ordered source lease is stale"));
+        }
+        if self
+            .marker_requests
+            .lock()
+            .expect("marker owners")
+            .iter()
+            .any(|((id, _), marker)| *id == collection_id && !marker.retired)
+        {
+            return Ok(crate::boundary::OrderedSourceRelease::Pending);
+        }
+        let origins: Vec<_> = owner
+            .origins
+            .lock()
+            .expect("ordered physical origins")
+            .values()
+            .cloned()
+            .collect();
+        for origin in origins {
+            if let Some(target) = self
+                .notification_targets
+                .get_epoch(&origin.scope, origin.activation_epoch)
+            {
+                match settle_notification_target(&target) {
+                    Ok(crate::boundary::OrderedNotificationSettlement::Released) => {}
+                    Ok(_) | Err(_) => return Ok(crate::boundary::OrderedSourceRelease::Pending),
+                }
+            }
+        }
+        let group = owner.group.lock().expect("ordered source group").clone();
+        if let Some(group) = group {
+            let routes: Vec<_> = group.lock().await.routes.keys().cloned().collect();
+            for (scope, epoch) in routes {
+                self.retire_peer_membership(group.clone(), &scope, epoch)
+                    .await?;
+            }
+            let mut guard = group.lock().await;
+            if !guard.detached && guard.task.as_ref().is_some_and(|task| task.is_finished()) {
+                guard.settle().await?;
+                let current = guard
+                    .peripheral
+                    .current_notification_source_generation()
+                    .map_err(|error| {
+                        DesktopError::new(
+                            BleErrorCode::PlatformFailure,
+                            BleErrorDomain::Cleanup,
+                            "gatt.ordered.source-release",
+                        )
+                        .with_detail(format!("cannot observe source generation: {error:?}"))
+                    })?;
+                if current == Some(guard.generation) {
+                    guard
+                        .peripheral
+                        .detach_notification_source_group(&guard.handle)
+                        .map_err(|error| {
+                            DesktopError::new(
+                                BleErrorCode::PlatformFailure,
+                                BleErrorDomain::Cleanup,
+                                "gatt.ordered.source-release",
+                            )
+                            .with_detail(format!(
+                                "cannot detach terminated source group: {error:?}"
+                            ))
+                        })?;
+                }
+                guard.detached = true;
+            }
+            if !guard.detached {
+                let current = guard
+                    .peripheral
+                    .current_notification_source_generation()
+                    .map_err(|error| {
+                        DesktopError::new(
+                            BleErrorCode::PlatformFailure,
+                            BleErrorDomain::Cleanup,
+                            "gatt.ordered.source-release",
+                        )
+                        .with_detail(format!("cannot observe source generation: {error:?}"))
+                    })?;
+                if current == Some(guard.generation) {
+                    let id = Self::next_notification_id(&self.next_peer_barrier)?;
+                    let received = guard.barrier(id)?;
+                    received.await.map_err(|_| {
+                        DesktopError::new(
+                            BleErrorCode::PlatformFailure,
+                            BleErrorDomain::Cleanup,
+                            "gatt.ordered.source-release",
+                        )
+                        .with_detail("ordered source fence was not acknowledged")
+                    })?;
+                    guard
+                        .peripheral
+                        .detach_notification_source_group_after_barrier(&guard.handle, id)
+                        .map_err(|error| {
+                            DesktopError::new(
+                                BleErrorCode::PlatformFailure,
+                                BleErrorDomain::Cleanup,
+                                "gatt.ordered.source-release",
+                            )
+                            .with_detail(format!("ordered source detach failed: {error:?}"))
+                        })?;
+                }
+                guard.detached = true;
+            }
+            guard.settle().await?;
+        }
+        if let Some(lease) = actual {
+            let source = crate::ordered_notification_groups::SourceKey {
+                peer_id: lease.peer_id.clone(),
+                generation: lease.source_generation.clone(),
+                native_group: lease.native_group,
+            };
+            let mut registry = self
+                .ordered_groups
+                .lock()
+                .expect("ordered notification groups");
+            if !registry.owns_source(collection_id, &source) {
+                return Err(DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.ordered.source-release",
+                )
+                .with_detail("ordered collection owner is absent"));
+            }
+            registry
+                .with_collection(collection_id, |collection| {
+                    if matches!(
+                        collection.phase(),
+                        ubm_core::ordered_notifications::Phase::Staging
+                            | ubm_core::ordered_notifications::Phase::Active
+                    ) {
+                        collection
+                            .close(ubm_core::ordered_notifications::EndReason::Closed, false)?;
+                    }
+                    Ok(())
+                })
+                .map_err(|error| {
+                    DesktopError::new(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Cleanup,
+                        "gatt.ordered.source-release",
+                    )
+                    .with_detail(format!("cannot close ordered collection: {error:?}"))
+                })?;
+            match registry.remove(collection_id) {
+                Ok(()) => {}
+                Err(crate::ordered_notification_groups::RegistryError::CleanupPending) => {
+                    return Ok(crate::boundary::OrderedSourceRelease::Pending);
+                }
+                Err(error) => {
+                    return Err(DesktopError::new(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Cleanup,
+                        "gatt.ordered.source-release",
+                    )
+                    .with_detail(format!("ordered collection removal failed: {error:?}")));
+                }
+            }
+        }
+        let mut sources = self.ordered_sources.lock().expect("ordered source owners");
+        if sources
+            .get(&collection_id)
+            .is_some_and(|held| Arc::ptr_eq(held, &owner))
+        {
+            sources.remove(&collection_id);
+            self.marker_requests
+                .lock()
+                .expect("marker owners")
+                .retain(|(id, _), _| *id != collection_id);
+        }
+        Ok(crate::boundary::OrderedSourceRelease::Released)
+    }
+
+    async fn poll_ordered_source(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+    ) -> Result<ubm_core::ordered_notifications::Poll, DesktopError> {
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: lease.peer_id.clone(),
+            generation: lease.source_generation.clone(),
+            native_group: lease.native_group,
+        };
+        let mut registry = self
+            .ordered_groups
+            .lock()
+            .expect("ordered notification groups");
+        if !registry.owns_source(lease.collection_id, &source) {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.poll",
+            )
+            .with_detail("ordered source lease is stale"));
+        }
+        registry.poll(lease.collection_id).map_err(|error| {
+            DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.poll",
+            )
+            .with_detail(format!("ordered collection poll failed: {error:?}"))
+        })
+    }
+
+    fn update_ordered_source(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        transition: crate::boundary::OrderedSourceTransition,
+    ) -> Result<(), DesktopError> {
+        use crate::boundary::OrderedSourceTransition;
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: lease.peer_id.clone(),
+            generation: lease.source_generation.clone(),
+            native_group: lease.native_group,
+        };
+        let mut registry = self
+            .ordered_groups
+            .lock()
+            .expect("ordered notification groups");
+        if !registry.owns_source(lease.collection_id, &source) {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.update",
+            )
+            .with_detail("ordered source lease is stale"));
+        }
+        registry
+            .with_collection(lease.collection_id, |owner| match transition {
+                OrderedSourceTransition::BeginEnable { member_id } => owner.begin_enable(member_id),
+                OrderedSourceTransition::EnableResult { member_id, outcome } => {
+                    owner.enable_result(member_id, outcome)
+                }
+                OrderedSourceTransition::FailEnable {
+                    member_id,
+                    outcome,
+                    failure,
+                    tail_uncertain,
+                } => owner.fail_enable(member_id, outcome, failure, tail_uncertain),
+                OrderedSourceTransition::BeginRelease { member_id } => {
+                    owner.begin_release(member_id)
+                }
+                OrderedSourceTransition::ReleaseResult { member_id, result } => {
+                    owner.release_result(member_id, result)
+                }
+                OrderedSourceTransition::Close {
+                    reason,
+                    tail_uncertain,
+                } => owner.close(reason, tail_uncertain),
+            })
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.update",
+                )
+                .with_detail(format!("ordered collection transition failed: {error:?}"))
+            })
+    }
+
+    fn attach_ordered_wake(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        wake: std::sync::Arc<tokio::sync::Notify>,
+    ) -> Result<(), DesktopError> {
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: lease.peer_id.clone(),
+            generation: lease.source_generation.clone(),
+            native_group: lease.native_group,
+        };
+        self.ordered_groups
+            .lock()
+            .expect("ordered notification groups")
+            .set_wake(lease.collection_id, &source, wake)
+            .map_err(|e| DesktopError::subscribe_failed(format!("ordered wake: {e:?}")))
+    }
+    fn increase_ordered_byte_capacity(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        max_bytes: usize,
+    ) -> Result<usize, DesktopError> {
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: lease.peer_id.clone(),
+            generation: lease.source_generation.clone(),
+            native_group: lease.native_group,
+        };
+        let mut registry = self
+            .ordered_groups
+            .lock()
+            .expect("ordered notification groups");
+        if !registry.owns_source(lease.collection_id, &source) {
+            return Err(DesktopError::new(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.increase-capacity",
+            ));
+        }
+        registry
+            .with_collection(lease.collection_id, |owner| {
+                owner.increase_byte_capacity(&source.generation, lease.collection_id, max_bytes)
+            })
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.increase-capacity",
+                )
+                .with_detail(format!("{error:?}"))
+            })
+    }
+    fn ordered_source_status(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+    ) -> Result<crate::boundary::OrderedSourceStatus, DesktopError> {
+        let source = crate::ordered_notification_groups::SourceKey {
+            peer_id: lease.peer_id.clone(),
+            generation: lease.source_generation.clone(),
+            native_group: lease.native_group,
+        };
+        let mut registry = self
+            .ordered_groups
+            .lock()
+            .expect("ordered notification groups");
+        if !registry.owns_source(lease.collection_id, &source) {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.status",
+            )
+            .with_detail("ordered source lease is stale"));
+        }
+        registry
+            .with_collection_silent(lease.collection_id, |owner| {
+                Ok(crate::boundary::OrderedSourceStatus {
+                    phase: owner.phase(),
+                    members: owner.members().to_vec(),
+                    cleanup_complete: owner.cleanup_complete(),
+                })
+            })
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.status",
+                )
+                .with_detail(format!("ordered collection status failed: {error:?}"))
+            })
+    }
+
+    async fn prepare_notification_activation(
+        &self,
+        scope: &InstanceKey,
+        epoch: u64,
+        requested: Option<DeliveryMode>,
+        preferred: Option<DeliveryMode>,
+    ) -> Result<crate::boundary::PreparedNotificationActivation, DesktopError> {
+        let _gate = self.gatt.lock_peer(&scope.0).await;
+        if let Some(target) = self.notification_targets.get_epoch(scope, epoch) {
+            return target
+                .prepared
+                .lock()
+                .expect("prepared notification")
+                .as_ref()
+                .map(|plan| plan.handle.clone())
+                .ok_or_else(|| {
+                    DesktopError::new(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Cleanup,
+                        "gatt.notification.prepare",
+                    )
+                    .with_detail("an earlier notification preparation remains owned for cleanup")
+                });
+        }
+        let peripheral = self.cached_peripheral(&scope.0).await?;
+        let characteristic =
+            Self::find_characteristic(&peripheral, &scope.1, scope.2, &scope.3, scope.4)
+                .ok_or_else(|| {
+                    DesktopError::subscribe_failed("unknown notification characteristic")
+                })?;
+        let plan = plan_delivery_for_os(
+            property_flags(characteristic.properties),
+            requested,
+            with_delivery_preference(platform_rule(), preferred),
+            os_answers_unflagged_subscribe(),
+        )?;
+        let selected = match plan {
+            DeliveryPlan::AdapterWrites { mode, .. } => Some(mode),
+            DeliveryPlan::Platform(ObservedDelivery::Notification)
+                if cfg!(target_os = "windows") =>
+            {
+                Some(DeliveryMode::Notification)
+            }
+            DeliveryPlan::Platform(ObservedDelivery::Indication) if cfg!(target_os = "windows") => {
+                Some(DeliveryMode::Indication)
+            }
+            DeliveryPlan::Platform(_) => None,
+        };
+        let observed = match plan {
+            DeliveryPlan::Platform(observed) => observed,
+            DeliveryPlan::AdapterWrites {
+                mode: DeliveryMode::Notification,
+                ..
+            } => ObservedDelivery::Notification,
+            DeliveryPlan::AdapterWrites {
+                mode: DeliveryMode::Indication,
+                ..
+            } => ObservedDelivery::Indication,
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            let owner = peripheral
+                .notification_activation_owner(&characteristic)
+                .await
+                .map_err(|error| {
+                    DesktopError::subscribe_failed(error.to_string()).with_os(&error)
+                })?;
+            let group = self.peer_group(&scope.0, &peripheral).await?;
+            let transport = DesktopNotificationTransport { peripheral, owner };
+            let target = self.notification_targets.retain_epoch(
+                scope,
+                epoch,
+                transport,
+                characteristic.clone(),
+            )?;
+            *target.group.lock().expect("notification target group") = Some(group.clone());
+            self.cleanup_debt
+                .lock()
+                .expect("cleanup debt")
+                .insert(scope.clone());
+            let prepared = async {
+                #[cfg(target_os = "linux")]
+                let activation = target.transport.owner.prepare_source_activation();
+                #[cfg(not(target_os = "linux"))]
+                let activation = target.transport.owner.prepare_source_activation().await;
+                let activation = activation.map_err(|error| {
+                    DesktopError::subscribe_failed(error.to_string()).with_os(&error)
+                })?;
+                let member = Self::next_notification_id(&self.next_peer_member)?;
+                let route = crate::peer_notification_ingress::native_route(NotificationRoute::of(
+                    &characteristic,
+                ));
+                let mut group = group.lock().await;
+                group.register(scope.clone(), epoch, route, member, activation)?;
+                let handle = crate::boundary::PreparedNotificationActivation {
+                    scope: scope.clone(),
+                    activation_epoch: epoch,
+                    requested,
+                    preferred,
+                };
+                *target.prepared.lock().expect("prepared notification") = Some(PreparedPlan {
+                    activation,
+                    source_generation: group.generation,
+                    handle: handle.clone(),
+                    selected,
+                    observed,
+                });
+                Ok::<_, DesktopError>(handle)
+            }
+            .await;
+            match prepared {
+                Ok(handle) => Ok(handle),
+                Err(error) => match self.release_epoch(scope, epoch).await {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => match crate::errors::cleanup_result(
+                        "notification-prepare",
+                        vec![error, cleanup],
+                    ) {
+                        Err(error) => Err(error),
+                        Ok(()) => unreachable!("nonempty preparation failures"),
+                    },
+                },
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            let _ = (peripheral, characteristic, selected, observed);
+            Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "gatt.notification.prepare",
+            ))
+        }
+    }
+
+    async fn dispatch_prepared_notification(
+        &self,
+        prepared: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<ObservedDelivery, DesktopError> {
+        let _gate = self.gatt.lock_peer(&prepared.scope.0).await;
+        let target = self
+            .notification_targets
+            .get_epoch(&prepared.scope, prepared.activation_epoch)
+            .ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.notification.enable",
+                )
+                .with_detail("prepared notification owner is absent")
+            })?;
+        let observed = dispatch_prepared_target(&target, prepared).await?;
+        self.cleanup_debt
+            .lock()
+            .expect("cleanup debt")
+            .remove(&prepared.scope);
+        Ok(observed)
+    }
+
+    fn reserve_ordered_notification(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        prepared: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        self.validate_ordered_source_claim(lease, id, membership, prepared)?;
+        let owner = self.ordered_source_owner(&lease.peer_id, lease.collection_id)?;
+        let mut origins = owner.origins.lock().expect("ordered physical origins");
+        if origins.values().any(|held| {
+            held.scope == prepared.scope
+                && held.activation_epoch == prepared.activation_epoch
+                && held != prepared
+        }) {
+            return Err(DesktopError::subscribe_failed(
+                "conflicting physical origin",
+            ));
+        }
+        origins.insert((id, membership), prepared.clone());
+        Ok(())
+    }
+    async fn dispatch_ordered_notification(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        member_id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        prepared: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<ObservedDelivery, DesktopError> {
+        self.validate_ordered_source_claim(lease, member_id, membership, prepared)?;
+        self.dispatch_prepared_notification(prepared).await
+    }
+
+    async fn ordered_notification_settlement(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        member_id: u64,
+        membership: ubm_core::ordered_notifications::Membership,
+        prepared: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<crate::boundary::OrderedNotificationSettlement, DesktopError> {
+        self.validate_ordered_origin(lease, member_id, membership, prepared)?;
+        let Some(target) = self
+            .notification_targets
+            .get_epoch(&prepared.scope, prepared.activation_epoch)
+        else {
+            return Ok(crate::boundary::OrderedNotificationSettlement::Released);
+        };
+        if !target
+            .prepared
+            .lock()
+            .expect("prepared notification")
+            .as_ref()
+            .is_some_and(|plan| plan.handle == *prepared)
+        {
+            return Err(DesktopError::subscribe_failed(
+                "stale notification activation",
+            ));
+        }
+        settle_notification_target(&target)
+    }
+
+    async fn release_ordered_notification(
+        &self,
+        lease: &crate::boundary::OrderedSourceLease,
+        id: u64,
+        m: ubm_core::ordered_notifications::Membership,
+        prepared: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        self.validate_ordered_origin(lease, id, m, prepared)?;
+        self.release_prepared_notification(prepared).await
+    }
+
+    async fn release_prepared_notification(
+        &self,
+        prepared: &crate::boundary::PreparedNotificationActivation,
+    ) -> Result<(), DesktopError> {
+        let _gate = self.gatt.lock_peer(&prepared.scope.0).await;
+        if let Some(target) = self
+            .notification_targets
+            .get_epoch(&prepared.scope, prepared.activation_epoch)
+        {
+            let valid = target
+                .prepared
+                .lock()
+                .expect("prepared notification")
+                .as_ref()
+                .is_some_and(|plan| plan.handle == *prepared);
+            if !valid {
+                return Err(DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.notification.release",
+                )
+                .with_detail("prepared notification identity is stale"));
+            }
+        }
+        self.release_epoch(&prepared.scope, prepared.activation_epoch)
+            .await
+    }
+
     async fn acquire_gatt(
         &self,
         scope: &crate::boundary::InstanceKey,
@@ -3667,6 +6401,228 @@ impl RadioBoundary for BtleplugRadio {
                 BleErrorDomain::Capability,
                 "gatt.acquire",
             ))
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn reserve_physical_loss(
+        &self,
+        peer: &str,
+        generation: u64,
+        reason: u8,
+    ) -> crate::boundary::PhysicalLossReservation {
+        match self
+            .linux_leases
+            .reserve_physical_loss(peer, generation, reason)
+        {
+            Ok(Some((token, guard))) => crate::boundary::PhysicalLossReservation::Accepted(
+                crate::boundary::PhysicalLossPermit {
+                    peer_id: peer.to_owned(),
+                    generation,
+                    reason,
+                    token,
+                    guard: Some(guard),
+                },
+            ),
+            Ok(None) => crate::boundary::PhysicalLossReservation::Stale,
+            Err(()) => crate::boundary::PhysicalLossReservation::Indeterminate(
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "connection.physical-loss.reserve",
+                )
+                .with_detail("exact lease is being released"),
+            ),
+        }
+    }
+    #[cfg(target_os = "linux")]
+    async fn fence_reserved_physical_loss(
+        &self,
+        permit: &crate::boundary::PhysicalLossPermit,
+    ) -> crate::boundary::PhysicalLossFence {
+        use crate::boundary::PhysicalLossFence;
+        let peer = permit.peer_id.as_str();
+        let generation = permit.generation;
+        let reason = permit.reason;
+        let Some(pin) = permit.guard.as_ref() else {
+            return PhysicalLossFence::Stale;
+        };
+        let state = {
+            let groups = self.peer_groups.lock().expect("peer notification groups");
+            match groups.get(peer).cloned() {
+                Some(state) => state,
+                None => {
+                    let result = if self
+                        .linux_leases
+                        .fence_reserved_physical_loss(peer, generation, reason, permit.token, || ())
+                        .is_some()
+                    {
+                        PhysicalLossFence::Accepted(Ok(()))
+                    } else {
+                        PhysicalLossFence::Stale
+                    };
+                    pin.release();
+                    return result;
+                }
+            }
+        };
+        let state = state.lock().await;
+        let source_group = state.group.clone();
+        let received = if let Some(group) = &source_group {
+            let group = group.lock().await;
+            let id = match Self::next_notification_id(&self.next_peer_barrier) {
+                Ok(id) => id,
+                Err(error) => return PhysicalLossFence::Indeterminate(error),
+            };
+            self.linux_leases.fence_reserved_physical_loss(
+                peer,
+                generation,
+                reason,
+                permit.token,
+                || group.barrier_native(id).map(Some),
+            )
+        } else {
+            self.linux_leases.fence_reserved_physical_loss(
+                peer,
+                generation,
+                reason,
+                permit.token,
+                || Ok(None),
+            )
+        };
+        drop(state);
+        pin.release();
+        match received {
+            None => PhysicalLossFence::Stale,
+            Some(Ok(None)) => PhysicalLossFence::Accepted(Ok(())),
+            Some(Ok(Some(received))) => PhysicalLossFence::Accepted(received.await.map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "gatt.notification.source",
+                )
+                .with_detail("physical-loss notification fence was not acknowledged")
+            })),
+            Some(Err(
+                btleplug::platform::SourceGroupError::StaleGeneration
+                | btleplug::platform::SourceGroupError::Ingress(
+                    crate::peer_notification_ingress::IngressError::Terminated,
+                ),
+            )) => {
+                // A closed native source has already queued its terminal after
+                // all accepted records. Wait until central applies that terminal.
+                let Some(group) = source_group else {
+                    return PhysicalLossFence::Indeterminate(
+                        DesktopError::new(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "gatt.notification.source",
+                        )
+                        .with_detail("closed source group is absent"),
+                    );
+                };
+                let outcome = group.lock().await.settle().await;
+                PhysicalLossFence::Accepted(match outcome {
+                    Ok(None) => Ok(()),
+                    Ok(Some(error)) | Err(error) => Err(error),
+                })
+            }
+            Some(Err(error)) => PhysicalLossFence::Accepted(Err(DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Cleanup,
+                "gatt.notification.source",
+            )
+            .with_detail(format!(
+                "cannot enqueue physical-loss notification fence: {error:?}"
+            )))),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn fence_physical_loss(
+        &self,
+        peer: &str,
+        generation: u64,
+        reason: u8,
+    ) -> crate::boundary::PhysicalLossFence {
+        use crate::boundary::PhysicalLossFence;
+        let state = {
+            let groups = self.peer_groups.lock().expect("peer notification groups");
+            match groups.get(peer).cloned() {
+                Some(state) => state,
+                None => {
+                    return if self
+                        .linux_leases
+                        .fence_physical_loss(peer, generation, reason, || ())
+                        .is_some()
+                    {
+                        PhysicalLossFence::Accepted(Ok(()))
+                    } else {
+                        PhysicalLossFence::Stale
+                    };
+                }
+            }
+        };
+        let state = state.lock().await;
+        let source_group = state.group.clone();
+        let received = if let Some(group) = &source_group {
+            let group = group.lock().await;
+            let id = match Self::next_notification_id(&self.next_peer_barrier) {
+                Ok(id) => id,
+                Err(error) => return PhysicalLossFence::Indeterminate(error),
+            };
+            self.linux_leases
+                .fence_physical_loss(peer, generation, reason, || {
+                    group.barrier_native(id).map(Some)
+                })
+        } else {
+            self.linux_leases
+                .fence_physical_loss(peer, generation, reason, || Ok(None))
+        };
+        drop(state);
+        match received {
+            None => PhysicalLossFence::Stale,
+            Some(Ok(None)) => PhysicalLossFence::Accepted(Ok(())),
+            Some(Ok(Some(received))) => PhysicalLossFence::Accepted(received.await.map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "gatt.notification.source",
+                )
+                .with_detail("physical-loss notification fence was not acknowledged")
+            })),
+            Some(Err(
+                btleplug::platform::SourceGroupError::StaleGeneration
+                | btleplug::platform::SourceGroupError::Ingress(
+                    crate::peer_notification_ingress::IngressError::Terminated,
+                ),
+            )) => {
+                // A closed native source has already queued its terminal after
+                // all accepted records. Wait until central applies that terminal.
+                let Some(group) = source_group else {
+                    return PhysicalLossFence::Indeterminate(
+                        DesktopError::new(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "gatt.notification.source",
+                        )
+                        .with_detail("closed source group is absent"),
+                    );
+                };
+                let outcome = group.lock().await.settle().await;
+                PhysicalLossFence::Accepted(match outcome {
+                    Ok(None) => Ok(()),
+                    Ok(Some(error)) | Err(error) => Err(error),
+                })
+            }
+            Some(Err(error)) => PhysicalLossFence::Accepted(Err(DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Cleanup,
+                "gatt.notification.source",
+            )
+            .with_detail(format!(
+                "cannot enqueue physical-loss notification fence: {error:?}"
+            )))),
         }
     }
 
@@ -4042,6 +6998,41 @@ impl RadioBoundary for BtleplugRadio {
         self.ingress_dropped()
     }
 
+    async fn arm_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        #[cfg(target_os = "windows")]
+        let result = self.adapter.arm_scan_ingress(ingress_epoch);
+        #[cfg(not(target_os = "windows"))]
+        let result = self.adapter.arm_scan_ingress(ingress_epoch).await;
+        result.map_err(map_radio(
+            "scan.ingress.arm",
+            BleErrorCode::ScanStartFailed,
+            BleErrorDomain::Scan,
+        ))
+    }
+
+    async fn retire_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        #[cfg(target_os = "windows")]
+        let result = self.adapter.retire_scan_ingress(ingress_epoch);
+        #[cfg(not(target_os = "windows"))]
+        let result = self.adapter.retire_scan_ingress(ingress_epoch).await;
+        result.map_err(map_radio(
+            "scan.ingress.retire",
+            BleErrorCode::ScanStopFailed,
+            BleErrorDomain::Cleanup,
+        ))
+    }
+
+    async fn fence_scan_ingress(&self, ingress_epoch: u64) -> Result<(), DesktopError> {
+        self.adapter
+            .fence_scan_ingress(ingress_epoch)
+            .await
+            .map_err(map_radio(
+                "scan.ingress.fence",
+                BleErrorCode::ScanStopFailed,
+                BleErrorDomain::Cleanup,
+            ))
+    }
+
     async fn start_scan(&self, filter: ScanFilterSpec) -> Result<(), DesktopError> {
         if filter.windows.is_some() && !cfg!(target_os = "windows") {
             return Err(DesktopError::new(
@@ -4097,25 +7088,52 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn stop_scan(&self) -> Result<(), DesktopError> {
-        // A requested stop is reported by the OS too; mark it expected so
-        // it never ends a later scan (Windows, vendored patch 5).
-        let observed = cfg!(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped));
-        if observed {
-            self.expected_scan_stops.fetch_add(1, Ordering::SeqCst);
+        // WinRT's Stop request returns before `Stopped`. Reserve the callback
+        // first, then hold this boundary operation until that callback arrives:
+        // DesktopCentral retains the scan slot for the entire await and cannot
+        // accidentally admit a replacement that the old callback can affect.
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+        let mut requested = {
+            let generation = self.adapter.scan_watcher_generation().map_err(|error| {
+                DesktopError::scan_stop_failed(format!(
+                    "could not read the WinRT advertisement watcher generation: {error}"
+                ))
+                .with_os(&error)
+            })?;
+            self.winrt_scan_stop_fence.requested_stop(generation)
+        };
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+        if requested.initiates_os_stop {
+            let stopped =
+                self.adapter.stop_scan().await.map_err(|error| {
+                    DesktopError::scan_stop_failed(error.to_string()).with_os(&error)
+                });
+            if let Err(error) = stopped {
+                requested.cancel();
+                return Err(error);
+            }
         }
-        let stopped = self
-            .adapter
+        #[cfg(not(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+        self.adapter
             .stop_scan()
             .await
-            .map_err(|error| DesktopError::scan_stop_failed(error.to_string()).with_os(&error));
-        if observed && stopped.is_err() {
-            let _ = self.expected_scan_stops.fetch_update(
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-                |count| count.checked_sub(1),
-            );
+            .map_err(|error| DesktopError::scan_stop_failed(error.to_string()).with_os(&error))?;
+        // The previous stop caller can time out after `Stop` reaches a
+        // terminal watcher but before WinRT delivers `Stopped`. A retry is
+        // still inside DesktopCentral's retiring scan slot, so it is the one
+        // place recovery can prove the old watcher is gone and release that
+        // slot without allowing a replacement to race its callback.
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+        if !requested.initiates_os_stop {
+            self.recover_stalled_winrt_scan_stop().await?;
         }
-        stopped
+        #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
+        if let Err(detail) = requested.wait().await {
+            return Err(DesktopError::scan_stop_failed(format!(
+                "the WinRT advertisement watcher stopped ({detail})"
+            )));
+        }
+        Ok(())
     }
 
     async fn peers(&self) -> Result<Vec<PeerSnapshot>, DesktopError> {
@@ -4337,6 +7355,172 @@ impl RadioBoundary for BtleplugRadio {
         self.discover_with_identity(peer_id).await
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn open_ordered_reclaim_authority(&self, request: u64) -> Result<u64, DesktopError> {
+        self.reclaim_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .open(request, self.adapter.reclaim_authority_handle())
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn forget_ordered_reclaim_open(&self, request: u64) -> Result<(), DesktopError> {
+        self.reclaim_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget_open(request)
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn close_ordered_reclaim_authority(&self, id: u64) -> Result<(), DesktopError> {
+        self.reclaim_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close(id)
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn forget_ordered_reclaim_authority(&self, id: u64) -> Result<(), DesktopError> {
+        self.reclaim_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget_authority(id)
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn reserve_ordered_reclaim_permit(
+        &self,
+        request: &crate::boundary::OrderedReclaimPermitRequest,
+    ) -> Result<u64, DesktopError> {
+        let mut state = self
+            .reclaim_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let captured = if state.has_request(request) {
+            None
+        } else {
+            let Some((generation, identity, binding, peripheral)) = self
+                .reclaim_bindings
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&request.peer_id)
+                .cloned()
+            else {
+                return state.refuse_request(request);
+            };
+            if generation != request.connection_generation || identity != request.identity {
+                return state.refuse_request(request);
+            }
+            Some((peripheral, binding))
+        };
+        state.reserve(request, captured)
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn forget_ordered_reclaim_permit_request(
+        &self,
+        request: &crate::boundary::OrderedReclaimPermitRequest,
+    ) -> Result<(), DesktopError> {
+        self.reclaim_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget_request(request)
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn acquire_ordered_reclaim_graph(
+        &self,
+        key: &crate::boundary::OrderedReclaimGraphKey,
+    ) -> Result<crate::boundary::OrderedReclaimGraphAcquire, DesktopError> {
+        self.reclaim_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .acquire(key)
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn commit_ordered_reclaim_graph(
+        &self,
+        key: &crate::boundary::OrderedReclaimGraphKey,
+    ) -> Result<crate::boundary::OrderedReclaimGraphCommit, DesktopError> {
+        self.reclaim_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .commit(key)
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn release_ordered_reclaim_graph(
+        &self,
+        key: &crate::boundary::OrderedReclaimGraphKey,
+    ) -> Result<(), DesktopError> {
+        reclaim::ReclaimState::release_retained(&self.reclaim_state, key).await
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    async fn forget_ordered_reclaim_graph(
+        &self,
+        key: &crate::boundary::OrderedReclaimGraphKey,
+    ) -> Result<(), DesktopError> {
+        self.reclaim_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget(key)
+    }
+
+    fn ordered_reclaim_requires_snapshot_binding(&self) -> bool {
+        self.ordered_recording_reclaim_supported()
+    }
+
+    fn bind_ordered_reclaim_snapshot(
+        &self,
+        peer_id: &str,
+        connection_generation: &str,
+        identity: &GattSnapshotIdentity,
+    ) -> Result<(), DesktopError> {
+        let peripheral = self.gatt.get(peer_id).ok_or_else(|| {
+            DesktopError::new(
+                BleErrorCode::GattDiscoveryRequired,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.reclaim-binding",
+            )
+        })?;
+        let tuple = (
+            identity.owner.clone(),
+            identity.attachment,
+            identity.revision,
+        );
+        let binding = peripheral
+            .capture_reclaim_graph_binding(peer_id, connection_generation, &tuple)
+            .map_err(|error| {
+                let code = match error {
+                    btleplug::platform::SourceGroupError::StaleGeneration => {
+                        BleErrorCode::GattStaleHandle
+                    }
+                    btleplug::platform::SourceGroupError::SourceStateUnavailable => {
+                        BleErrorCode::PlatformFailure
+                    }
+                    _ => BleErrorCode::LifecycleInvariantViolation,
+                };
+                DesktopError::new(code, BleErrorDomain::Gatt, "gatt.ordered.reclaim-binding")
+                    .with_detail(format!("native graph binding failed: {error:?}"))
+            })?;
+        let mut bindings = self
+            .reclaim_bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        bindings.retain(|peer, _| self.gatt.get(peer).is_some());
+        if !bindings.contains_key(peer_id) && bindings.len() >= 256 {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.ordered.reclaim-binding",
+            )
+            .with_detail("native graph binding capacity exhausted"));
+        }
+        bindings.insert(
+            peer_id.to_owned(),
+            (
+                connection_generation.to_owned(),
+                identity.clone(),
+                binding,
+                peripheral,
+            ),
+        );
+        Ok(())
+    }
+
     fn gatt_snapshot_identity(
         &self,
         peer_id: &str,
@@ -4366,8 +7550,26 @@ impl RadioBoundary for BtleplugRadio {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = peer_id;
-            Ok(None)
+            self.gatt
+                .get(peer_id)
+                .map(|peripheral| {
+                    peripheral
+                        .accepted_gatt_graph_identity()
+                        .map(|identity| {
+                            identity.map(|(owner, attachment, revision)| GattSnapshotIdentity {
+                                owner,
+                                attachment,
+                                revision,
+                            })
+                        })
+                        .map_err(map_radio(
+                            "gatt.snapshot-identity",
+                            BleErrorCode::GattDiscoveryRequired,
+                            BleErrorDomain::Gatt,
+                        ))
+                })
+                .transpose()
+                .map(Option::flatten)
         }
     }
 
@@ -4562,7 +7764,6 @@ impl RadioBoundary for BtleplugRadio {
         requested: Option<DeliveryMode>,
         preferred: Option<DeliveryMode>,
     ) -> Result<ObservedDelivery, DesktopError> {
-        let _gate = self.gatt.lock_peer(peer_id).await;
         let scope: InstanceKey = (
             peer_id.to_owned(),
             service_uuid.to_owned(),
@@ -4570,178 +7771,15 @@ impl RadioBoundary for BtleplugRadio {
             characteristic_uuid.to_owned(),
             characteristic_occurrence,
         );
-        let key = forwarder_key(
-            peer_id,
-            service_uuid,
-            service_occurrence,
-            characteristic_uuid,
-            characteristic_occurrence,
-        );
-        // Cleanup uses the target captured before the original native effect,
-        // even after graph eviction/replacement or watcher failure.
         if !enable {
-            release_notification_target(
-                &self.notification_targets,
-                &self.forwarders,
-                &self.cleanup_debt,
-                &key,
-                &scope,
-            )
-            .await?;
+            let _gate = self.gatt.lock_peer(peer_id).await;
+            self.release_epoch(&scope, epoch).await?;
             return Ok(ObservedDelivery::Unknown);
         }
-        let peripheral = self.cached_peripheral(peer_id).await?;
-        let characteristic = Self::find_characteristic(
-            &peripheral,
-            service_uuid,
-            service_occurrence,
-            characteristic_uuid,
-            characteristic_occurrence,
-        )
-        .ok_or_else(|| {
-            DesktopError::subscribe_failed(format!(
-                "unknown characteristic {characteristic_uuid} occurrence {characteristic_occurrence}"
-            ))
-        })?;
-        if enable {
-            // Finding 39: answer the delivery mode from the characteristic's
-            // properties and the platform's documented rule, before any
-            // effect (see `crate::delivery`).
-            let plan = plan_delivery_for_os(
-                property_flags(characteristic.properties),
-                requested,
-                with_delivery_preference(platform_rule(), preferred),
-                os_answers_unflagged_subscribe(),
-            )?;
-            if self
-                .cleanup_debt
-                .lock()
-                .expect("cleanup debt")
-                .contains(&scope)
-            {
-                release_notification_target(
-                    &self.notification_targets,
-                    &self.forwarders,
-                    &self.cleanup_debt,
-                    &key,
-                    &scope,
-                )
-                .await?;
-            }
-            #[cfg(target_os = "linux")]
-            let cleanup_peripheral = peripheral
-                .notification_cleanup_peripheral(&characteristic)
-                .map_err(|error| {
-                    DesktopError::subscribe_failed(error.to_string()).with_os(&error)
-                })?;
-            #[cfg(not(target_os = "linux"))]
-            let cleanup_peripheral = peripheral.clone();
-            // F09: every value routes by the exact attribute instance
-            // (UBM_PATCHES.md #6), so same-UUID siblings subscribe side by
-            // side and never share bytes.
-            // F13 / finding 128: shared enable sequencing — the value
-            // stream opens before the native enable.
-            let selected = match plan {
-                DeliveryPlan::AdapterWrites { mode, .. } => Some(mode),
-                // WinRT's configuration API must receive the selected value
-                // even when it equals the historical unselected OS rule.
-                DeliveryPlan::Platform(ObservedDelivery::Notification)
-                    if cfg!(target_os = "windows") =>
-                {
-                    Some(DeliveryMode::Notification)
-                }
-                DeliveryPlan::Platform(ObservedDelivery::Indication)
-                    if cfg!(target_os = "windows") =>
-                {
-                    Some(DeliveryMode::Indication)
-                }
-                DeliveryPlan::Platform(_) => None,
-            };
-            let enabled = if let Some(mode) = selected {
-                subscribe_and_stream_owned_selecting(
-                    &cleanup_peripheral,
-                    &characteristic,
-                    &self.notification_targets,
-                    &self.cleanup_debt,
-                    &scope,
-                    Some(mode),
-                )
-                .await
-            } else {
-                subscribe_and_stream_owned(
-                    &cleanup_peripheral,
-                    &characteristic,
-                    &self.notification_targets,
-                    &self.cleanup_debt,
-                    &scope,
-                )
-                .await
-            };
-            let stream: NotificationStream = match enabled {
-                Ok(stream) => stream,
-                Err(EnableStreamError::Subscribe(refusal) | EnableStreamError::Stream(refusal)) => {
-                    return Err(refusal);
-                }
-            };
-            // The btleplug stream is peripheral-wide: filter on the full
-            // (service, characteristic) identity, each with its attribute
-            // instance, so one subscription never routes another
-            // instance's values (UBM_PATCHES.md #6).
-            let route = NotificationRoute::of(&characteristic);
-            // The subscription epoch is captured at install, never minted
-            // at dequeue: every value this forwarder emits is attributable
-            // to exactly the enablement that installed it (F10).
-            let target = ForwardTarget {
-                peer_id: peer_id.to_owned(),
-                service_uuid: service_uuid.to_owned(),
-                service_occurrence,
-                characteristic_uuid: characteristic_uuid.to_owned(),
-                characteristic_occurrence,
-                epoch,
-            };
-            let forwarder = spawn_notification_forwarder(
-                &self.spawn,
-                stream,
-                route,
-                target,
-                self.notifications.clone(),
-                Arc::clone(&self.ingress_bytes),
-                Arc::clone(&self.ingress_dropped),
-            );
-            // Defensive replace: a live entry under the same per-instance
-            // key is aborted before overwrite so no forwarder ever leaks.
-            let replaced = self.forwarders.lock().expect("forwarder table").insert(
-                key.clone(),
-                ForwarderEntry {
-                    task: forwarder,
-                    peer_id: peer_id.to_owned(),
-                    service_uuid: service_uuid.to_owned(),
-                    service_occurrence,
-                    characteristic_uuid: characteristic_uuid.to_owned(),
-                    characteristic_occurrence,
-                    epoch,
-                },
-            );
-            if let Some(stale) = replaced {
-                stale.task.abort();
-            }
-            // A full enable supersedes any parked setup debt for this
-            // scope: the new forwarder owns the native CCCD now.
-            self.cleanup_debt
-                .lock()
-                .expect("cleanup debt")
-                .remove(&scope);
-            return match plan {
-                DeliveryPlan::Platform(observed) => Ok(observed),
-                // The first subscribe already wrote `mode`. Do not rewrite,
-                // and do not report `platform_writes` as what was observed.
-                DeliveryPlan::AdapterWrites { mode, .. } => Ok(match mode {
-                    DeliveryMode::Notification => ObservedDelivery::Notification,
-                    DeliveryMode::Indication => ObservedDelivery::Indication,
-                }),
-            };
-        }
-        Ok(ObservedDelivery::Unknown)
+        let prepared = self
+            .prepare_notification_activation(&scope, epoch, requested, preferred)
+            .await?;
+        self.dispatch_prepared_notification(&prepared).await
     }
 
     /// Teardown hook (M3): abort every live forwarder and best-effort
@@ -4777,12 +7815,77 @@ impl RadioBoundary for BtleplugRadio {
             .lock()
             .await
             .extend(entries.into_iter().map(|entry| entry.task.handle));
-        let failures = close_scope_debt(&self.cleanup_debt, |scope| async move {
-            tokio::time::timeout(CLOSE_SCOPE_BOUND, self.release_scope(&scope))
+        let ordered: Vec<_> = self
+            .ordered_sources
+            .lock()
+            .expect("ordered source owners")
+            .values()
+            .map(|owner| (owner.peer_id.clone(), owner.collection_id))
+            .collect();
+        let mut group_failures = Vec::new();
+        for (peer_id, collection_id) in ordered {
+            let cleanup = crate::boundary::OrderedSourceCleanup::Indeterminate {
+                peer_id,
+                collection_id,
+            };
+            match tokio::time::timeout(CLOSE_SCOPE_BOUND, self.release_ordered_source(&cleanup))
                 .await
-                .map_err(|_| CloseScopeElapsed)
-        })
+            {
+                Ok(Ok(crate::boundary::OrderedSourceRelease::Released)) => {}
+                Ok(Ok(crate::boundary::OrderedSourceRelease::Pending)) => group_failures.push(
+                    DesktopError::new(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Cleanup,
+                        "gatt.ordered.source-release",
+                    )
+                    .with_detail("ordered source cleanup remains pending"),
+                ),
+                Ok(Err(error)) => group_failures.push(error),
+                Err(_) => group_failures.push(
+                    DesktopError::new(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Cleanup,
+                        "gatt.ordered.source-release",
+                    )
+                    .with_detail("ordered source cleanup remains owned"),
+                ),
+            }
+        }
+        let failures = close_target_claims(
+            &self.notification_targets,
+            &self.cleanup_debt,
+            |scope, epoch| async move {
+                tokio::time::timeout(CLOSE_SCOPE_BOUND, self.release_scope(&scope, epoch))
+                    .await
+                    .map_err(|_| CloseScopeElapsed)
+            },
+        )
         .await;
+        let peers: Vec<_> = self
+            .peer_groups
+            .lock()
+            .expect("peer notification groups")
+            .keys()
+            .cloned()
+            .collect();
+        for peer in peers {
+            match tokio::time::timeout(CLOSE_SCOPE_BOUND, self.close_peer_group(&peer)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => group_failures.push(error),
+                Err(_) => group_failures.push(
+                    DesktopError::new(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Cleanup,
+                        "gatt.notification.source",
+                    )
+                    .with_detail("peer notification group cleanup remains owned"),
+                ),
+            }
+        }
+        *self
+            .closing_group_failures
+            .lock()
+            .expect("group close failures") = group_failures;
         self.gatt.clear();
         *self.close_failures.lock().expect("close failures") = failures;
     }
@@ -4792,7 +7895,12 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn finish_close(&self) -> Vec<DesktopError> {
-        let mut failures = Vec::new();
+        let mut failures = std::mem::take(
+            &mut *self
+                .closing_group_failures
+                .lock()
+                .expect("group close failures"),
+        );
         #[cfg(target_os = "windows")]
         for peer in self.native_devices.peers().await {
             match tokio::time::timeout(
@@ -5445,13 +8553,66 @@ impl RadioBoundary for BtleplugRadio {
                 }
                 Step::Os(Some(event)) => return Some(event),
                 Step::Os(None) => {}
-                Step::Adapter(None) => return None,
+                Step::Adapter(None) => {
+                    let close = {
+                        let mut source_close = self.scan_ingress_source_close.lock().await;
+                        source_close.begin()
+                    };
+                    if !close {
+                        if self.scan_ingress_source_close.lock().await.has_failed() {
+                            // The failure was already delivered as an event.
+                            // Do not turn its next poll into EOF: the central
+                            // must retain the cleanup owner until its explicit
+                            // fence retry receives the adapter's same refusal.
+                            std::future::pending::<()>().await;
+                        }
+                        return None;
+                    }
+                    let outcome =
+                        self.adapter
+                            .scan_ingress_source_closed()
+                            .await
+                            .map_err(map_radio(
+                                "scan.ingress.source-closed",
+                                BleErrorCode::PlatformFailure,
+                                BleErrorDomain::Cleanup,
+                            ));
+                    let failure = self
+                        .scan_ingress_source_close
+                        .lock()
+                        .await
+                        .complete(outcome);
+                    return failure.map(RadioEvent::ScanIngressSourceClosedFailed);
+                }
                 // Findings 120 and 122: every OS sighting is an observation
                 // with its own data (vendored patch 17); discovery and update
                 // events only mark the peripheral known.
+                Step::Adapter(Some(CentralEvent::ScanIngressFence { fence_id, .. })) => {
+                    // This acknowledgement is deliberately downstream of
+                    // `EventStream::next`: any earlier scoped advertisement
+                    // was already returned from this boundary and processed
+                    // by the central before it can ask for another event.
+                    // The marker itself is private ordering machinery, never
+                    // a public radio event.
+                    let _acknowledged = self.adapter.acknowledge_scan_ingress_fence(fence_id);
+                }
                 Step::Adapter(Some(CentralEvent::Advertisement { id, report })) => {
                     if let Some(event) = self.sighting(&id, report).await {
                         return Some(event);
+                    }
+                }
+                Step::Adapter(Some(CentralEvent::AdvertisementScoped {
+                    id,
+                    report,
+                    ingress_epoch,
+                })) => {
+                    if let Some(RadioEvent::Advertisement(snapshot)) =
+                        self.sighting(&id, report).await
+                    {
+                        return Some(RadioEvent::AdvertisementScoped {
+                            snapshot,
+                            ingress_epoch,
+                        });
                     }
                 }
                 Step::Adapter(Some(CentralEvent::AdvertisementUnread { id, detail })) => {
@@ -5461,6 +8622,56 @@ impl RadioBoundary for BtleplugRadio {
                 // surface it as its own event so the central invalidates
                 // generations instead of re-reading stale handles. The
                 // next discovery refreshes the snapshot.
+                Step::Adapter(Some(CentralEvent::DeviceSourceUncertain {
+                    id,
+                    graph,
+                    platform,
+                })) => {
+                    let mut error = DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Gatt,
+                        "gatt.source",
+                    )
+                    .with_detail("native source could not establish graph or callback ordering");
+                    if let Some(platform) = platform {
+                        let detail = platform.metadata.into_iter().fold(
+                            crate::errors::PlatformDetail::new(platform.domain, platform.code)
+                                .with_message(platform.message),
+                            |detail, (key, value)| {
+                                detail.with_metadata(key, crate::errors::PlatformValue::Text(value))
+                            },
+                        );
+                        error = error.with_platform(detail);
+                    }
+                    if let Some((owner, attachment, revision)) = graph {
+                        return Some(RadioEvent::GattSourceUncertain {
+                            peer_id: id.to_string(),
+                            identity: GattSnapshotIdentity {
+                                owner,
+                                attachment,
+                                revision,
+                            },
+                            error,
+                        });
+                    }
+                    return Some(RadioEvent::GattSourceUncertainUnassociated {
+                        peer_id: id.to_string(),
+                        error,
+                    });
+                }
+                Step::Adapter(Some(CentralEvent::DeviceGraphRetired {
+                    id,
+                    graph: (owner, attachment, revision),
+                })) => {
+                    return Some(RadioEvent::GattGraphRetired {
+                        peer_id: id.to_string(),
+                        identity: GattSnapshotIdentity {
+                            owner,
+                            attachment,
+                            revision,
+                        },
+                    });
+                }
                 Step::Adapter(Some(CentralEvent::DeviceServicesModified(id))) => {
                     let peer_id = id.to_string();
                     #[cfg(target_os = "linux")]
@@ -5547,63 +8758,244 @@ static OS_RELEASE_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// watcher stops). Counted, never silent.
 static OS_EVENT_DROPS: AtomicU64 = AtomicU64::new(0);
 
+/// Serializes WinRT's asynchronous watcher-stop acknowledgement with scan
+/// ownership. `BluetoothLEAdvertisementWatcher::Stop()` only requests a
+/// transition; the subsequent successful `Stopped` callback is the physical
+/// confirmation that makes a replacement scan safe.
+///
+/// The watcher callback does not contain a scan generation. Therefore the
+/// only sound association is temporal: while a requested stop is pending, do
+/// not release its central scan or start another one. The first successful
+/// callback then belongs to that retiring watcher lifecycle and acknowledges
+/// it. A failed `Stop` call cancels its reservation; a cancelled/timed-out
+/// caller deliberately does not, because its eventual callback must still be
+/// swallowed before another scan can be admitted.
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+struct WinRtScanStopFence {
+    next: AtomicU64,
+    retired_through: AtomicU64,
+    pending: StdMutex<Option<WinRtPendingStop>>,
+}
+
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+struct WinRtPendingStop {
+    id: u64,
+    generation: u64,
+    acknowledgement: tokio::sync::watch::Sender<WinRtStopAcknowledgement>,
+}
+
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WinRtStopAcknowledgement {
+    Pending,
+    Stopped,
+    Failed(String),
+    Replaced,
+}
+
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WinRtStopDisposition {
+    Requested,
+    Stale,
+    Unsolicited,
+}
+
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+#[derive(Debug)]
+enum WinRtRecovery {
+    Stopped,
+    Failed(String),
+}
+
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+struct WinRtRequestedStop {
+    fence: Arc<WinRtScanStopFence>,
+    id: u64,
+    acknowledgement: tokio::sync::watch::Receiver<WinRtStopAcknowledgement>,
+    initiates_os_stop: bool,
+}
+
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+impl WinRtScanStopFence {
+    fn new() -> Self {
+        Self {
+            next: AtomicU64::new(1),
+            retired_through: AtomicU64::new(0),
+            pending: StdMutex::new(None),
+        }
+    }
+
+    fn requested_stop(self: &Arc<Self>, generation: u64) -> WinRtRequestedStop {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(active) = pending.as_ref() {
+            return WinRtRequestedStop {
+                fence: Arc::clone(self),
+                id: active.id,
+                acknowledgement: active.acknowledgement.subscribe(),
+                initiates_os_stop: false,
+            };
+        }
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (sender, acknowledgement) =
+            tokio::sync::watch::channel(WinRtStopAcknowledgement::Pending);
+        *pending = Some(WinRtPendingStop {
+            id,
+            generation,
+            acknowledgement: sender,
+        });
+        WinRtRequestedStop {
+            fence: Arc::clone(self),
+            id,
+            acknowledgement,
+            initiates_os_stop: true,
+        }
+    }
+
+    /// Resolves one requested stop callback. An unsolicited callback has no
+    /// reservation and remains a central lifecycle event.
+    fn acknowledge_stop(
+        &self,
+        generation: u64,
+        successful: bool,
+        error_name: String,
+    ) -> WinRtStopDisposition {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if pending
+            .as_ref()
+            .is_some_and(|active| active.generation == generation)
+        {
+            let active = pending.take().expect("pending stop checked above");
+            // The stop caller may have timed out/cancelled, dropping its
+            // receiver. The reservation still belongs to this callback and
+            // must be consumed rather than forwarded as a later scan's stop.
+            let outcome = if successful {
+                WinRtStopAcknowledgement::Stopped
+            } else {
+                WinRtStopAcknowledgement::Failed(error_name)
+            };
+            let _ = active.acknowledgement.send(outcome);
+            WinRtStopDisposition::Requested
+        } else if generation <= self.retired_through.load(Ordering::Acquire) {
+            WinRtStopDisposition::Stale
+        } else {
+            WinRtStopDisposition::Unsolicited
+        }
+    }
+
+    /// Atomically replace a stopped watcher whose callback never arrived.
+    /// Holding this fence while the vendor watcher is replaced makes a late
+    /// old-generation callback harmless: it can only observe no matching
+    /// reservation after the replacement has been published.
+    fn recover_stalled(
+        &self,
+        replace: impl FnOnce(u64) -> Result<WinRtRecovery, DesktopError>,
+    ) -> Result<Option<WinRtRecovery>, DesktopError> {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(generation) = pending.as_ref().map(|active| active.generation) else {
+            return Ok(None);
+        };
+        let recovery = replace(generation)?;
+        let active = pending
+            .take()
+            .expect("pending stop retained while replacing watcher");
+        self.retired_through.store(generation, Ordering::Release);
+        let acknowledgement = match recovery {
+            WinRtRecovery::Stopped => WinRtStopAcknowledgement::Replaced,
+            WinRtRecovery::Failed(ref detail) => WinRtStopAcknowledgement::Failed(detail.clone()),
+        };
+        let _ = active.acknowledgement.send(acknowledgement);
+        Ok(Some(recovery))
+    }
+
+    fn cancel(&self, id: u64) {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if pending.as_ref().is_some_and(|active| active.id == id) {
+            *pending = None;
+        }
+    }
+}
+
+#[cfg(any(test, all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
+impl WinRtRequestedStop {
+    async fn wait(&mut self) -> Result<(), String> {
+        match self
+            .acknowledgement
+            .wait_for(|acknowledged| !matches!(*acknowledged, WinRtStopAcknowledgement::Pending))
+            .await
+        {
+            Ok(acknowledged)
+                if matches!(
+                    *acknowledged,
+                    WinRtStopAcknowledgement::Stopped | WinRtStopAcknowledgement::Replaced
+                ) =>
+            {
+                Ok(())
+            }
+            Ok(acknowledged) => match &*acknowledged {
+                WinRtStopAcknowledgement::Failed(error_name) => Err(error_name.clone()),
+                _ => Err("the WinRT watcher-stop acknowledgement channel closed".to_owned()),
+            },
+            Err(_) => Err("the WinRT watcher-stop acknowledgement channel closed".to_owned()),
+        }
+    }
+
+    fn cancel(self) {
+        self.fence.cancel(self.id);
+    }
+}
+
 /// Forward the WinRT watcher's own stops as [`RadioEvent::ScanTerminated`]
 /// (Windows, vendored patch 5), skipping the stops this radio requested.
 /// Elsewhere the OS ends a scan only by closing the event source, which the
 /// central already settles.
+#[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
 fn watch_scan_stopped(
     adapter: &Adapter,
     spawn: &tokio::runtime::Handle,
     events: mpsc::Sender<RadioEvent>,
-    expected: Arc<AtomicU64>,
+    fence: Arc<WinRtScanStopFence>,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    #[cfg(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped))]
-    {
-        let mut stops = match adapter.scan_stopped_events() {
-            Ok(stops) => stops,
-            Err(error) => {
-                OS_EVENT_DROPS.fetch_add(1, Ordering::Relaxed);
-                eprintln!("ubm-desktop: WinRT watcher stops cannot be observed: {error}");
-                return None;
-            }
-        };
-        Some(spawn.spawn(async move {
-            loop {
-                match stops.recv().await {
-                    Ok(stopped) => {
-                        let requested = stopped.error == 0
-                            && expected
-                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                                    count.checked_sub(1)
-                                })
-                                .is_ok();
-                        if requested {
-                            continue;
-                        }
-                        let event = RadioEvent::ScanTerminated {
-                            aborted: stopped.error != 0,
-                            detail: format!(
-                                "the WinRT advertisement watcher stopped ({})",
-                                stopped.error_name
-                            ),
-                        };
-                        if events.send(event).await.is_err() {
-                            return;
-                        }
+    let mut stops = match adapter.scan_stopped_events() {
+        Ok(stops) => stops,
+        Err(error) => {
+            OS_EVENT_DROPS.fetch_add(1, Ordering::Relaxed);
+            eprintln!("ubm-desktop: WinRT watcher stops cannot be observed: {error}");
+            return None;
+        }
+    };
+    Some(spawn.spawn(async move {
+        loop {
+            match stops.recv().await {
+                Ok(stopped) => {
+                    let disposition = fence.acknowledge_stop(
+                        stopped.generation,
+                        stopped.error == 0,
+                        stopped.error_name.clone(),
+                    );
+                    match disposition {
+                        WinRtStopDisposition::Stale => continue,
+                        WinRtStopDisposition::Requested if stopped.error == 0 => continue,
+                        WinRtStopDisposition::Requested | WinRtStopDisposition::Unsolicited => {}
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        OS_EVENT_DROPS.fetch_add(1, Ordering::Relaxed);
+                    let event = RadioEvent::ScanTerminated {
+                        aborted: stopped.error != 0,
+                        detail: format!(
+                            "the WinRT advertisement watcher stopped ({})",
+                            stopped.error_name
+                        ),
+                    };
+                    if events.send(event).await.is_err() {
+                        return;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    OS_EVENT_DROPS.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
-        }))
-    }
-    #[cfg(not(all(target_os = "windows", btleplug_ubm_winrt_scan_stopped)))]
-    {
-        let _ = (adapter, spawn, events, expected);
-        None
-    }
+        }
+    }))
 }
 
 /// Windows: whether this process runs with package identity (the legacy
@@ -5844,6 +9236,33 @@ mod winrt_parameter_answer_tests {
 #[cfg(test)]
 mod tests {
     use ubm_core::contracts::BleErrorCode;
+
+    #[test]
+    fn scan_ingress_source_close_retains_and_reports_a_refusal_once() {
+        let expected = crate::DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Cleanup,
+            "scan.ingress.source-closed",
+        )
+        .with_detail("the platform could not close callback ingress");
+        let mut close = super::ScanIngressSourceClose::default();
+
+        assert!(
+            close.begin(),
+            "the EOF observation claims the one close attempt"
+        );
+        assert_eq!(
+            close.complete(Err(expected.clone())),
+            Some(expected.clone())
+        );
+        assert_eq!(close.retained_failure(), Some(&expected));
+        assert!(close.has_failed());
+        assert!(
+            !close.begin(),
+            "a later EOF poll must not retry and repeatedly emit the refusal"
+        );
+    }
+
     #[test]
     fn owned_corebluetooth_discovery_refusals_keep_specific_public_names() {
         for (native, expected) in [
@@ -5985,6 +9404,106 @@ mod tests {
             }
         );
     }
+    #[test]
+    fn nested_native_cleanup_keeps_each_producers_ordered_metadata() {
+        let make = |code, first, second| {
+            btleplug::Error::Platform(
+                btleplug::PlatformError::new("native", code, "failure")
+                    .with("key", first)
+                    .with("key", second),
+            )
+        };
+        let error = btleplug::Error::WithCleanup {
+            primary: Box::new(make("primary", "p1", "p2")),
+            cleanup: Box::new(btleplug::Error::WithCleanup {
+                primary: Box::new(make("cleanup", "c1", "c2")),
+                cleanup: Box::new(make("nested", "n1", "n2")),
+            }),
+        };
+        let detail = super::platform_detail(&error).unwrap();
+        use crate::errors::PlatformValue::Text;
+        let check = |detail: &crate::errors::PlatformDetail, code, first: &str, second: &str| {
+            assert_eq!(detail.code, code);
+            let entries = detail.metadata_entries.as_ref().unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].key, "key");
+            assert_eq!(entries[0].value, Text(first.into()));
+            assert_eq!(entries[1].key, "key");
+            assert_eq!(entries[1].value, Text(second.into()));
+            assert_eq!(detail.metadata.get("key"), Some(&Text(second.into())));
+        };
+        check(&detail, "primary", "p1", "p2");
+        let [cleanup] = detail.cleanup.as_slice() else {
+            panic!("one cleanup expected")
+        };
+        check(cleanup, "cleanup", "c1", "c2");
+        let [nested] = cleanup.cleanup.as_slice() else {
+            panic!("one nested cleanup expected")
+        };
+        check(nested, "nested", "n1", "n2");
+        assert!(nested.cleanup.is_empty());
+    }
+
+    #[test]
+    fn nested_primary_keeps_all_cleanup_causes() {
+        let native = |code| {
+            btleplug::Error::Platform(
+                btleplug::PlatformError::new("native", code, "failure").with("key", code),
+            )
+        };
+        let detail = super::platform_detail(&btleplug::Error::WithCleanup {
+            primary: Box::new(btleplug::Error::WithCleanup {
+                primary: Box::new(native("primary")),
+                cleanup: Box::new(native("first")),
+            }),
+            cleanup: Box::new(native("second")),
+        })
+        .unwrap();
+        assert_eq!(detail.code, "primary");
+        assert_eq!(
+            detail
+                .cleanup
+                .iter()
+                .map(|cause| cause.code.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert_eq!(
+            detail.cleanup[0].metadata_entries.as_ref().unwrap()[0].value,
+            crate::errors::PlatformValue::Text("first".into())
+        );
+        assert_eq!(
+            detail.cleanup[1].metadata_entries.as_ref().unwrap()[0].value,
+            crate::errors::PlatformValue::Text("second".into())
+        );
+    }
+
+    #[test]
+    fn native_empty_and_special_metadata_preserve_source_shape() {
+        use crate::errors::PlatformValue::Text;
+        let empty = super::platform_detail(&btleplug::Error::Platform(
+            btleplug::PlatformError::new("native", "empty", ""),
+        ))
+        .unwrap();
+        assert_eq!(empty.metadata_entries, Some(vec![]));
+        assert!(
+            crate::errors::PlatformDetail::new("native", "map-only")
+                .metadata_entries
+                .is_none()
+        );
+        let native = btleplug::PlatformError::new("native", "special", "")
+            .with("__proto__", "雪")
+            .with("constructor", "x")
+            .with("__proto__", "雪");
+        let detail = super::platform_detail(&btleplug::Error::Platform(native)).unwrap();
+        let entries = detail.metadata_entries.unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].key, "__proto__");
+        assert_eq!(entries[0].value, Text("雪".into()));
+        assert_eq!(entries[1].key, "constructor");
+        assert_eq!(entries[2], entries[0]);
+    }
+
     #[test]
     fn discovery_reports_missing_le_gatt_mechanism_without_losing_platform_answer() {
         use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
@@ -6388,14 +9907,19 @@ mod tests {
     #[test]
     fn f113_platform_answers_become_typed_error_fields() {
         use super::WithOs;
-        use crate::errors::{PlatformDetail, PlatformValue};
+        use crate::errors::{PlatformDetail, PlatformMetadataEntry, PlatformValue};
         let cases = [
             (
                 btleplug::PlatformError::new("winrt", "gatt-status", "read failed")
+                    .with("gattStatus", "unreachable")
                     .with("gattStatus", "protocol-error"),
                 PlatformDetail::new("winrt", "gatt-status")
                     .with_message("read failed")
                     .with_metadata("gattStatus", PlatformValue::Text("protocol-error".into())),
+                vec![
+                    ("gattStatus", "unreachable"),
+                    ("gattStatus", "protocol-error"),
+                ],
             ),
             (
                 btleplug::PlatformError::new("corebluetooth", "413", "ambiguous")
@@ -6406,6 +9930,7 @@ mod tests {
                         "nsErrorDomain",
                         PlatformValue::Text("UBMCoreBluetooth".into()),
                     ),
+                vec![("nsErrorDomain", "UBMCoreBluetooth")],
             ),
             (
                 btleplug::PlatformError::bluez_dbus(
@@ -6414,9 +9939,27 @@ mod tests {
                 ),
                 PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotPermitted")
                     .with_message("Read not permitted"),
+                vec![],
             ),
         ];
-        for (platform, expected) in cases {
+        for (platform, mut expected, source_entries) in cases {
+            assert_eq!(
+                platform
+                    .metadata
+                    .iter()
+                    .map(|(key, value)| (*key, value.as_str()))
+                    .collect::<Vec<_>>(),
+                source_entries
+            );
+            expected.metadata_entries = Some(
+                source_entries
+                    .into_iter()
+                    .map(|(key, value)| PlatformMetadataEntry {
+                        key: key.into(),
+                        value: PlatformValue::Text(value.into()),
+                    })
+                    .collect(),
+            );
             let cause = btleplug::Error::Platform(platform);
             let error = crate::errors::DesktopError::read_failed(cause.to_string()).with_os(&cause);
             // One vocabulary on every OS: the read keeps its own name, the
@@ -6431,6 +9974,7 @@ mod tests {
             // On BlueZ the synthesized answer rides the error without
             // renaming it: the read keeps its own name.
             assert_eq!(error.code_str(), "gatt.read-failed");
+            assert!(error.platform().unwrap().metadata_entries.is_none());
             assert_eq!(
                 error.platform(),
                 Some(
@@ -6457,13 +10001,16 @@ mod tests {
         use super::WithOs;
         use crate::errors::{DesktopError, PlatformDetail};
         let failed = || {
-            btleplug::Error::Platform(btleplug::PlatformError::bluez_dbus(
+            let platform = btleplug::PlatformError::bluez_dbus(
                 Some("org.bluez.Error.Failed"),
                 Some("Failed to start notify"),
-            ))
+            );
+            assert!(platform.metadata.is_empty());
+            btleplug::Error::Platform(platform)
         };
-        let expected = PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
+        let mut expected = PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
             .with_message("Failed to start notify");
+        expected.metadata_entries = Some(vec![]);
         let subscribe = DesktopError::subscribe_failed(failed().to_string()).with_os(&failed());
         assert_eq!(subscribe.code_str(), "gatt.subscribe-failed");
         assert_eq!(subscribe.operation(), "gatt.subscribe");
@@ -6999,6 +10546,198 @@ mod tests {
     }
 
     #[test]
+    fn omitted_overflow_evidence_reaches_each_legacy_subscription() {
+        let route = NotificationRoute::new(uuid(HRM_SERVICE), 0, uuid(HRM_MEASUREMENT), 0);
+        let target = super::ForwardTarget {
+            peer_id: "peer".to_owned(),
+            service_uuid: HRM_SERVICE.to_owned(),
+            service_occurrence: 0,
+            characteristic_uuid: HRM_MEASUREMENT.to_owned(),
+            characteristic_occurrence: 0,
+            epoch: 17,
+        };
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let mut note = notification(BATTERY_SERVICE, BATTERY_LEVEL, vec![]);
+        note.source_failure = Some(
+            btleplug::PlatformError::new(
+                "ubm-native",
+                "notification-overflow-evidence-omitted",
+                "evidence omitted",
+            )
+            .with("omittedCount", "4"),
+        );
+        let mut lost = 0;
+        let result = super::forward_one(
+            note,
+            &route,
+            &target,
+            &sender,
+            &std::sync::atomic::AtomicU64::new(0),
+            &std::sync::atomic::AtomicU64::new(0),
+            &mut lost,
+        );
+        let super::Forwarded::SourceFailure(event) = result else {
+            panic!("peer-wide omission evidence must reach unrelated routes");
+        };
+        let crate::boundary::RadioEvent::NotificationSourceFailed { error, .. } = *event else {
+            panic!("omission evidence must remain a source failure");
+        };
+        assert_eq!(
+            error.platform().unwrap().code,
+            "notification-overflow-evidence-omitted"
+        );
+    }
+
+    #[cfg(all(
+        feature = "reclaim-test-support",
+        any(target_os = "windows", target_vendor = "apple")
+    ))]
+    #[tokio::test]
+    async fn source_overflow_reaches_both_retained_characteristic_forwarders() {
+        use std::sync::{Arc, atomic::AtomicU64};
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+        let streams = btleplug::platform::legacy_overflow_receiver_fixture(
+            [
+                notification(HRM_SERVICE, HRM_MEASUREMENT, vec![1]),
+                notification(HRM_SERVICE, BATTERY_LEVEL, vec![2]),
+            ],
+            notification(HRM_SERVICE, HRM_MEASUREMENT, vec![3]),
+        );
+        let mut tasks = Vec::new();
+        for (characteristic, stream) in [HRM_MEASUREMENT, BATTERY_LEVEL].into_iter().zip(streams) {
+            let target = super::ForwardTarget {
+                peer_id: "peer".into(),
+                service_uuid: HRM_SERVICE.into(),
+                service_occurrence: 0,
+                characteristic_uuid: characteristic.into(),
+                characteristic_occurrence: 0,
+                epoch: 17,
+            };
+            tasks.push(super::spawn_notification_forwarder(
+                &tokio::runtime::Handle::current(),
+                stream,
+                NotificationRoute::new(uuid(HRM_SERVICE), 0, uuid(characteristic), 0),
+                target,
+                sender.clone(),
+                Arc::new(AtomicU64::new(0)),
+                Arc::new(AtomicU64::new(0)),
+            ));
+        }
+        for task in tasks {
+            assert_eq!(task.handle.await.unwrap(), 0);
+        }
+        drop(sender);
+        let mut seen = std::collections::HashMap::<String, Vec<&str>>::new();
+        while let Some(event) = receiver.recv().await {
+            match event {
+                crate::boundary::RadioEvent::NotificationsLost {
+                    characteristic_uuid,
+                    lost,
+                    ..
+                } => {
+                    assert_eq!(lost, 2);
+                    seen.entry(characteristic_uuid).or_default().push("loss");
+                }
+                crate::boundary::RadioEvent::NotificationSourceFailed {
+                    characteristic_uuid,
+                    error,
+                    ..
+                } => {
+                    assert_eq!(
+                        error.platform().unwrap().code,
+                        "notification-broadcast-overflow"
+                    );
+                    seen.entry(characteristic_uuid).or_default().push("failure");
+                }
+                _ => panic!("unexpected forwarder event"),
+            }
+        }
+        assert_eq!(seen.len(), 2);
+        for characteristic in [HRM_MEASUREMENT, BATTERY_LEVEL] {
+            assert_eq!(seen.get(characteristic).unwrap(), &["loss", "failure"]);
+        }
+    }
+
+    #[cfg(feature = "reclaim-test-support")]
+    #[tokio::test]
+    async fn peer_group_source_overflow_reaches_both_registered_members_in_order() {
+        use crate::peer_notification_ingress::{
+            Members, NotificationRoute as NativeRoute, pump_group,
+        };
+        use std::sync::{Arc, Mutex, atomic::AtomicU64};
+        let (source, consumer) = btleplug::platform::PeerGroupTestSource::new(8, 2);
+        let members = Arc::new(Members::default());
+        for (index, characteristic) in [HRM_MEASUREMENT, BATTERY_LEVEL].into_iter().enumerate() {
+            let route = NativeRoute {
+                service_uuid: uuid(HRM_SERVICE),
+                service_instance: 0,
+                characteristic_uuid: uuid(characteristic),
+                characteristic_instance: 0,
+            };
+            let target = super::ForwardTarget {
+                peer_id: "peer".into(),
+                service_uuid: HRM_SERVICE.into(),
+                service_occurrence: 0,
+                characteristic_uuid: characteristic.into(),
+                characteristic_occurrence: 0,
+                epoch: index as u64 + 1,
+            };
+            members
+                .register(target, || source.register(route, index as u64 + 1))
+                .unwrap();
+        }
+        for (index, characteristic) in [HRM_MEASUREMENT, BATTERY_LEVEL].into_iter().enumerate() {
+            source
+                .publish(
+                    index as u64 + 1,
+                    notification(HRM_SERVICE, characteristic, vec![index as u8 + 1]),
+                )
+                .unwrap();
+        }
+        source
+            .publish(1, notification(HRM_SERVICE, HRM_MEASUREMENT, vec![3]))
+            .unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+        let task = tokio::spawn(pump_group(
+            "peer".into(),
+            8,
+            1,
+            true,
+            Arc::new(Mutex::new(
+                crate::ordered_notification_groups::OrderedGroupRegistry::default(),
+            )),
+            consumer,
+            members.clone(),
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+            sender,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
+            None,
+        ));
+        assert!(matches!(
+            receiver.recv().await,
+            Some(crate::boundary::RadioEvent::PeerNotificationSourceStarted { generation: 8, .. })
+        ));
+        for (index, characteristic) in [HRM_MEASUREMENT, BATTERY_LEVEL].into_iter().enumerate() {
+            assert!(
+                matches!(receiver.recv().await, Some(crate::boundary::RadioEvent::NotificationWithProvenance { characteristic_uuid, source_ordinal, value, .. }) if characteristic_uuid == characteristic && source_ordinal == index as u64 && value == [index as u8 + 1])
+            );
+        }
+        assert!(
+            matches!(receiver.recv().await, Some(crate::boundary::RadioEvent::PeerNotificationSourceFailed { members, rejected_loss: Some(1), tail_uncertain: true, .. }) if members.len() == 2 && members.iter().any(|(scope, epoch)| scope.3 == HRM_MEASUREMENT && *epoch == 1) && members.iter().any(|(scope, epoch)| scope.3 == BATTERY_LEVEL && *epoch == 2))
+        );
+        let Some(crate::boundary::RadioEvent::PeerNotificationSourceFence { ack }) =
+            receiver.recv().await
+        else {
+            panic!("expected terminal fence")
+        };
+        ack.acknowledge();
+        assert!(task.await.unwrap().is_ok());
+        assert!(members.is_closed());
+        assert!(receiver.recv().await.is_none());
+    }
+
+    #[test]
     fn f61_same_uuid_instances_route_by_instance() {
         // Two same-UUID characteristics (handles 0x12 and 0x15) under two
         // same-UUID services (0x10, 0x20): each value reaches only the
@@ -7086,11 +10825,16 @@ mod tests {
         subscribe_local_refusal: std::sync::Arc<std::sync::atomic::AtomicU8>,
         object_gone: std::sync::Arc<std::sync::atomic::AtomicBool>,
         release_no_reply: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        exact_cleanup: bool,
         release_gate: Option<std::sync::Arc<tokio::sync::Notify>>,
         enable_gate: Option<std::sync::Arc<tokio::sync::Notify>>,
     }
 
     impl super::NotificationTransport for ExactNotificationTransport {
+        fn owns_exact_cleanup(&self) -> bool {
+            self.exact_cleanup
+        }
+
         async fn transport_subscribe(
             &self,
             characteristic: &Characteristic,
@@ -7990,6 +11734,247 @@ mod tests {
         assert!(queue.entries.lock().unwrap().is_empty());
     }
 
+    #[test]
+    fn ordered_claim_bindings_isolate_groups_sharing_a_physical_activation() {
+        use crate::boundary::{
+            OrderedSourceIngress, OrderedSourceLease, PreparedNotificationActivation,
+        };
+        use ubm_core::ordered_notifications::{Membership, SourceGeneration};
+        let activation = PreparedNotificationActivation {
+            scope: scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0),
+            activation_epoch: 5,
+            requested: None,
+            preferred: None,
+        };
+        let make = |id, native_group, membership| {
+            let lease = OrderedSourceLease {
+                peer_id: "peer".into(),
+                collection_id: id,
+                connection_generation: "conn".into(),
+                source_generation: SourceGeneration::Counter(3),
+                native_group,
+                members: vec![(1, membership)],
+                ingress: OrderedSourceIngress::BackendOwned,
+            };
+            let owner = crate::peer_notification_ingress::OrderedSourceOwner {
+                peer_id: "peer".into(),
+                collection_id: id,
+                group: std::sync::Mutex::new(None),
+                lease: std::sync::Mutex::new(Some(lease.clone())),
+                renewals: std::sync::Mutex::new(std::collections::HashMap::new()),
+                origins: std::sync::Mutex::new(std::collections::HashMap::new()),
+                claims: std::sync::Mutex::new(std::collections::HashMap::from([(
+                    1,
+                    (membership, activation.clone()),
+                )])),
+            };
+            (owner, lease)
+        };
+        let first = Membership {
+            member: 10,
+            epoch: 1,
+        };
+        let second = Membership {
+            member: 11,
+            epoch: 1,
+        };
+        let (a, lease_a) = make(1, 10, first);
+        let (b, lease_b) = make(2, 11, second);
+        assert!(super::validate_source_claim_binding(&a, &lease_a, 1, first, &activation).is_ok());
+        assert!(super::validate_source_claim_binding(&b, &lease_b, 1, second, &activation).is_ok());
+        assert!(
+            super::validate_source_claim_binding(&a, &lease_b, 1, second, &activation).is_err()
+        );
+        let mut stale = activation.clone();
+        stale.activation_epoch += 1;
+        assert!(super::validate_source_claim_binding(&a, &lease_a, 1, first, &stale).is_err());
+        assert!(super::validate_source_claim_binding(&b, &lease_b, 1, second, &activation).is_ok());
+    }
+
+    #[tokio::test]
+    async fn prepared_dispatch_retries_only_a_confirmed_no_effect_refusal() {
+        let transport = ExactNotificationTransport::default();
+        let characteristic =
+            characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let scope = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let prepared = crate::boundary::PreparedNotificationActivation {
+            scope: scope.clone(),
+            activation_epoch: 5,
+            requested: None,
+            preferred: None,
+        };
+        let targets = super::NotificationTargets::default();
+        let target = targets
+            .retain_epoch(&scope, 5, transport.clone(), characteristic)
+            .unwrap();
+        *target.prepared.lock().unwrap() = Some(super::PreparedPlan {
+            activation: 9,
+            source_generation: 3,
+            handle: prepared.clone(),
+            selected: None,
+            observed: super::ObservedDelivery::Unknown,
+        });
+        transport
+            .subscribe_local_refusal
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            super::dispatch_prepared_target(&target, &prepared)
+                .await
+                .is_err()
+        );
+        transport
+            .subscribe_local_refusal
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            super::dispatch_prepared_target(&target, &prepared)
+                .await
+                .unwrap(),
+            super::ObservedDelivery::Unknown
+        );
+        assert_eq!(*transport.subscribed.lock().unwrap(), vec![0x20, 0x20]);
+    }
+
+    #[tokio::test]
+    async fn prepared_dispatch_survives_cancel_and_reuses_one_native_enable() {
+        let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+        let transport = ExactNotificationTransport {
+            enable_gate: Some(gate.clone()),
+            ..Default::default()
+        };
+        let characteristic =
+            characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let scope = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let prepared = crate::boundary::PreparedNotificationActivation {
+            scope: scope.clone(),
+            activation_epoch: 5,
+            requested: None,
+            preferred: None,
+        };
+        let targets = super::NotificationTargets::default();
+        let target = targets
+            .retain_epoch(&scope, 5, transport.clone(), characteristic)
+            .unwrap();
+        *target.prepared.lock().unwrap() = Some(super::PreparedPlan {
+            activation: 9,
+            source_generation: 3,
+            handle: prepared.clone(),
+            selected: Some(DeliveryMode::Notification),
+            observed: super::ObservedDelivery::Notification,
+        });
+        let first_target = target.clone();
+        let first_handle = prepared.clone();
+        let first = tokio::spawn(async move {
+            super::dispatch_prepared_target(&first_target, &first_handle).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while transport.subscribed.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        first.abort();
+        assert_eq!(
+            super::settle_notification_target(&target).unwrap(),
+            crate::boundary::OrderedNotificationSettlement::Pending
+        );
+        let second_target = target.clone();
+        let second_handle = prepared.clone();
+        let second = tokio::spawn(async move {
+            super::dispatch_prepared_target(&second_target, &second_handle).await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(*transport.subscribed.lock().unwrap(), vec![0x20]);
+        gate.notify_one();
+        assert_eq!(
+            second.await.unwrap().unwrap(),
+            super::ObservedDelivery::Notification
+        );
+        assert_eq!(
+            super::settle_notification_target(&target).unwrap(),
+            crate::boundary::OrderedNotificationSettlement::Enabled
+        );
+        let mut stale = prepared.clone();
+        stale.activation_epoch += 1;
+        assert!(
+            super::dispatch_prepared_target(&target, &stale)
+                .await
+                .is_err()
+        );
+        assert_eq!(*transport.subscribed.lock().unwrap(), vec![0x20]);
+    }
+
+    #[tokio::test]
+    async fn exact_owner_retries_indeterminate_cleanup_without_retargeting() {
+        let transport = ExactNotificationTransport {
+            exact_cleanup: true,
+            ..Default::default()
+        };
+        let characteristic =
+            characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let scope = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let _stream = super::subscribe_and_stream_owned_epoch(
+            &transport,
+            &characteristic,
+            &targets,
+            &debt,
+            &scope,
+            7,
+            None,
+        )
+        .await
+        .unwrap();
+        transport
+            .release_no_reply
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            super::release_notification_target_epoch(
+                &targets,
+                &forwarders,
+                &debt,
+                "key",
+                &scope,
+                7
+            )
+            .await
+            .is_err()
+        );
+        assert!(targets.get_epoch(&scope, 7).is_some());
+        transport
+            .release_no_reply
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        transport
+            .object_gone
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            super::release_notification_target_epoch(
+                &targets,
+                &forwarders,
+                &debt,
+                "key",
+                &scope,
+                7
+            )
+            .await
+            .is_err()
+        );
+        assert!(targets.get_epoch(&scope, 7).is_some());
+        transport
+            .object_gone
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        super::release_notification_target_epoch(&targets, &forwarders, &debt, "key", &scope, 7)
+            .await
+            .unwrap();
+        assert!(targets.get_epoch(&scope, 7).is_none());
+        assert_eq!(
+            *transport.unsubscribed.lock().unwrap(),
+            vec![0x20, 0x20, 0x20]
+        );
+    }
+
     #[tokio::test]
     async fn original_notification_target_indeterminate_release_fences_retry_and_new_graph() {
         let transport = ExactNotificationTransport::default();
@@ -8048,6 +12033,253 @@ mod tests {
         assert!(cache.get("peer").is_none());
         assert!(targets.get(&owned).is_some() && debt.lock().unwrap().contains(&owned));
         assert_eq!(*transport.unsubscribed.lock().unwrap(), [0x20]);
+    }
+
+    #[tokio::test]
+    async fn peer_retirement_uses_production_forwarder_key_for_epoch_zero() {
+        let transport = ExactNotificationTransport::default();
+        let characteristic =
+            characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let scope = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let key = super::epoch_forwarder_key(&scope, 0);
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        let _stream = super::subscribe_and_stream_owned_epoch(
+            &transport,
+            &characteristic,
+            &targets,
+            &debt,
+            &scope,
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+        forwarders.lock().unwrap().insert(
+            key.clone(),
+            forwarder(tokio::spawn(std::future::pending()), &scope),
+        );
+        let retired = super::retire_peer_forwarders(
+            &mut forwarders.lock().unwrap(),
+            &mut debt.lock().unwrap(),
+            "peer",
+            super::PeerRetirement::DatabaseChanged,
+        );
+        assert_eq!(retired.len(), 1);
+        retired.into_iter().for_each(|entry| entry.task.abort());
+        assert!(!forwarders.lock().unwrap().contains_key(&key));
+        assert!(targets.get_epoch(&scope, 0).is_some());
+        assert!(debt.lock().unwrap().contains(&scope));
+    }
+
+    #[tokio::test]
+    async fn discovery_retries_exact_peer_claims_before_replacing_services() {
+        let old = ExactNotificationTransport::default();
+        let other = ExactNotificationTransport::default();
+        let characteristic =
+            characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let unrelated = scope("other", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let _old = super::subscribe_and_stream_owned_epoch(
+            &old,
+            &characteristic,
+            &targets,
+            &debt,
+            &owned,
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+        let _other = super::subscribe_and_stream_owned_epoch(
+            &other,
+            &characteristic,
+            &targets,
+            &debt,
+            &unrelated,
+            2,
+            None,
+        )
+        .await
+        .unwrap();
+        old.refuse_release
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let targets_ref = &targets;
+        let release = |scope: crate::boundary::InstanceKey, epoch| async move {
+            let target = targets_ref.get_epoch(&scope, epoch).unwrap();
+            super::release_original_notification_target(&target).await?;
+            targets_ref.remove_if_epoch(&scope, epoch, &target);
+            Ok(())
+        };
+        let cache = GattCache::new();
+        cache.insert("peer", 1);
+        let discovery_started = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            cache
+                .refresh_retiring(
+                    "peer",
+                    || async { Ok(1) },
+                    || super::release_peer_target_claims(&targets, "peer", release),
+                    |_| async {
+                        discovery_started.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(2)
+                    },
+                )
+                .await
+                .is_err()
+        );
+        assert!(!discovery_started.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(cache.get("peer"), Some(1));
+        assert!(targets.get_epoch(&owned, 1).is_some());
+        assert!(targets.get_epoch(&unrelated, 2).is_some());
+        old.refuse_release
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        cache
+            .refresh_retiring(
+                "peer",
+                || async { Ok(1) },
+                || super::release_peer_target_claims(&targets, "peer", release),
+                |_| async {
+                    discovery_started.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(2)
+                },
+            )
+            .await
+            .unwrap();
+        assert!(discovery_started.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(cache.get("peer"), Some(2));
+        assert!(targets.get_epoch(&owned, 1).is_none());
+        assert!(targets.get_epoch(&unrelated, 2).is_some());
+    }
+
+    #[tokio::test]
+    async fn close_retries_each_epoch_even_when_they_share_a_path() {
+        let old = ExactNotificationTransport::default();
+        let newer = ExactNotificationTransport::default();
+        let characteristic =
+            characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let scope = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let _old = super::subscribe_and_stream_owned_epoch(
+            &old,
+            &characteristic,
+            &targets,
+            &debt,
+            &scope,
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+        let _new = super::subscribe_and_stream_owned_epoch(
+            &newer,
+            &characteristic,
+            &targets,
+            &debt,
+            &scope,
+            2,
+            None,
+        )
+        .await
+        .unwrap();
+        old.refuse_release
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let targets_ref = &targets;
+        let release = |scope: crate::boundary::InstanceKey, epoch| async move {
+            let target = targets_ref.get_epoch(&scope, epoch).unwrap();
+            match super::release_original_notification_target(&target).await {
+                Ok(()) => {
+                    targets_ref.remove_if_epoch(&scope, epoch, &target);
+                    Ok(Ok(()))
+                }
+                Err(error) => Ok(Err(ScopeRelease::Failed(error.to_string()))),
+            }
+        };
+        let failures = super::close_target_claims(&targets, &debt, release).await;
+        assert_eq!(failures.len(), 1);
+        assert!(targets.get_epoch(&scope, 1).is_some());
+        assert!(targets.get_epoch(&scope, 2).is_none());
+        assert!(debt.lock().unwrap().contains(&scope));
+        old.refuse_release
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let failures = super::close_target_claims(&targets, &debt, release).await;
+        assert!(failures.is_empty());
+        assert!(targets.claims().is_empty());
+        assert!(debt.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn epoch_cleanup_never_releases_replacement_on_same_path() {
+        let old = ExactNotificationTransport::default();
+        let newer = ExactNotificationTransport::default();
+        let first = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let second = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x30, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        forwarders.lock().unwrap().insert(
+            "old".to_owned(),
+            forwarder(tokio::spawn(std::future::pending()), &owned),
+        );
+        forwarders.lock().unwrap().insert(
+            "new".to_owned(),
+            forwarder(tokio::spawn(std::future::pending()), &owned),
+        );
+        let _old_stream = super::subscribe_and_stream_owned_epoch(
+            &old, &first, &targets, &debt, &owned, 11, None,
+        )
+        .await
+        .unwrap();
+        let _new_stream = super::subscribe_and_stream_owned_epoch(
+            &newer, &second, &targets, &debt, &owned, 12, None,
+        )
+        .await
+        .unwrap();
+        old.refuse_release
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            super::release_notification_target_epoch(
+                &targets,
+                &forwarders,
+                &debt,
+                "old",
+                &owned,
+                11
+            )
+            .await
+            .is_err()
+        );
+        assert!(targets.get_epoch(&owned, 11).is_some());
+        assert!(targets.get_epoch(&owned, 12).is_some());
+        assert!(newer.unsubscribed.lock().unwrap().is_empty());
+        assert!(forwarders.lock().unwrap().contains_key("old"));
+        assert!(forwarders.lock().unwrap().contains_key("new"));
+        old.refuse_release
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        super::release_notification_target_epoch(&targets, &forwarders, &debt, "old", &owned, 11)
+            .await
+            .unwrap();
+        assert!(targets.get_epoch(&owned, 11).is_none());
+        assert!(targets.get_epoch(&owned, 12).is_some());
+        assert!(!forwarders.lock().unwrap().contains_key("old"));
+        assert!(forwarders.lock().unwrap().contains_key("new"));
+        assert!(newer.unsubscribed.lock().unwrap().is_empty());
+        // Path-only setup debt can belong to the newer epoch, so stale epoch 0
+        // must not be mistaken for a missing cleanup target of that epoch.
+        debt.lock().unwrap().insert(owned.clone());
+        super::release_notification_target_epoch(&targets, &forwarders, &debt, "stale", &owned, 0)
+            .await
+            .unwrap();
+        assert!(targets.get_epoch(&owned, 12).is_some());
+        super::release_notification_target_epoch(&targets, &forwarders, &debt, "new", &owned, 12)
+            .await
+            .unwrap();
+        assert_eq!(*newer.unsubscribed.lock().unwrap(), vec![0x30]);
     }
 
     #[tokio::test]
@@ -8342,7 +12574,7 @@ mod tests {
     }
 
     fn scope_key(scope: &crate::boundary::InstanceKey) -> String {
-        forwarder_key(&scope.0, &scope.1, scope.2, &scope.3, scope.4)
+        super::epoch_forwarder_key(scope, 0)
     }
 
     #[test]
@@ -8794,5 +13026,202 @@ mod tests {
         assert_eq!(debt, std::collections::HashSet::from([owned]));
         assert_eq!(forwarders.len(), 1);
         assert!(forwarders.contains_key(&scope_key(&other)));
+    }
+
+    #[tokio::test]
+    async fn winrt_requested_stop_fence_blocks_replacement_until_the_stopped_callback() {
+        let fence = std::sync::Arc::new(super::WinRtScanStopFence::new());
+        let mut requested = fence.requested_stop(1);
+
+        // `BluetoothLEAdvertisementWatcher::Stop` has returned, but WinRT
+        // has not called Stopped yet. A central must not report this stop as
+        // complete and admit the next scan during that interval.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(1), requested.wait())
+                .await
+                .is_err()
+        );
+
+        assert_eq!(
+            fence.acknowledge_stop(1, true, "Success".to_owned()),
+            super::WinRtStopDisposition::Requested
+        );
+        requested
+            .wait()
+            .await
+            .expect("requested stop acknowledgement");
+        assert!(
+            fence.acknowledge_stop(2, true, "Success".to_owned())
+                == super::WinRtStopDisposition::Unsolicited,
+            "the next successful stop belongs to the next scan, not the old request"
+        );
+    }
+
+    #[tokio::test]
+    async fn winrt_requested_stop_fence_keeps_failed_stop_retryable() {
+        let fence = std::sync::Arc::new(super::WinRtScanStopFence::new());
+        let requested = fence.requested_stop(1);
+        requested.cancel();
+
+        assert!(
+            fence.acknowledge_stop(1, true, "Success".to_owned())
+                == super::WinRtStopDisposition::Unsolicited,
+            "a failed Stop call leaves no stale acknowledgement to swallow a later scan"
+        );
+    }
+
+    #[tokio::test]
+    async fn winrt_requested_stop_retry_joins_the_pending_os_transition() {
+        let fence = std::sync::Arc::new(super::WinRtScanStopFence::new());
+        let first = fence.requested_stop(1);
+        assert!(first.initiates_os_stop);
+        // Simulate the first caller timing out: dropping it must retain the
+        // physical stop fence for the next logical retry.
+        drop(first);
+
+        let mut retry = fence.requested_stop(1);
+        assert!(
+            !retry.initiates_os_stop,
+            "retry waits for the already requested WinRT stop instead of issuing another one"
+        );
+        assert_eq!(
+            fence.acknowledge_stop(1, true, "Success".to_owned()),
+            super::WinRtStopDisposition::Requested
+        );
+        retry.wait().await.expect("joined stop acknowledgement");
+    }
+
+    #[tokio::test]
+    async fn winrt_failed_stopped_callback_wakes_waiter_and_allows_a_real_retry() {
+        let fence = std::sync::Arc::new(super::WinRtScanStopFence::new());
+        let mut requested = fence.requested_stop(1);
+        assert_eq!(
+            fence.acknowledge_stop(1, false, "AccessDenied".to_owned()),
+            super::WinRtStopDisposition::Requested
+        );
+        assert_eq!(requested.wait().await, Err("AccessDenied".to_owned()));
+
+        let retry = fence.requested_stop(2);
+        assert!(
+            retry.initiates_os_stop,
+            "failed watcher stop clears the old fence"
+        );
+    }
+
+    #[test]
+    fn winrt_recovery_retires_a_lost_callback_and_fences_the_old_generation() {
+        let fence = std::sync::Arc::new(super::WinRtScanStopFence::new());
+        let requested = fence.requested_stop(7);
+        drop(requested); // the central operation timed out, but physical ownership remains.
+
+        assert!(
+            fence
+                .recover_stalled(|generation| {
+                    assert_eq!(generation, 7);
+                    Ok(super::WinRtRecovery::Stopped)
+                })
+                .expect("terminal watcher can be replaced")
+                .is_some()
+        );
+        assert_eq!(
+            fence.acknowledge_stop(7, true, "Success".to_owned()),
+            super::WinRtStopDisposition::Stale,
+            "a queued callback from the retired watcher cannot terminate the replacement scan"
+        );
+        assert_eq!(
+            fence.acknowledge_stop(8, true, "Success".to_owned()),
+            super::WinRtStopDisposition::Unsolicited,
+            "the replacement generation remains observable"
+        );
+    }
+
+    #[test]
+    fn winrt_recovery_does_not_release_a_watcher_that_is_still_stopping() {
+        let fence = std::sync::Arc::new(super::WinRtScanStopFence::new());
+        let retry = fence.requested_stop(4);
+        let error = fence
+            .recover_stalled(|_| {
+                Err(super::DesktopError::scan_start_failed(
+                    "the WinRT advertisement watcher is still stopping",
+                ))
+            })
+            .expect_err("a nonterminal watcher stays owned by its pending stop");
+        assert!(
+            error
+                .detail()
+                .expect("recovery error detail")
+                .contains("still stopping")
+        );
+        assert!(
+            !fence.requested_stop(4).initiates_os_stop,
+            "a failed recovery keeps the same physical stop reservation"
+        );
+        retry.cancel();
+    }
+
+    #[tokio::test]
+    async fn winrt_lost_callback_retry_releases_the_retiring_scan_before_replacement() {
+        // This is the DesktopCentral control-flow shape: scan A owns the
+        // slot, its first stop attempt times out after calling WinRT Stop,
+        // then a stop retry (not scan B) proves terminal state and only then
+        // permits the replacement scan.
+        let fence = std::sync::Arc::new(super::WinRtScanStopFence::new());
+        let first = fence.requested_stop(11);
+        assert!(first.initiates_os_stop);
+        drop(first);
+
+        let mut retry = fence.requested_stop(11);
+        assert!(
+            !retry.initiates_os_stop,
+            "the retry joins A's physical stop rather than starting B"
+        );
+        assert!(
+            fence
+                .recover_stalled(|generation| {
+                    assert_eq!(generation, 11);
+                    Ok(super::WinRtRecovery::Stopped)
+                })
+                .expect("terminal watcher recovery")
+                .is_some()
+        );
+        retry
+            .wait()
+            .await
+            .expect("recovery is a confirmed completion of A's stop");
+
+        let replacement = fence.requested_stop(12);
+        assert!(
+            replacement.initiates_os_stop,
+            "B can now own a fresh watcher lifecycle"
+        );
+        replacement.cancel();
+    }
+
+    #[tokio::test]
+    async fn winrt_aborted_watcher_recovery_releases_ownership_but_preserves_failure() {
+        let fence = std::sync::Arc::new(super::WinRtScanStopFence::new());
+        let first = fence.requested_stop(20);
+        drop(first);
+        let mut retry = fence.requested_stop(20);
+        assert!(
+            fence
+                .recover_stalled(|_| {
+                    Ok(super::WinRtRecovery::Failed(
+                        "the WinRT advertisement watcher entered Aborted".to_owned(),
+                    ))
+                })
+                .expect("aborted watcher was retired")
+                .is_some()
+        );
+        assert_eq!(
+            retry.wait().await,
+            Err("the WinRT advertisement watcher entered Aborted".to_owned()),
+            "an OS abort is never represented as a successful explicit stop"
+        );
+        assert_eq!(
+            fence.acknowledge_stop(20, true, "Success".to_owned()),
+            super::WinRtStopDisposition::Stale,
+            "a queued callback from the retired aborted watcher remains fenced"
+        );
     }
 }

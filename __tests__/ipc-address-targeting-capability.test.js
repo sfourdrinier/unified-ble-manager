@@ -1,6 +1,7 @@
 // __tests__/ipc-address-targeting-capability.test.js
 // IPC preserves the instantiated authority's address-targeting capability.
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
+const { emptyIpcDiagnostics } = require('./helpers/ipc-diagnostics')
 
 function descriptor(id, state) {
   return {
@@ -42,6 +43,7 @@ function ipcManagerWith(
   const ipc = {
     capabilities,
     bootstrap: { discovery: { kind: 'scan' } },
+    diagnostics: emptyIpcDiagnostics,
     connect,
     scan
   }

@@ -3,6 +3,7 @@
 export { createNativeContinuationControl } from './backends/desktop/native-continuation-controller'
 export type {
   NativeContinuationControl,
+  NativeContinuationControlV1,
   NativeContinuationControlAccess,
   NativeContinuationCompleted,
   NativeContinuationStatus
@@ -18,4 +19,21 @@ export {
   createElectronRendererBleManagerWithEnvironment
 } from './electron/public-manager'
 export type { ElectronRendererBleManagerEnvironment } from './electron/public-manager'
+export type {
+  ElectronRendererBleManager,
+  ElectronPeerFailureRecovery,
+  ElectronPeerFailureRecoveryHandle,
+  ElectronPeerFailureRecoveryChunk,
+  ElectronTerminalEvidenceRecovery,
+  ElectronTerminalEvidenceRecoveryRecord,
+  ElectronTerminalEvidenceRecoveryValue
+} from './electron/public-manager'
 export { assertAdvertisementObservation as assertElectronAdvertisementObservation } from './electron/advertisement-observation'
+export { createDesktopOrderedDiagnostics } from './ipc/ordered-diagnostics'
+export type {
+  DesktopOrderedDiagnosticClient,
+  DesktopOrderedOrphanReceipt,
+  DesktopOrderedOrphanSummary,
+  DesktopOrderedRecordingStartSummary,
+  DesktopOrderedMarkerWriteEvidence
+} from './ipc/ordered-diagnostics'

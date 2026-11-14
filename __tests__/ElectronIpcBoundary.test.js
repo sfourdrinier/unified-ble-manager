@@ -3,15 +3,16 @@
 const { ElectronMainBleBinding, ElectronMainBleRouter } = require('../src/electron-main')
 const { ElectronRendererBleClient } = require('../src/electron-renderer')
 const { createElectronRendererBleManager } = require('../src/electron-renderer')
-const { BackendContractError } = require('../src/backend-contract/errors')
+const { BackendContractError, contractError } = require('../src/backend-contract/errors')
 const { IPC_CLIENT_COMPATIBILITY_OFFER } = require('../src/ipc/protocol')
 const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
 const { BUILT_IN_FEATURE_CATALOG } = require('../src/backend-contract/capabilities')
 const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
+const { markTerminalEvidenceStageFailure } = require('../src/core/terminal-evidence-stage-failure')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 6 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 10 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -432,10 +433,18 @@ function connectionLifecycleEvent(fixture, connection, cause, previous = 'connec
   }
 }
 
-function createMainFixture(managerOverrides = {}) {
+function createMainFixture(
+  managerOverrides = {},
+  backendOverride = undefined,
+  realManager = undefined,
+  routerOverrides = {}
+) {
   const currentAttachment = attachment()
-  const manager = {
-    attachedBackend: { attachment: { attachment: currentAttachment } },
+  const manager = realManager ?? {
+    attachedBackend: {
+      attachment: { attachment: currentAttachment },
+      ...(backendOverride === undefined ? {} : { backend: backendOverride })
+    },
     identity: { versions: versions() },
     capabilities: () => [],
     planScan: jest.fn(query => diagnosticPlan(query)),
@@ -448,7 +457,8 @@ function createMainFixture(managerOverrides = {}) {
     maximumMessageBytes: 4096,
     maximumOutstandingOperations: 2,
     maximumRetainedBytes: 8192,
-    publish: async () => 'terminalized'
+    publish: async () => 'terminalized',
+    ...routerOverrides
   })
   const port = {
     handler: null,
@@ -475,17 +485,27 @@ function createMainFixture(managerOverrides = {}) {
     authenticate
   })
   binding.install()
-  return { authenticate, binding, currentAttachment, manager, port, router, versions: manager.identity.versions }
+  return {
+    authenticate,
+    binding,
+    currentAttachment: realManager?.attachedBackend.attachment.attachment ?? currentAttachment,
+    manager,
+    port,
+    router,
+    versions: manager.identity.versions
+  }
 }
 
 function routeRequest(current, bootstrapValue, ordinal) {
   return {
     kind: 'route',
     envelope: {
-      versions: {
-        ...current.versions,
-        ipcProtocol: negotiated('ipc-protocol')
-      },
+      // An envelope must repeat the complete negotiated axes returned by this
+      // bootstrap.  The current client offer is a range (v6..v10), whereas a
+      // renderer lease records that range as well as the selected v10; an
+      // independently reconstructed singleton v10 axes is not the same lease
+      // contract.
+      versions: bootstrapValue.versions,
       attachment: current.currentAttachment,
       attachmentId: current.currentAttachment.attachmentId,
       renderer: bootstrapValue.renderer,
@@ -513,8 +533,8 @@ function commandRequest(current, renderer, ordinal, command, payload, binaryPayl
   }
 }
 
-async function bootstrap(current, sender) {
-  const response = await current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
+async function bootstrap(current, sender, offer = IPC_CLIENT_COMPATIBILITY_OFFER) {
+  const response = await current.port.handler({ sender }, { kind: 'bootstrap', offer })
   if (response.kind === 'failure') {
     throw new BackendContractError(response.error)
   }
@@ -552,6 +572,236 @@ async function awaitRendererRetirement(binding) {
 }
 
 describe('Electron v4 IPC boundary', () => {
+  test('delivers recovery availability only after binding registration, re-announces on rebind, and keeps it server-side v10-only', async () => {
+    const { DesktopRustCoreBackend } = require('../src/backends/desktop/desktop-rust-core-provider')
+    const backend = Object.create(DesktopRustCoreBackend.prototype)
+    backend.orderedFinishedObservers = new Set()
+    backend.orderedRecorderSessions = new Map()
+    backend.assertAlive = () => undefined
+    backend.recoverTerminalEvidenceForRecipientWithStatus = jest.fn(async () => ({ records: [], busyProducers: [] }))
+    const recovery = {
+      provenance: {
+        peerId: 'private-peer',
+        selector: {
+          serviceUuid: '180d',
+          serviceOccurrence: 0,
+          characteristicUuid: '2a37',
+          characteristicOccurrence: 0
+        },
+        contiguousRead: '0',
+        acknowledged: false,
+        producerAck: 'not-started'
+      },
+      read: jest.fn(async () => ({ offset: '0', nextOffset: '0', bytes: new Uint8Array(), done: true })),
+      acknowledge: jest.fn(async () => undefined)
+    }
+    backend.durablePeerNotificationFailureRecoveries = () => [recovery]
+    const current = createMainFixture({}, backend, undefined, { grantPeerFailureRecovery: () => true })
+    const sender = createSender('recovery-client', 'recovery-window', 'recovery-session')
+    const renderer = await bootstrap(current, sender)
+    expect(sender.sent).toHaveLength(1)
+    expect(sender.sent[0].event.item).toMatchObject({
+      kind: 'value',
+      value: { code: 'gatt.peer-failure-recovery-available' }
+    })
+    const listRequest = commandRequest(current, renderer, 1, 'peerFailureRecovery.list', {})
+    listRequest.envelope.versions = renderer.versions
+    const listed = await current.port.handler({ sender }, listRequest)
+    expect(listed).toMatchObject({ kind: 'route', payload: { recoveries: [{ peerId: 'private-peer' }] } })
+
+    sender.startNavigation()
+    sender.commitNavigation({ processId: 11, routingId: 21 })
+    await awaitRendererRetirement(current.binding)
+    const rebound = createSender('recovery-client', 'recovery-window', 'recovery-session')
+    const reboundRenderer = await bootstrap(current, rebound)
+    expect(reboundRenderer.rendererLease).not.toEqual(renderer.rendererLease)
+    expect(rebound.sent).toHaveLength(1)
+    expect(rebound.sent[0].event.item).toMatchObject({
+      kind: 'value',
+      value: { code: 'gatt.peer-failure-recovery-available' }
+    })
+
+    const v6Offer = {
+      ...IPC_CLIENT_COMPATIBILITY_OFFER,
+      ipcProtocol: versionRange(version('ipc-protocol', 6), version('ipc-protocol', 6))
+    }
+    const v6Sender = createSender('recovery-v6-client', 'recovery-v6-window', 'recovery-v6-session')
+    const v6Renderer = await bootstrap(current, v6Sender, v6Offer)
+    expect(v6Sender.sent).toHaveLength(0)
+    for (const command of ['peerFailureRecovery.list', 'peerFailureRecovery.read', 'peerFailureRecovery.ack']) {
+      const request = commandRequest(
+        current,
+        v6Renderer,
+        command === 'peerFailureRecovery.list' ? 1 : command === 'peerFailureRecovery.read' ? 2 : 3,
+        command,
+        command === 'peerFailureRecovery.read'
+          ? { handleId: 'unknown', offset: '0' }
+          : command === 'peerFailureRecovery.ack'
+            ? { handleId: 'unknown' }
+            : {}
+      )
+      request.envelope.versions = v6Renderer.versions
+      await expectIpcFailure(current.port.handler({ sender: v6Sender }, request), { code: 'capability.unsupported' })
+    }
+    expect(recovery.read).not.toHaveBeenCalled()
+    expect(recovery.acknowledge).not.toHaveBeenCalled()
+    await current.binding.destroy()
+  })
+
+  test('does not conceal configured terminal-evidence recovery unavailability at bootstrap', async () => {
+    const { DesktopRustCoreBackend } = require('../src/backends/desktop/desktop-rust-core-provider')
+    const backend = Object.create(DesktopRustCoreBackend.prototype)
+    backend.orderedFinishedObservers = new Set()
+    backend.orderedRecorderSessions = new Map()
+    backend.assertAlive = () => undefined
+    backend.hasTerminalEvidenceRecovery = () => true
+    backend.recoverTerminalEvidenceForRecipientWithStatus = jest.fn(async () => {
+      throw contractError('capability.unsupported', 'restoration', 'test.terminal-evidence.recover')
+    })
+    const current = createMainFixture({}, backend)
+    const sender = createSender('terminal-evidence-client', 'terminal-evidence-window', 'terminal-evidence-session')
+    await expect(bootstrap(current, sender)).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    expect(backend.recoverTerminalEvidenceForRecipientWithStatus).toHaveBeenCalledTimes(1)
+    await current.binding.destroy()
+  })
+
+  test('preserves configured terminal-evidence recovery malformed failures at bootstrap', async () => {
+    const { DesktopRustCoreBackend } = require('../src/backends/desktop/desktop-rust-core-provider')
+    const backend = Object.create(DesktopRustCoreBackend.prototype)
+    backend.orderedFinishedObservers = new Set()
+    backend.orderedRecorderSessions = new Map()
+    backend.assertAlive = () => undefined
+    backend.hasTerminalEvidenceRecovery = () => true
+    backend.recoverTerminalEvidenceForRecipientWithStatus = jest.fn(async () => {
+      throw contractError('protocol.malformed', 'restoration', 'test.terminal-evidence.recover')
+    })
+    const current = createMainFixture({}, backend)
+    const sender = createSender(
+      'malformed-terminal-evidence-client',
+      'malformed-terminal-evidence-window',
+      'malformed-terminal-evidence-session'
+    )
+    await expect(bootstrap(current, sender)).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    expect(backend.recoverTerminalEvidenceForRecipientWithStatus).toHaveBeenCalledTimes(1)
+    await current.binding.destroy()
+  })
+
+  test('does not query an explicitly unavailable legacy terminal-evidence recovery surface', async () => {
+    const { DesktopRustCoreBackend } = require('../src/backends/desktop/desktop-rust-core-provider')
+    const backend = Object.create(DesktopRustCoreBackend.prototype)
+    backend.orderedFinishedObservers = new Set()
+    backend.orderedRecorderSessions = new Map()
+    backend.assertAlive = () => undefined
+    backend.hasTerminalEvidenceRecovery = () => false
+    backend.recoverTerminalEvidenceForRecipientWithStatus = jest.fn(async () => {
+      throw new Error('legacy recovery must not be called')
+    })
+    const current = createMainFixture({}, backend)
+    const sender = createSender(
+      'legacy-terminal-evidence-client',
+      'legacy-terminal-evidence-window',
+      'legacy-terminal-evidence-session'
+    )
+    await expect(bootstrap(current, sender)).resolves.toMatchObject({ rendererLease: expect.any(Object) })
+    expect(backend.recoverTerminalEvidenceForRecipientWithStatus).not.toHaveBeenCalled()
+    await current.binding.destroy()
+  })
+
+  test('projects trusted scan recovery through generation-bound aliases and rejects forged, legacy, and stale routes', async () => {
+    const recovery = {
+      owners: jest.fn(async () => [
+        {
+          handleId: 'native-owner',
+          prepared: true,
+          producerFinished: true,
+          rawRetired: false,
+          rawReleased: false,
+          memberCount: 1,
+          released: false
+        }
+      ]),
+      member: jest.fn(async () => ({ recipient: 'recipient', delivery: 'delivery' })),
+      head: jest.fn(async () => ({ handleId: 'native-head', contiguousRead: '0', acknowledged: false })),
+      read: jest.fn(async () => ({ offset: '0', nextOffset: '3', bytes: new Uint8Array([1, 2, 3]), done: true })),
+      acknowledge: jest.fn(async () => undefined),
+      retire: jest.fn(async () => undefined),
+      release: jest.fn(async () => undefined),
+      finalizeRelease: jest.fn(async () => 'native-cleanup'),
+      pendingCleanupReceipts: jest.fn(async () => ['native-cleanup']),
+      retireCleanup: jest.fn(async () => undefined),
+      rawInfo: jest.fn(async () => ({ memberCount: 1, tokenCount: 1 })),
+      rawMember: jest.fn(async () => ({ recipient: 'recipient', delivery: 'delivery' })),
+      rawToken: jest.fn(async () => ({ kind: 'bytes', total: 3, bytes: [1, 2, 3] })),
+      rawRetire: jest.fn(async () => undefined),
+      rawRelease: jest.fn(async () => undefined),
+      rawFinalize: jest.fn(async () => 'native-raw-cleanup')
+    }
+    const current = createMainFixture({}, undefined, undefined, { grantScanFailureRecovery: () => [recovery] })
+    const sender = createSender('scan-recovery-client', 'scan-recovery-window', 'scan-recovery-session')
+    const renderer = await bootstrap(current, sender)
+    const route = async (correlationId, command, payload) => {
+      const request = commandRequest(current, renderer, correlationId, command, payload)
+      request.envelope.versions = renderer.versions
+      return current.port.handler({ sender }, request)
+    }
+    const listed = await route(1, 'scanFailureRecovery.list', {})
+    const recoveryId = listed.payload.recoveries[0].handleId
+    expect(recoveryId).not.toBe('native-owner')
+    const owners = await route(2, 'scanFailureRecovery.owners', { recoveryId })
+    const ownerId = owners.payload.owners[0].handleId
+    expect(ownerId).not.toBe('native-owner')
+    const head = await route(3, 'scanFailureRecovery.head', { recoveryId, handleId: ownerId, index: 0 })
+    const headId = head.payload.head.handleId
+    const page = await route(4, 'scanFailureRecovery.read', { recoveryId, handleId: headId, offset: '0' })
+    expect(page.payload.bytes).toEqual(new Uint8Array([1, 2, 3]))
+    const refreshedOwners = await route(5, 'scanFailureRecovery.owners', { recoveryId })
+    expect(refreshedOwners.payload.owners[0].handleId).toBe(ownerId)
+    await expect(
+      route(6, 'scanFailureRecovery.read', { recoveryId, handleId: headId, offset: '0' })
+    ).resolves.toMatchObject({
+      kind: 'route'
+    })
+    await route(7, 'scanFailureRecovery.raw.token', { recoveryId, handleId: ownerId, index: 0, offset: 0, maxBytes: 3 })
+    expect(recovery.rawToken).toHaveBeenCalledWith('native-owner', 0, 0, 3)
+    const cleanup = await route(8, 'scanFailureRecovery.cleanup.list', { recoveryId })
+    expect(cleanup.payload.cleanupReceiptIds).toHaveLength(1)
+    expect(cleanup.payload.cleanupReceiptIds[0]).not.toBe('native-cleanup')
+    await expectIpcFailure(
+      route(9, 'scanFailureRecovery.read', { recoveryId: 'forged', handleId: headId, offset: '0' }),
+      { code: 'ownership.denied' }
+    )
+    sender.startNavigation()
+    sender.commitNavigation({ processId: 11, routingId: 21 })
+    await awaitRendererRetirement(current.binding)
+    await expectIpcFailure(route(10, 'scanFailureRecovery.read', { recoveryId, handleId: headId, offset: '0' }), {
+      code: 'ownership.denied'
+    })
+    const v6Offer = {
+      ...IPC_CLIENT_COMPATIBILITY_OFFER,
+      ipcProtocol: versionRange(version('ipc-protocol', 6), version('ipc-protocol', 6))
+    }
+    const legacySender = createSender('scan-recovery-v6-client', 'scan-recovery-v6-window', 'scan-recovery-v6-session')
+    const legacyRenderer = await bootstrap(current, legacySender, v6Offer)
+    const legacyRequest = commandRequest(current, legacyRenderer, 11, 'scanFailureRecovery.list', {})
+    legacyRequest.envelope.versions = legacyRenderer.versions
+    await expectIpcFailure(current.port.handler({ sender: legacySender }, legacyRequest), {
+      code: 'capability.unsupported'
+    })
+    await current.binding.destroy()
+
+    const denied = createMainFixture()
+    const deniedSender = createSender(
+      'scan-recovery-denied-client',
+      'scan-recovery-denied-window',
+      'scan-recovery-denied-session'
+    )
+    const deniedRenderer = await bootstrap(denied, deniedSender)
+    const deniedRequest = commandRequest(denied, deniedRenderer, 12, 'scanFailureRecovery.list', {})
+    deniedRequest.envelope.versions = deniedRenderer.versions
+    await expectIpcFailure(denied.port.handler({ sender: deniedSender }, deniedRequest), { code: 'ownership.denied' })
+    await denied.binding.destroy()
+  })
+
   test('does not retire a lease when the initial document commits after renderer bootstrap', async () => {
     const current = createMainFixture()
     const sender = createSender('client-initial-navigation', 'window-initial-navigation', 'session-initial-navigation')
@@ -888,7 +1138,9 @@ describe('Electron v4 IPC boundary', () => {
     expect(replacementResponse.kind).toBe('bootstrap')
     const replacement = replacementResponse.bootstrap
     sender.commitNavigation(sender.mainFrame)
-    await flushAsyncWork()
+    // Navigation retirement is authoritative asynchronous cleanup. Waiting for
+    // its owned release is deterministic; a fixed microtask count is not.
+    await awaitRendererRetirement(current.binding)
 
     expect(current.router.resources.has(String(outgoing.rendererLease.leaseId))).toBe(false)
     expect(current.router.resources.has(String(replacement.rendererLease.leaseId))).toBe(true)
@@ -1520,6 +1772,49 @@ describe('Electron v4 IPC boundary', () => {
     await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { kind: 'value' } })
     await expect(client.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(listeners).toEqual([])
+  })
+
+  test.each([
+    ['wrong flag', { kind: 'terminal', reason: 'source-failed', terminalEvidenceStageFailed: false }],
+    ['wrong kind', { kind: 'value', value: {}, terminalEvidenceStageFailed: true }],
+    ['wrong reason', { kind: 'terminal', reason: 'closed', terminalEvidenceStageFailed: true }],
+    [
+      'receipt evidence',
+      {
+        kind: 'terminal',
+        reason: 'source-failed',
+        terminalEvidenceStageFailed: true,
+        evidence: { ref: 'forged', byteLength: 1, digest: '0'.repeat(64), formatVersion: 1, durability: 'committed' }
+      }
+    ]
+  ])('rejects authenticated terminal-evidence staging wire with %s', async (_label, item) => {
+    const listeners = []
+    const bootstrap = rendererBootstrap(`malformed-stage-failure-${_label}`)
+    const transport = {
+      invoke: async request =>
+        request.kind === 'bootstrap'
+          ? { kind: 'bootstrap', bootstrap }
+          : request.kind === 'release'
+            ? { kind: 'release', cleanup: released() }
+            : { kind: 'route', payload: {} },
+      acknowledge: async () => ({ kind: 'event.ack' }),
+      subscribe(listener) {
+        listeners.push(listener)
+        return () => listeners.splice(listeners.indexOf(listener), 1)
+      }
+    }
+    const client = new ElectronRendererBleClient(transport)
+    await client.initialize()
+    listeners[0]({ rendererLease: bootstrap.rendererLease, eventId: 'malformed-stage', streamId: 'scan', item })
+
+    await expect(client.events[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: { code: 'protocol.malformed', operation: 'electron-renderer.terminal-evidence-stage-failure-wire' }
+      }
+    })
+    await expect(client.destroy()).resolves.toEqual(released())
   })
 
   test('preserves a complete rich advertisement observation through the renderer IPC boundary', async () => {
@@ -2674,6 +2969,51 @@ describe('Electron v4 IPC boundary', () => {
   test('projects the real authenticated router into the common public manager journey', async () => {
     const scanStream = createControlledStream()
     const notificationStream = createControlledStream()
+    const orderedStream = createControlledStream()
+    let orderedClosed = false
+    let orderedCloseAttempts = 0
+    const recordingReceipt = {
+      kind: 'started',
+      receipt: {
+        version: 2,
+        recordingId: 'electron-recording',
+        collectionId: '1',
+        state: 'active',
+        sourceGeneration: null,
+        members: [
+          {
+            memberId: '0',
+            acquisition: 'acquired',
+            delivery: 'notification',
+            cleanupReleased: false,
+            cleanupError: null
+          }
+        ],
+        setupFailure: null,
+        fenceFailure: null,
+        error: null,
+        inspectionError: null,
+        driverError: null
+      }
+    }
+    let publicJournalAcknowledged = false
+    const recordingMarkerStatus = { state: 'admitted', ordinal: '12', write: { state: 'settled', error: null } }
+    const recordingMarker = {
+      start: jest.fn(async () => recordingMarkerStatus),
+      status: jest.fn(async () => recordingMarkerStatus),
+      cancel: jest.fn(async () => recordingMarkerStatus),
+      forget: jest.fn(async () => {
+        if (!publicJournalAcknowledged)
+          throw contractError('lifecycle.invalid-state', 'gatt', 'test.recording-marker.unacknowledged')
+      })
+    }
+    const recordingOwner = {
+      start: jest.fn(async () => recordingReceipt),
+      status: jest.fn(async () => ({ state: 'result', result: recordingReceipt })),
+      retire: jest.fn(async () => undefined),
+      recoveryHandle: () => ({ kind: 'ordered-recording-recovery' }),
+      reserveMarkerWrite: () => recordingMarker
+    }
     const lifecycleStream = createConnectionLifecycleStream()
     const serviceUuid = '0000180d-0000-1000-8000-00805f9b34fb'
     const characteristicUuid = '00002a37-0000-1000-8000-00805f9b34fb'
@@ -2720,9 +3060,17 @@ describe('Electron v4 IPC boundary', () => {
       snapshot: jest.fn(async () => ({
         path: { databaseId: 'database-public', databaseGeneration: 'database-generation-public' },
         services: [{ path: { serviceUuid, serviceOccurrence: 0 }, primary: true, includedServices: [] }],
-        characteristics: [characteristic],
+        characteristics: [
+          characteristic,
+          {
+            ...characteristic,
+            path: { ...characteristic.path, characteristicUuid: '00002a38-0000-1000-8000-00805f9b34fb' }
+          }
+        ],
         descriptors: [descriptor]
       })),
+      reserveOrderedRecordingStart: jest.fn(() => recordingOwner),
+      reserveOrderedRecordingMarker: jest.fn(() => recordingMarker),
       read: jest.fn(async () => new Uint8Array([1, 2, 3])),
       readReceipt: jest.fn(async () => ({ value: new Uint8Array([1, 2, 3]), provenance: 'read-or-notification' })),
       writeWhenReady: jest.fn(async (_path, bytes, options) => {
@@ -2763,6 +3111,28 @@ describe('Electron v4 IPC boundary', () => {
         terminal: { correlation: 'descriptor-write-correlation', outcome: 'succeeded', cause: null },
         commitState: 'confirmed',
         bytesSubmitted: bytes.byteLength
+      })),
+      subscribeOrdered: jest.fn(async members => ({
+        state: 'ready',
+        members: members.map(member => ({
+          ...member,
+          requestedDelivery: member.deliveryMode,
+          effectiveDelivery: 'notification'
+        })),
+        stream: {
+          limits: { itemCapacity: 8, byteCapacity: 1024, reservedControlCapacity: 1 },
+          [Symbol.asyncIterator]: () => orderedStream[Symbol.asyncIterator](),
+          close: async () => {
+            orderedCloseAttempts += 1
+            if (orderedCloseAttempts === 1) return { group: failed('ordered-group'), members: [] }
+            if (!orderedClosed) {
+              orderedClosed = true
+              orderedStream.push({ kind: 'terminal', reason: 'closed', uncertainTail: false })
+              orderedStream.close()
+            }
+            return { group: released(), members: [] }
+          }
+        }
       })),
       subscribe: jest.fn(async () => ({
         subscriptionId: 'subscription-public',
@@ -2820,9 +3190,75 @@ describe('Electron v4 IPC boundary', () => {
       for (const listener of [...listeners]) listener(event)
     }
     let acquiredWriterHandle
+    let cancelBeforeOpen = null
+    let loseMarkerReserve = true
+    let loseMarkerStart = true
+    let loseRecordingReserve = true
+    let loseRecordingStart = true
+    let loseOrderedOpen = true
+    let loseOrderedResponse = true
     const rendererTransport = {
       invoke: async request => {
+        if (request.kind === 'route' && request.envelope.command === 'gatt.ordered.open' && cancelBeforeOpen !== null) {
+          cancelBeforeOpen.abort()
+          throw new Error('synthetic canceled before delivery')
+        }
         const response = await current.port.handler({ sender }, request)
+        if (
+          request.kind === 'route' &&
+          request.envelope.command === 'gatt.ordered.marker.reserve' &&
+          response.kind === 'route' &&
+          loseMarkerReserve
+        ) {
+          loseMarkerReserve = false
+          throw new Error('synthetic lost marker reservation')
+        }
+        if (
+          request.kind === 'route' &&
+          request.envelope.command === 'gatt.ordered.marker.start' &&
+          response.kind === 'route' &&
+          loseMarkerStart
+        ) {
+          loseMarkerStart = false
+          throw new Error('synthetic lost marker start')
+        }
+        if (
+          request.kind === 'route' &&
+          request.envelope.command === 'gatt.ordered-recording.reserve' &&
+          response.kind === 'route' &&
+          loseRecordingReserve
+        ) {
+          loseRecordingReserve = false
+          throw new Error('synthetic lost recording reservation')
+        }
+        if (
+          request.kind === 'route' &&
+          request.envelope.command === 'gatt.ordered-recording.start' &&
+          response.kind === 'route' &&
+          loseRecordingStart
+        ) {
+          loseRecordingStart = false
+          throw new Error('synthetic lost recording start')
+        }
+        if (
+          request.kind === 'route' &&
+          request.envelope.command === 'gatt.ordered.open' &&
+          response.kind === 'route' &&
+          loseOrderedOpen
+        ) {
+          loseOrderedOpen = false
+          throw new Error('synthetic lost open response')
+        }
+        if (
+          request.kind === 'route' &&
+          request.envelope.command === 'gatt.ordered.next' &&
+          response.kind === 'route' &&
+          response.payload.state === 'item' &&
+          loseOrderedResponse
+        ) {
+          loseOrderedResponse = false
+          throw new Error('synthetic lost ordered response')
+        }
         if (request.kind === 'route' && request.envelope.command === 'gatt.acquire-write' && response.kind === 'route')
           acquiredWriterHandle = response.payload.handle
         return response
@@ -2881,6 +3317,222 @@ describe('Electron v4 IPC boundary', () => {
     await expect(publicConnection.controls.readRssi()).resolves.toMatchObject({ rssi: -42, state: 'measured' })
     const publicDatabase = await publicConnection.discover()
     const publicCharacteristic = publicDatabase.characteristic('180d', '2a37')
+    const secondCharacteristic = publicDatabase.characteristic('180d', '2a38')
+    const recordingStart = publicDatabase.reserveOrderedRecordingStart()
+    const recordingMembers = [{ memberId: 'A', characteristic: publicCharacteristic }]
+    const recordingOptions = { recording: { id: 'electron-recording', maxBytes: 1048576, maxRecords: 100 } }
+    await expect(recordingStart.start(recordingMembers, recordingOptions)).rejects.toThrow(
+      'synthetic lost recording reservation'
+    )
+    await expect(recordingStart.status()).resolves.toEqual({ state: 'unknown' })
+    await expect(recordingStart.start(recordingMembers, recordingOptions)).rejects.toThrow(
+      'synthetic lost recording start'
+    )
+    await expect(recordingStart.status()).resolves.toMatchObject({
+      state: 'result',
+      result: { kind: 'started', receipt: { recordingId: 'electron-recording' } }
+    })
+    await expect(recordingStart.start(recordingMembers, recordingOptions)).resolves.toMatchObject({ kind: 'started' })
+    expect(recordingOwner.start).toHaveBeenCalledTimes(1)
+    const recordingMarkerWriter = recordingStart.reserveMarkerWrite()
+    await expect(
+      recordingMarkerWriter.start(publicCharacteristic, new Uint8Array([21]), 'with-response')
+    ).resolves.toMatchObject(recordingMarkerStatus)
+    await expect(recordingMarkerWriter.forget()).rejects.toMatchObject({ code: 'lifecycle.invalid-state' })
+    publicJournalAcknowledged = true
+    await recordingMarkerWriter.forget()
+    expect(recordingMarker.forget).toHaveBeenCalledTimes(2)
+    await recordingStart.retire()
+    expect(recordingOwner.retire).toHaveBeenCalledTimes(1)
+    const ordered = await publicDatabase.subscribeOrdered([
+      { memberId: 'A', characteristic: publicCharacteristic },
+      { memberId: 'B', characteristic: secondCharacteristic }
+    ])
+    expect(ordered.state).toBe('ready')
+    expect(database.subscribeOrdered).toHaveBeenCalledTimes(1)
+    const orderedIterator = ordered.stream[Symbol.asyncIterator]()
+    for (const [memberId, ordinal] of [
+      ['A', '9007199254740993'],
+      ['B', '18446744073709551614'],
+      ['A', '18446744073709551615']
+    ]) {
+      orderedStream.push({
+        kind: 'value',
+        collectionId: 'collection',
+        connectionGeneration: 'connection-generation-peer-public',
+        databaseGeneration: 'database-generation-public',
+        memberId,
+        ordinal,
+        sourceMembership: { member: memberId === 'A' ? '0' : '1', epoch: '18446744073709551615' },
+        value: new Uint8Array([0, 255]),
+        delivery: 'notification',
+        provenance: 'notification'
+      })
+    }
+    await expect(orderedIterator.next()).rejects.toThrow('synthetic lost ordered response')
+    for (const [memberId, ordinal] of [
+      ['A', '9007199254740993'],
+      ['B', '18446744073709551614'],
+      ['A', '18446744073709551615']
+    ]) {
+      await expect(orderedIterator.next()).resolves.toMatchObject({
+        done: false,
+        value: {
+          memberId,
+          ordinal,
+          sourceMembership: { member: memberId === 'A' ? '0' : '1', epoch: '18446744073709551615' },
+          value: new Uint8Array([0, 255])
+        }
+      })
+    }
+    await expect(ordered.stream.close()).resolves.toMatchObject({ group: { state: 'release-failed' } })
+    await expect(ordered.stream.close()).resolves.toMatchObject({ group: { state: 'released' } })
+    await expect(orderedIterator.next()).resolves.toMatchObject({ value: { kind: 'terminal' } })
+    await expect(orderedIterator.next()).resolves.toMatchObject({ done: true })
+    const publicMarkerSource = createControlledStream()
+    const publicMarkerStatus = { state: 'admitted', ordinal: '1', write: { state: 'settled', error: null } }
+    const publicNativeMarker = {
+      start: jest.fn(async () => publicMarkerStatus),
+      status: jest.fn(async () => publicMarkerStatus),
+      cancel: jest.fn(async () => publicMarkerStatus),
+      forget: jest.fn(async () => undefined)
+    }
+    const markerCleanup = { group: released(), members: [] }
+    database.subscribeOrdered.mockImplementationOnce(async members => ({
+      state: 'ready',
+      members: members.map(member => ({
+        ...member,
+        requestedDelivery: member.deliveryMode,
+        effectiveDelivery: 'notification'
+      })),
+      stream: {
+        limits: { itemCapacity: 8, byteCapacity: 1024, reservedControlCapacity: 1 },
+        reserveMarkerWrite: () => publicNativeMarker,
+        [Symbol.asyncIterator]: () => publicMarkerSource[Symbol.asyncIterator](),
+        close: async () => markerCleanup,
+        discard: async () => {
+          publicMarkerSource.close()
+          return markerCleanup
+        }
+      }
+    }))
+    const markedSetup = await publicDatabase.subscribeOrdered([{ memberId: 'A', characteristic: publicCharacteristic }])
+    const markerWriter = markedSetup.stream.reserveMarkerWrite()
+    await expect(markerWriter.start(publicCharacteristic, new Uint8Array([12, 13]), 'with-response')).rejects.toThrow(
+      'synthetic lost marker reservation'
+    )
+    await expect(markerWriter.status()).resolves.toMatchObject({ state: 'idle' })
+    await expect(markerWriter.start(publicCharacteristic, new Uint8Array([12, 13]), 'with-response')).rejects.toThrow(
+      'synthetic lost marker start'
+    )
+    await expect(markerWriter.status()).resolves.toMatchObject(publicMarkerStatus)
+    await expect(
+      markerWriter.start(publicCharacteristic, new Uint8Array([12, 13]), 'with-response')
+    ).resolves.toMatchObject(publicMarkerStatus)
+    expect(publicNativeMarker.start).toHaveBeenCalledTimes(1)
+    expect(publicNativeMarker.start.mock.calls[0][1]).toEqual(new Uint8Array([12, 13]))
+    await expect(markerWriter.forget()).rejects.toMatchObject({ code: 'lifecycle.invalid-state' })
+    const markerIterator = markedSetup.stream[Symbol.asyncIterator]()
+    publicMarkerSource.push({
+      kind: 'marker',
+      collectionId: 'marker-c',
+      connectionGeneration: 'connection-generation-peer-public',
+      databaseGeneration: 'database-generation-public',
+      markerId: '77',
+      ordinal: '1'
+    })
+    publicMarkerSource.push({ kind: 'terminal', reason: 'closed', uncertainTail: false })
+    publicMarkerSource.close()
+    await expect(markerIterator.next()).resolves.toMatchObject({
+      value: { kind: 'marker', markerId: '77', ordinal: '1' }
+    })
+    await expect(markerIterator.next()).resolves.toMatchObject({ value: { kind: 'terminal' } })
+    await markerWriter.forget()
+    await markedSetup.stream.close()
+    await expect(markerIterator.next()).resolves.toMatchObject({ done: true })
+    expect(publicNativeMarker.forget).toHaveBeenCalledTimes(1)
+    const lateOrdered = createControlledStream()
+    const setupClose = jest
+      .fn()
+      .mockResolvedValueOnce({ group: failed('setup-group'), members: [] })
+      .mockImplementationOnce(async () => {
+        lateOrdered.push({ kind: 'terminal', reason: 'operation-aborted', uncertainTail: true })
+        lateOrdered.close()
+        return { group: released(), members: [] }
+      })
+    database.subscribeOrdered.mockResolvedValueOnce({
+      state: 'failed',
+      error: {
+        code: 'operation.aborted',
+        domain: 'gatt',
+        operation: 'test.setup',
+        platform: null,
+        retryability: 'caller-decides'
+      },
+      members: [
+        { memberId: 'A', acquisition: 'acquired' },
+        { memberId: 'B', acquisition: 'indeterminate' }
+      ],
+      observations: [
+        {
+          kind: 'value',
+          collectionId: 'collection-failed',
+          connectionGeneration: 'connection-generation-peer-public',
+          databaseGeneration: 'database-generation-public',
+          memberId: 'A',
+          ordinal: '18446744073709551614',
+          value: new Uint8Array([255]),
+          delivery: 'notification',
+          provenance: 'notification'
+        }
+      ],
+      uncertainTail: true,
+      cleanup: { group: failed('setup-group'), members: [] },
+      stream: {
+        limits: { itemCapacity: 8, byteCapacity: 1024, reservedControlCapacity: 1 },
+        [Symbol.asyncIterator]: () => lateOrdered[Symbol.asyncIterator](),
+        close: setupClose
+      },
+      close: setupClose
+    })
+    const failedOrdered = await publicDatabase.subscribeOrdered([
+      { memberId: 'A', characteristic: publicCharacteristic },
+      { memberId: 'B', characteristic: secondCharacteristic }
+    ])
+    expect(failedOrdered).toMatchObject({
+      state: 'failed',
+      error: { code: 'operation.aborted' },
+      members: [{ acquisition: 'acquired' }, { acquisition: 'indeterminate' }],
+      observations: [{ ordinal: '18446744073709551614', value: new Uint8Array([255]) }],
+      uncertainTail: true
+    })
+    const lateIterator = failedOrdered.stream[Symbol.asyncIterator]()
+    lateOrdered.push({
+      kind: 'value',
+      collectionId: 'collection-failed',
+      connectionGeneration: 'connection-generation-peer-public',
+      databaseGeneration: 'database-generation-public',
+      memberId: 'A',
+      ordinal: '18446744073709551615',
+      value: new Uint8Array([254]),
+      delivery: 'notification',
+      provenance: 'notification'
+    })
+    await expect(lateIterator.next()).resolves.toMatchObject({ value: { value: new Uint8Array([254]) } })
+    await expect(failedOrdered.close()).resolves.toMatchObject({ group: { state: 'release-failed' } })
+    await expect(failedOrdered.close()).resolves.toMatchObject({ group: { state: 'released' } })
+    await expect(failedOrdered.close()).resolves.toMatchObject({ group: { state: 'released' } })
+    await expect(lateIterator.next()).resolves.toMatchObject({ value: { kind: 'terminal' } })
+    await expect(lateIterator.next()).resolves.toMatchObject({ done: true })
+    expect(setupClose).toHaveBeenCalledTimes(2)
+    cancelBeforeOpen = new AbortController()
+    await expect(
+      publicDatabase.subscribeOrdered([{ memberId: 'A', characteristic: publicCharacteristic }], {
+        signal: cancelBeforeOpen.signal
+      })
+    ).rejects.toThrow('synthetic canceled before delivery')
+    expect(database.subscribeOrdered).toHaveBeenCalledTimes(3)
+    cancelBeforeOpen = null
     await expect(publicCharacteristic.read()).resolves.toEqual(new Uint8Array([1, 2, 3]))
     // The main process forwards the radio's provenance verbatim to the renderer.
     await expect(publicCharacteristic.readReceipt()).resolves.toEqual({
@@ -2960,6 +3612,523 @@ describe('Electron v4 IPC boundary', () => {
     expect(nativeWriterAtDisconnect.close).toHaveBeenCalledTimes(1)
     expect(nativeNotificationsAtDisconnect.close).toHaveBeenCalledTimes(1)
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
+  })
+
+  test('Electron marker reservation retains credit until its source marker is acknowledged', async () => {
+    const { OrderedDelivery } = require('../src/ipc/ordered-delivery')
+    const current = createMainFixture()
+    const sender = createSender('marker-client', 'marker-window', 'marker-session')
+    const renderer = await bootstrap(current, sender)
+    const resources = current.router.resources.get(String(renderer.rendererLease.leaseId))
+    const source = createControlledStream()
+    const markerStatus = { state: 'admitted', ordinal: '42', write: { state: 'settled', error: null } }
+    const marker = {
+      start: jest.fn(async () => markerStatus),
+      status: jest.fn(async () => markerStatus),
+      cancel: jest.fn(async () => markerStatus),
+      forget: jest.fn(async () => undefined)
+    }
+    const stream = {
+      reserveMarkerWrite: () => marker,
+      discard: async () => {
+        source.close()
+        return {
+          group: released(),
+          members: [],
+          discarded: { values: '0', bytes: '0', controls: '0', uncertainTail: true, terminal: null, losses: [] }
+        }
+      },
+      close: async () => ({ group: released(), members: [] })
+    }
+    resources.connections.set('connection', { peerId: 'peer', disconnect: jest.fn(async () => released()) })
+    resources.databases.set('db', {
+      connectionHandle: 'connection',
+      database: {},
+      characteristics: new Map([['ch', characteristicPath()]]),
+      descriptors: new Map()
+    })
+    const markerKey = JSON.stringify([resources.ownerKey, String(resources.rendererLease.leaseId), 'group'])
+    resources.orderedGroups.set('group', {
+      databaseHandle: 'db',
+      markerKey,
+      acknowledgedMarkerOrdinals: new Set(),
+      setup: { state: 'ready', stream },
+      delivery: new OrderedDelivery(source[Symbol.asyncIterator]()),
+      pendingSetupObservations: [],
+      cleanupReleased: false,
+      cleanupResponse: null
+    })
+    const reserve = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 1, 'gatt.ordered.marker.reserve', {
+        orderedHandle: 'group',
+        reservationToken: 'token'
+      })
+    )
+    const markerHandle = reserve.payload.markerHandle
+    const replay = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 2, 'gatt.ordered.marker.reserve', {
+        orderedHandle: 'group',
+        reservationToken: 'token'
+      })
+    )
+    expect(replay.payload.markerHandle).toBe(markerHandle)
+    await expectIpcFailure(
+      current.port.handler(
+        { sender },
+        commandRequest(current, renderer, 3, 'gatt.ordered.marker.reserve', {
+          orderedHandle: 'group',
+          reservationToken: 'other'
+        })
+      ),
+      { code: 'stream.quota' }
+    )
+    const started = await current.port.handler(
+      { sender },
+      commandRequest(
+        current,
+        renderer,
+        4,
+        'gatt.ordered.marker.start',
+        { orderedHandle: 'group', markerHandle, databaseHandle: 'db', characteristicHandle: 'ch', withResponse: true },
+        new Uint8Array([4, 5])
+      )
+    )
+    expect(started.payload).toMatchObject({ statusFormat: 'public', status: markerStatus })
+    expect(marker.start).toHaveBeenCalledTimes(1)
+    expect(marker.start.mock.calls[0][1]).toEqual(new Uint8Array([4, 5]))
+    await expectIpcFailure(
+      current.port.handler(
+        { sender },
+        commandRequest(current, renderer, 5, 'gatt.ordered.marker.forget', { orderedHandle: 'group', markerHandle })
+      ),
+      { code: 'lifecycle.invalid-state' }
+    )
+    source.push({
+      kind: 'marker',
+      collectionId: 'group',
+      connectionGeneration: 'generation',
+      databaseGeneration: 'db-generation',
+      markerId: '77',
+      ordinal: '42'
+    })
+    expect(
+      (
+        await current.port.handler(
+          { sender },
+          commandRequest(current, renderer, 6, 'gatt.ordered.next', { orderedHandle: 'group' })
+        )
+      ).payload.state
+    ).toBe('empty')
+    await new Promise(resolve => setImmediate(resolve))
+    const item = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 7, 'gatt.ordered.next', { orderedHandle: 'group' })
+    )
+    expect(item.payload).toMatchObject({ state: 'item', item: { kind: 'marker', ordinal: '42' } })
+    await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 8, 'gatt.ordered.next', {
+        orderedHandle: 'group',
+        ackDeliveryId: item.payload.deliveryId
+      })
+    )
+    expect(
+      (
+        await current.port.handler(
+          { sender },
+          commandRequest(current, renderer, 9, 'gatt.ordered.marker.forget', { orderedHandle: 'group', markerHandle })
+        )
+      ).payload
+    ).toEqual({ forgotten: true })
+    expect(
+      (
+        await current.port.handler(
+          { sender },
+          commandRequest(current, renderer, 10, 'gatt.ordered.marker.forget', { orderedHandle: 'group', markerHandle })
+        )
+      ).payload
+    ).toEqual({ forgotten: true })
+    expect(marker.forget).toHaveBeenCalledTimes(1)
+    await current.binding.destroy()
+  })
+
+  test('replacement renderer discovers and retires a process-owned recording start', async () => {
+    const { DesktopRustCoreBackend } = require('../src/backends/desktop/desktop-rust-core-provider')
+    const backend = Object.create(DesktopRustCoreBackend.prototype)
+    backend.orderedFinishedObservers = new Set()
+    backend.orderedRecorderSessions = new Map()
+    backend.assertAlive = () => undefined
+    backend.recoverTerminalEvidenceForRecipientWithStatus = jest.fn(async () => ({ records: [], busyProducers: [] }))
+    let stopState = {
+      recording: { version: 2, state: 'waiting-drain', error: null },
+      hostCleanup: { state: 'pending' }
+    }
+    const envelope = value => JSON.stringify({ ok: true, value })
+    backend.central = {
+      orderedRecordingReceiptVersion: () => 2,
+      continuationConfigureRecordingDirectory: async () => envelope({ state: 'configured', encrypted: false }),
+      continuationRecordingStore: () => ({ stopOrdered: async () => envelope(stopState) })
+    }
+    const current = createMainFixture({}, backend)
+    const sender = createSender('record-client', 'record-window', 'old-session')
+    const renderer = await bootstrap(current, sender)
+    const resources = current.router.resources.get(String(renderer.rendererLease.leaseId))
+    const receipt = {
+      kind: 'started',
+      receipt: {
+        version: 1,
+        recordingId: 'recovery-recording',
+        collectionId: '2',
+        state: 'active',
+        sourceGeneration: null,
+        members: [
+          {
+            memberId: '0',
+            acquisition: 'acquired',
+            delivery: 'notification',
+            cleanupReleased: false,
+            cleanupError: null
+          }
+        ],
+        setupFailure: null,
+        fenceFailure: null,
+        error: null,
+        inspectionError: null,
+        driverError: null
+      }
+    }
+    let journalAcknowledged = false
+    const markerStatus = { state: 'admitted', ordinal: '11', write: { state: 'settled', error: null } }
+    const recordingMarker = {
+      start: jest.fn(async () => markerStatus),
+      status: jest.fn(async () => markerStatus),
+      cancel: jest.fn(async () => markerStatus),
+      forget: jest.fn(async () => {
+        if (!journalAcknowledged)
+          throw contractError('lifecycle.invalid-state', 'gatt', 'test.recording-marker.unacknowledged')
+      })
+    }
+    const handle = {
+      start: jest.fn(async () => receipt),
+      status: jest.fn(async () => ({ state: 'result', result: receipt })),
+      retire: jest.fn(async () => undefined),
+      reserveMarkerWrite: () => recordingMarker
+    }
+    const connection = { peerId: 'peer', disconnect: jest.fn(async () => released()) }
+    resources.connections.set('connection', connection)
+    resources.databases.set('db', {
+      connectionHandle: 'connection',
+      database: { reserveOrderedRecordingStart: () => handle, reserveOrderedRecordingMarker: () => recordingMarker },
+      characteristics: new Map([['ch', characteristicPath()]]),
+      descriptors: new Map()
+    })
+    const reserved = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 1, 'gatt.ordered-recording.reserve', { reservationToken: 'client-token' })
+    )
+    const startHandle = reserved.payload.startHandle
+    const started = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 2, 'gatt.ordered-recording.start', {
+        startHandle,
+        databaseHandle: 'db',
+        members: [{ memberId: 'A', characteristicHandle: 'ch', deliveryMode: 'prefer-notification' }],
+        recording: { id: 'recovery-recording', maxBytes: 1048576, maxRecords: 100 },
+        streamItemCapacity: 8,
+        streamByteCapacity: 1024,
+        streamReservedControlCapacity: 1
+      })
+    )
+    expect(started.payload).toMatchObject({ kind: 'started' })
+    const markerReserve = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 3, 'gatt.ordered-recording.marker.reserve', {
+        startHandle,
+        reservationToken: 'rec-marker'
+      })
+    )
+    const markerHandle = markerReserve.payload.markerHandle
+    const marked = await current.port.handler(
+      { sender },
+      commandRequest(
+        current,
+        renderer,
+        4,
+        'gatt.ordered-recording.marker.start',
+        { startHandle, markerHandle, databaseHandle: 'db', characteristicHandle: 'ch', withResponse: true },
+        new Uint8Array([8])
+      )
+    )
+    expect(marked.payload).toMatchObject({ statusFormat: 'public', status: markerStatus })
+    await expectIpcFailure(
+      current.port.handler(
+        { sender },
+        commandRequest(current, renderer, 5, 'gatt.ordered-recording.marker.forget', { startHandle, markerHandle })
+      ),
+      { code: 'lifecycle.invalid-state' }
+    )
+    journalAcknowledged = true
+    expect(
+      (
+        await current.port.handler(
+          { sender },
+          commandRequest(current, renderer, 6, 'gatt.ordered-recording.marker.forget', { startHandle, markerHandle })
+        )
+      ).payload
+    ).toEqual({ forgotten: true })
+    journalAcknowledged = false
+    const secondReserve = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 7, 'gatt.ordered-recording.marker.reserve', {
+        startHandle,
+        reservationToken: 'rec-marker-recovery'
+      })
+    )
+    const secondMarkerHandle = secondReserve.payload.markerHandle
+    await current.port.handler(
+      { sender },
+      commandRequest(
+        current,
+        renderer,
+        8,
+        'gatt.ordered-recording.marker.start',
+        {
+          startHandle,
+          markerHandle: secondMarkerHandle,
+          databaseHandle: 'db',
+          characteristicHandle: 'ch',
+          withResponse: true
+        },
+        new Uint8Array([9])
+      )
+    )
+    sender.startNavigation()
+    sender.commitNavigation({ processId: 11, routingId: 21 })
+    await awaitRendererRetirement(current.binding)
+    expect(connection.disconnect).toHaveBeenCalledTimes(1)
+    const replacement = createSender('record-client', 'record-window', 'old-session')
+    const rebound = await bootstrap(current, replacement)
+    const recovered = await current.port.handler(
+      { sender: replacement },
+      commandRequest(current, rebound, 1, 'gatt.ordered-recording.starts', { limit: 1 })
+    )
+    expect(recovered.payload).toMatchObject({
+      starts: [{ startHandle, recordingId: 'recovery-recording', state: 'result' }],
+      truncated: false
+    })
+    const replacementResources = current.router.resources.get(String(rebound.rendererLease.leaseId))
+    replacementResources.connections.set('replacement-connection', {
+      peerId: 'peer',
+      disconnect: jest.fn(async () => released())
+    })
+    replacementResources.databases.set('replacement-db', {
+      connectionHandle: 'replacement-connection',
+      database: { reserveOrderedRecordingMarker: () => recordingMarker },
+      characteristics: new Map(),
+      descriptors: new Map()
+    })
+    await expectIpcFailure(
+      current.port.handler(
+        { sender: replacement },
+        commandRequest(current, rebound, 10, 'gatt.ordered-recording.marker-owner', {
+          recordingId: 'recovery-recording',
+          databaseHandle: 'replacement-db'
+        })
+      ),
+      { code: 'protocol.malformed' }
+    )
+    const pendingMarkers = await current.port.handler(
+      { sender: replacement },
+      commandRequest(current, rebound, 11, 'gatt.ordered-recording.markers', { startHandle })
+    )
+    expect(pendingMarkers.payload).toMatchObject({
+      markers: [{ markerHandle: secondMarkerHandle, status: markerStatus }]
+    })
+    await expectIpcFailure(
+      current.port.handler(
+        { sender: replacement },
+        commandRequest(current, rebound, 12, 'gatt.ordered-recording.marker.forget', {
+          startHandle,
+          markerHandle: secondMarkerHandle
+        })
+      ),
+      { code: 'lifecycle.invalid-state' }
+    )
+    journalAcknowledged = true
+    expect(
+      (
+        await current.port.handler(
+          { sender: replacement },
+          commandRequest(current, rebound, 13, 'gatt.ordered-recording.marker.forget', {
+            startHandle,
+            markerHandle: secondMarkerHandle
+          })
+        )
+      ).payload
+    ).toEqual({ forgotten: true })
+    const status = await current.port.handler(
+      { sender: replacement },
+      commandRequest(current, rebound, 2, 'gatt.ordered-recording.status', { startHandle })
+    )
+    expect(status.payload).toMatchObject({ state: 'result', result: { kind: 'started' } })
+    const foreign = createSender('record-client', 'different-window', 'foreign-session')
+    const other = await bootstrap(current, foreign)
+    await expectIpcFailure(
+      current.port.handler(
+        { sender: foreign },
+        commandRequest(current, other, 1, 'gatt.ordered-recording.status', { startHandle })
+      ),
+      { code: 'ownership.denied' }
+    )
+    const retired = await current.port.handler(
+      { sender: replacement },
+      commandRequest(current, rebound, 3, 'gatt.ordered-recording.retire', { startHandle })
+    )
+    expect(retired.payload).toEqual({ retired: true })
+    const stillOwned = await current.port.handler(
+      { sender: replacement },
+      commandRequest(current, rebound, 4, 'gatt.ordered-recording.starts', {})
+    )
+    expect(stillOwned.payload).toMatchObject({ starts: [{ startHandle, state: 'retired' }] })
+    const recordings = await backend.nativeContinuationController().recordings('/private/app/recordings')
+    await recordings.stopOrdered('recovery-recording')
+    expect(
+      (
+        await current.port.handler(
+          { sender: replacement },
+          commandRequest(current, rebound, 5, 'gatt.ordered-recording.starts', {})
+        )
+      ).payload.starts
+    ).toHaveLength(1)
+    stopState = {
+      recording: { version: 2, state: 'finished', error: null },
+      hostCleanup: {
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'lease',
+            error: {
+              code: 'platform.failure',
+              domain: 'cleanup',
+              operation: 'test.stop',
+              retryability: 'caller-decides',
+              platform: null
+            }
+          }
+        ]
+      }
+    }
+    await recordings.stopOrdered('recovery-recording')
+    expect(
+      (
+        await current.port.handler(
+          { sender: replacement },
+          commandRequest(current, rebound, 6, 'gatt.ordered-recording.starts', {})
+        )
+      ).payload.starts
+    ).toHaveLength(1)
+    stopState = {
+      recording: { version: 2, state: 'finished', error: null },
+      hostCleanup: { state: 'released', failures: [] }
+    }
+    await recordings.stopOrdered('recovery-recording')
+    const finished = await current.port.handler(
+      { sender: replacement },
+      commandRequest(current, rebound, 7, 'gatt.ordered-recording.starts', {})
+    )
+    expect(finished.payload.starts).toEqual([])
+    await current.binding.destroy()
+  })
+
+  test('replacement renderer can inspect and acknowledge only its own abandoned group receipt', async () => {
+    const { OrderedDelivery } = require('../src/ipc/ordered-delivery')
+    const current = createMainFixture()
+    const sender = createSender('orphan-client', 'orphan-window', 'session-old')
+    const renderer = await bootstrap(current, sender)
+    const resources = current.router.resources.get(String(renderer.rendererLease.leaseId))
+    const stream = (async function* () {
+      yield { kind: 'value', memberId: 'A', value: new Uint8Array([77]) }
+    })()
+    const delivery = new OrderedDelivery(stream)
+    delivery.poll()
+    await new Promise(resolve => setImmediate(resolve))
+    resources.orderedGroups.set('orphan-group', {
+      databaseHandle: 'db',
+      setup: {
+        state: 'ready',
+        stream: {
+          discard: async () => ({
+            group: released(),
+            members: [],
+            discarded: {
+              values: '0',
+              bytes: '0',
+              controls: '1',
+              uncertainTail: false,
+              terminal: { kind: 'terminal', reason: 'closed', uncertainTail: false },
+              losses: []
+            }
+          })
+        }
+      },
+      delivery
+    })
+    sender.startNavigation()
+    sender.commitNavigation({ processId: 11, routingId: 21 })
+    await awaitRendererRetirement(current.binding)
+    const replacement = createSender('orphan-client', 'orphan-window', 'session-old')
+    const rebound = await bootstrap(current, replacement)
+    const response = await current.port.handler(
+      { sender: replacement },
+      commandRequest(current, rebound, 1, 'gatt.ordered.orphans', {})
+    )
+    expect(response.payload.receipts).toHaveLength(1)
+    expect(response.payload.receipts[0]).toMatchObject({ values: '1', bytes: '1', controls: '1', uncertainTail: true })
+    expect(JSON.stringify(response.payload.receipts)).not.toContain('77')
+    const missingWindow = createSender('orphan-client', '', 'session-missing')
+    await expectIpcFailure(
+      current.port.handler({ sender: missingWindow }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }),
+      { code: 'ownership.denied' }
+    )
+    const foreign = createSender('orphan-client', 'other-window', 'session-other')
+    const other = await bootstrap(current, foreign)
+    const foreignList = await current.port.handler(
+      { sender: foreign },
+      commandRequest(current, other, 1, 'gatt.ordered.orphans', {})
+    )
+    expect(foreignList.payload.receipts).toEqual([])
+    await expectIpcFailure(
+      current.port.handler(
+        { sender: foreign },
+        commandRequest(current, other, 2, 'gatt.ordered.orphan-ack', {
+          receiptId: response.payload.receipts[0].receiptId
+        })
+      ),
+      { code: 'ownership.denied' }
+    )
+    const { createDesktopOrderedDiagnostics } = require('../src/ipc/ordered-diagnostics')
+    let correlation = 2
+    const diagnostics = createDesktopOrderedDiagnostics({
+      request: async request => {
+        const result = await current.port.handler(
+          { sender: replacement },
+          commandRequest(current, rebound, correlation++, request.command, request.payload)
+        )
+        return { payload: result.payload }
+      }
+    })
+    const inspected = await diagnostics.inspect()
+    expect(inspected).toMatchObject({ truncated: false, receipts: [{ values: '1', bytes: '1' }] })
+    await expect(diagnostics.acknowledge(response.payload.receipts[0].receiptId)).rejects.toThrow()
+    expect(await diagnostics.read(response.payload.receipts[0].receiptId)).toMatchObject({
+      terminal: { kind: 'terminal' }
+    })
+    await diagnostics.acknowledge(response.payload.receipts[0].receiptId)
+    await diagnostics.acknowledge(response.payload.receipts[0].receiptId)
+    expect((await diagnostics.inspect()).receipts).toEqual([])
+    await current.binding.destroy()
   })
 
   test('retains a failed lifecycle iterator detach for an explicit unsubscribe retry', async () => {
@@ -3339,6 +4508,10 @@ describe('Electron v4 IPC boundary', () => {
       rendererLeaseId: 'renderer-lease-1',
       error: deliveryFailure
     })
+    // The failed delivery starts an authoritative renderer release. Join that
+    // release rather than assuming a fixed number of microtasks has reached
+    // subscription cleanup; this does not wait for the stream pump itself.
+    await awaitRendererRetirement(current.binding)
     expect(subscription.remove).toHaveBeenCalledTimes(1)
     // Destroy joins the already-owned renderer release; a fixed microtask count
     // does not establish that its asynchronous cleanup has settled.
@@ -4173,60 +5346,627 @@ test('snapshot rejection compensates the database admitted before serialization'
   }
 })
 
-test.each(['manufacturer', 'name'])('authenticated Electron public filtering preserves %s capture ordering through full observation cloning', async fact => {
+test.each(['manufacturer', 'name'])(
+  'authenticated Electron public filtering preserves %s capture ordering through full observation cloning',
+  async fact => {
+    const scanStream = createControlledStream()
+    const current = createMainFixture({
+      scan: jest.fn(async () => ({
+        observations: scanStream,
+        stop: async () => {
+          scanStream.close()
+          return released()
+        }
+      }))
+    })
+    const sender = createSender('capture-client', 'capture-window', 'capture-session')
+    const listeners = []
+    const originalSend = sender.send
+    sender.send = (channel, event) => {
+      originalSend.call(sender, channel, event)
+      for (const listener of [...listeners]) listener(event)
+    }
+    const manager = await createElectronRendererBleManager({
+      transport: {
+        invoke: request => current.port.handler({ sender }, request),
+        subscribe(listener) {
+          listeners.push(listener)
+          return () => listeners.splice(listeners.indexOf(listener), 1)
+        },
+        acknowledge: (rendererLease, eventId) =>
+          current.port.handler({ sender }, { kind: 'event.ack', rendererLease, eventId })
+      }
+    })
+    const present = value => ({ state: 'present', provenance: 'observed', value })
+    const absent = () => ({ state: 'absent', provenance: 'not-provided', reason: 'not in this packet' })
+    const scan = await manager.scan({
+      duplicates: 'all',
+      query: {
+        anyOf: [
+          {
+            names: { exact: ['Capture target'] },
+            manufacturerData: { all: [{ companyId: 107, dataPrefix: new Uint8Array([1]) }] }
+          }
+        ]
+      }
+    })
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    try {
+      const next = iterator.next()
+      let ordinal = 0
+      const packets =
+        fact === 'manufacturer'
+          ? [
+              [200, null, [2]],
+              [100, null, [1]],
+              [300, 'Capture target', null],
+              [400, null, [1]]
+            ]
+          : [
+              [200, 'Other capture', null],
+              [100, 'Capture target', null],
+              [300, null, [1]],
+              [400, 'Capture target', null]
+            ]
+      for (const [capture, name, bytes] of packets) {
+        ordinal++
+        scanStream.push({
+          kind: 'value',
+          value: {
+            device: {
+              id: 'capture-peer',
+              backendInstanceId: 'electron-backend',
+              scope: 'backend',
+              stableAcrossRestarts: false,
+              address: { value: 'capture-peer', type: 'opaque' }
+            },
+            provenance: 'platform-raw',
+            origin: 'advertisement',
+            sourceTimestamp: present({
+              monotonicMs: capture,
+              origin: 'platform',
+              clockScope: 'capture-platform-epoch'
+            }),
+            receivedAtMonotonicMs: 20000 + ordinal,
+            ingressOrdinal: ordinal,
+            scanSessionId: 'capture-scan',
+            localName: name === null ? absent() : present(name),
+            rssi: present(-45),
+            txPower: absent(),
+            connectable: present(true),
+            appearance: absent(),
+            serviceUuids: present([]),
+            solicitedServiceUuids: absent(),
+            overflowServiceUuids: absent(),
+            serviceData: present([]),
+            manufacturerData: present(bytes === null ? [] : [{ companyIdentifier: 107, value: new Uint8Array(bytes) }]),
+            rawRecord: absent(),
+            scanResponseRecord: absent()
+          }
+        })
+        await flushAsyncWork()
+      }
+      const item = (await next).value
+      expect(item).toMatchObject({
+        kind: 'value',
+        value: { localName: 'Capture target', observedAtMonotonicMs: 20004 }
+      })
+      expect([...item.value.manufacturerData[0].data]).toEqual([1])
+      expect(
+        sender.sent
+          .filter(({ event }) => event.item.kind === 'value')
+          .map(({ event }) => event.item.value.sourceTimestamp.value)
+      ).toEqual(
+        [200, 100, 300, 400].map(monotonicMs => ({
+          monotonicMs,
+          origin: 'platform',
+          clockScope: 'capture-platform-epoch'
+        }))
+      )
+    } finally {
+      await iterator.return()
+      await scan.stop()
+      await manager.destroy()
+      await current.binding.destroy()
+    }
+  }
+)
+
+test('real Electron process host recovers recording after router and manager destruction', async () => {
+  const fs = require('node:fs')
+  const os = require('node:os')
+  const path = require('node:path')
+  const {
+    openBackend,
+    observePeer,
+    hrmServices,
+    HRM_SERVICE,
+    HRM_MEASUREMENT
+  } = require('./helpers/desktop-rust-core-harness')
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-electron-process-'))
+  const terminalEvidenceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-electron-terminal-evidence-'))
+  const { backend, stage } = await openBackend('corebluetooth', {
+    terminalEvidenceStore: { directory: terminalEvidenceDirectory, maxBytes: '1048576' }
+  })
+  const host = await require('../src/desktop-process-host').createDesktopProcessHostFromBackend(backend, {
+    now: () => performance.now()
+  })
+  let replacement
+  try {
+    expect(JSON.parse(await stage.continuationConfigureRecordingDirectory(directory)).ok).toBe(true)
+    const peer = await observePeer(backend, stage)
+    const services = hrmServices()
+    services[0].characteristics[0].properties.write = true
+    await stage.stageServices('peer-1', services)
+    stage.stageGattSnapshotIdentity('peer-1', 'electron-process', '1', '1')
+    const main = await host.createInternalManager()
+    const current = createMainFixture({}, undefined, main)
+    const sender = createSender('process-client', 'process-window', 'first')
+    let startHandle
+    let recoveryToken
+    const transport = {
+      invoke: async request => {
+        const response = await current.port.handler({ sender }, request)
+        if (request.kind === 'route' && request.envelope.command === 'gatt.ordered-recording.reserve')
+          startHandle = response.payload.startHandle
+        if (
+          request.kind === 'route' &&
+          request.envelope.command === 'gatt.ordered-recording.recovery' &&
+          response.kind === 'route'
+        )
+          recoveryToken = response.payload.recoveryToken
+        return response
+      },
+      subscribe: () => () => {},
+      acknowledge: (rendererLease, eventId) =>
+        current.port.handler({ sender }, { kind: 'event.ack', rendererLease, eventId })
+    }
+    const renderer = await createElectronRendererBleManager({ transport })
+    const connection = await renderer.connect(String(peer))
+    const database = await connection.discover()
+    const characteristic = database.characteristic(HRM_SERVICE, HRM_MEASUREMENT)
+    const recordingStart = database.reserveOrderedRecordingStart()
+    const started = await recordingStart.start([{ memberId: 'heart', characteristic }], {
+      recording: { id: 'electron-process', maxBytes: 1048576, maxRecords: 8 }
+    })
+    const recovery = stage.orderedRecordingReclaimSupported() ? recordingStart.recoveryHandle() : null
+    expect(started).toMatchObject({ kind: 'started', receipt: { state: 'active' } })
+    expect(await renderer.destroy()).toMatchObject({ state: 'released' })
+    expect(await current.binding.destroy()).toMatchObject({ state: 'released' })
+    expect(await main.destroy()).toMatchObject({ state: 'released' })
+
+    replacement = await host.createInternalManager()
+    const next = createMainFixture({}, undefined, replacement)
+    const nextSender = createSender('process-client', 'process-window', 'first')
+    const boot = await bootstrap(next, nextSender)
+    const listed = await next.port.handler(
+      { sender: nextSender },
+      commandRequest(next, boot, 1, 'gatt.ordered-recording.starts', {})
+    )
+    expect(listed.payload.starts).toMatchObject([{ startHandle, recordingId: 'electron-process' }])
+    const foreign = createSender('process-client', 'foreign-window', 'replacement')
+    const foreignBoot = await bootstrap(next, foreign)
+    await expectIpcFailure(
+      next.port.handler(
+        { sender: foreign },
+        commandRequest(next, foreignBoot, 1, 'gatt.ordered-recording.recovery', { startHandle })
+      ),
+      { code: 'ownership.denied' }
+    )
+    if (recoveryToken) {
+      const foreignConnection = await replacement.connect(peer, { signal: null, deadline: null })
+      const foreignDatabase = await foreignConnection.discover({ signal: null, deadline: null })
+      const foreignResources = next.router.resources.get(String(foreignBoot.rendererLease.leaseId))
+      foreignResources.connections.set('foreign-connection', foreignConnection)
+      foreignResources.databases.set('foreign-db', {
+        connectionHandle: 'foreign-connection',
+        database: foreignDatabase,
+        characteristics: new Map(),
+        descriptors: new Map()
+      })
+      await expectIpcFailure(
+        next.port.handler(
+          { sender: foreign },
+          commandRequest(next, foreignBoot, 2, 'gatt.ordered-recording.reclaim.reserve', {
+            recoveryToken,
+            callerKey: 'stolen',
+            databaseHandle: 'foreign-db'
+          })
+        ),
+        { code: 'ownership.denied' }
+      )
+    }
+
+    const lostRecoveryResponses = new Set([
+      'gatt.ordered-recording.reclaim.reserve',
+      'gatt.ordered-recording.reclaim.commit',
+      'gatt.ordered-recording.reclaim.forget-retirement'
+    ])
+    const nextTransport = {
+      invoke: async request => {
+        const response = await next.port.handler({ sender: nextSender }, request)
+        if (
+          request.kind === 'route' &&
+          response.kind === 'route' &&
+          lostRecoveryResponses.delete(request.envelope.command)
+        )
+          throw new Error('synthetic lost recovery response')
+        return response
+      },
+      subscribe: () => () => {},
+      acknowledge: (rendererLease, eventId) =>
+        next.port.handler({ sender: nextSender }, { kind: 'event.ack', rendererLease, eventId })
+    }
+    const replacementRenderer = await createElectronRendererBleManager({ transport: nextTransport })
+    const nextConnection = await replacementRenderer.connect(String(peer))
+    const nextDatabase = await nextConnection.discover()
+    const target = nextDatabase.characteristic(HRM_SERVICE, HRM_MEASUREMENT)
+    if (recovery === null) {
+      expect(() => recordingStart.recoveryHandle()).toThrow('capability.unsupported')
+      const control = await host.continuation.recordings(directory)
+      let stopped
+      for (let i = 0; i < 200; i++) {
+        stopped = await control.stopOrdered('electron-process')
+        if (stopped.recording.state === 'finished' && stopped.hostCleanup.state === 'released') break
+        const tail = await control.prepareOrdered('electron-process', { maxItems: 16, maxBytes: 4096 })
+        if (tail.token) await control.acknowledge('electron-process', tail.token)
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      expect(stopped).toMatchObject({ recording: { state: 'finished' }, hostCleanup: { state: 'released' } })
+      await next.port.handler(
+        { sender: nextSender },
+        commandRequest(next, boot, 301, 'gatt.ordered-recording.retire', { startHandle })
+      )
+      await replacementRenderer.destroy()
+      await next.binding.destroy()
+      await replacement.destroy()
+      return
+    }
+    const reclaim = nextDatabase.reserveOrderedRecordingReclaim(recovery)
+    await expect(reclaim.start()).rejects.toThrow('synthetic lost recovery response')
+    let reclaimStatus = await reclaim.start()
+    for (let i = 0; i < 200 && reclaimStatus.state === 'pending'; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      reclaimStatus = await reclaim.status()
+    }
+    expect(reclaimStatus.state).toBe('ready')
+    await expect(reclaim.commit()).rejects.toThrow('synthetic lost recovery response')
+    expect((await reclaim.status()).mappingCommitted).toBe(true)
+    let released = await reclaim.release()
+    for (let i = 0; i < 200 && released.state === 'releasing'; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      released = await reclaim.status()
+    }
+    expect(released.state).toBe('released')
+    await expect(reclaim.retire()).rejects.toThrow('synthetic lost recovery response')
+    await reclaim.retire()
+    const marker = nextDatabase.reserveOrderedRecordingMarker('electron-process')
+    let marked = await marker.start(target, new Uint8Array([9]), 'with-response')
+    for (let i = 0; i < 200 && marked.state === 'pending'; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      marked = await marker.status()
+    }
+    expect(marked.state).toBe('admitted')
+    const control = await host.continuation.recordings(directory)
+    const access = control
+    let page
+    for (let i = 0; i < 200; i++) {
+      page = await access.prepareOrdered('electron-process', { maxItems: 16, maxBytes: 4096 })
+      if (page.records.length) break
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(page.records[0].record.kind).toBe('marker')
+    await access.acknowledge('electron-process', page.token)
+    stage.stageSettleMarkerWrite(started.receipt.collectionId, '0')
+    await marker.forget()
+    const canceled = nextDatabase.reserveOrderedRecordingMarker('electron-process')
+    expect((await canceled.cancel()).state).toBe('not-admitted')
+    await canceled.forget()
+    await stage.stageNotification({
+      peerId: 'peer-1',
+      serviceUuid: HRM_SERVICE,
+      serviceOccurrence: 0,
+      characteristicUuid: HRM_MEASUREMENT,
+      characteristicOccurrence: 0,
+      value: Buffer.from([88])
+    })
+    let foundValue = false
+    for (let i = 0; i < 200 && !foundValue; i++) {
+      page = await access.prepareOrdered('electron-process', { maxItems: 16, maxBytes: 4096 })
+      foundValue = page.records.some(item => item.record.kind === 'value')
+      if (page.token) await access.acknowledge('electron-process', page.token)
+      if (!foundValue) await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(foundValue).toBe(true)
+    expect((await control.contextOrdered('electron-process')).members[0].publicMemberId).toBe('heart')
+    let stopped
+    for (let i = 0; i < 200; i++) {
+      stopped = await control.stopOrdered('electron-process')
+      if (stopped.recording.state === 'finished' && stopped.hostCleanup.state === 'released') break
+      page = await access.prepareOrdered('electron-process', { maxItems: 16, maxBytes: 4096 })
+      if (page.token) await access.acknowledge('electron-process', page.token)
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(stopped).toMatchObject({ recording: { state: 'finished' }, hostCleanup: { state: 'released' } })
+    await next.port.handler(
+      { sender: nextSender },
+      commandRequest(next, boot, 301, 'gatt.ordered-recording.retire', { startHandle })
+    )
+    expect(
+      (
+        await next.port.handler(
+          { sender: nextSender },
+          commandRequest(next, boot, 302, 'gatt.ordered-recording.starts', {})
+        )
+      ).payload.starts
+    ).toEqual([])
+    await replacementRenderer.destroy()
+    await next.binding.destroy()
+    await replacement.destroy()
+  } finally {
+    await host.destroy()
+    fs.rmSync(directory, { recursive: true, force: true })
+    fs.rmSync(terminalEvidenceDirectory, { recursive: true, force: true })
+  }
+}, 30000)
+
+test('replacement reconciles an uncertain recording start before accessing its marker owner', async () => {
+  const current = createMainFixture()
+  const first = createSender('reconcile-client', 'reconcile-window', 'first')
+  const boot = await bootstrap(current, first)
+  const resources = current.router.resources.get(String(boot.rendererLease.leaseId))
+  const receipt = {
+    kind: 'started',
+    receipt: {
+      version: 1,
+      recordingId: 'reconcile-recording',
+      collectionId: '2',
+      state: 'active',
+      sourceGeneration: null,
+      members: [
+        { memberId: '0', acquisition: 'acquired', delivery: 'notification', cleanupReleased: false, cleanupError: null }
+      ],
+      setupFailure: null,
+      fenceFailure: null,
+      error: null,
+      inspectionError: null,
+      driverError: null
+    }
+  }
+  const markerStatus = { state: 'not-admitted', error: null }
+  const marker = {
+    start: jest.fn(async () => markerStatus),
+    status: jest.fn(async () => markerStatus),
+    cancel: jest.fn(async () => markerStatus),
+    forget: jest.fn(async () => undefined)
+  }
+  const handle = {
+    start: jest.fn(async () => {
+      throw contractError('operation.cancelled', 'gatt', 'test.start')
+    }),
+    status: jest.fn(async () => ({ state: 'result', result: receipt })),
+    retire: jest.fn(async () => undefined),
+    recoveryHandle: () => ({ kind: 'ordered-recording-recovery' })
+  }
+  resources.connections.set('connection', { peerId: 'peer', disconnect: jest.fn(async () => released()) })
+  resources.databases.set('db', {
+    connectionHandle: 'connection',
+    database: { reserveOrderedRecordingStart: () => handle },
+    characteristics: new Map([['ch', characteristicPath()]]),
+    descriptors: new Map()
+  })
+  const startHandle = (
+    await current.port.handler(
+      { sender: first },
+      commandRequest(current, boot, 1, 'gatt.ordered-recording.reserve', { reservationToken: 'reconcile' })
+    )
+  ).payload.startHandle
+  await expectIpcFailure(
+    current.port.handler(
+      { sender: first },
+      commandRequest(current, boot, 2, 'gatt.ordered-recording.start', {
+        startHandle,
+        databaseHandle: 'db',
+        members: [{ memberId: 'A', characteristicHandle: 'ch', deliveryMode: 'prefer-notification' }],
+        recording: { id: 'reconcile-recording', maxBytes: 1048576, maxRecords: 100 },
+        streamItemCapacity: 8,
+        streamByteCapacity: 1024,
+        streamReservedControlCapacity: 1
+      })
+    ),
+    { code: 'operation.cancelled' }
+  )
+  first.startNavigation()
+  first.commitNavigation({ processId: 11, routingId: 21 })
+  await awaitRendererRetirement(current.binding)
+  const successor = createSender('reconcile-client', 'reconcile-window', 'first')
+  const next = await bootstrap(current, successor)
+  const replacement = current.router.resources.get(String(next.rendererLease.leaseId))
+  replacement.connections.set('connection', { peerId: 'peer', disconnect: jest.fn(async () => released()) })
+  const receiptStatus = state => ({
+    state,
+    error: null,
+    mappingCommitted: state === 'committed' || state === 'released'
+  })
+  const reclaim = {
+    start: async () => receiptStatus('ready'),
+    status: async () => receiptStatus('committed'),
+    commit: async () => receiptStatus('committed'),
+    cancel: async () => receiptStatus('released'),
+    release: async () => receiptStatus('released'),
+    retire: async () => undefined
+  }
+  replacement.databases.set('db', {
+    connectionHandle: 'connection',
+    database: { reserveOrderedRecordingMarker: () => marker, reserveOrderedRecordingReclaim: () => reclaim },
+    characteristics: new Map([['ch', characteristicPath()]]),
+    descriptors: new Map()
+  })
+  expect(
+    (
+      await current.port.handler(
+        { sender: successor },
+        commandRequest(current, next, 3, 'gatt.ordered-recording.status', { startHandle })
+      )
+    ).payload
+  ).toMatchObject({ state: 'result', result: receipt })
+  await expectIpcFailure(
+    current.port.handler(
+      { sender: successor },
+      commandRequest(current, next, 4, 'gatt.ordered-recording.marker-owner', {
+        recordingId: 'reconcile-recording',
+        databaseHandle: 'db'
+      })
+    ),
+    { code: 'protocol.malformed' }
+  )
+  const recoveryToken = (
+    await current.port.handler(
+      { sender: successor },
+      commandRequest(current, next, 5, 'gatt.ordered-recording.recovery', { startHandle })
+    )
+  ).payload.recoveryToken
+  const foreign = createSender('reconcile-client', 'foreign-window', 'replacement')
+  const foreignBoot = await bootstrap(current, foreign)
+  await expectIpcFailure(
+    current.port.handler(
+      { sender: foreign },
+      commandRequest(current, foreignBoot, 6, 'gatt.ordered-recording.recovery', { startHandle })
+    ),
+    { code: 'ownership.denied' }
+  )
+  const reclaimHandle = (
+    await current.port.handler(
+      { sender: successor },
+      commandRequest(current, next, 7, 'gatt.ordered-recording.reclaim.reserve', {
+        recoveryToken,
+        callerKey: 'transaction',
+        databaseHandle: 'db'
+      })
+    )
+  ).payload.reclaimHandle
+  await current.port.handler(
+    { sender: successor },
+    commandRequest(current, next, 8, 'gatt.ordered-recording.reclaim.start', { reclaimHandle })
+  )
+  await current.port.handler(
+    { sender: successor },
+    commandRequest(current, next, 9, 'gatt.ordered-recording.reclaim.commit', { reclaimHandle })
+  )
+  expect(
+    (
+      await current.port.handler(
+        { sender: successor },
+        commandRequest(current, next, 10, 'gatt.ordered-recording.marker-owner', {
+          recordingId: 'reconcile-recording',
+          databaseHandle: 'db',
+          reclaimHandle
+        })
+      )
+    ).payload
+  ).toEqual({ startHandle })
+  const markerHandle = (
+    await current.port.handler(
+      { sender: successor },
+      commandRequest(current, next, 11, 'gatt.ordered-recording.marker.reserve', {
+        startHandle,
+        reservationToken: 'marker'
+      })
+    )
+  ).payload.markerHandle
+  expect(
+    (
+      await current.port.handler(
+        { sender: successor },
+        commandRequest(
+          current,
+          next,
+          12,
+          'gatt.ordered-recording.marker.start',
+          { startHandle, markerHandle, databaseHandle: 'db', characteristicHandle: 'ch', withResponse: true },
+          new Uint8Array([1])
+        )
+      )
+    ).payload.status
+  ).toEqual(markerStatus)
+  await current.port.handler(
+    { sender: successor },
+    commandRequest(current, next, 13, 'gatt.ordered-recording.marker.forget', { startHandle, markerHandle })
+  )
+  await current.port.handler(
+    { sender: successor },
+    commandRequest(current, next, 14, 'gatt.ordered-recording.reclaim.release', { reclaimHandle })
+  )
+  await current.port.handler(
+    { sender: successor },
+    commandRequest(current, next, 15, 'gatt.ordered-recording.reclaim.retire', { reclaimHandle })
+  )
+  await current.port.handler(
+    { sender: successor },
+    commandRequest(current, next, 16, 'gatt.ordered-recording.reclaim.ack-retirement', { reclaimHandle })
+  )
+  await current.port.handler(
+    { sender: successor },
+    commandRequest(current, next, 17, 'gatt.ordered-recording.reclaim.forget-retirement', { reclaimHandle })
+  )
+  await current.port.handler(
+    { sender: successor },
+    commandRequest(current, next, 18, 'gatt.ordered-recording.reclaim.confirm-forgotten', { reclaimHandle })
+  )
+  expect(handle.start).toHaveBeenCalledTimes(1)
+  await current.binding.destroy()
+})
+
+test('authenticated Electron public manager preserves a native terminal-evidence staging failure', async () => {
   const scanStream = createControlledStream()
-  const current = createMainFixture({ scan: jest.fn(async () => ({ observations: scanStream,
-    stop: async () => { scanStream.close(); return released() } })) })
-  const sender = createSender('capture-client', 'capture-window', 'capture-session')
+  const current = createMainFixture({
+    scan: jest.fn(async () => ({
+      observations: scanStream,
+      stop: async () => {
+        scanStream.close()
+        return released()
+      }
+    }))
+  })
+  const sender = createSender('terminal-stage-client', 'terminal-stage-window', 'terminal-stage-session')
   const listeners = []
   const originalSend = sender.send
   sender.send = (channel, event) => {
     originalSend.call(sender, channel, event)
     for (const listener of [...listeners]) listener(event)
   }
-  const manager = await createElectronRendererBleManager({ transport: {
-    invoke: request => current.port.handler({ sender }, request),
-    subscribe(listener) { listeners.push(listener); return () => listeners.splice(listeners.indexOf(listener), 1) },
-    acknowledge: (rendererLease, eventId) => current.port.handler({ sender }, { kind: 'event.ack', rendererLease, eventId })
-  } })
-  const present = value => ({ state: 'present', provenance: 'observed', value })
-  const absent = () => ({ state: 'absent', provenance: 'not-provided', reason: 'not in this packet' })
-  const scan = await manager.scan({ duplicates: 'all', query: { anyOf: [{
-    names: { exact: ['Capture target'] },
-    manufacturerData: { all: [{ companyId: 107, dataPrefix: new Uint8Array([1]) }] }
-  }] } })
-  const iterator = scan.observations[Symbol.asyncIterator]()
-  try {
-    const next = iterator.next()
-    let ordinal = 0
-    const packets = fact === 'manufacturer'
-      ? [[200, null, [2]], [100, null, [1]], [300, 'Capture target', null], [400, null, [1]]]
-      : [[200, 'Other capture', null], [100, 'Capture target', null], [300, null, [1]], [400, 'Capture target', null]]
-    for (const [capture, name, bytes] of packets) {
-      ordinal++
-      scanStream.push({ kind: 'value', value: {
-        device: { id: 'capture-peer', backendInstanceId: 'electron-backend', scope: 'backend',
-          stableAcrossRestarts: false, address: { value: 'capture-peer', type: 'opaque' } },
-        provenance: 'platform-raw', origin: 'advertisement',
-        sourceTimestamp: present({ monotonicMs: capture, origin: 'platform', clockScope: 'capture-platform-epoch' }),
-        receivedAtMonotonicMs: 20000 + ordinal, ingressOrdinal: ordinal, scanSessionId: 'capture-scan',
-        localName: name === null ? absent() : present(name), rssi: present(-45),
-        txPower: absent(), connectable: present(true), appearance: absent(), serviceUuids: present([]),
-        solicitedServiceUuids: absent(), overflowServiceUuids: absent(), serviceData: present([]),
-        manufacturerData: present(bytes === null ? [] : [{ companyIdentifier: 107, value: new Uint8Array(bytes) }]),
-        rawRecord: absent(), scanResponseRecord: absent()
-      } })
-      await flushAsyncWork()
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe(listener) {
+        listeners.push(listener)
+        return () => listeners.splice(listeners.indexOf(listener), 1)
+      },
+      acknowledge: (rendererLease, eventId) =>
+        current.port.handler({ sender }, { kind: 'event.ack', rendererLease, eventId })
     }
-    const item = (await next).value
-    expect(item).toMatchObject({ kind: 'value', value: { localName: 'Capture target', observedAtMonotonicMs: 20004 } })
-    expect([...item.value.manufacturerData[0].data]).toEqual([1])
-    expect(sender.sent.filter(({ event }) => event.item.kind === 'value').map(({ event }) => event.item.value.sourceTimestamp.value))
-      .toEqual([200, 100, 300, 400].map(monotonicMs => ({ monotonicMs, origin: 'platform', clockScope: 'capture-platform-epoch' })))
-  } finally {
-    await iterator.return()
-    await scan.stop()
-    await manager.destroy()
-    await current.binding.destroy()
-  }
+  })
+  const scan = await manager.scan()
+  const iterator = scan.observations[Symbol.asyncIterator]()
+  const error = markTerminalEvidenceStageFailure({
+    code: 'platform.failure',
+    domain: 'restoration',
+    operation: 'native.scan.terminal-evidence.stage',
+    platform: null,
+    retryability: 'caller-decides'
+  })
+  scanStream.push({
+    kind: 'terminal',
+    reason: 'source-failed',
+    droppedItems: 0,
+    droppedBytes: 0,
+    replacedItems: 0,
+    error
+  })
+
+  await expect(iterator.next()).resolves.toMatchObject({
+    value: { kind: 'terminal', reason: 'source-failed', error }
+  })
+  expect(sender.sent.some(({ event }) => event.item.terminalEvidenceStageFailed === true)).toBe(true)
+  await current.binding.destroy()
 })

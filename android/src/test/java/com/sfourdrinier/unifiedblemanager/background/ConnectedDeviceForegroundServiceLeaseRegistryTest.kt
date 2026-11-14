@@ -4,8 +4,214 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.sfourdrinier.unifiedblemanager.rustcore.ForegroundServiceBackgroundPort
 
 class ConnectedDeviceForegroundServiceLeaseRegistryTest {
+  @Test fun `a finishing start cannot clear a newer same-owner start identity`() = finishingStartPreservesNewerIdentity("second")
+
+  @Test fun `a finishing start cannot clear a newer start with a reused lease ID`() = finishingStartPreservesNewerIdentity("first")
+
+  private fun finishingStartPreservesNewerIdentity(newerId: String) {
+    val entered = java.util.concurrent.CountDownLatch(1)
+    val finish = java.util.concurrent.CountDownLatch(1)
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun start(reason: String) {
+        entered.countDown()
+        check(finish.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        throw IllegalStateException("start failed")
+      }
+      override fun stop() {}
+      override fun update(title: String, body: String?) {}
+    }
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "first" }
+    val owner = Any()
+    val worker = Thread { runCatching { registry.acquireOwned(owner, "first") } }
+    worker.start()
+    try {
+      assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+      // Model the critical interleaving: the next start has published its ID
+      // before the first acquisition's finally block can clear its own ID.
+      val ownersField = registry.javaClass.getDeclaredField("owners").apply { isAccessible = true }
+      val owners = ownersField.get(registry) as Map<*, *>
+      val state = owners[owner]!!
+      val id = state.javaClass.getDeclaredField("startInFlightId").apply { isAccessible = true }
+      id.set(state, newerId)
+      // The IDs may be reused after a failed start; distinguish acquisitions
+      // even when the externally visible lease string is identical.
+      state.javaClass.declaredFields.firstOrNull { it.name == "startInFlightToken" }
+        ?.apply { isAccessible = true }?.set(state, Any())
+      finish.countDown()
+      worker.join(5000)
+      assertFalse(worker.isAlive)
+      assertEquals(newerId, registry.snapshotOwner(owner).pendingStartId)
+    } finally {
+      finish.countDown()
+      worker.join(5000)
+    }
+  }
+  @Test fun `same owner retries its pending start before acquiring again`() {
+    var starts = 0
+    var stops = 0
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun start(reason: String) {
+        if (++starts == 1) throw ForegroundServiceControlException("interrupted", "accepted", InterruptedException(), true)
+      }
+      override fun stop() { if (++stops == 1) throw IllegalStateException("refused") }
+      override fun update(title: String, body: String?) {}
+    }
+    var id = 0
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease-${++id}" }
+    val owner = Any()
+    assertTrue(runCatching { registry.acquireOwned(owner, "first") }.isFailure)
+    assertEquals("lease-2", registry.acquireOwned(owner, "retry"))
+    assertFalse(registry.snapshotOwner(owner).pendingStartCleanup)
+    assertTrue(registry.snapshotOwner(owner).failures.isEmpty())
+    assertEquals(2, stops)
+  }
+  @Test fun `snapshot retains a release in progress across a nonblocking fence`() {
+    val entered = java.util.concurrent.CountDownLatch(1)
+    val finish = java.util.concurrent.CountDownLatch(1)
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun start(reason: String) {}
+      override fun stop() { entered.countDown(); check(finish.await(5, java.util.concurrent.TimeUnit.SECONDS)) }
+      override fun update(title: String, body: String?) {}
+    }
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease" }
+    val owner = Any()
+    val lease = registry.acquireOwned(owner, "first")
+    val thread = Thread { registry.releaseOwned(owner, lease) }
+    thread.start()
+    assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+    assertTrue(registry.fenceOwner(owner, "fence"))
+    assertEquals(1, registry.snapshotOwner(owner).inFlight)
+    assertEquals(setOf(lease), registry.snapshotOwner(owner).leases)
+    finish.countDown()
+    thread.join(5000)
+    assertEquals(0, registry.snapshotOwner(owner).inFlight)
+    assertTrue(registry.snapshotOwner(owner).leases.isEmpty())
+  }
+  @Test fun `fence retains a late accepted start and exact retry releases it`() {
+    val entered = java.util.concurrent.CountDownLatch(1)
+    val finish = java.util.concurrent.CountDownLatch(1)
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      var stops = 0
+      override fun start(reason: String) { entered.countDown(); check(finish.await(5, java.util.concurrent.TimeUnit.SECONDS)) }
+      override fun stop() { stops++ }
+      override fun update(title: String, body: String?) {}
+    }
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "late" }
+    val owner = Any()
+    val retirement = "retirement"
+    var result: Result<String>? = null
+    val thread = Thread { result = runCatching { registry.acquireOwned(owner, "start") } }
+    thread.start()
+    assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+    assertTrue(registry.fenceOwner(owner, retirement))
+    assertEquals(1, registry.snapshotOwner(owner).inFlight)
+    assertEquals("late", registry.snapshotOwner(owner).pendingStartId)
+    assertFalse(registry.snapshotOwner(owner).pendingStartCleanup)
+    assertFalse(registry.fenceOwner(owner, "other"))
+    assertTrue(runCatching { registry.acquireOwned(owner, "after fence") }.isFailure)
+    finish.countDown()
+    thread.join(5000)
+    assertEquals("late", result!!.getOrThrow())
+    assertEquals(setOf("late"), registry.snapshotOwner(owner).leases)
+    assertTrue(runCatching { registry.retryOwner(Any(), retirement) }.isFailure)
+    assertTrue(runCatching { registry.retryOwner(owner, "other") }.isFailure)
+    registry.retryOwner(owner, retirement)
+    assertTrue(registry.snapshotOwner(owner).leases.isEmpty())
+    assertEquals(1, driver.stops)
+  }
+
+  @Test fun `fenced cleanup retries failed stop without touching a shared owner`() {
+    val driver = RecordingServiceDriver(failFirstStop = true)
+    var id = 0
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease-${++id}" }
+    val first = Any()
+    val second = Any()
+    val firstLease = registry.acquireOwned(first, "first")
+    val secondLease = registry.acquireOwned(second, "second")
+    assertTrue(registry.fenceOwner(first, "fence-1"))
+    registry.retryOwner(first, "fence-1")
+    assertFalse(registry.hasLease(firstLease))
+    assertTrue(registry.hasLease(secondLease))
+    assertEquals(0, driver.stopCount)
+    assertTrue(registry.fenceOwner(second, "fence-2"))
+    assertTrue(runCatching { registry.retryOwner(second, "fence-2") }.isFailure)
+    assertEquals(setOf(secondLease), registry.snapshotOwner(second).leases)
+    assertEquals(1, registry.snapshotOwner(second).failures.size)
+    registry.retryOwner(second, "fence-2")
+    assertTrue(registry.snapshotOwner(second).leases.isEmpty())
+    assertEquals(2, driver.stopCount)
+  }
+
+  @Test fun `failed accepted start is retained for only its fenced owner`() {
+    var stops = 0
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun start(reason: String) { throw ForegroundServiceControlException("interrupted", "accepted", InterruptedException(), true) }
+      override fun stop() { if (++stops < 3) throw IllegalStateException("refused $stops") }
+      override fun update(title: String, body: String?) {}
+    }
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease" }
+    val owner = Any()
+    val foreign = Any()
+    assertTrue(runCatching { registry.acquireOwned(owner, "first") }.isFailure)
+    assertTrue(registry.snapshotOwner(owner).pendingStartCleanup)
+    assertEquals("lease", registry.snapshotOwner(owner).pendingStartId)
+    assertFalse(registry.snapshotOwner(foreign).pendingStartCleanup)
+    assertTrue(registry.fenceOwner(owner, "fence"))
+    assertTrue(runCatching { registry.retryOwner(owner, "fence") }.isFailure)
+    assertTrue(registry.snapshotOwner(owner).pendingStartCleanup)
+    assertEquals(2, registry.snapshotOwner(owner).failures.size)
+    registry.retryOwner(owner, "fence")
+    assertFalse(registry.snapshotOwner(owner).pendingStartCleanup)
+  }
+  @Test fun `another owner cannot clean up a failed accepted start`() {
+    var stops = 0
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun start(reason: String) {
+        throw ForegroundServiceControlException("interrupted", "accepted", InterruptedException(), true)
+      }
+      override fun stop() { stops++; if (stops == 1) throw IllegalStateException("refused") }
+      override fun update(title: String, body: String?) {}
+    }
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease" }
+    val first = ForegroundServiceBackgroundPort(registry)
+    val second = ForegroundServiceBackgroundPort(registry)
+    assertTrue(runCatching { first.acquire("connected-device", "first") }.isFailure)
+    assertTrue(runCatching { second.acquire("connected-device", "second") }.isFailure)
+    assertEquals(1, stops)
+    assertTrue(registry.hasPendingStartCleanup())
+  }
+  @Test fun `colliding lease IDs cannot replace another owner's lease`() {
+    val driver = RecordingServiceDriver()
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "collision" }
+    val first = ForegroundServiceBackgroundPort(registry)
+    val second = ForegroundServiceBackgroundPort(registry)
+    val lease = first.acquire("connected-device", "first")
+    assertTrue(runCatching { second.acquire("connected-device", "second") }.isFailure)
+    assertTrue(runCatching { second.release(lease) }.isFailure)
+    assertTrue(registry.hasLease(lease))
+    assertEquals(0, driver.stopCount)
+    first.release(lease)
+    assertEquals(1, driver.stopCount)
+  }
+
+  @Test fun `background ports cannot release or update another owner's lease`() {
+    val driver = RecordingServiceDriver()
+    var id = 0
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease-${++id}" }
+    val first = ForegroundServiceBackgroundPort(registry)
+    val second = ForegroundServiceBackgroundPort(registry)
+    val lease = first.acquire("connected-device", "first")
+
+    assertTrue(runCatching { second.release(lease) }.isFailure)
+    assertTrue(runCatching { second.update(lease, "wrong owner", null) }.isFailure)
+    assertTrue(registry.hasLease(lease))
+    assertEquals(0, driver.stopCount)
+    first.release(lease)
+    assertEquals(1, driver.stopCount)
+  }
   @Test fun `display text update does not replace pinned acquisition configuration`() {
     val configuration = ForegroundServiceNotificationConfiguration.fromValues("ble", "BLE", "Recording", null, null, false)
     val updates = mutableListOf<String>()

@@ -60,10 +60,18 @@ function bindScanSourceTerminalMethod(
 ): void {
   const method = Reflect.get(source, methodName)
   if (typeof method !== 'function') return
-  Reflect.set(source, methodName, (reason: StreamTerminalNotice['reason'], error?: ScanSourceTerminalError) => {
-    method.call(source, reason, error)
-    onTerminal(reason, error)
-  })
+  Reflect.set(
+    source,
+    methodName,
+    (
+      reason: StreamTerminalNotice['reason'],
+      error?: ScanSourceTerminalError,
+      evidence?: StreamTerminalNotice['evidence']
+    ) => {
+      method.call(source, reason, error, evidence)
+      onTerminal(reason, error)
+    }
+  )
 }
 
 interface StateWaiter {

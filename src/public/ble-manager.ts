@@ -19,7 +19,7 @@ import {
   canonicalUuid,
   createAttachmentBoundPeerId
 } from '../backend-contract/primitives'
-import type { PeerId } from '../backend-contract/primitives'
+import type { PeerId, SerializableRecord, SerializableValue } from '../backend-contract/primitives'
 import { utf8ByteLength } from '../backend-contract/serializable'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
@@ -27,9 +27,13 @@ import type {
   BoundedAsyncStream,
   BoundedAsyncStreamIterator,
   StreamOverflowNotice,
+  StreamItem,
   StreamTerminalNotice
 } from '../backend-contract/streams'
 import { CoreBoundedStream } from '../core/bounded-stream'
+import type { CoreStreamRetainedByteAdmission } from '../core/bounded-stream'
+import { AggregateStreamSharedTransferError } from '../core/aggregate-stream-quota'
+import { retainedScanValueBuffers, retainedScanValueBytes } from '../core/unified-ble-core-helpers'
 import { normalizeOperationOptions, remainingOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
 import { resolveStreamPolicy } from './stream-presets'
@@ -53,7 +57,7 @@ import type {
   AdapterWatchOptions,
   BleAdapterStateWatch
 } from './ble-adapter'
-import type { BleDiagnostics, BleDiagnosticTraceDocument } from './diagnostics'
+import type { BleDiagnostics, BleDiagnosticTraceDocument, BleDiagnosticWarning } from './diagnostics'
 import { snapshotPublicTraceDocument, snapshotResourceCounters } from './diagnostics'
 import type { DiagnosticTraceDocument, DiagnosticTraceRecord } from '../diagnostics/trace-format'
 import {
@@ -62,6 +66,7 @@ import {
   UNIFIED_BLE_TRACE_MAXIMUM_RECORDS
 } from '../diagnostics/trace-format'
 import { isAuthorizationBlocking, type AdapterStateSnapshot } from '../backend-contract/identity'
+import { optionalPlatformErrorDetail } from '../backend-contract/errors'
 import { createPublicGattDatabase, ProvisionalGattSubscriptionOwner } from './gatt'
 import type { GattDatabase, GattValueEvent } from './gatt'
 import {
@@ -260,7 +265,32 @@ export type {
   GattDescriptor,
   GattSubscription,
   GattValueEvent,
+  GattOrderedMember,
+  GattOrderedRecordingStart,
+  GattOrderedRecordingStartResult,
+  GattOrderedRecordingStartReceipt,
+  GattOrderedRecordingReclaim,
+  GattOrderedRecordingReclaimReceipt,
+  GattOrderedRecordingReclaimStatus,
+  GattOrderedRecordingFailureValue,
+  GattOrderedRecordingPlatformDetail,
+  GattOrderedRecordingFailure,
+  GattOrderedRecordingStopFailure,
+  GattOrderedRecordingStorageFailure,
+  GattOrderedMarkerWrite,
+  GattOrderedMarkerWritePhase,
+  GattOrderedMarkerWriteStatus,
+  GattOrderedSetup,
+  GattOrderedStream,
+  GattOrderedItem,
+  GattOrderedCleanup,
+  GattOrderedSourceGeneration,
+  GattOrderedSourceMembership,
+  GattOrderedLossScope,
+  GattOrderedSourceRejection,
+  GattOrderedRejectedLoss,
   NotificationReceipt,
+  NotificationProvenance,
   GattValueStream,
   GattDatabaseChangedEvent,
   GattWriteReceipt,
@@ -390,6 +420,7 @@ export interface PublicScanObservation extends NormalizedScanObservation {
   readonly rawAdvertisement?: AdvertisementField<Readonly<Uint8Array>>
 }
 
+/** The original 5.x discovery event vocabulary. */
 export type DiscoveryEvent =
   | {
       readonly kind: 'observed'
@@ -407,6 +438,24 @@ export type DiscoveryEvent =
       readonly guarantee: 'reportLostAfterMs-completeness'
       readonly droppedEntries: number
       readonly droppedBytes: number
+    }
+
+/** Cumulative bounded loss since the source or this event subscription began. */
+export interface DiscoveryLossCountersV1 {
+  readonly droppedItems: number
+  readonly droppedBytes: number
+  readonly replacedItems: number
+}
+
+/** Opt-in discovery view with stage-attributed loss and source uncertainty. */
+export type LossAwareDiscoveryEventV1 =
+  | DiscoveryEvent
+  | import('./streams').PublicStreamSourceLossNotice
+  | import('./streams').PublicStreamPeerSourceLossNotice
+  | {
+      readonly kind: 'stream-loss'
+      readonly upstream: DiscoveryLossCountersV1
+      readonly subscriber: DiscoveryLossCountersV1
     }
 
 export type AndroidScanMode = 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
@@ -437,7 +486,10 @@ export interface ScanSession {
   readonly plan: ScanPlan | null
   readonly stop: () => Promise<PublicCleanupRecord>
   readonly observations: PublicBoundedAsyncStream<PublicScanObservation>
+  /** Original 5.x events; terminal failures reject, while drop-policy overflow is skipped. */
   readonly events?: AsyncIterable<DiscoveryEvent>
+  /** Opt in by subscribing; each iterator owns an independently bounded event view. */
+  readonly lossAwareEventsV1?: AsyncIterable<LossAwareDiscoveryEventV1>
   readonly state: AsyncIterable<ScanStateEvent>
 }
 
@@ -613,6 +665,34 @@ interface PublicScanPresence {
   lastSeenAtMonotonicMs: number
   timer: PublicScanDeadlineHandle | null
   readonly bytes: number
+  readonly sharedReference?: import('../core/bounded-stream').CoreStreamOwnedValue<unknown>
+  release(): void
+}
+
+function ownedScanPresence(
+  owned: import('../core/bounded-stream').CoreStreamOwnedValue<PublicScanObservation>,
+  lastSeenAtMonotonicMs: number,
+  bytes: number,
+  sharedReference?: import('../core/bounded-stream').CoreStreamOwnedValue<unknown>
+): PublicScanPresence {
+  return {
+    get observation() {
+      return owned.value
+    },
+    lastSeenAtMonotonicMs,
+    timer: null,
+    bytes,
+    sharedReference,
+    release: () => owned.release()
+  }
+}
+
+function localScanPresence(
+  observation: PublicScanObservation,
+  lastSeenAtMonotonicMs: number,
+  bytes: number
+): PublicScanPresence {
+  return { observation, lastSeenAtMonotonicMs, timer: null, bytes, release: () => undefined }
 }
 
 interface PublicScanFingerprint {
@@ -622,8 +702,30 @@ interface PublicScanFingerprint {
 
 type PublicScanEventTerminalReason = 'closed' | 'source-failed' | 'overflow' | 'owner-released'
 
+type SourceLossDetail =
+  | import('../backend-contract/streams').StreamSourceLossNotice
+  | import('../backend-contract/streams').StreamPeerSourceLossNotice
+
+interface LossAwareScanSubscriber {
+  nextLossIndex: number
+}
+
+interface SourceLossObserver {
+  onSourceLoss(observer: (notice: SourceLossDetail) => void): () => void
+}
+
+function hasSourceLossObserver(value: object): value is SourceLossObserver {
+  return 'onSourceLoss' in value && typeof value.onSourceLoss === 'function'
+}
+
 class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
   private readonly subscribers = new Set<CoreBoundedStream<DiscoveryEvent>>()
+  private readonly ownedViews = new Set<CoreBoundedStream<DiscoveryEvent>>()
+  private readonly lossAwareSubscribers = new WeakMap<CoreBoundedStream<DiscoveryEvent>, LossAwareScanSubscriber>()
+  private readonly lossJournal: SourceLossDetail[] = []
+  private lossJournalBytes = 0
+  private lossJournalAdmission: CoreStreamRetainedByteAdmission | null | undefined
+  private lossJournalFailure: NormalizedBleError | null = null
   private terminal: {
     readonly mode: 'close' | 'finish'
     readonly reason: PublicScanEventTerminalReason
@@ -632,11 +734,27 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
 
   constructor(
     private readonly startPump: () => void,
-    private readonly delivery: StreamBudget
+    private readonly delivery: StreamBudget,
+    private readonly trackView: (view: import('../core/bounded-stream').RetainedStreamView) => void,
+    private readonly createAdmission: () => ((bytes: number) => boolean) | null
   ) {}
 
   [Symbol.asyncIterator](): AsyncIterableIterator<DiscoveryEvent> {
-    const stream = new CoreBoundedStream<DiscoveryEvent>(this.delivery, this.delivery.overflowPolicy)
+    return this.subscribe(false)
+  }
+
+  readonly lossAwareV1: AsyncIterable<LossAwareDiscoveryEventV1> = {
+    [Symbol.asyncIterator]: () => this.subscribe(true)
+  }
+
+  private subscribe(lossAware: false): AsyncIterableIterator<DiscoveryEvent>
+  private subscribe(lossAware: true): AsyncIterableIterator<LossAwareDiscoveryEventV1>
+  private subscribe(lossAware: boolean): AsyncIterableIterator<LossAwareDiscoveryEventV1> {
+    const stream = new CoreBoundedStream<DiscoveryEvent>(this.delivery, this.delivery.overflowPolicy, true)
+    if (lossAware) this.lossAwareSubscribers.set(stream, { nextLossIndex: 0 })
+    this.trackView(stream)
+    this.ownedViews.add(stream)
+    stream.onRetainedValuesDrained(() => this.ownedViews.delete(stream))
     if (this.terminal === null) {
       this.subscribers.add(stream)
       this.startPump()
@@ -648,31 +766,61 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
     const iterator = stream[Symbol.asyncIterator]()
     const delivery = this.delivery
     let returned = false
-    let failed = false
-    const sourceFailure = () =>
-      rehydratePublicError(
-        this.terminal?.error == null
-          ? contractError('platform.failure', 'stream', 'public-scan.events')
-          : new BackendContractError(this.terminal.error)
-      )
+    let failure: unknown = null
+    let pendingItem: Promise<IteratorResult<StreamItem<DiscoveryEvent>>> | null = null
     return {
       next: async () => {
         if (returned) return { done: true, value: undefined }
-        if (failed) throw sourceFailure()
+        if (failure !== null) throw failure
         while (true) {
-          const item = await iterator.next()
+          const lossState = lossAware ? this.lossAwareSubscribers.get(stream) : undefined
+          const itemPromise = pendingItem ?? iterator.next()
+          pendingItem = itemPromise
+          const item = await itemPromise
+          pendingItem = null
           if (returned) return { done: true, value: undefined }
-          if (item.done) return { done: true, value: undefined }
-          if (item.value.kind === 'value') return { done: false, value: item.value.value }
+          if (item.done) {
+            this.ownedViews.delete(stream)
+            return { done: true, value: undefined }
+          }
+          if (item.value.kind === 'value') {
+            const event = item.value.value
+            return {
+              done: false,
+              value:
+                event.kind === 'presence-tracking-overflow'
+                  ? event
+                  : Object.freeze({ ...event, peer: snapshotBlePeer(event.peer) })
+            }
+          }
           if (item.value.kind === 'overflow') {
-            // F8: a drop-policy notice is loss accounting, not session
-            // failure — skip it and keep delivering, as the observation pump
-            // does. Only an error-policy overflow fail-closes the events.
+            if (lossAware)
+              return { done: false, value: { kind: 'stream-loss', ...stream.overflowNoticeStages(item.value) } }
             if (item.value.policy !== 'error') continue
-            throw rehydratePublicError(scanStreamOverflowError('public-scan.events', item.value, delivery))
+            failure = rehydratePublicError(scanStreamOverflowError('public-scan.events', item.value, delivery))
+            throw failure
+          }
+          if (lossState !== undefined && lossState.nextLossIndex < this.lossJournal.length) {
+            const notice = this.lossJournal[lossState.nextLossIndex]
+            if (notice === undefined)
+              throw contractError('lifecycle.invariant-violation', 'scan', 'public-scan.loss-journal')
+            lossState.nextLossIndex += 1
+            pendingItem = Promise.resolve(item)
+            return { done: false, value: notice }
+          }
+          this.ownedViews.delete(stream)
+          const coreSourceLossOverflow =
+            item.value.error?.code === 'stream.overflow' && item.value.error.operation === 'bounded-stream.source-loss'
+          if (
+            (item.value.reason === 'overflow' || item.value.reason === 'source-failed') &&
+            item.value.error != null &&
+            !coreSourceLossOverflow
+          ) {
+            failure = rehydratePublicError(new BackendContractError(item.value.error))
+            throw failure
           }
           if (item.value.reason === 'overflow') {
-            throw rehydratePublicError(
+            failure = rehydratePublicError(
               scanStreamOverflowError(
                 'public-scan.events',
                 {
@@ -684,10 +832,11 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
                 delivery
               )
             )
+            throw failure
           }
           if (item.value.reason === 'source-failed') {
-            failed = true
-            throw sourceFailure()
+            failure = rehydratePublicError(contractError('platform.failure', 'stream', 'public-scan.events'))
+            throw failure
           }
           return { done: true, value: undefined }
         }
@@ -695,7 +844,10 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
       return: async () => {
         returned = true
         this.subscribers.delete(stream)
+        this.ownedViews.delete(stream)
         await iterator.return()
+        await stream.close()
+        stream.dispose()
         return { done: true, value: undefined }
       },
       [Symbol.asyncIterator]() {
@@ -707,13 +859,128 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
   emit(event: DiscoveryEvent, byteLength: number): boolean {
     let terminated = false
     for (const subscriber of [...this.subscribers]) {
-      const result = subscriber.emit(event, byteLength)
+      const admission = this.createAdmission()
+      const increase = Math.max(0, subscriber.projectedRetainedBytes(byteLength) - subscriber.retainedBytes())
+      const admitted = admission === null || admission(increase)
+      let result
+      try {
+        result = admitted ? subscriber.emit(event, byteLength) : subscriber.terminateForAggregateQuota(byteLength)
+      } finally {
+        admission?.(0)
+      }
       if (result.terminated) {
         terminated = true
         this.subscribers.delete(subscriber)
       }
     }
     return terminated
+  }
+
+  observeSourceOverflow(notice: StreamOverflowNotice): void {
+    for (const subscriber of this.subscribers) subscriber.observeSourceOverflow(notice)
+  }
+
+  observeSourceTerminal(notice: StreamTerminalNotice, policy: StreamOverflowNotice['policy']): void {
+    for (const subscriber of this.subscribers) {
+      if (this.lossAwareSubscribers.has(subscriber)) subscriber.observeSourceTerminalOverflow(notice, policy)
+    }
+  }
+
+  observeSourceLoss(
+    notice:
+      | import('../backend-contract/streams').StreamSourceLossNotice
+      | import('../backend-contract/streams').StreamPeerSourceLossNotice
+  ): boolean {
+    if (!this.appendLoss(notice)) return false
+    for (const subscriber of [...this.subscribers]) {
+      subscriber.observeSourceLoss(notice)
+      if (subscriber.isTerminal()) this.subscribers.delete(subscriber)
+    }
+    return true
+  }
+
+  /** Records exact provenance for V1; terminal delivery is chosen by the session. */
+  recordSourceLoss(notice: SourceLossDetail): boolean {
+    return this.appendLoss(notice)
+  }
+
+  sourceLossFailure(): NormalizedBleError | null {
+    return this.lossJournalFailure
+  }
+
+  private appendLoss(notice: SourceLossDetail): boolean {
+    if (this.terminal !== null) return false
+    // This is a deterministic serialized-byte charge for the V1 replay
+    // record, not a measurement of its JavaScript heap footprint.
+    const bytes = utf8ByteLength(JSON.stringify(notice))
+    const nextBytes = this.lossJournalBytes + bytes
+    if (this.lossJournalAdmission === undefined) this.lossJournalAdmission = this.createAdmission()
+    const admission = this.lossJournalAdmission
+    if (admission !== null && !admission(nextBytes)) {
+      // The V1 control was not retained, so it must report a source failure;
+      // an overflow terminal would falsely imply an admitted loss record.
+      const failure = contractError('stream.quota', 'stream', 'public-scan.events.loss-journal').normalized
+      this.lossJournalFailure = failure
+      this.finish('source-failed', failure)
+      return false
+    }
+    this.lossJournal.push(notice)
+    this.lossJournalBytes = nextBytes
+    return true
+  }
+
+  private releaseLossJournal(): void {
+    this.lossJournal.length = 0
+    this.lossJournalBytes = 0
+    this.lossJournalAdmission?.(0)
+  }
+
+  reserveReplacement<Value>(event: DiscoveryEvent, project: (value: Value) => DiscoveryEvent) {
+    const stages: import('../core/bounded-stream').CoreStreamReplacementStage<Value>[] = []
+    for (const subscriber of this.subscribers) {
+      const bytes = estimatePublicDiscoveryEventBytes(event)
+      const stage =
+        subscriber.reserveOwnedReplacement(bytes, project, value => value) ?? subscriber.reserveOwnedDrop<Value>(bytes)
+      if (stage === null) {
+        for (const pending of stages) pending.cancel()
+        if (this.delivery.overflowPolicy === 'error' && !subscriber.isTerminal()) {
+          subscriber.terminateForAggregateQuota(estimatePublicDiscoveryEventBytes(event))
+          return { stages: [], terminated: true }
+        }
+        return null
+      }
+      stages.push(stage)
+    }
+    return { stages, terminated: false }
+  }
+
+  reserveOrderedReplacement<Value>(
+    items: readonly { event: DiscoveryEvent; project: (value: Value) => DiscoveryEvent }[]
+  ) {
+    const stages: import('../core/bounded-stream').CoreStreamReplacementStage<Value>[] = []
+    let terminated = false
+    for (const subscriber of this.subscribers) {
+      const stage = subscriber.reserveOwnedReplacementBatch(
+        items.map(({ event, project }) => ({
+          byteLength: estimatePublicDiscoveryEventBytes(event),
+          project,
+          copy: value => value
+        }))
+      )
+      if (stage === null) {
+        for (const pending of stages) pending.cancel()
+        if (this.delivery.overflowPolicy === 'error' && !subscriber.isTerminal()) {
+          subscriber.terminateForAggregateQuota(
+            items.reduce((sum, item) => sum + estimatePublicDiscoveryEventBytes(item.event), 0)
+          )
+          return { stages: [], terminated: true }
+        }
+        return null
+      }
+      terminated ||= stage.inspect().terminates === true
+      stages.push(stage)
+    }
+    return { stages, terminated }
   }
 
   finish(reason: PublicScanEventTerminalReason, error?: NormalizedBleError | null): void {
@@ -726,44 +993,88 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
   }
 
   close(reason: PublicScanEventTerminalReason, error?: NormalizedBleError | null): void {
-    if (this.terminal !== null) return
     this.terminal = { mode: 'close', reason, error }
-    for (const subscriber of this.subscribers) {
+    this.releaseLossJournal()
+    for (const subscriber of this.ownedViews) {
       subscriber.closeWithReason(reason, error ?? null)
       this.subscribers.delete(subscriber)
+      this.ownedViews.delete(subscriber)
     }
   }
 }
 
 class PublicScanObservationBroadcast {
   private readonly subscribers = new Set<CoreBoundedStream<PublicScanObservation>>()
+  private readonly ownedViews = new Set<CoreBoundedStream<PublicScanObservation>>()
+  private releaseTerminalCache: (() => void) | null = null
+  private readonly admitTerminal: ((bytes: number) => boolean) | null
+  private terminalReserved = false
   private terminal: {
     readonly mode: 'close' | 'finish'
     readonly reason: StreamTerminalNotice['reason']
     readonly error?: NormalizedBleError | null
+    readonly sourceTerminal?: StreamTerminalNotice
   } | null = null
 
   constructor(
     private readonly startPump: () => void,
-    private readonly delivery: StreamBudget
-  ) {}
+    private readonly delivery: StreamBudget,
+    private readonly trackView: (view: import('../core/bounded-stream').RetainedStreamView) => void,
+    admitTerminal: ((bytes: number) => boolean) | null,
+    private readonly terminalEvidenceHydrator: ((notice: StreamTerminalNotice) => Promise<StreamTerminalNotice>) | null
+  ) {
+    this.admitTerminal = admitTerminal
+    this.trackView({
+      retainedBytes: () =>
+        this.terminalReserved || this.terminal === null || this.terminal.sourceTerminal?.evidence !== undefined
+          ? 0
+          : utf8ByteLength(JSON.stringify(this.terminal)),
+      onRetainedValuesDrained: callback => {
+        this.releaseTerminalCache = callback
+      }
+    })
+  }
+
+  private releaseCachedTerminal(): void {
+    this.admitTerminal?.(0)
+    this.terminalReserved = false
+    const release = this.releaseTerminalCache
+    this.releaseTerminalCache = null
+    release?.()
+  }
 
   subscribe(): BoundedAsyncStreamIterator<PublicScanObservation> {
-    const stream = new CoreBoundedStream<PublicScanObservation>(this.delivery, this.delivery.overflowPolicy)
+    const stream = new CoreBoundedStream<PublicScanObservation>(this.delivery, this.delivery.overflowPolicy, true)
+    if (this.terminalEvidenceHydrator !== null) stream.setTerminalEvidenceHydrator(this.terminalEvidenceHydrator)
+    this.trackView(stream)
+    this.ownedViews.add(stream)
+    stream.onRetainedValuesDrained(() => this.ownedViews.delete(stream))
     if (this.terminal === null) {
       this.subscribers.add(stream)
       this.startPump()
     } else if (this.terminal.mode === 'finish') {
-      stream.finishWithReason(this.terminal.reason, this.terminal.error ?? null)
+      if (this.terminal.sourceTerminal !== undefined) stream.observeSourceTerminal(this.terminal.sourceTerminal)
+      stream.finishWithReason(this.terminal.reason, this.terminal.error ?? null, this.terminal.sourceTerminal?.evidence)
     } else {
-      stream.closeWithReason(this.terminal.reason, this.terminal.error ?? null)
+      if (this.terminal.sourceTerminal !== undefined) stream.observeSourceTerminal(this.terminal.sourceTerminal)
+      stream.closeWithReason(this.terminal.reason, this.terminal.error ?? null, this.terminal.sourceTerminal?.evidence)
     }
     const iterator = stream[Symbol.asyncIterator]()
     return {
-      next: () => iterator.next(),
+      next: async () => {
+        const result = await iterator.next()
+        if (result.done || result.value.kind === 'terminal') this.ownedViews.delete(stream)
+        if (!result.done && result.value.kind === 'value') {
+          return { done: false, value: { kind: 'value', value: copyPublicScanObservation(result.value.value) } }
+        }
+        return result
+      },
       return: async () => {
         this.subscribers.delete(stream)
+        this.ownedViews.delete(stream)
         await iterator.return()
+        await stream.close()
+        stream.dispose()
         return { done: true, value: undefined }
       },
       [Symbol.asyncIterator]() {
@@ -785,12 +1096,43 @@ class PublicScanObservationBroadcast {
               })
             })
           : observation
-      if (subscriber.emit(owned, byteLength).terminated) {
+      const result = subscriber.emit(owned, byteLength)
+      if (result.terminated) {
         terminated = true
         this.subscribers.delete(subscriber)
       }
     }
     return terminated
+  }
+
+  reserveReplacement<Value>(observation: PublicScanObservation, project: (value: Value) => PublicScanObservation) {
+    const stages: import('../core/bounded-stream').CoreStreamReplacementStage<Value>[] = []
+    for (const subscriber of this.subscribers) {
+      const bytes = estimatePublicScanObservationBytes(observation)
+      const stage =
+        subscriber.reserveOwnedReplacement(bytes, project, value => value) ?? subscriber.reserveOwnedDrop<Value>(bytes)
+      if (stage === null) {
+        for (const pending of stages) pending.cancel()
+        if (this.delivery.overflowPolicy === 'error' && !subscriber.isTerminal()) {
+          subscriber.terminateForAggregateQuota(estimatePublicScanObservationBytes(observation))
+          return { stages: [], terminated: true }
+        }
+        return null
+      }
+      stages.push(stage)
+    }
+    return { stages, terminated: false }
+  }
+
+  observeSourceLoss(
+    notice:
+      | import('../backend-contract/streams').StreamSourceLossNotice
+      | import('../backend-contract/streams').StreamPeerSourceLossNotice
+  ): void {
+    for (const subscriber of [...this.subscribers]) {
+      subscriber.observeSourceLoss(notice)
+      if (subscriber.isTerminal()) this.subscribers.delete(subscriber)
+    }
   }
 
   observeSourceOverflow(notice: StreamOverflowNotice): void {
@@ -799,28 +1141,95 @@ class PublicScanObservationBroadcast {
     }
   }
 
-  finishWithReason(reason: StreamTerminalNotice['reason'], error?: NormalizedBleError | null): void {
+  finishWithReason(
+    reason: StreamTerminalNotice['reason'],
+    error?: NormalizedBleError | null,
+    sourceTerminal?: StreamTerminalNotice
+  ): void {
     if (this.terminal !== null) return
-    this.terminal = { mode: 'finish', reason, error }
+    // The receipt is sufficient to restore the exact error for each public
+    // reader. Retaining that decoded error here would put durable payload
+    // bytes back into the bounded public queue.
+    const retainedError = sourceTerminal?.evidence === undefined ? error : null
+    this.terminal = { mode: 'finish', reason, error: retainedError, sourceTerminal }
     for (const subscriber of [...this.subscribers]) {
-      subscriber.finishWithReason(reason, error ?? null)
+      if (sourceTerminal !== undefined) subscriber.observeSourceTerminal(sourceTerminal)
+      subscriber.finishWithReason(reason, retainedError ?? null, sourceTerminal?.evidence)
       this.subscribers.delete(subscriber)
     }
   }
 
-  closeWithReason(reason: StreamTerminalNotice['reason'], error?: NormalizedBleError | null): void {
-    if (this.terminal !== null) return
-    this.terminal = { mode: 'close', reason, error }
-    for (const subscriber of [...this.subscribers]) {
-      subscriber.closeWithReason(reason, error ?? null)
+  /** Reserve terminal metadata before publishing it after the accepted prefix. */
+  tryFinishWithReason(reason: StreamTerminalNotice['reason'], sourceTerminal: StreamTerminalNotice): boolean {
+    if (this.terminal !== null) return true
+    const terminal = { mode: 'finish', reason, error: undefined, sourceTerminal }
+    if (this.admitTerminal !== null && !this.admitTerminal(utf8ByteLength(JSON.stringify(terminal)))) return false
+    this.terminalReserved = this.admitTerminal !== null
+    return true
+  }
+
+  closeWithReason(
+    reason: StreamTerminalNotice['reason'],
+    error?: NormalizedBleError | null,
+    sourceTerminal?: StreamTerminalNotice
+  ): void {
+    this.terminal = { mode: 'close', reason, error, sourceTerminal }
+    this.releaseCachedTerminal()
+    for (const subscriber of [...this.ownedViews]) {
+      if (sourceTerminal !== undefined) subscriber.observeSourceTerminal(sourceTerminal)
+      subscriber.closeWithReason(reason, error ?? null, sourceTerminal?.evidence)
       this.subscribers.delete(subscriber)
+      this.ownedViews.delete(subscriber)
     }
   }
+}
+
+// Keep the source claim while cache admission is blocked. Capacity may be
+// released by any aggregate owner, including a public view, so recheck with a
+// bounded delay and wake immediately when the reader is cancelled.
+class ScanAdmissionWait {
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private wake: (() => void) | null = null
+  private delay = 10
+
+  wait(): Promise<void> {
+    return new Promise(resolve => {
+      this.wake = resolve
+      this.timer = setTimeout(() => this.cancel(), this.delay)
+      this.delay = Math.min(this.delay * 2, 250)
+    })
+  }
+
+  reset(): void {
+    this.delay = 10
+  }
+
+  cancel(): void {
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = null
+    const wake = this.wake
+    this.wake = null
+    wake?.()
+  }
+}
+
+function isScanEvidenceQuota(error: unknown): boolean {
+  return (
+    error instanceof BackendContractError &&
+    error.normalized.code === 'stream.quota' &&
+    error.normalized.domain === 'scan' &&
+    error.normalized.operation.startsWith('scan.evidence.')
+  )
+}
+
+function scanBufferBytes(buffers: readonly ArrayBufferLike[]): number {
+  return buffers.reduce((total, buffer) => total + buffer.byteLength, 0)
 }
 
 class PublicScanSessionController<Attachment extends string> {
   readonly observations: PublicBoundedAsyncStream<PublicScanObservation>
   readonly events: AsyncIterable<DiscoveryEvent>
+  readonly lossAwareEventsV1: AsyncIterable<LossAwareDiscoveryEventV1>
   private readonly observationBroadcast: PublicScanObservationBroadcast
   private readonly eventBroadcast: PublicScanEventBroadcast
   private readonly presence = new Map<string, PublicScanPresence>()
@@ -829,9 +1238,23 @@ class PublicScanSessionController<Attachment extends string> {
   private fingerprintBytes = 0
   private sourceIterator: BoundedAsyncStreamIterator<AdvertisementObservation<Attachment> | IpcAdvertisement> | null =
     null
+  private sourceClaimReader:
+    | import('../core/bounded-stream').CoreStreamClaimConsumer<AdvertisementObservation<Attachment> | IpcAdvertisement>
+    | null = null
   private pumpStarted = false
+  private presenceStopped = false
   private closed = false
-  private readonly evidence = new ScanEvidenceSession()
+  private sourceCloseResult: BackendCleanupRecord | null = null
+  private closeAttempt: Promise<BackendCleanupRecord> | null = null
+  private closeResult: BackendCleanupRecord | null = null
+  private readonly evidence: ScanEvidenceSession
+  private readonly evidenceAdmission: CoreStreamRetainedByteAdmission | null
+  private evidenceRetainedBytes = 0
+  private evidenceBuffers: readonly ArrayBufferLike[] = []
+  private cacheAdmittedBytes = 0
+  private readonly admissionWait = new ScanAdmissionWait()
+  private stopSourceLossObservation: (() => void) | null = null
+  private readonly pendingSourceLosses: SourceLossDetail[] = []
 
   constructor(
     private readonly source: BoundedAsyncStream<AdvertisementObservation<Attachment> | IpcAdvertisement>,
@@ -843,9 +1266,38 @@ class PublicScanSessionController<Attachment extends string> {
     private readonly reportLostAfterMs: number | undefined,
     private readonly includeRawAdvertisement: boolean,
     private readonly requestStop: (reason: PublicScanEventTerminalReason) => void,
-    private readonly onDeliveryEnded: (reason: StreamTerminalNotice['reason']) => void
+    private readonly onDeliveryEnded: (reason: StreamTerminalNotice['reason']) => void,
+    private readonly onViewReleased: () => void
   ) {
-    this.observationBroadcast = new PublicScanObservationBroadcast(() => this.start(), delivery)
+    const admission = source instanceof CoreBoundedStream ? source.createRetainedByteAdmission() : null
+    this.evidenceAdmission = admission
+    this.evidence = new ScanEvidenceSession((bytes, buffers) => {
+      const accepted =
+        admission === null
+          ? bytes + this.fingerprintBytes <= Number(source.limits.byteCapacity)
+          : admission(bytes + this.fingerprintBytes - scanBufferBytes(buffers), buffers)
+      if (accepted) {
+        this.evidenceRetainedBytes = bytes
+        this.evidenceBuffers = buffers
+        this.cacheAdmittedBytes = bytes + this.fingerprintBytes
+      }
+      return accepted
+    })
+    const trackView = (view: import('../core/bounded-stream').RetainedStreamView) => {
+      if (source instanceof CoreBoundedStream) source.trackRetainedView(view)
+    }
+    const terminalAdmission = source instanceof CoreBoundedStream ? source.createRetainedByteAdmission() : null
+    const terminalEvidenceHydrator =
+      source instanceof CoreBoundedStream
+        ? (notice: StreamTerminalNotice) => source.hydrateTerminalEvidence(notice)
+        : null
+    this.observationBroadcast = new PublicScanObservationBroadcast(
+      () => this.start(),
+      delivery,
+      trackView,
+      terminalAdmission,
+      terminalEvidenceHydrator
+    )
     const observationSource: BoundedAsyncStream<PublicScanObservation> = {
       limits: delivery,
       overflowPolicy: delivery.overflowPolicy,
@@ -853,61 +1305,238 @@ class PublicScanSessionController<Attachment extends string> {
       close: () => this.close('closed')
     }
     this.observations = mapPublicBoundedAsyncStream(observationSource, observation => observation)
-    this.eventBroadcast = new PublicScanEventBroadcast(() => this.start(), delivery)
+    this.eventBroadcast = new PublicScanEventBroadcast(
+      () => this.start(),
+      delivery,
+      trackView,
+      () => (source instanceof CoreBoundedStream ? source.createRetainedByteAdmission() : null)
+    )
     this.events = this.eventBroadcast
+    this.lossAwareEventsV1 = this.eventBroadcast.lossAwareV1
+    if (hasSourceLossObserver(source)) {
+      this.stopSourceLossObservation = source.onSourceLoss(notice => {
+        if (this.closed) return
+        if (source instanceof CoreBoundedStream) {
+          // Core's claim reader retains the ordering boundary; journal the
+          // loss now, then let the in-band control terminate after its prefix.
+          if (!this.eventBroadcast.observeSourceLoss(notice)) {
+            // The journal cannot retain another replay record under the
+            // shared aggregate budget. Stop the public session as well as
+            // its event views; otherwise scan ingress could continue after
+            // its only truthful loss record has been rejected.
+            this.terminateFromSourceLossFailure()
+            return
+          }
+          if (!source.canShareClaim()) {
+            // A generic Core stream cannot expose the claim-side boundary.
+            // Let an already-resolved iterator read run first, then fail this
+            // public projection closed rather than waiting for a later source
+            // terminal that may never arrive.
+            queueMicrotask(() => {
+              if (!this.closed) this.terminateFromOverflow()
+            })
+          }
+        } else {
+          this.pendingSourceLosses.push(notice)
+        }
+      })
+    }
     bindScanSourceTerminal(source, reason => {
       this.onDeliveryEnded(reason)
     })
   }
 
   async close(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<BackendCleanupRecord> {
-    return this.closeView(reason)
+    this.stopSourceLossObservation?.()
+    this.stopSourceLossObservation = null
+    this.pendingSourceLosses.length = 0
+    if (this.closeResult !== null) return this.closeResult
+    if (this.closeAttempt !== null) return this.closeAttempt
+    const attempt = this.closeOnce(reason)
+    this.closeAttempt = attempt
+    try {
+      const result = await attempt
+      if (result.state === 'released') {
+        this.closeResult = result
+        this.onViewReleased()
+      }
+      return result
+    } finally {
+      this.closeAttempt = null
+    }
   }
 
-  async closeView(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<BackendCleanupRecord> {
+  private async closeOnce(reason: PublicScanEventTerminalReason): Promise<BackendCleanupRecord> {
     this.closed = true
+    const phases: { readonly error?: unknown; readonly cleanup?: BackendCleanupRecord }[] = []
+    let sourceCleanup: BackendCleanupRecord | undefined = this.sourceCloseResult ?? undefined
+    try {
+      if (sourceCleanup === undefined) {
+        sourceCleanup = await this.source.close()
+        if (sourceCleanup.state === 'released') this.sourceCloseResult = sourceCleanup
+      }
+      phases.push({ cleanup: sourceCleanup })
+    } catch (error) {
+      phases.push({ error })
+    }
+    const sourceTerminal: StreamTerminalNotice | undefined =
+      this.source instanceof CoreBoundedStream
+        ? { kind: 'terminal', reason: 'closed', ...this.source.overflowCounters() }
+        : undefined
+    try {
+      phases.push({ cleanup: await this.closeView(reason, sourceTerminal) })
+    } catch (error) {
+      phases.push({ error })
+    }
+    collectCleanupPhases(phases)
+    return sourceCleanup ?? { state: 'released', failures: [] }
+  }
+
+  async closeView(
+    reason: PublicScanEventTerminalReason = 'owner-released',
+    sourceTerminal?: StreamTerminalNotice
+  ): Promise<BackendCleanupRecord> {
+    this.closed = true
+    this.admissionWait.cancel()
     this.evidence.clear()
     this.cancelPresenceTimers()
-    this.observationBroadcast.closeWithReason(reason)
+    this.observationBroadcast.closeWithReason(reason, null, sourceTerminal)
     this.eventBroadcast.close(reason)
+    this.sourceClaimReader?.close()
+    this.sourceClaimReader = null
+    if (this.source instanceof CoreBoundedStream && this.sourceCloseResult?.state === 'released') this.source.dispose()
     if (this.sourceIterator === null) return { state: 'released', failures: [] }
     await this.sourceIterator.return()
     this.sourceIterator = null
     return { state: 'released', failures: [] }
   }
 
+  stopPresenceTracking(): void {
+    this.presenceStopped = true
+    for (const current of this.presence.values()) {
+      current.timer?.cancel()
+      current.timer = null
+    }
+  }
+
   private terminateFromOverflow(): void {
-    this.endDelivery('overflow', 'close')
+    this.endDelivery('overflow', 'finish')
     this.requestStop('overflow')
+  }
+
+  private terminateFromSourceLossFailure(): void {
+    const failure = this.eventBroadcast.sourceLossFailure()
+    if (failure === null) {
+      this.terminateFromOverflow()
+      return
+    }
+    this.endDelivery('source-failed', 'finish', failure)
+    this.requestStop('source-failed')
   }
 
   private start(): void {
     if (this.pumpStarted || this.closed) return
     this.pumpStarted = true
-    const iterator = this.source[Symbol.asyncIterator]()
+    const claimReader =
+      this.source instanceof CoreBoundedStream && this.source.canShareClaim() ? this.source.claimConsumer() : null
+    this.sourceClaimReader = claimReader
+    const iterator = claimReader === null ? this.source[Symbol.asyncIterator]() : null
     this.sourceIterator = iterator
-    this.pump(iterator).catch(() => undefined)
+    this.pump(iterator, claimReader).catch(() => undefined)
   }
 
   private async pump(
-    iterator: BoundedAsyncStreamIterator<AdvertisementObservation<Attachment> | IpcAdvertisement>
+    iterator: BoundedAsyncStreamIterator<AdvertisementObservation<Attachment> | IpcAdvertisement> | null,
+    claimReader:
+      | import('../core/bounded-stream').CoreStreamClaimConsumer<
+          AdvertisementObservation<Attachment> | IpcAdvertisement
+        >
+      | null
   ): Promise<void> {
     try {
       while (!this.closed) {
-        const item = await iterator.next()
-        if (item.done) {
+        const claimed = claimReader === null ? null : await claimReader.next()
+        const item = iterator === null ? null : await iterator.next()
+        if (this.closed) return
+        if (claimed?.kind === 'done' || item?.done === true) {
           this.finish('closed')
           return
         }
-        if (item.value.kind === 'overflow') {
-          this.observationBroadcast.observeSourceOverflow(item.value)
+        const claim = claimed?.kind === 'claim' ? claimed.claim : null
+        if (claim !== null && this.source instanceof CoreBoundedStream && !this.source.isClaimCurrent(claim)) continue
+        const value = claim?.item ?? (claimed?.kind === 'control' ? claimed.item : item?.value)
+        if (value === undefined) throw contractError('lifecycle.invariant-violation', 'scan', 'public-scan.source-read')
+        if (value.kind === 'overflow') {
+          this.observationBroadcast.observeSourceOverflow(value)
+          this.eventBroadcast.observeSourceOverflow(value)
           continue
         }
-        if (item.value.kind === 'terminal') {
-          this.finish(item.value.reason, item.value.error)
+        if (value.kind === 'source-loss') {
+          this.terminateFromOverflow()
+          continue
+        }
+        if (value.kind === 'terminal') {
+          const terminal =
+            this.pendingSourceLosses.length > 0 && value.error == null
+              ? { ...value, reason: 'overflow' as const }
+              : value
+          for (const notice of this.pendingSourceLosses) {
+            if (!this.eventBroadcast.observeSourceLoss(notice)) {
+              this.pendingSourceLosses.length = 0
+              this.terminateFromSourceLossFailure()
+              return
+            }
+          }
+          this.pendingSourceLosses.length = 0
+          if (terminal.error == null) {
+            while (!this.closed && !this.observationBroadcast.tryFinishWithReason(terminal.reason, terminal)) {
+              await this.admissionWait.wait()
+            }
+            if (this.closed) return
+          }
+          this.eventBroadcast.observeSourceTerminal(terminal, this.source.overflowPolicy)
+          this.finish(terminal.reason, terminal.error, terminal)
           return
         }
-        this.accept(item.value.value)
+        const receiptTime = 'device' in value.value ? null : this.now()
+        if (claim !== null && this.source instanceof CoreBoundedStream && this.source.canShareClaim()) {
+          while (!this.closed && this.source.isClaimCurrent(claim)) {
+            if (this.publishSharedObservation(this.source, claim, value.value, receiptTime)) {
+              this.admissionWait.reset()
+              break
+            }
+            await this.admissionWait.wait()
+          }
+          continue
+        }
+        let current = true
+        let accepted = false
+        while (!this.closed) {
+          try {
+            this.accept(value.value, receiptTime)
+            accepted = true
+            this.admissionWait.reset()
+            break
+          } catch (error) {
+            if (!isScanEvidenceQuota(error)) {
+              if (claim !== null && this.source instanceof CoreBoundedStream && this.source.isClaimCurrent(claim))
+                claim.rollback()
+              throw error
+            }
+            await this.admissionWait.wait()
+            if (claim !== null && this.source instanceof CoreBoundedStream && !this.source.isClaimCurrent(claim)) {
+              current = false
+              break
+            }
+          }
+        }
+        if (
+          accepted &&
+          current &&
+          (claim === null || !(this.source instanceof CoreBoundedStream) || this.source.isClaimCurrent(claim))
+        )
+          claim?.commit()
+        if (this.closed) return
       }
     } catch (error) {
       const failure =
@@ -920,15 +1549,258 @@ class PublicScanSessionController<Attachment extends string> {
               metadata: {}
             }).normalized
       this.finish('source-failed', failure)
+    } finally {
+      claimReader?.close()
+      if (this.sourceClaimReader === claimReader) this.sourceClaimReader = null
     }
   }
 
-  private accept(raw: AdvertisementObservation<Attachment> | IpcAdvertisement): void {
-    const matched = this.matchSplitAdvertisement(raw)
+  private publishSharedObservation(
+    source: CoreBoundedStream<AdvertisementObservation<Attachment> | IpcAdvertisement>,
+    claim: import('../core/bounded-stream').CoreStreamClaim<AdvertisementObservation<Attachment> | IpcAdvertisement>,
+    raw: AdvertisementObservation<Attachment> | IpcAdvertisement,
+    receiptTime: number | null
+  ): boolean {
+    const filtered = this.query.anyOf !== null || this.query.exclude !== null
+    const stagedEvidence = filtered
+      ? this.evidence.stage(candidate => this.matchSplitAdvertisement(raw, receiptTime, candidate))
+      : null
+    const matched = stagedEvidence === null ? raw : stagedEvidence.matched
+    if ((stagedEvidence !== null || this.duplicates === 'coalesced') && this.evidenceAdmission === null) return false
+    const observation = matched === null ? null : projectPublicScanObservation(matched, this.includeRawAdvertisement)
+    let fingerprints: Map<string, PublicScanFingerprint> | null = null
+    let fingerprintBytes = this.fingerprintBytes
+    let duplicate = false
+    if (observation !== null && this.duplicates === 'coalesced') {
+      const value = publicObservationFingerprint(observation)
+      const previous = this.lastObservationFingerprints.get(observation.peer.id)
+      duplicate = previous?.value === value
+      if (!duplicate) {
+        fingerprints = new Map(this.lastObservationFingerprints)
+        if (previous !== undefined) {
+          fingerprints.delete(observation.peer.id)
+          fingerprintBytes -= previous.bytes
+        }
+        const entry = { value, bytes: value.length * 2 }
+        fingerprints.set(observation.peer.id, entry)
+        fingerprintBytes += entry.bytes
+        while (fingerprints.size > MAX_PUBLIC_SCAN_STATE_ENTRIES || fingerprintBytes > MAX_PUBLIC_SCAN_STATE_BYTES) {
+          const oldest = fingerprints.entries().next().value
+          if (oldest === undefined) break
+          fingerprints.delete(oldest[0])
+          fingerprintBytes -= oldest[1].bytes
+        }
+      }
+    }
+    const evidenceBuffers = stagedEvidence?.buffers ?? this.evidenceBuffers
+    const rawBuffers = retainedScanValueBuffers(raw)
+    const matchedBuffers = matched === null ? [] : retainedScanValueBuffers(matched)
+    // A shared upstream entry may have only a reference charge. Reconstruct
+    // the full successor footprint before its upstream owner is released.
+    const rawOwnerBytes = Math.max(source.claimedBytes(claim), retainedScanValueBytes(raw))
+    const adjustment =
+      this.evidenceAdmission === null
+        ? undefined
+        : {
+            admission: this.evidenceAdmission,
+            bytes:
+              (stagedEvidence?.bytes ?? this.evidenceRetainedBytes) +
+              fingerprintBytes -
+              scanBufferBytes(evidenceBuffers),
+            buffers: evidenceBuffers,
+            valueBuffers: matchedBuffers
+          }
+    const commitState = () => {
+      stagedEvidence?.commit()
+      if (stagedEvidence !== null) {
+        this.evidenceRetainedBytes = stagedEvidence.bytes
+        this.evidenceBuffers = stagedEvidence.buffers
+      }
+      if (fingerprints !== null) {
+        this.lastObservationFingerprints.clear()
+        for (const [key, entry] of fingerprints) this.lastObservationFingerprints.set(key, entry)
+        this.fingerprintBytes = fingerprintBytes
+        this.assertFingerprintAccounting()
+      }
+      if (adjustment !== undefined) this.cacheAdmittedBytes = adjustment.bytes + scanBufferBytes(evidenceBuffers)
+    }
+    if (matched === null) {
+      try {
+        const refs = source.replaceSharedClaim(
+          claim,
+          raw,
+          source.claimedBytes(claim),
+          16,
+          [],
+          0,
+          adjustment,
+          commitState
+        )
+        if (refs === null) return false
+        return true
+      } catch (error) {
+        if (error instanceof AggregateStreamSharedTransferError) {
+          for (const ref of error.references) ref.release()
+        }
+        throw error
+      }
+    }
+    if (observation === null) throw contractError('lifecycle.invariant-violation', 'scan', 'public-scan.projection')
+    const observedAt = observation.observedAtMonotonicMs ?? receiptTime ?? this.now()
+    const previousPresence = this.presence.get(observation.peer.id)
+    const retainPresence =
+      this.reportLostAfterMs !== undefined &&
+      !this.presenceStopped &&
+      (previousPresence === undefined || observedAt >= previousPresence.lastSeenAtMonotonicMs)
+    const event: DiscoveryEvent = Object.freeze({ kind: 'observed', peer: observation.peer })
+    const evictedPresence: import('../core/bounded-stream').CoreStreamOwnedValue<unknown>[] = []
+    let droppedEntries = 0
+    let droppedBytes = 0
+    if (retainPresence) {
+      let entries = this.presence.size - (previousPresence === undefined ? 0 : 1) + 1
+      const newBytes = estimatePublicScanObservationBytes(observation)
+      let bytes = this.presenceBytes - (previousPresence?.bytes ?? 0) + newBytes
+      if (previousPresence?.sharedReference !== undefined) evictedPresence.push(previousPresence.sharedReference)
+      for (const [peerId, current] of this.presence) {
+        if (entries <= MAX_PUBLIC_SCAN_STATE_ENTRIES && bytes <= MAX_PUBLIC_SCAN_STATE_BYTES) break
+        if (peerId === observation.peer.id) continue
+        entries--
+        bytes -= current.bytes
+        droppedEntries++
+        droppedBytes += current.bytes
+        if (current.sharedReference !== undefined) evictedPresence.push(current.sharedReference)
+      }
+      if (entries > MAX_PUBLIC_SCAN_STATE_ENTRIES || bytes > MAX_PUBLIC_SCAN_STATE_BYTES) {
+        droppedEntries++
+        droppedBytes += newBytes
+      }
+    }
+    const presenceOverflow: DiscoveryEvent | null =
+      droppedEntries === 0
+        ? null
+        : Object.freeze({
+            kind: 'presence-tracking-overflow',
+            guarantee: 'reportLostAfterMs-completeness',
+            droppedEntries,
+            droppedBytes
+          })
+    const observationAdmission = duplicate
+      ? { stages: [], terminated: false }
+      : this.observationBroadcast.reserveReplacement<AdvertisementObservation<Attachment> | IpcAdvertisement>(
+          observation,
+          value => projectPublicScanObservation(value, this.includeRawAdvertisement)
+        )
+    if (observationAdmission === null) {
+      return false
+    }
+    if (observationAdmission.terminated) {
+      claim.commit()
+      this.terminateFromOverflow()
+      return true
+    }
+    const observations = observationAdmission.stages
+    const eventAdmission =
+      presenceOverflow === null
+        ? duplicate
+          ? { stages: [], terminated: false }
+          : this.eventBroadcast.reserveReplacement<AdvertisementObservation<Attachment> | IpcAdvertisement>(
+              event,
+              value => Object.freeze({ kind: 'observed', peer: projectPublicScanObservation(value).peer })
+            )
+        : this.eventBroadcast.reserveOrderedReplacement<AdvertisementObservation<Attachment> | IpcAdvertisement>([
+            { event: presenceOverflow, project: () => presenceOverflow },
+            ...(duplicate
+              ? []
+              : [
+                  {
+                    event,
+                    project: (value: AdvertisementObservation<Attachment> | IpcAdvertisement) =>
+                      Object.freeze({ kind: 'observed' as const, peer: projectPublicScanObservation(value).peer })
+                  }
+                ])
+          ])
+    if (eventAdmission === null) {
+      for (const stage of observations) stage.cancel()
+      return false
+    }
+    if (eventAdmission.terminated && eventAdmission.stages.length === 0) {
+      for (const stage of observations) stage.cancel()
+      claim.commit()
+      this.terminateFromOverflow()
+      return true
+    }
+    const events = eventAdmission.stages
+    const stages = [...observations, ...events]
+    if (stages.length === 0 && stagedEvidence === null && fingerprints === null && !retainPresence) {
+      claim.commit()
+      return true
+    }
+    try {
+      // The merged value retains selected fields, not the evidence cache's
+      // peer and fact maps. Buffers are charged separately by identity.
+      const ownerBytes =
+        Math.max(
+          rawOwnerBytes - (adjustment === undefined ? 0 : scanBufferBytes(rawBuffers)),
+          retainedScanValueBytes(matched) - (adjustment === undefined ? 0 : scanBufferBytes(matchedBuffers))
+        ) +
+        (presenceOverflow !== null && events.some(stage => stage.inspect().acceptedItemIndexes?.includes(0))
+          ? estimatePublicDiscoveryEventBytes(presenceOverflow)
+          : 0)
+      const extras = retainPresence ? 1 : 0
+      const references = source.replaceSharedClaim(
+        claim,
+        matched,
+        ownerBytes,
+        16,
+        stages,
+        extras,
+        adjustment,
+        refs => {
+          commitState()
+          if (retainPresence) {
+            const reference = refs[0]
+            if (reference === undefined)
+              throw contractError('lifecycle.invariant-violation', 'scan', 'public-scan.presence-reference')
+            const includeRaw = this.includeRawAdvertisement
+            this.observePresence(
+              observation,
+              {
+                get value() {
+                  return projectPublicScanObservation(reference.value, includeRaw)
+                },
+                release: () => reference.release()
+              },
+              observedAt,
+              reference,
+              true
+            )
+          } else {
+            for (const reference of refs) reference.release()
+          }
+          if (eventAdmission.terminated) this.terminateFromOverflow()
+        },
+        evictedPresence
+      )
+      return references !== null
+    } catch (error) {
+      if (error instanceof AggregateStreamSharedTransferError) {
+        // The commit hook may have adopted the presence reference before a
+        // cleanup callback failed. Its owner remains responsible for release.
+        const adopted = this.presence.get(observation.peer.id)?.sharedReference
+        for (const reference of error.references) if (reference !== adopted) reference.release()
+      }
+      throw error
+    } finally {
+      for (const stage of stages) stage.cancel()
+    }
+  }
+
+  private accept(raw: AdvertisementObservation<Attachment> | IpcAdvertisement, receiptTime: number | null): void {
+    const matched = this.matchSplitAdvertisement(raw, receiptTime)
     if (matched === null) return
     const observation = projectPublicScanObservation(matched, this.includeRawAdvertisement)
 
-    this.observePresence(observation)
+    this.observePresence(observation, undefined, receiptTime ?? undefined)
     if (this.duplicates === 'coalesced') {
       const fingerprint = publicObservationFingerprint(observation)
       const previous = this.lastObservationFingerprints.get(observation.peer.id)
@@ -947,39 +1819,56 @@ class PublicScanSessionController<Attachment extends string> {
   }
 
   private matchSplitAdvertisement(
-    raw: AdvertisementObservation<Attachment> | IpcAdvertisement
+    raw: AdvertisementObservation<Attachment> | IpcAdvertisement,
+    receiptTime: number | null,
+    evidence: ScanEvidenceSession = this.evidence
   ): AdvertisementObservation<Attachment> | IpcAdvertisement | null {
+    // With no clauses every packet already matches; retaining facts cannot
+    // change the result and would compete with the accepted source prefix.
+    if (this.query.anyOf === null && this.query.exclude === null) return raw
     const matches = (candidate: AdvertisementObservation<Attachment> | IpcAdvertisement): boolean =>
       observationMatchesScanQuery(this.query, normalizeScanObservation(candidate))
     if ('device' in raw) {
-      return this.evidence.matchAdvertisement(raw, matches)
+      return evidence.matchAdvertisement(raw, matches)
     }
-    return this.evidence.matchIpc(raw, this.now(), 'public-scan', matches)
+    return evidence.matchIpc(raw, receiptTime ?? this.now(), 'public-scan', matches)
   }
 
-  private observePresence(observation: PublicScanObservation): void {
-    if (this.reportLostAfterMs === undefined) return
-    const observedAt = observation.observedAtMonotonicMs ?? this.now()
-    const current = this.presence.get(observation.peer.id)
+  private observePresence(
+    observation: PublicScanObservation,
+    owned?: import('../core/bounded-stream').CoreStreamOwnedValue<PublicScanObservation>,
+    receiptAt?: number,
+    sharedReference?: import('../core/bounded-stream').CoreStreamOwnedValue<unknown>,
+    overflowStaged = false
+  ): void {
+    if (this.reportLostAfterMs === undefined || this.presenceStopped) {
+      owned?.release()
+      return
+    }
+    const observedAt = observation.observedAtMonotonicMs ?? receiptAt ?? this.now()
+    const peerId = observation.peer.id
+    const current = this.presence.get(peerId)
     if (current !== undefined && observedAt < current.lastSeenAtMonotonicMs) {
+      owned?.release()
       return
     }
     if (current !== undefined) {
       current.timer?.cancel()
-      this.presence.delete(observation.peer.id)
+      this.presence.delete(peerId)
       this.presenceBytes -= current.bytes
+      current.release()
     }
-    const presence: PublicScanPresence = {
-      observation,
-      lastSeenAtMonotonicMs: observedAt,
-      timer: null,
-      bytes: estimatePublicScanObservationBytes(observation)
-    }
-    this.presence.set(observation.peer.id, presence)
+    const bytes = estimatePublicScanObservationBytes(observation)
+    const presence =
+      owned === undefined
+        ? localScanPresence(observation, observedAt, bytes)
+        : ownedScanPresence(owned, observedAt, bytes, sharedReference)
+    this.presence.set(peerId, presence)
     this.presenceBytes += presence.bytes
-    this.evictPresenceState()
+    this.evictPresenceState(overflowStaged)
+    if (this.presence.get(peerId) !== presence) return
     presence.timer = this.scheduleDeadline(observedAt + this.reportLostAfterMs, () => {
-      this.reportLost(observation.peer.id, observedAt)
+      this.reportLost(peerId, observedAt)
     })
   }
 
@@ -1004,6 +1893,7 @@ class PublicScanSessionController<Attachment extends string> {
       derivedAt: now,
       reason: 'observation-timeout'
     })
+    current.release()
     const eventTerminated = this.eventBroadcast.emit(lost, estimatePublicDiscoveryEventBytes(lost))
     if (eventTerminated) this.terminateFromOverflow()
   }
@@ -1012,11 +1902,14 @@ class PublicScanSessionController<Attachment extends string> {
     for (const current of this.presence.values()) {
       current.timer?.cancel()
       current.timer = null
+      current.release()
     }
     this.presence.clear()
     this.presenceBytes = 0
     this.lastObservationFingerprints.clear()
     this.fingerprintBytes = 0
+    this.evidenceAdmission?.(this.evidenceRetainedBytes - scanBufferBytes(this.evidenceBuffers), this.evidenceBuffers)
+    this.cacheAdmittedBytes = this.evidenceRetainedBytes
     this.assertFingerprintAccounting()
   }
 
@@ -1037,6 +1930,12 @@ class PublicScanSessionController<Attachment extends string> {
     if (existing === undefined) return
     this.lastObservationFingerprints.delete(peerId)
     this.fingerprintBytes -= existing.bytes
+    const retained = this.evidenceRetainedBytes + this.fingerprintBytes
+    if (this.evidenceAdmission !== null && retained <= this.cacheAdmittedBytes) {
+      if (!this.evidenceAdmission(retained - scanBufferBytes(this.evidenceBuffers), this.evidenceBuffers))
+        throw contractError('lifecycle.invariant-violation', 'scan', 'public-scan.cache-release')
+      this.cacheAdmittedBytes = retained
+    }
     this.assertFingerprintAccounting()
   }
 
@@ -1057,7 +1956,7 @@ class PublicScanSessionController<Attachment extends string> {
     }
   }
 
-  private evictPresenceState(): void {
+  private evictPresenceState(overflowStaged = false): void {
     let droppedEntries = 0
     let droppedBytes = 0
     while (this.presence.size > MAX_PUBLIC_SCAN_STATE_ENTRIES || this.presenceBytes > MAX_PUBLIC_SCAN_STATE_BYTES) {
@@ -1068,11 +1967,12 @@ class PublicScanSessionController<Attachment extends string> {
       presence.timer = null
       this.presence.delete(peerId)
       this.presenceBytes -= presence.bytes
+      presence.release()
       this.forgetObservationFingerprint(peerId)
       droppedEntries += 1
       droppedBytes += presence.bytes
     }
-    if (droppedEntries === 0) return
+    if (droppedEntries === 0 || overflowStaged) return
     const overflow: DiscoveryEvent = Object.freeze({
       kind: 'presence-tracking-overflow',
       guarantee: 'reportLostAfterMs-completeness',
@@ -1090,17 +1990,27 @@ class PublicScanSessionController<Attachment extends string> {
     }
   }
 
-  private finish(reason: StreamTerminalNotice['reason'], error?: NormalizedBleError | null): void {
-    this.endDelivery(reason, 'finish', error)
+  private finish(
+    reason: StreamTerminalNotice['reason'],
+    error?: NormalizedBleError | null,
+    sourceTerminal?: StreamTerminalNotice
+  ): void {
+    this.endDelivery(reason, 'finish', error, sourceTerminal)
   }
 
   private endDelivery(
     reason: StreamTerminalNotice['reason'],
     observationMode: 'finish' | 'close',
-    error?: NormalizedBleError | null
+    error?: NormalizedBleError | null,
+    sourceTerminal?: StreamTerminalNotice
   ): void {
     if (this.closed) return
     this.closed = true
+    this.stopSourceLossObservation?.()
+    this.stopSourceLossObservation = null
+    this.pendingSourceLosses.length = 0
+    this.admissionWait.cancel()
+    this.evidence.clear()
     this.cancelPresenceTimers()
     const eventReason: PublicScanEventTerminalReason =
       reason === 'source-failed'
@@ -1114,7 +2024,7 @@ class PublicScanSessionController<Attachment extends string> {
       this.observationBroadcast.closeWithReason(reason, error)
       this.eventBroadcast.close(eventReason, error)
     } else {
-      this.observationBroadcast.finishWithReason(reason, error)
+      this.observationBroadcast.finishWithReason(reason, error, sourceTerminal)
       this.eventBroadcast.finish(eventReason, error)
     }
     this.onDeliveryEnded(reason)
@@ -1980,6 +2890,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     readonly localViewReleased: () => boolean
     readonly localViewError: () => unknown | null
   }>()
+  private readonly retainedScanViews = new Set<PublicScanSessionController<Attachment>>()
   private readonly provisionalSubscriptions = new ProvisionalGattSubscriptionOwner()
   private readonly lateScanStopFailures: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
   private readonly lateProvisionalFailures: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
@@ -1998,7 +2909,8 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       snapshot: () =>
         Object.freeze({ trace: this.diagnosticTrace(), resourceCounters: this.diagnostics.resourceCounters() }),
       resourceCounters: () => snapshotResourceCounters(publicResourceCounters(internal)),
-      startTrace: () => ({ stop: async () => this.diagnosticTrace() })
+      startTrace: () => ({ stop: async () => this.diagnosticTrace() }),
+      warnings: () => publicDiagnosticWarnings(internal)
     }
     this.peers = hostOptions.peers ?? createPublicPeerDirectory(internal.attachedBackend?.backend?.peers, now)
     this.security = createPublicSecurity(resolveSecurityBackend(internal), this.peers, internal, now)
@@ -2110,26 +3022,18 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
           if (stopState.deliveryEnded || stopState.stopPromise !== null) return
           stopState.deliveryEnded = true
           scanState.emit(projectScanDeliveryTerminal(reason))
-        }
+        },
+        () => this.retainedScanViews.delete(controller)
       )
-      stopScan = async (reason: PublicScanEventTerminalReason): Promise<PublicCleanupRecord> => {
+      this.retainedScanViews.add(controller)
+      stopScan = async (_reason: PublicScanEventTerminalReason): Promise<PublicCleanupRecord> => {
         if (stopState.stopPromise !== null) return stopState.stopPromise
         if (!stopState.deliveryEnded) scanState.emit({ state: 'stopping' })
         const run = (async () => {
           const phases: { readonly error?: unknown; readonly cleanup?: BackendCleanupRecord }[] = []
-          if (!stopState.viewReleased) {
-            try {
-              const view = await controller.closeView(reason)
-              if (view.state === 'released') {
-                stopState.viewReleased = true
-                stopState.localViewError = null
-              }
-              phases.push({ cleanup: view })
-            } catch (error) {
-              stopState.localViewError = error
-              phases.push({ error })
-            }
-          }
+          // Stopping the producer leaves the view readable, including when it was never opened.
+          controller.stopPresenceTracking()
+          stopState.viewReleased = true
           if (!stopState.nativeReleased) {
             try {
               const nativeAttempt = rehydratePublicPromise(session.stop())
@@ -2191,6 +3095,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         stop: () => stopScan('owner-released').then(toPublicCleanupRecord),
         observations: controller.observations,
         events: controller.events,
+        lossAwareEventsV1: controller.lossAwareEventsV1,
         state: scanState.stream
       }
       publicScanFingerprintInspectors.set(publicSession, () => controller.fingerprintAccounting())
@@ -2217,7 +3122,11 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     })
     return runWithCleanup(
       () => findPeerInScan(scan, select, { ...operation, now: this.now }),
-      () => scan.stop()
+      () =>
+        runWithCleanup(
+          () => scan.stop(),
+          () => scan.observations.close()
+        )
     )
   }
 
@@ -2398,6 +3307,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     try {
       const active = [...this.activeScanSessions]
       const viewResults: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
+      const retainedViewResults: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
       const retainedViewFailures = this.lateScanStopFailures.splice(0)
       const retainedProvisionalFailures = this.lateProvisionalFailures.splice(0)
       const viewAttempts: Promise<void>[] = []
@@ -2430,6 +3340,18 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         } catch (error) {
           viewResults.push({ error })
         }
+      }
+      for (const view of this.retainedScanViews) {
+        viewAttempts.push(
+          view.close('closed').then(
+            cleanup => {
+              if (reportOpen) retainedViewResults.push({ cleanup: toPublicCleanupRecord(cleanup) })
+            },
+            error => {
+              if (reportOpen) retainedViewResults.push({ error })
+            }
+          )
+        )
       }
       // Retry children without making the authoritative manager release wait
       // on an individual unsubscribe that may never settle. The owner keeps
@@ -2483,6 +3405,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       return toPublicCleanupRecord(
         collectCleanupPhases([
           ...localViewFailures,
+          ...retainedViewResults,
           ...(parentReleased ? [] : retainedViewFailures),
           ...(parentReleased ? [] : viewResults),
           // The original subscribe rejection preserved the provisional failure.
@@ -2582,6 +3505,49 @@ function publicTraceDocument<Attachment extends string, Identity extends Backend
   internal: PublicInternalManager<Attachment, Identity>
 ): BleDiagnosticTraceDocument {
   return snapshotPublicTraceDocument(internal.attachedBackend?.backend.traceDocument?.() ?? internal.traceDocument())
+}
+
+function publicDiagnosticWarnings<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>
+): readonly BleDiagnosticWarning[] {
+  return Object.freeze(
+    internal.backendDiagnosticWarnings().map(warning => {
+      const detail = warning.detail
+      const platformValue = detail.platform
+      const platformRecord = isSerializableDiagnosticRecord(platformValue) ? platformValue : null
+      const platform =
+        platformRecord !== null &&
+        typeof platformRecord.domain === 'string' &&
+        typeof platformRecord.code === 'string' &&
+        typeof platformRecord.message === 'string'
+          ? toPublicPlatformErrorDetail(
+              optionalPlatformErrorDetail(
+                {
+                  domain: platformRecord.domain,
+                  code: platformRecord.code,
+                  safeMessage: platformRecord.message,
+                  metadata: platformRecord.metadata
+                },
+                'public-diagnostics.warning.platform'
+              )
+            )
+          : null
+      return Object.freeze({
+        code: warning.code,
+        cause: typeof detail.code === 'string' ? detail.code : null,
+        platform
+      })
+    })
+  )
+}
+
+/**
+ * Backend diagnostic detail is serializable by contract, but it may still be
+ * an array or byte value. Only a record can carry the structured platform
+ * fields exposed by the public warning surface.
+ */
+function isSerializableDiagnosticRecord(value: SerializableValue | undefined): value is SerializableRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Uint8Array)
 }
 
 function resolveSecurityBackend<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -2904,34 +3870,98 @@ export function filterScanObservations(
   duplicates: 'coalesced' | 'all' = 'all',
   now: () => number = () => globalThis.performance.now()
 ): BoundedAsyncStream<PublicScanObservation> {
+  const readers = new Set<() => void>()
   return {
     limits: source.limits,
     overflowPolicy: source.overflowPolicy,
     [Symbol.asyncIterator](): BoundedAsyncStreamIterator<PublicScanObservation> {
-      const iterator = source[Symbol.asyncIterator]()
+      const claimReader = source instanceof CoreBoundedStream ? source.claimConsumer() : null
+      const iterator = claimReader === null ? source[Symbol.asyncIterator]() : null
       const lastObservations = new Map<string, string>()
-      const evidence = new ScanEvidenceSession()
+      const admission = source instanceof CoreBoundedStream ? source.createRetainedByteAdmission() : null
+      const evidence = new ScanEvidenceSession(bytes => {
+        if (source instanceof CoreBoundedStream && !source.canEverRetainBytes(bytes))
+          throw contractError('stream.quota', 'scan', 'filtered-scan.evidence-too-large')
+        return admission === null ? bytes <= Number(source.limits.byteCapacity) : admission(bytes)
+      })
+      let released = false
+      const admissionWait = new ScanAdmissionWait()
+      const release = () => {
+        if (released) return
+        released = true
+        admissionWait.cancel()
+        lastObservations.clear()
+        evidence.clear()
+        claimReader?.close()
+        readers.delete(release)
+      }
+      readers.add(release)
       const matches = (candidate: AdvertisementObservation<string> | IpcAdvertisement): boolean =>
         observationMatchesScanQuery(query, normalizeScanObservation(candidate))
       return {
         async next() {
           while (true) {
-            const item = await iterator.next()
-            if (item.done) {
-              lastObservations.clear()
-              evidence.clear()
-              return item
+            const claimed = claimReader === null ? null : await claimReader.next()
+            const item = iterator === null ? null : await iterator.next()
+            if (released) return { done: true, value: undefined }
+            if (claimed?.kind === 'done' || item?.done === true) {
+              release()
+              return { done: true, value: undefined }
             }
-            if (item.value.kind === 'overflow' || item.value.kind === 'terminal') {
-              return { done: false, value: item.value }
+            const claim = claimed?.kind === 'claim' ? claimed.claim : null
+            if (claim !== null && source instanceof CoreBoundedStream && !source.isClaimCurrent(claim)) continue
+            const value = claim?.item ?? (claimed?.kind === 'control' ? claimed.item : item?.value)
+            if (value === undefined) throw contractError('lifecycle.invariant-violation', 'scan', 'filtered-scan.read')
+            // This filtered projection does not expose source-loss controls;
+            // the owning scan's loss-aware event stream preserves them.
+            if (value.kind === 'source-loss') continue
+            if (value.kind !== 'value') {
+              if (value.kind === 'terminal') release()
+              return { done: false, value }
             }
-            const raw = item.value.value
-            const matched =
-              'device' in raw
-                ? evidence.matchAdvertisement(raw, matches)
-                : evidence.matchIpc(raw, now(), 'filtered-scan', matches)
-            if (matched === null) continue
-            const observation = projectPublicScanObservation(matched)
+            const receiptTime = 'device' in value.value ? null : now()
+            let matched: AdvertisementObservation<string> | IpcAdvertisement | null = null
+            let current = true
+            while (!released) {
+              try {
+                const raw = value.value
+                matched =
+                  query.anyOf === null && query.exclude === null
+                    ? raw
+                    : 'device' in raw
+                      ? evidence.matchAdvertisement(raw, matches)
+                      : evidence.matchIpc(raw, receiptTime ?? now(), 'filtered-scan', matches)
+                admissionWait.reset()
+                break
+              } catch (error) {
+                if (!isScanEvidenceQuota(error)) {
+                  if (claim !== null && source instanceof CoreBoundedStream && source.isClaimCurrent(claim))
+                    claim.rollback()
+                  release()
+                  throw error
+                }
+                await admissionWait.wait()
+                if (claim !== null && source instanceof CoreBoundedStream && !source.isClaimCurrent(claim)) {
+                  current = false
+                  break
+                }
+              }
+            }
+            if (released) return { done: true, value: undefined }
+            if (!current) continue
+            if (matched === null) {
+              claim?.commit()
+              continue
+            }
+            let observation: PublicScanObservation
+            try {
+              observation = projectPublicScanObservation(matched)
+            } catch (error) {
+              claim?.rollback()
+              release()
+              throw error
+            }
+            claim?.commit()
             if (observationMatchesScanQuery(query, observation)) {
               if (duplicates === 'coalesced') {
                 const fingerprint = publicObservationFingerprint(observation)
@@ -2947,9 +3977,8 @@ export function filterScanObservations(
           }
         },
         return: async () => {
-          lastObservations.clear()
-          evidence.clear()
-          await iterator.return()
+          release()
+          if (iterator !== null) await iterator.return()
           return { done: true, value: undefined }
         },
         [Symbol.asyncIterator]() {
@@ -2957,13 +3986,20 @@ export function filterScanObservations(
         }
       }
     },
-    close: () => source.close()
+    close: () => {
+      for (const release of [...readers]) release()
+      return source.close()
+    }
   }
 }
 
 function publicObservationFingerprint(observation: PublicScanObservation): string {
-  const bytes = (value: Readonly<Uint8Array>): readonly number[] => [...value]
-  return JSON.stringify({
+  const payloads: Readonly<Uint8Array>[] = []
+  const bytes = (value: Readonly<Uint8Array>): number => {
+    payloads.push(value)
+    return value.byteLength
+  }
+  const metadata = JSON.stringify({
     provenance: observation.provenance ?? null,
     origin: observation.origin ?? null,
     peerReference: observation.peerReference === undefined ? null : encodePeerReference(observation.peerReference),
@@ -2979,6 +4015,15 @@ function publicObservationFingerprint(observation: PublicScanObservation): strin
         ? bytes(observation.rawAdvertisement.value)
         : (observation.rawAdvertisement ?? null)
   })
+  // Pack two bytes per UTF-16 code unit. Lengths in the metadata preserve
+  // boundaries and odd trailing bytes, so equality remains exact.
+  let packed = ''
+  for (const payload of payloads) {
+    for (let index = 0; index < payload.length; index += 2) {
+      packed += String.fromCharCode((payload[index] ?? 0) | ((payload[index + 1] ?? 0) << 8))
+    }
+  }
+  return `${metadata}\0${packed}`
 }
 
 function estimatePublicScanObservationBytes(observation: PublicScanObservation): number {
@@ -2989,12 +4034,39 @@ function estimatePublicScanObservationBytes(observation: PublicScanObservation):
   return bytes
 }
 
+/** Give each reader its own mutable byte buffers without retaining another queued copy. */
+function copyPublicScanObservation(observation: PublicScanObservation): PublicScanObservation {
+  const raw = observation.rawAdvertisement
+  return Object.freeze({
+    ...observation,
+    manufacturerData:
+      observation.manufacturerData === null
+        ? null
+        : Object.freeze(
+            observation.manufacturerData.map(entry => Object.freeze({ ...entry, data: new Uint8Array(entry.data) }))
+          ),
+    serviceData:
+      observation.serviceData === null
+        ? null
+        : Object.freeze(
+            observation.serviceData.map(entry => Object.freeze({ ...entry, data: new Uint8Array(entry.data) }))
+          ),
+    peer: snapshotBlePeer(observation.peer),
+    ...(raw?.state === 'present'
+      ? { rawAdvertisement: Object.freeze({ ...raw, value: new Uint8Array(raw.value) }) }
+      : {})
+  })
+}
+
 function estimatePublicDiscoveryEventBytes(event: DiscoveryEvent): number {
   if (event.kind === 'presence-tracking-overflow') {
     return 64
   }
   const peerBytes = event.peer.id.length * 2 + (event.peer.name?.length ?? 0) * 2
-  return event.kind === 'observed' ? 32 + peerBytes : 96 + peerBytes
+  let payloadBytes = 0
+  for (const entry of event.peer.lastAdvertisement?.manufacturerData ?? []) payloadBytes += entry.data.byteLength
+  for (const entry of event.peer.lastAdvertisement?.serviceData ?? []) payloadBytes += entry.data.byteLength
+  return (event.kind === 'observed' ? 32 : 96) + peerBytes + payloadBytes
 }
 
 export function publicConnectionEvents(
@@ -3545,12 +4617,13 @@ function scanStreamOverflowError(
   },
   budget: { readonly itemCapacity: number; readonly byteCapacity: number }
 ): BackendContractError {
+  const subject = operation === 'public-scan.events' ? 'event' : 'observation'
   return contractError('stream.overflow', 'scan', operation, {
     domain: 'scan',
     code: 'scan-observation-overflow',
     safeMessage:
-      `The scan observation stream overflowed its ${String(budget.itemCapacity)}-item budget ` +
-      `under ${notice.policy} and dropped ${String(notice.droppedItems)} observations.`,
+      `The scan ${subject} stream overflowed its ${String(budget.itemCapacity)}-item budget ` +
+      `under ${notice.policy} and dropped ${String(notice.droppedItems)} ${subject} items.`,
     metadata: Object.freeze({
       policy: notice.policy,
       droppedItems: notice.droppedItems,
@@ -3572,43 +4645,77 @@ export async function findPeerInScan(
   } | null = null
 ): Promise<BlePeer> {
   const iterator = scan.observations[Symbol.asyncIterator]()
-  while (true) {
-    const item = await iterator.next()
-    if (item.done) throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
-    if (item.value.kind === 'terminal') {
-      if (item.value.reason === 'operation-timed-out') {
-        throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
+  return runWithCleanup(
+    async () => {
+      while (true) {
+        const item = await iterator.next()
+        if (item.done)
+          throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
+        if (item.value.kind === 'terminal') {
+          if (item.value.reason === 'source-failed' || item.value.reason === 'overflow') {
+            if (item.value.error != null) {
+              const error = item.value.error
+              throw new BleError(error.code, error.domain, error.operation, {
+                platform: error.platform,
+                retryability: error.retryability,
+                commit: error.commit ?? null,
+                ...(error.orderedFailure === undefined ? {} : { orderedFailure: error.orderedFailure })
+              })
+            }
+            if (item.value.reason === 'overflow') {
+              throw rehydratePublicError(
+                scanStreamOverflowError(
+                  'public-ble-manager.find',
+                  {
+                    policy: scan.observations.overflowPolicy,
+                    droppedItems: item.value.droppedItems,
+                    droppedBytes: item.value.droppedBytes,
+                    replacedItems: item.value.replacedItems
+                  },
+                  scan.observations.limits
+                )
+              )
+            }
+            throw rehydratePublicError(contractError('platform.failure', 'scan', 'public-ble-manager.find'))
+          }
+          if (item.value.reason === 'operation-timed-out') {
+            throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
+          }
+          if (operation !== null && operation.signal !== null && operation.signal.aborted) {
+            throw rehydratePublicError(contractError('operation.aborted', 'scan', 'public-ble-manager.find'))
+          }
+          if (operation !== null && operation.deadline !== null && operation.deadline <= operation.now()) {
+            throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
+          }
+          throw rehydratePublicError(contractError('stream.closed', 'scan', 'public-ble-manager.find'))
+        }
+        if (item.value.kind === 'overflow') {
+          // F8: a drop-policy notice is loss accounting, not session failure (the
+          // desktop N-API path filters per-consumer before bounding, so a burst of
+          // non-matching cached peripherals never reaches its capacity-1 stream).
+          // Skip it and wait for the match; only an error-policy overflow
+          // fail-closes the find.
+          if (item.value.policy !== 'error') continue
+          throw rehydratePublicError(
+            scanStreamOverflowError('public-ble-manager.find', item.value, scan.observations.limits)
+          )
+        }
+        const peer = peerFromPublicObservation(item.value.value)
+        if (select === undefined || select === 'first' || select(peer)) {
+          // A queued value is not a timely result merely because the JS deadline
+          // callback was suspended. Fence success against the original operation.
+          if (operation?.signal?.aborted === true) {
+            throw rehydratePublicError(contractError('operation.aborted', 'scan', 'public-ble-manager.find'))
+          }
+          if (operation !== null && operation.deadline !== null && operation.deadline <= operation.now()) {
+            throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
+          }
+          return peer
+        }
       }
-      if (operation !== null && operation.signal !== null && operation.signal.aborted) {
-        throw rehydratePublicError(contractError('operation.aborted', 'scan', 'public-ble-manager.find'))
-      }
-      if (operation !== null && operation.deadline !== null && operation.deadline <= operation.now()) {
-        throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
-      }
-      throw rehydratePublicError(contractError('stream.closed', 'scan', 'public-ble-manager.find'))
+    },
+    async () => {
+      await iterator.return?.()
     }
-    if (item.value.kind === 'overflow') {
-      // F8: a drop-policy notice is loss accounting, not session failure (the
-      // desktop N-API path filters per-consumer before bounding, so a burst of
-      // non-matching cached peripherals never reaches its capacity-1 stream).
-      // Skip it and wait for the match; only an error-policy overflow
-      // fail-closes the find.
-      if (item.value.policy !== 'error') continue
-      throw rehydratePublicError(
-        scanStreamOverflowError('public-ble-manager.find', item.value, scan.observations.limits)
-      )
-    }
-    const peer = peerFromPublicObservation(item.value.value)
-    if (select === undefined || select === 'first' || select(peer)) {
-      // A queued value is not a timely result merely because the JS deadline
-      // callback was suspended. Fence success against the original operation.
-      if (operation?.signal?.aborted === true) {
-        throw rehydratePublicError(contractError('operation.aborted', 'scan', 'public-ble-manager.find'))
-      }
-      if (operation !== null && operation.deadline !== null && operation.deadline <= operation.now()) {
-        throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
-      }
-      return peer
-    }
-  }
+  )
 }

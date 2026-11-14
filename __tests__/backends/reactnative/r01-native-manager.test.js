@@ -14,7 +14,8 @@ const { createReactNativeBleManagerWithEnvironment } = require('../../../src/rea
 const InternalShapes = require('../../../src/manager/ble-manager')
 const {
   rustCoreHarness,
-  environment: harnessEnvironment
+  environment: harnessEnvironment,
+  settle
 } = require('../../../test-support/react-native/rust-core-harness')
 
 const MANAGER_SOURCE = path.join(__dirname, '../../../src/backends/reactnative/react-native-rust-core-manager.ts')
@@ -141,6 +142,7 @@ describe('R01 native-owned manager', () => {
         '../../core/connection-lifecycle-rules',
         '../../core/core-capabilities',
         '../../core/gatt-path-equality',
+        '../../core/terminal-evidence-codec',
         '../../core/unified-ble-core-helpers'
       ].sort()
     )
@@ -176,6 +178,20 @@ describe('R01 native-owned manager', () => {
     }
     expect(ops(calls, 'session.dispose')).toHaveLength(1)
     expect(calls.calls.filter(call => call[0] === 'closeSession')).toHaveLength(1)
+  })
+
+  test('retains native diagnostic warnings through the internal manager surface', async () => {
+    const calls = presentNative()
+    const manager = await createReactNativeBleManagerWithEnvironment(environment())
+    try {
+      calls.ingressDrop('control', 3)
+      await settle(60)
+      expect(manager.backendDiagnosticWarnings()).toEqual([
+        { code: 'native-ingress-drop', detail: { class: 'control', count: 3 } }
+      ])
+    } finally {
+      await manager.destroy()
+    }
   })
 
   test('connection + GATT routing with handle parity', async () => {

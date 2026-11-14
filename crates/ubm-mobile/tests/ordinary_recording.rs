@@ -5,6 +5,96 @@ use serde_json::json;
 use ubm_mobile::{Instance, MobilePlatform, RadioIngress, RadioRequest};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recorded_consumer_unsubscribes_after_confirmed_link_loss() {
+    let Some(directory) =
+        recording_test_directory("recorded_consumer_unsubscribes_after_confirmed_link_loss")
+    else {
+        return;
+    };
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    host.continuation()
+        .configure_recording_directory(&directory)
+        .unwrap();
+    let session = host.open_session("recorded-link-loss").unwrap();
+    for (op, id) in [
+        ("connection.connect", "connect"),
+        ("gatt.discover", "discover"),
+    ] {
+        ok(&call(
+            &session,
+            op,
+            &json!({"peerId":POLAR,"lease":"lease","operationId":id}).to_string(),
+        )
+        .await);
+    }
+    ok(&call(&session, "gatt.subscribe-recorded", &json!({"peerId":POLAR,"selector":selector(),"consumer":"recorded","operationId":"sub","recording":{"id":"lost","maxBytes":1048576,"maxRecords":1000}}).to_string()).await);
+    let epoch = radio
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|request| match request {
+            RadioRequest::EnableNotifications { epoch, .. } => Some(*epoch),
+            _ => None,
+        })
+        .unwrap();
+    host.ingest(RadioIngress::Notification {
+        instance: Instance {
+            peer_id: POLAR.into(),
+            service_uuid: HR_SERVICE.into(),
+            service_occurrence: 0,
+            characteristic_uuid: HR_MEASUREMENT.into(),
+            characteristic_occurrence: 0,
+        },
+        epoch,
+        value: vec![42],
+    });
+    host.ingest(RadioIngress::Connection {
+        peer_id: POLAR.into(),
+        connected: false,
+        status: None,
+    });
+    drain_until(&session, |records| {
+        records
+            .iter()
+            .any(|row| row["t"] == "stream-end" && row["consumer"] == "recorded")
+    })
+    .await;
+    ok(&call(
+        &session,
+        "gatt.unsubscribe",
+        &json!({"peerId":POLAR,"selector":selector(),"consumer":"recorded","operationId":"unsub"})
+            .to_string(),
+    )
+    .await);
+    assert!(
+        !radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| matches!(request, RadioRequest::DisableNotifications { .. }))
+    );
+    let batch = ok(&host.continuation_recording_prepare("lost", 100, 65536));
+    assert!(
+        batch["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["record"]["valueB64"] == "Kg==")
+    );
+    assert!(
+        batch["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["record"]["t"] == "stream-end")
+    );
+    host.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recorded_and_ordinary_consumers_have_independent_delivery_and_cursor() {
     let Some(directory) = recording_test_directory(
         "recorded_and_ordinary_consumers_have_independent_delivery_and_cursor",
@@ -695,6 +785,11 @@ async fn shared_cccd_cutoff_excludes_later_ingress_but_keeps_ordinary_delivery()
         value: vec![3],
     });
     assert!(matches!(dropped, ubm_mobile::IngressStatus::Dropped(_)));
+    host.ingest(RadioIngress::DroppedCount {
+        class: ubm_mobile::IngressClass::Notification,
+        detail: "native source batch".into(),
+        count: 1_000_000,
+    });
     radio.answer(
         read_id,
         RadioCompletion::Read {
@@ -721,15 +816,22 @@ async fn shared_cccd_cutoff_excludes_later_ingress_but_keeps_ordinary_delivery()
             .any(|row| row["t"] == "value" && row["consumer"] == "recorded")
     );
     let batch = ok(&host.continuation_recording_prepare("cutoff", 100, 65536));
-    assert!(
-        batch["records"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["record"]["t"] == "ingress-drop"
+    let loss: u64 = batch["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| {
+            row["record"]["t"] == "ingress-drop"
                 && row["record"]["class"] == "notification"
-                && row["record"]["count"] == 1
-                && row["metadata"]["consumer"].is_null())
+                && row["metadata"]["consumer"].is_null()
+        })
+        .map(|row| row["record"]["count"].as_u64().unwrap())
+        .sum();
+    assert_eq!(loss, 1_000_001);
+    let counters = ok(&call(&session, "counters.describe", "{}").await);
+    assert_eq!(
+        counters["process"]["native"]["ingressDrops"]["notification"],
+        1_000_001
     );
     let values: Vec<_> = batch["records"]
         .as_array()
@@ -815,6 +917,89 @@ async fn refused_physical_cleanup_retains_owner_and_can_retry() {
             .iter()
             .any(|row| row["record"]["t"] == "consumer-registration")
     );
+    ok(&call(&session, "session.dispose", "{}").await);
+    host.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recorded_source_failure_preserves_structured_error() {
+    let Some(directory) =
+        recording_test_directory("recorded_source_failure_preserves_structured_error")
+    else {
+        return;
+    };
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    host.continuation()
+        .configure_recording_directory(&directory)
+        .unwrap();
+    let session = host.open_session("source-recording").unwrap();
+    for (op, id) in [
+        ("connection.connect", "connect"),
+        ("gatt.discover", "discover"),
+    ] {
+        ok(&call(
+            &session,
+            op,
+            &json!({"peerId":POLAR,"lease":"lease","operationId":id}).to_string(),
+        )
+        .await);
+    }
+    ok(&call(&session, "gatt.subscribe-recorded", &json!({"peerId":POLAR,"selector":selector(),"consumer":"recorded","operationId":"sub","recording":{"id":"source","maxBytes":1048576,"maxRecords":1000}}).to_string()).await);
+    let epoch = radio
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|request| match request {
+            RadioRequest::EnableNotifications { epoch, .. } => Some(*epoch),
+            _ => None,
+        })
+        .unwrap();
+    let instance = Instance {
+        peer_id: POLAR.into(),
+        service_uuid: HR_SERVICE.into(),
+        service_occurrence: 0,
+        characteristic_uuid: HR_MEASUREMENT.into(),
+        characteristic_occurrence: 0,
+    };
+    host.ingest(RadioIngress::Notification {
+        instance: instance.clone(),
+        epoch,
+        value: vec![42],
+    });
+    host.ingest(RadioIngress::NotificationSourceFailed {
+        instance,
+        epoch,
+        failure: ubm_mobile::PlatformFailure::new(
+            ubm_mobile::FailureKind::Platform,
+            "notification source stopped",
+        ),
+    });
+    let events = drain_until(&session, |records| {
+        records
+            .iter()
+            .any(|row| row["t"] == "stream-end" && row["consumer"] == "recorded")
+    })
+    .await;
+    let terminal = events
+        .iter()
+        .find(|row| row["t"] == "stream-end" && row["consumer"] == "recorded")
+        .unwrap();
+    let error = &terminal["error"];
+    assert_eq!(error["code"], "platform.failure");
+    let batch = ok(&host.continuation_recording_prepare("source", 100, 65536));
+    let records = batch["records"].as_array().unwrap();
+    let value_index = records
+        .iter()
+        .position(|row| row["record"]["valueB64"] == "Kg==")
+        .unwrap();
+    let terminal_index = records
+        .iter()
+        .position(|row| row["record"]["t"] == "stream-end")
+        .unwrap();
+    assert!(value_index < terminal_index);
+    assert_eq!(records[terminal_index]["record"]["error"], *error);
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
 }

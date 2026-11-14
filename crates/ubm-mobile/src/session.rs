@@ -17,16 +17,19 @@
 //! Native module) keeps them past dispose, as legacy did (87/N8).
 
 use std::cell::Cell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use serde_json::Value;
 use tokio::sync::Notify;
 use tokio::time::Instant;
-use ubm_core::central::{ConnectionState, PathSelector, canonical_uuid};
-use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, MAX_TIMEOUT_MS};
+use ubm_core::central::{ConnectionState, OperationAdmission, PathSelector, canonical_uuid};
+use ubm_core::contracts::{
+    AttachmentTuple, BleErrorCode, BleErrorDomain, CommitState, MAX_TIMEOUT_MS,
+};
+use ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope;
 use ubm_desktop::{
     Budget, CancelAck, DeliveryMode, DesktopCentral, DesktopError, DiscoveredPath, InstanceKey,
     LIVENESS_BACKSTOP_DETAIL, LIVENESS_OP, ObservedDelivery, OpControl, OpTicket, PeerRecord,
@@ -35,7 +38,8 @@ use ubm_desktop::{
 use crate::drain::Outbox;
 use crate::foreign::{ConnectStaging, DISPATCHED, OP_RADIO, OpRadio, lock};
 use crate::host::{
-    BackgroundScope, HostInner, Route, ScanMember, SecurityEntry, adapter_value, security_value,
+    BackgroundScope, HostInner, Route, ScanMember, ScanTerminalEvidenceScope, SecurityEntry,
+    adapter_value, security_value,
 };
 use crate::radio::BackgroundKind;
 use crate::radio::{
@@ -51,6 +55,13 @@ pub type Completion = Box<dyn FnOnce(String) + Send + 'static>;
 pub const OPS: &[&str] = &[
     "adapter.state",
     "counters.describe",
+    // Host-owned durable terminal evidence.  These operations are deliberately
+    // separate from the radio surface: the selected trusted host owns its
+    // ledger and never accepts a storage path from JavaScript.
+    "terminal-evidence.reserve",
+    "terminal-evidence.commit",
+    "terminal-evidence.read",
+    "terminal-evidence.release",
     "scan.start",
     "scan.stop",
     "peers.resolve",
@@ -83,6 +94,40 @@ pub const OPS: &[&str] = &[
     "gatt.subscribe",
     "gatt.subscribe-recorded",
     "gatt.unsubscribe",
+    "gatt.ordered.version",
+    "gatt.ordered.failure-metadata.version",
+    "gatt.ordered.capacity.version",
+    "gatt.ordered.reserve",
+    "gatt.ordered.reclaim",
+    "gatt.ordered.open",
+    "gatt.ordered.status",
+    "gatt.ordered.increase-capacity",
+    "gatt.ordered.poll",
+    "gatt.ordered.ack-delivery",
+    "gatt.ordered.discard",
+    "gatt.ordered.poll-discard",
+    "gatt.ordered.ack-discard",
+    "gatt.ordered.close",
+    "gatt.ordered.ack-group",
+    "gatt.ordered.forget-group",
+    "gatt.ordered.recording-reclaim.version",
+    "gatt.ordered.recording-reclaim.next",
+    "gatt.ordered.recording-reclaim.reserve",
+    "gatt.ordered.recording-reclaim.start",
+    "gatt.ordered.recording-reclaim.status",
+    "gatt.ordered.recording-reclaim.commit",
+    "gatt.ordered.recording-reclaim.cancel",
+    "gatt.ordered.recording-reclaim.release",
+    "gatt.ordered.recording-reclaim.retire",
+    "gatt.ordered.recording-reclaim.ack-retire",
+    "gatt.ordered.recording-reclaim.forget-retire",
+    "gatt.ordered.recording-reclaim.ack-forget",
+    "gatt.ordered.marker.version",
+    "gatt.ordered.marker.reserve",
+    "gatt.ordered.marker.start",
+    "gatt.ordered.marker.status",
+    "gatt.ordered.marker.cancel",
+    "gatt.ordered.marker.forget",
     "background.acquire",
     "background.release",
     "background.update-notification",
@@ -142,6 +187,130 @@ pub(crate) struct Subscription {
     selector: PathSelector,
     core_consumer: String,
     scope: InstanceKey,
+    attachment: AttachmentTuple,
+    admission: OperationAdmission,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedLease {
+    name: String,
+    attachment: AttachmentTuple,
+    admission: OperationAdmission,
+}
+
+// Live owners and failed cleanup are never evicted. Bound them separately
+// from successful receipts, whose eviction only makes old identities stale.
+const DEFAULT_EXACT_LIVE_LEASE_LIMIT: usize = 1024;
+const DEFAULT_EXACT_RECEIPT_LIMIT: usize = 1024;
+
+struct ExactLeaseRecord {
+    peer: String,
+    name: String,
+    owner: Option<OwnedLease>,
+    released: bool,
+    attempt: Option<Arc<ExactReleaseAttempt>>,
+}
+
+struct ExactReleaseAttempt {
+    result: Mutex<Option<Value>>,
+    changed: Notify,
+}
+
+struct ExactReleaseLeader(Arc<ExactReleaseAttempt>);
+
+impl Drop for ExactReleaseLeader {
+    fn drop(&mut self) {
+        let mut result = lock(&self.0.result);
+        if result.is_none() {
+            let failure = error(
+                BleErrorCode::LifecycleInvariantViolation,
+                BleErrorDomain::Cleanup,
+                "connection.disconnect.attempt",
+            )
+            .with_detail("release task ended without a cleanup result");
+            *result = Some(connection_cleanup_record(&failure));
+            self.0.changed.notify_waiters();
+        }
+    }
+}
+
+struct ExactLeases {
+    namespace: String,
+    next: u64,
+    records: HashMap<String, ExactLeaseRecord>,
+    live_limit: usize,
+    receipt_limit: usize,
+    receipts: VecDeque<String>,
+}
+
+impl ExactLeases {
+    fn trim_receipts(&mut self) {
+        while self.receipts.len() > self.receipt_limit {
+            let Some(identity) = self.receipts.pop_front() else {
+                break;
+            };
+            if self
+                .records
+                .get(&identity)
+                .is_some_and(|entry| entry.released)
+            {
+                self.records.remove(&identity);
+            }
+        }
+    }
+}
+
+struct ExactLeaseReservation<'a> {
+    table: &'a Mutex<Option<ExactLeases>>,
+    identity: String,
+}
+
+impl Drop for ExactLeaseReservation<'_> {
+    fn drop(&mut self) {
+        if let Some(table) = lock(self.table).as_mut()
+            && table
+                .records
+                .get(&self.identity)
+                .is_some_and(|entry| entry.owner.is_none())
+        {
+            table.records.remove(&self.identity);
+        }
+    }
+}
+
+pub(crate) struct ResetResources {
+    leases: Vec<(String, OwnedLease, Option<DesktopError>)>,
+    subscriptions: Vec<(String, Subscription, Option<DesktopError>)>,
+}
+
+impl ResetResources {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.leases.is_empty() && self.subscriptions.is_empty()
+    }
+}
+
+#[cfg(test)]
+struct PublicationTestGate {
+    entered: Notify,
+    resume: Notify,
+}
+
+#[cfg(test)]
+impl SessionState {
+    async fn pause_publication_for_test(&self, operation: &'static str) {
+        let gate = {
+            let mut slot = lock(&self.publication_test_gate);
+            if slot.as_ref().is_some_and(|(kind, _)| *kind == operation) {
+                slot.take().map(|(_, gate)| gate)
+            } else {
+                None
+            }
+        };
+        if let Some(gate) = gate {
+            gate.entered.notify_one();
+            gate.resume.notified().await;
+        }
+    }
 }
 
 /// Session state shared with the host (routing) and the op tasks.
@@ -171,7 +340,46 @@ impl ScanSlot {
 /// new session inherits the dead one's client state).
 static NEXT_INSTANCE: AtomicUsize = AtomicUsize::new(1);
 
+fn reclaim_secret_matches(expected: &str, supplied: &str) -> bool {
+    expected.len() == supplied.len()
+        && expected
+            .as_bytes()
+            .iter()
+            .zip(supplied.as_bytes())
+            .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+            == 0
+}
+
+#[derive(Clone)]
+struct SessionReclaim {
+    owner: Arc<
+        ubm_desktop::reclaim_reservation::ReclaimReservationOwner<crate::foreign::ForeignRadio>,
+    >,
+    recording_owner:
+        Arc<ubm_desktop::ordered_recording::OrderedRecording<crate::foreign::ForeignRadio>>,
+    previous: u64,
+    id: u64,
+    peer: String,
+    recording: String,
+    capability: String,
+    lease: String,
+    caller_key: String,
+}
+
+struct ReclaimForgetReceipt {
+    peer: String,
+    recording: String,
+    capability: String,
+    caller_key: String,
+}
+
+const RECLAIM_RECEIPT_CAPACITY: usize = 128;
+
 pub(crate) struct SessionState {
+    #[cfg(test)]
+    publication_test_gate: Mutex<Option<(&'static str, Arc<PublicationTestGate>)>>,
+    #[cfg(test)]
+    disconnect_failure_override: Mutex<Option<DesktopError>>,
     pub id: u64,
     /// Process-unique instance identity, shared by clones, never reused.
     pub instance: usize,
@@ -186,15 +394,32 @@ pub(crate) struct SessionState {
     /// never counts itself), keyed by a per-session sequence.
     op_radio: Mutex<HashMap<u64, Arc<OpRadio>>>,
     op_sequence: AtomicU64,
-    leases: Mutex<HashMap<String, String>>,
+    recording_start_last: Mutex<Option<u64>>,
+    reclaim_guards: Mutex<HashMap<u64, Weak<tokio::sync::Mutex<()>>>>,
+    reclaim_reservations: Mutex<HashMap<u64, SessionReclaim>>,
+    reclaim_forget_receipts: Mutex<HashMap<(u64, String, u64), ReclaimForgetReceipt>>,
+    leases: Mutex<HashMap<String, OwnedLease>>,
+    exact_leases: Mutex<Option<ExactLeases>>,
+    exact_connection_gates: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     subscriptions: Mutex<HashMap<String, Subscription>>,
     pending_subscriptions: Mutex<HashSet<String>>,
-    /// Leases and subscriptions an adapter reset ended: the core forgot
-    /// them, and their release answers `released`, as the legacy backends'
-    /// adapter-loss cleanup left terminalized handles.
-    reset_leases: Mutex<HashMap<String, String>>,
-    reset_subscriptions: Mutex<HashMap<String, Subscription>>,
+    /// Reset outcomes retain the admitted attachment and operation, including
+    /// failures, until the corresponding owner can observe them.
+    reset_changed: Notify,
+    #[expect(
+        clippy::type_complexity,
+        reason = "the reset lease map stores its exact cleanup ownership tuple"
+    )]
+    reset_leases: Mutex<HashMap<OperationAdmission, (String, OwnedLease, Option<DesktopError>)>>,
+    #[expect(
+        clippy::type_complexity,
+        reason = "the reset subscription map stores its exact cleanup ownership tuple"
+    )]
+    reset_subscriptions:
+        Mutex<HashMap<OperationAdmission, (String, Subscription, Option<DesktopError>)>>,
     scan: Mutex<ScanSlot>,
+    // None until negotiation or the first scan admission freezes the wire.
+    pub(crate) scan_end_version: Mutex<Option<u8>>,
     scan_ordinal: AtomicU64,
     pub background_scope: BackgroundScope,
 }
@@ -215,8 +440,17 @@ struct AdmissionState {
 }
 
 impl SessionState {
-    pub(crate) fn new(id: u64, outbox: Outbox, background_scope: BackgroundScope) -> Self {
+    pub(crate) fn new(
+        id: u64,
+        outbox: Outbox,
+        background_scope: BackgroundScope,
+        exact_namespace: Option<String>,
+    ) -> Self {
         Self {
+            #[cfg(test)]
+            publication_test_gate: Mutex::new(None),
+            #[cfg(test)]
+            disconnect_failure_override: Mutex::new(None),
             id,
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             outbox,
@@ -235,12 +469,27 @@ impl SessionState {
             last_release: Mutex::new(None),
             op_radio: Mutex::new(HashMap::new()),
             op_sequence: AtomicU64::new(0),
+            recording_start_last: Mutex::new(None),
+            reclaim_guards: Mutex::new(HashMap::new()),
+            reclaim_reservations: Mutex::new(HashMap::new()),
+            reclaim_forget_receipts: Mutex::new(HashMap::new()),
             leases: Mutex::new(HashMap::new()),
+            exact_leases: Mutex::new(exact_namespace.map(|namespace| ExactLeases {
+                namespace,
+                next: 1,
+                records: HashMap::new(),
+                live_limit: DEFAULT_EXACT_LIVE_LEASE_LIMIT,
+                receipt_limit: DEFAULT_EXACT_RECEIPT_LIMIT,
+                receipts: VecDeque::new(),
+            })),
+            exact_connection_gates: Mutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
             pending_subscriptions: Mutex::new(HashSet::new()),
+            reset_changed: Notify::new(),
             reset_leases: Mutex::new(HashMap::new()),
             reset_subscriptions: Mutex::new(HashMap::new()),
             scan: Mutex::new(ScanSlot::Idle),
+            scan_end_version: Mutex::new(None),
             scan_ordinal: AtomicU64::new(0),
             background_scope,
         }
@@ -254,25 +503,141 @@ impl SessionState {
         }
     }
 
-    /// An adapter reset ended every link: the core cleared its connection
-    /// records, including links already lost before the reset. Move all of
-    /// this session's leases and subscriptions to the reset tables. Answers
-    /// the routes (scope, consumer) the host drops.
-    pub(crate) fn end_by_reset(&self) -> Vec<(InstanceKey, String)> {
-        lock(&self.reset_leases).extend(lock(&self.leases).drain());
-        let mut ended = lock(&self.reset_subscriptions);
-        lock(&self.subscriptions)
-            .drain()
+    /// Snapshot only resources belonging to the attachment the core reset.
+    pub(crate) fn capture_reset_resources(
+        &self,
+        previous: &AttachmentTuple,
+        released: &[String],
+        failures: &[(String, DesktopError)],
+    ) -> ResetResources {
+        let failure_for = |peer: &str| {
+            failures
+                .iter()
+                .find(|(id, _)| id == peer)
+                .map(|(_, error)| error.clone())
+                .or_else(|| {
+                    (!released.iter().any(|id| id == peer)).then(|| {
+                        error(
+                            BleErrorCode::LifecycleInvariantViolation,
+                            BleErrorDomain::Cleanup,
+                            "adapter.reset.release-observation",
+                        )
+                        .with_detail("reset did not report a release for the admitted peer")
+                    })
+                })
+        };
+        let leases = if let Some(table) = lock(&self.exact_leases).as_ref() {
+            table
+                .records
+                .values()
+                .filter_map(|entry| {
+                    let lease = entry.owner.as_ref()?;
+                    (!entry.released && &lease.attachment == previous)
+                        .then(|| (entry.peer.clone(), lease.clone(), failure_for(&entry.peer)))
+                })
+                .collect()
+        } else {
+            lock(&self.leases)
+                .iter()
+                .filter(|(_, lease)| &lease.attachment == previous)
+                .map(|(peer, lease)| (peer.clone(), lease.clone(), failure_for(peer)))
+                .collect()
+        };
+        let subscriptions = lock(&self.subscriptions)
+            .iter()
+            .filter(|(_, subscription)| &subscription.attachment == previous)
             .map(|(consumer, subscription)| {
-                let route = (subscription.scope.clone(), consumer.clone());
-                ended.insert(consumer, subscription);
-                route
+                (
+                    consumer.clone(),
+                    subscription.clone(),
+                    failure_for(&subscription.peer_id),
+                )
             })
-            .collect()
+            .collect();
+        ResetResources {
+            leases,
+            subscriptions,
+        }
+    }
+
+    /// Retire only the exact attachment-owned resources captured at reset.
+    pub(crate) fn end_by_reset(&self, captured: ResetResources) -> Vec<(InstanceKey, String)> {
+        let mut leases = lock(&self.leases);
+        let mut ended_leases = lock(&self.reset_leases);
+        for (peer, lease, failure) in captured.leases {
+            if leases.get(&peer) == Some(&lease) {
+                leases.remove(&peer);
+            }
+            ended_leases
+                .entry(lease.admission.clone())
+                .or_insert((peer, lease, failure));
+        }
+        drop(ended_leases);
+        drop(leases);
+        let mut subscriptions = lock(&self.subscriptions);
+        let mut ended = lock(&self.reset_subscriptions);
+        let mut routes = Vec::new();
+        for (consumer, subscription, failure) in captured.subscriptions {
+            if subscriptions
+                .get(&consumer)
+                .is_some_and(|current| current.admission == subscription.admission)
+            {
+                subscriptions.remove(&consumer);
+                routes.push((subscription.scope.clone(), consumer.clone()));
+            }
+            ended.entry(subscription.admission.clone()).or_insert((
+                consumer,
+                subscription,
+                failure,
+            ));
+        }
+        drop(ended);
+        drop(subscriptions);
+        self.reset_changed.notify_waiters();
+        routes
     }
 
     fn core_name(&self, name: &str) -> String {
         format!("s{}:{name}", self.id)
+    }
+
+    fn exact_connection_gate(&self, peer: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut gates = lock(&self.exact_connection_gates);
+        gates.retain(|_, gate| gate.strong_count() != 0);
+        let slot = gates.entry(peer.to_owned()).or_default();
+        if let Some(gate) = slot.upgrade() {
+            gate
+        } else {
+            let gate = Arc::new(tokio::sync::Mutex::new(()));
+            *slot = Arc::downgrade(&gate);
+            gate
+        }
+    }
+}
+
+pub(crate) struct RecordingStartReceipt {
+    recording_id: String,
+    caller_key: String,
+    owner_collection: Option<u64>,
+    revoked: bool,
+    identity: Option<(Value, ubm_desktop::continuation_journal::JournalQuota)>,
+    reclaim_capability: Option<String>,
+    result: Option<Value>,
+    failed: bool,
+}
+
+struct RecordingStartGuard {
+    host: Arc<HostInner>,
+    key: (u64, u64),
+    completed: bool,
+}
+impl Drop for RecordingStartGuard {
+    fn drop(&mut self) {
+        if !self.completed
+            && let Some(entry) = lock(&self.host.ordered_start_receipts).get_mut(&self.key)
+        {
+            entry.failed = true;
+        }
     }
 }
 
@@ -289,6 +654,29 @@ pub(crate) fn cleanup_failure(resource_kind: &str, error: &DesktopError) -> Valu
     Value::Object(map)
 }
 
+// Desktop's cleanup aggregate stores the primary as element zero and every
+// independent error in order. Unwrap only that explicit wrapper; a regular
+// platform error can carry its own cleanup evidence and is not an aggregate.
+fn connection_cleanup_failures(error: &DesktopError) -> Vec<Value> {
+    let mut pending = vec![error];
+    let mut failures = Vec::new();
+    while let Some(error) = pending.pop() {
+        match error.platform() {
+            Some(platform)
+                if platform.code == "cleanup-failures" && !platform.cleanup_failures.is_empty() =>
+            {
+                pending.extend(platform.cleanup_failures.iter().rev());
+            }
+            _ => failures.push(cleanup_failure("connection", error)),
+        }
+    }
+    failures
+}
+
+fn connection_cleanup_record(error: &DesktopError) -> Value {
+    cleanup_record(connection_cleanup_failures(error))
+}
+
 pub(crate) fn cleanup_record(failures: Vec<Value>) -> Value {
     object(vec![
         (
@@ -303,6 +691,51 @@ pub(crate) fn cleanup_record(failures: Vec<Value>) -> Value {
     ])
 }
 
+/// The reset reports physical release only after its teardown completes.
+/// Subscribe before admission so even a fast reset remains observable.
+async fn reset_release_failure(
+    events: &mut tokio::sync::broadcast::Receiver<ubm_desktop::AdapterResetEvent>,
+    attachment: &AttachmentTuple,
+    peer: &str,
+) -> Option<DesktopError> {
+    loop {
+        match events.recv().await {
+            Ok(event) if &event.previous == attachment => {
+                if let Some((_, failure)) = event
+                    .link_release_failures
+                    .into_iter()
+                    .find(|(id, _)| id == peer)
+                {
+                    return Some(failure);
+                }
+                return if event.released_links.iter().any(|id| id == peer) {
+                    None
+                } else {
+                    Some(
+                        error(
+                            BleErrorCode::LifecycleInvariantViolation,
+                            BleErrorDomain::Cleanup,
+                            "adapter.reset.release-observation",
+                        )
+                        .with_detail("reset did not report a release for the admitted peer"),
+                    )
+                };
+            }
+            Ok(_) => {}
+            Err(failure) => {
+                return Some(
+                    error(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Cleanup,
+                        "adapter.reset.release-observation",
+                    )
+                    .with_detail(failure.to_string()),
+                );
+            }
+        }
+    }
+}
+
 fn error(code: BleErrorCode, domain: BleErrorDomain, operation: &str) -> DesktopError {
     let error = DesktopError::new(code, domain, operation);
     if matches!(
@@ -313,6 +746,24 @@ fn error(code: BleErrorCode, domain: BleErrorDomain, operation: &str) -> Desktop
     } else {
         error
     }
+}
+
+fn ordered_encoding_error() -> DesktopError {
+    error(
+        BleErrorCode::ProtocolIncompatible,
+        BleErrorDomain::Core,
+        "gatt.ordered.failure-metadata-version",
+    )
+    .with_detail("ordered failure cannot be represented by the selected mobile wire revision")
+}
+
+fn ordered_discard_value(
+    receipt: &ubm_desktop::central::OrderedDiscardReceipt,
+) -> Result<Value, DesktopError> {
+    let encoded = crate::ordered_encoding::discard(receipt).ok_or_else(ordered_encoding_error)?;
+    Ok(
+        serde_json::json!({"receiptId":receipt.receipt_id.to_string(),"discardedDeliveryId":receipt.discarded_delivery_id.to_string(),"evidence":encoded["evidence"].to_string()}),
+    )
 }
 
 fn recording_storage_error(failure: &Value, operation: &str) -> DesktopError {
@@ -631,8 +1082,89 @@ fn commit_of(error: &DesktopError, dispatched: bool) -> &'static str {
 }
 
 impl MobileSession {
-    pub(crate) fn seal_continuation_collection(&self) {
-        self.state.outbox.seal();
+    /// Secret authority for recovering this session's scan evidence after its
+    /// disposal. Persist it before admitting a scan and protect it as a secret.
+    #[allow(
+        dead_code,
+        reason = "the platform-specific scan recovery binding obtains this authority"
+    )]
+    pub(crate) fn scan_failure_recovery_authority(&self) -> Result<[u8; 32], DesktopError> {
+        let admission = lock(&self.state.admission);
+        if self.host.is_shut_down() || admission.closing {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleDestroyed,
+                BleErrorDomain::Core,
+                "scan.failure-recovery-authority",
+            ));
+        }
+        self.state
+            .outbox
+            .scan_failure_recovery_authority()
+            .map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Core,
+                    "scan.failure-recovery-authority",
+                )
+            })?
+            .ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Core,
+                    "scan.failure-recovery-authority",
+                )
+            })
+    }
+
+    /// Select the scan terminal format before this session admits a scan.
+    pub fn negotiate_scan_end_version(&self, offered_json: &str) -> Result<String, DesktopError> {
+        self.negotiate_scan_end_version_with_max(offered_json, 2)
+    }
+
+    /// Apply a host qualification ceiling without altering the peer's offer.
+    pub fn negotiate_scan_end_version_with_max(
+        &self,
+        offered_json: &str,
+        max_version: u8,
+    ) -> Result<String, DesktopError> {
+        let admission = lock(&self.state.admission);
+        if self.host.is_shut_down() || admission.closing {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleDestroyed,
+                BleErrorDomain::Core,
+                "scan-end-version",
+            ));
+        }
+        let offered: Vec<u8> =
+            serde_json::from_str(offered_json).map_err(|_| wire::invalid("scan-end-version"))?;
+        if offered.is_empty() || offered.len() > 16 {
+            return Err(wire::invalid("scan-end-version"));
+        }
+        let mut selected = lock(&self.state.scan_end_version);
+        let version = match *selected {
+            Some(version) if version <= max_version && offered.contains(&version) => version,
+            Some(_) => {
+                return Err(DesktopError::new(
+                    BleErrorCode::ProtocolIncompatible,
+                    BleErrorDomain::Core,
+                    "scan-end-version",
+                ));
+            }
+            None if max_version >= 2 && offered.contains(&2) => 2,
+            None if max_version >= 1 && offered.contains(&1) => 1,
+            None => {
+                return Err(DesktopError::new(
+                    BleErrorCode::ProtocolIncompatible,
+                    BleErrorDomain::Core,
+                    "scan-end-version",
+                ));
+            }
+        };
+        *selected = Some(version);
+        Ok(serde_json::json!({"version":version}).to_string())
+    }
+    pub(crate) fn seal_continuation_collection(&self) -> bool {
+        self.host.seal_scan_ingress(&self.state).is_some()
     }
     pub(crate) fn continuation_collection_sealed(&self) -> bool {
         self.state.outbox.is_sealed()
@@ -692,6 +1224,42 @@ impl MobileSession {
         self.state.id
     }
 
+    /// Configure the experimental /4 session's retained successful connection
+    /// receipts (default 1,024). Evicted identities fail closed; live owners
+    /// and failed cleanup are never evicted. The limit may be zero and is
+    /// capped at 65,536. Admission separately bounds live and unresolved
+    /// connection records using `set_exact_connection_live_limit`.
+    pub fn set_exact_connection_receipt_limit(&self, limit: usize) -> Result<(), DesktopError> {
+        if limit > 65_536 {
+            return Err(wire::invalid("session.exact-connection-receipt-limit"));
+        }
+        let mut guard = lock(&self.state.exact_leases);
+        let table = guard.as_mut().ok_or_else(|| {
+            unsupported(
+                "session.exact-connection-receipt-limit",
+                "requires experimental wire revision 4",
+            )
+        })?;
+        table.receipt_limit = limit;
+        table.trim_receipts();
+        Ok(())
+    }
+
+    /// Set the experimental /4 session's maximum admitted or unresolved
+    /// connection owners. The default is 1,024; zero refuses new owners.
+    /// Reducing the limit never evicts existing owners or failed cleanup.
+    pub fn set_exact_connection_live_limit(&self, limit: usize) -> Result<(), DesktopError> {
+        let mut guard = lock(&self.state.exact_leases);
+        let table = guard.as_mut().ok_or_else(|| {
+            unsupported(
+                "session.exact-connection-live-limit",
+                "requires experimental wire revision 4",
+            )
+        })?;
+        table.live_limit = limit;
+        Ok(())
+    }
+
     /// Identity of this session object across hosts (session ids restart
     /// per host): clones share it, and it is never reused after the session
     /// dies, so clients keeping per-session state cannot inherit a dead
@@ -712,6 +1280,9 @@ impl MobileSession {
 
     /// Run one op; `completion` receives the envelope text exactly once.
     pub fn invoke(&self, op: &str, args_json: &str, completion: Completion) {
+        if op == "scan.start" {
+            lock(&self.state.scan_end_version).get_or_insert(1);
+        }
         let received = Instant::now();
         let lifetime_received = tokio::time::Instant::now();
         let is_effectful = EFFECTFUL_OPS.contains(&op);
@@ -790,6 +1361,12 @@ impl MobileSession {
                 Ok(admission) => Some(admission),
                 Err(error) => return reject(error, completion),
             },
+            Body::Ordered(crate::ordered_public::OrderedCommand::Open { peer, .. }) => {
+                match self.host.central.admit_gatt(peer) {
+                    Ok(admission) => Some(admission),
+                    Err(error) => return reject(error, completion),
+                }
+            }
             _ => None,
         };
         let is_disposal = matches!(command.body, Body::Dispose | Body::ContinuationDispose);
@@ -921,6 +1498,88 @@ impl MobileSession {
             Ok(Some(args.string("operationId")?))
         };
         let (body, operation_id, budget) = match op {
+            "terminal-evidence.reserve" => {
+                args.exact(
+                    &["producer", "maximumBytes", "formatVersion", "scope"],
+                    &["scopeUtf16leBase64"],
+                )?;
+                let producer = args.one_of("producer", &["scan", "subscription"])?;
+                if args.integer("formatVersion", 1)? != 1 {
+                    return Err(wire::invalid("args.formatVersion"));
+                }
+                let scope = args.object("scope")?;
+                scope.exact(&["managerId", "operationId", "incarnation"], &[])?;
+                (
+                    Body::TerminalEvidenceReserve {
+                        scope: TerminalEvidenceScope {
+                            producer: producer.to_owned(),
+                            manager_id: scope.string("managerId")?,
+                            operation_id: scope.string("operationId")?,
+                            incarnation: scope.string("incarnation")?,
+                            scope_utf16le: args
+                                .opt_string("scopeUtf16leBase64")?
+                                .map(|text| wire::decode_base64(&text, "args.scopeUtf16leBase64"))
+                                .transpose()?,
+                        },
+                        maximum_bytes: args.integer("maximumBytes", wire::MAX_SAFE_INTEGER)?,
+                    },
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "terminal-evidence.commit" => {
+                args.exact(&["reservationId", "canonicalBytesBase64", "digest"], &[])?;
+                let reservation_id = args.string("reservationId")?;
+                let ledger = self.host.terminal_evidence_ledger().ok_or_else(|| {
+                    unsupported(
+                        "terminal-evidence.commit",
+                        "trusted terminal evidence storage was not configured",
+                    )
+                })?;
+                let maximum_bytes = ledger
+                    .reservation_maximum_bytes(&reservation_id)
+                    .map_err(terminal_evidence_error)?;
+                let maximum_bytes = usize::try_from(maximum_bytes).map_err(|_| {
+                    error(
+                        BleErrorCode::BytesTooLarge,
+                        BleErrorDomain::Stream,
+                        "terminal-evidence.commit",
+                    )
+                })?;
+                let canonical_bytes = wire::decode_base64_bounded(
+                    &args.string("canonicalBytesBase64")?,
+                    "args.canonicalBytesBase64",
+                    maximum_bytes,
+                )?;
+                (
+                    Body::TerminalEvidenceCommit {
+                        reservation_id,
+                        canonical_bytes,
+                        digest: terminal_digest(&args.string("digest")?)?,
+                    },
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "terminal-evidence.read" => {
+                args.exact(&["ref", "maximumBytes"], &[])?;
+                (
+                    Body::TerminalEvidenceRead {
+                        reference: args.string("ref")?,
+                        maximum_bytes: args.integer("maximumBytes", wire::MAX_SAFE_INTEGER)?,
+                    },
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "terminal-evidence.release" => {
+                args.exact(&["reservationId"], &[])?;
+                (
+                    Body::TerminalEvidenceRelease(args.string("reservationId")?),
+                    None,
+                    Budget::unbounded(),
+                )
+            }
             "adapter.state"
             | "connection.control-capabilities"
             | "counters.describe"
@@ -998,7 +1657,13 @@ impl MobileSession {
             "scan.start" => {
                 args.exact(
                     &["serviceUuids", "duplicatePolicy", "operationId"],
-                    &["deviceAddresses", "platform", "budgetMs", "lifetimeMs"],
+                    &[
+                        "deviceAddresses",
+                        "platform",
+                        "budgetMs",
+                        "lifetimeMs",
+                        "terminalEvidenceScope",
+                    ],
                 )?;
                 let lifetime_ms = args.opt_integer("lifetimeMs", MAX_TIMEOUT_MS)?;
                 if lifetime_ms == Some(0) {
@@ -1108,6 +1773,31 @@ impl MobileSession {
                         service_uuids,
                         device_addresses,
                         android,
+                        terminal_evidence_scope: args
+                            .opt_object("terminalEvidenceScope")?
+                            .map(|scope| {
+                                scope.exact(
+                                    &["managerId", "operationId", "incarnation"],
+                                    &["scopeUtf16leBase64"],
+                                )?;
+                                Ok::<ScanTerminalEvidenceScope, DesktopError>(
+                                    ScanTerminalEvidenceScope {
+                                        manager_id: scope.string("managerId")?,
+                                        operation_id: scope.string("operationId")?,
+                                        incarnation: scope.string("incarnation")?,
+                                        scope_utf16le: scope
+                                            .opt_string("scopeUtf16leBase64")?
+                                            .map(|text| {
+                                                wire::decode_base64(
+                                                    &text,
+                                                    "args.terminalEvidenceScope.scopeUtf16leBase64",
+                                                )
+                                            })
+                                            .transpose()?,
+                                    },
+                                )
+                            })
+                            .transpose()?,
                         deadline: lifetime_ms
                             .map(|ms| lifetime_received + std::time::Duration::from_millis(ms)),
                     },
@@ -1170,11 +1860,29 @@ impl MobileSession {
                 )
             }
             "connection.disconnect" => {
-                args.exact(&["peerId", "lease"], &["budgetMs", "operationId"])?;
+                let exact = lock(&self.state.exact_leases).is_some();
+                if exact {
+                    args.exact(
+                        &["peerId", "lease", "releaseIdentity"],
+                        &["budgetMs", "operationId"],
+                    )?;
+                } else {
+                    args.exact(&["peerId", "lease"], &["budgetMs", "operationId"])?;
+                }
+                let release_identity = if exact {
+                    let identity = args.string("releaseIdentity")?;
+                    if identity.len() > 128 {
+                        return Err(wire::invalid("args.connection.disconnect.releaseIdentity"));
+                    }
+                    Some(identity)
+                } else {
+                    None
+                };
                 (
                     Body::Disconnect {
                         peer_id: args.string("peerId")?,
                         lease: args.string("lease")?,
+                        release_identity,
                     },
                     Self::operation_id(args)?,
                     budget(args, received)?,
@@ -1386,14 +2094,398 @@ impl MobileSession {
                     budget(args, received)?,
                 )
             }
+            "gatt.ordered.version" => {
+                args.exact(&[], &[])?;
+                (
+                    Body::Ordered(crate::ordered_public::OrderedCommand::Version),
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "gatt.ordered.failure-metadata.version" => {
+                args.exact(&[], &[])?;
+                (
+                    Body::Ordered(crate::ordered_public::OrderedCommand::FailureMetadataVersion),
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "gatt.ordered.capacity.version" => {
+                args.exact(&[], &[])?;
+                (
+                    Body::Ordered(crate::ordered_public::OrderedCommand::CapacityVersion),
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "gatt.ordered.reserve" => {
+                args.exact(&["peerId"], &[])?;
+                (
+                    Body::Ordered(crate::ordered_public::OrderedCommand::Reserve {
+                        peer: args.string("peerId")?,
+                    }),
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "gatt.ordered.reclaim" => {
+                args.exact(
+                    &["peerId", "collectionId", "reclaimCapability"],
+                    &["recordingId"],
+                )?;
+                (
+                    Body::Ordered(crate::ordered_public::OrderedCommand::Reclaim {
+                        peer: args.string("peerId")?,
+                        id: args.decimal_u64("collectionId")?,
+                        capability: args.string("reclaimCapability")?,
+                        recording_id: args.opt_string("recordingId")?,
+                    }),
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "gatt.ordered.open" => {
+                args.exact(
+                    &[
+                        "wireVersion",
+                        "peerId",
+                        "collectionId",
+                        "connectionGeneration",
+                        "databaseGeneration",
+                        "publicConnectionGeneration",
+                        "publicDatabaseGeneration",
+                        "members",
+                        "maxItems",
+                        "maxBytes",
+                        "maxControls",
+                        "operationId",
+                    ],
+                    &["budgetMs", "failureMetadataVersion"],
+                )?;
+                if args.integer("wireVersion", 9_007_199_254_740_991)? != 2 {
+                    return Err(error(
+                        BleErrorCode::ProtocolIncompatible,
+                        BleErrorDomain::Core,
+                        "gatt.ordered.version",
+                    ));
+                }
+                if args
+                    .opt_integer("failureMetadataVersion", 9_007_199_254_740_991)?
+                    .unwrap_or(1)
+                    != 1
+                {
+                    return Err(error(
+                        BleErrorCode::ProtocolIncompatible,
+                        BleErrorDomain::Core,
+                        "gatt.ordered.failure-metadata-version",
+                    ));
+                }
+                let id = args.decimal_u64("collectionId")?;
+                let mut members = Vec::new();
+                let mut context_members = Vec::new();
+                for member in args.objects("members", 128)? {
+                    member.exact(
+                        &[
+                            "memberId",
+                            "publicMemberId",
+                            "selector",
+                            "requestedDelivery",
+                        ],
+                        &["deliveryMode", "preferredDeliveryMode"],
+                    )?;
+                    let member_id = member.decimal_u64("memberId")?;
+                    let mode = |name| -> Result<Option<DeliveryMode>, DesktopError> {
+                        Ok(
+                            match member.opt_one_of(name, &["notification", "indication"])? {
+                                Some("notification") => Some(DeliveryMode::Notification),
+                                Some("indication") => Some(DeliveryMode::Indication),
+                                _ => None,
+                            },
+                        )
+                    };
+                    let selector = characteristic_selector(&member)?;
+                    let public_member = member.string("publicMemberId")?;
+                    let requested = member.one_of(
+                        "requestedDelivery",
+                        &[
+                            "prefer-notification",
+                            "prefer-indication",
+                            "require-notification",
+                            "require-indication",
+                        ],
+                    )?;
+                    context_members.push(serde_json::json!({
+                        "memberId": member_id.to_string(), "publicMemberId": public_member,
+                        "selector": member.get_raw("selector").cloned().ok_or_else(|| wire::invalid("args.selector"))?,
+                        "requestedDelivery": requested, "deliveryMode": member.opt_string("deliveryMode")?,
+                        "preferredDeliveryMode": member.opt_string("preferredDeliveryMode")?
+                    }));
+                    members.push(ubm_desktop::central::OrderedClaimRequest {
+                        member_id,
+                        selector,
+                        consumer: format!("ordered-{id}-{member_id}"),
+                        delivery: mode("deliveryMode")?,
+                        preference: mode("preferredDeliveryMode")?,
+                    });
+                }
+                let context = serde_json::json!({
+                    "connectionGeneration": args.string("connectionGeneration")?,
+                    "databaseGeneration": args.string("databaseGeneration")?,
+                    "publicConnectionGeneration": args.string("publicConnectionGeneration")?,
+                    "publicDatabaseGeneration": args.string("publicDatabaseGeneration")?,
+                    "maxItems": args.integer("maxItems", u32::MAX as u64)?,
+                    "maxBytes": args.integer("maxBytes", u32::MAX as u64)?,
+                    "maxControls": args.integer("maxControls", u32::MAX as u64)?,
+                    "members": context_members,
+                });
+                (
+                    Body::Ordered(crate::ordered_public::OrderedCommand::Open {
+                        peer: args.string("peerId")?,
+                        id,
+                        connection: args.string("connectionGeneration")?,
+                        database: args.string("databaseGeneration")?,
+                        members,
+                        items: args.integer("maxItems", u32::MAX as u64)? as usize,
+                        bytes: args.integer("maxBytes", u32::MAX as u64)? as usize,
+                        controls: args.integer("maxControls", u32::MAX as u64)? as usize,
+                        context,
+                    }),
+                    id_required(args)?,
+                    budget(args, received)?,
+                )
+            }
+            "gatt.ordered.recording-reclaim.next"
+            | "gatt.ordered.recording-reclaim.reserve"
+            | "gatt.ordered.recording-reclaim.start"
+            | "gatt.ordered.recording-reclaim.status"
+            | "gatt.ordered.recording-reclaim.commit"
+            | "gatt.ordered.recording-reclaim.cancel"
+            | "gatt.ordered.recording-reclaim.release"
+            | "gatt.ordered.recording-reclaim.retire"
+            | "gatt.ordered.recording-reclaim.ack-retire"
+            | "gatt.ordered.recording-reclaim.forget-retire"
+            | "gatt.ordered.recording-reclaim.ack-forget" => {
+                let action = op.rsplit('.').next().expect("known operation").to_owned();
+                let common = ["peerId", "collectionId", "recordingId", "reclaimCapability"];
+                if action == "next" {
+                    args.exact(&common, &["callerKey"])?;
+                } else {
+                    args.exact(
+                        &[
+                            "peerId",
+                            "collectionId",
+                            "recordingId",
+                            "reclaimCapability",
+                            "requestId",
+                            "callerKey",
+                        ],
+                        &[],
+                    )?;
+                }
+                (
+                    Body::RecordingReclaim {
+                        action: action.clone(),
+                        peer: args.string("peerId")?,
+                        collection: args.decimal_u64("collectionId")?,
+                        recording: args.string("recordingId")?,
+                        capability: args.string("reclaimCapability")?,
+                        request: if action == "next" {
+                            None
+                        } else {
+                            Some(args.decimal_u64("requestId")?)
+                        },
+                        caller_key: if action == "next" {
+                            args.opt_string("callerKey")?
+                        } else {
+                            Some(args.string("callerKey")?)
+                        },
+                    },
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "gatt.ordered.recording-reclaim.version" => {
+                args.exact(&[], &[])?;
+                (Body::ReclaimVersion, None, Budget::unbounded())
+            }
+            "gatt.ordered.marker.version" => {
+                args.exact(&[], &[])?;
+                (Body::MarkerVersion, None, Budget::unbounded())
+            }
+            "gatt.ordered.marker.reserve"
+            | "gatt.ordered.marker.start"
+            | "gatt.ordered.marker.status"
+            | "gatt.ordered.marker.cancel"
+            | "gatt.ordered.marker.forget" => {
+                let action = match op {
+                    "gatt.ordered.marker.reserve" => {
+                        args.exact(&["peerId", "collectionId", "reservationId"], &[])?;
+                        MarkerAction::Reserve(args.string("reservationId")?)
+                    }
+                    "gatt.ordered.marker.start" => {
+                        args.exact(
+                            &[
+                                "peerId",
+                                "collectionId",
+                                "handle",
+                                "selector",
+                                "valueB64",
+                                "mode",
+                            ],
+                            &[],
+                        )?;
+                        MarkerAction::Start {
+                            handle: args.decimal_u64("handle")?,
+                            selector: characteristic_selector(args)?,
+                            value: args.bytes("valueB64")?,
+                            with_response: args
+                                .one_of("mode", &["with-response", "without-response"])?
+                                == "with-response",
+                        }
+                    }
+                    "gatt.ordered.marker.status" => {
+                        args.exact(&["peerId", "collectionId", "handle"], &[])?;
+                        MarkerAction::Status(args.decimal_u64("handle")?)
+                    }
+                    "gatt.ordered.marker.cancel" => {
+                        args.exact(&["peerId", "collectionId", "handle"], &[])?;
+                        MarkerAction::Cancel(args.decimal_u64("handle")?)
+                    }
+                    _ => {
+                        args.exact(&["peerId", "collectionId", "handle"], &[])?;
+                        MarkerAction::Forget(args.decimal_u64("handle")?)
+                    }
+                };
+                (
+                    Body::Marker {
+                        peer: args.string("peerId")?,
+                        collection: args.decimal_u64("collectionId")?,
+                        action,
+                    },
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "gatt.ordered.increase-capacity" => {
+                args.exact(
+                    &[
+                        "peerId",
+                        "collectionId",
+                        "sourceGeneration",
+                        "maxBytes",
+                        "wireVersion",
+                    ],
+                    &[],
+                )?;
+                if args.integer("wireVersion", 1)? != 1 {
+                    return Err(wire::invalid("args.wireVersion"));
+                }
+                let generation = args.object("sourceGeneration")?;
+                generation.exact(&["kind", "value"], &[])?;
+                let generation = match generation.string("kind")?.as_str() {
+                    "counter" => ubm_core::ordered_notifications::SourceGeneration::Counter(
+                        generation.decimal_u64("value")?,
+                    ),
+                    "opaque" => ubm_core::ordered_notifications::SourceGeneration::Opaque(
+                        generation.string("value")?,
+                    ),
+                    _ => return Err(wire::invalid("args.sourceGeneration.kind")),
+                };
+                let max_bytes = args
+                    .integer("maxBytes", ubm_core::contracts::MAX_STREAM_BYTE_CAPACITY)?
+                    as usize;
+                if max_bytes == 0 {
+                    return Err(wire::invalid("args.maxBytes"));
+                }
+                (
+                    Body::Ordered(crate::ordered_public::OrderedCommand::IncreaseCapacity {
+                        peer: args.string("peerId")?,
+                        id: args.decimal_u64("collectionId")?,
+                        generation,
+                        max_bytes,
+                    }),
+                    None,
+                    Budget::unbounded(),
+                )
+            }
+            "gatt.ordered.status"
+            | "gatt.ordered.poll"
+            | "gatt.ordered.ack-delivery"
+            | "gatt.ordered.discard"
+            | "gatt.ordered.poll-discard"
+            | "gatt.ordered.ack-discard"
+            | "gatt.ordered.close"
+            | "gatt.ordered.ack-group"
+            | "gatt.ordered.forget-group" => {
+                use crate::ordered_public::GroupAction;
+                let action = match op {
+                    "gatt.ordered.status" => GroupAction::Status,
+                    "gatt.ordered.poll" => GroupAction::Poll,
+                    "gatt.ordered.ack-delivery" => GroupAction::AckDelivery,
+                    "gatt.ordered.discard" => GroupAction::Discard,
+                    "gatt.ordered.poll-discard" => GroupAction::PollDiscard,
+                    "gatt.ordered.ack-discard" => GroupAction::AckDiscard,
+                    "gatt.ordered.close" => GroupAction::Close,
+                    "gatt.ordered.ack-group" => GroupAction::AckGroup,
+                    _ => GroupAction::ForgetGroup,
+                };
+                let identity = matches!(
+                    action,
+                    GroupAction::AckDelivery | GroupAction::Discard | GroupAction::AckDiscard
+                );
+                let close = matches!(action, GroupAction::Close);
+                let forget = matches!(action, GroupAction::ForgetGroup);
+                let required: &[&str] = if forget {
+                    &["peerId", "collectionId", "reclaimCapability"]
+                } else if identity {
+                    &["peerId", "collectionId", "deliveryId"]
+                } else if close {
+                    &["peerId", "collectionId", "operationId"]
+                } else {
+                    &["peerId", "collectionId"]
+                };
+                args.exact(required, if close { &["budgetMs"] } else { &[] })?;
+                (
+                    Body::Ordered(crate::ordered_public::OrderedCommand::Group {
+                        action,
+                        peer: args.string("peerId")?,
+                        id: args.decimal_u64("collectionId")?,
+                        delivery: if identity {
+                            Some(args.decimal_u64("deliveryId")?)
+                        } else {
+                            None
+                        },
+                        capability: if forget {
+                            Some(args.string("reclaimCapability")?)
+                        } else {
+                            None
+                        },
+                    }),
+                    if close { id_required(args)? } else { None },
+                    if close {
+                        budget(args, received)?
+                    } else {
+                        Budget::unbounded()
+                    },
+                )
+            }
             "gatt.subscribe" | "gatt.subscribe-recorded" => {
+                if lock(&self.state.exact_leases).is_some() {
+                    return Err(unsupported(
+                        "gatt.subscribe",
+                        "exact subscription release is not implemented for wire revision 4",
+                    ));
+                }
                 let recorded = op == "gatt.subscribe-recorded";
                 let required: &[&str] = if recorded {
                     &["peerId", "selector", "consumer", "operationId", "recording"]
                 } else {
                     &["peerId", "selector", "consumer", "operationId"]
                 };
-                args.exact(required, &["deliveryMode", "budgetMs"])?;
+                args.exact(
+                    required,
+                    &["deliveryMode", "budgetMs", "terminalEvidenceScope"],
+                )?;
                 let mode = args.opt_one_of(
                     "deliveryMode",
                     &[
@@ -1409,6 +2501,31 @@ impl MobileSession {
                         selector: characteristic_selector(args)?,
                         consumer: args.string("consumer")?,
                         mode,
+                        terminal_evidence_scope: args
+                            .opt_object("terminalEvidenceScope")?
+                            .map(|scope| {
+                                scope.exact(
+                                    &["managerId", "operationId", "incarnation"],
+                                    &["scopeUtf16leBase64"],
+                                )?;
+                                Ok::<ScanTerminalEvidenceScope, DesktopError>(
+                                    ScanTerminalEvidenceScope {
+                                        manager_id: scope.string("managerId")?,
+                                        operation_id: scope.string("operationId")?,
+                                        incarnation: scope.string("incarnation")?,
+                                        scope_utf16le: scope
+                                            .opt_string("scopeUtf16leBase64")?
+                                            .map(|text| {
+                                                wire::decode_base64(
+                                                    &text,
+                                                    "args.terminalEvidenceScope.scopeUtf16leBase64",
+                                                )
+                                            })
+                                            .transpose()?,
+                                    },
+                                )
+                            })
+                            .transpose()?,
                         recording: if recorded {
                             let recording = args.object("recording")?;
                             recording.exact(&["id", "maxBytes", "maxRecords"], &[])?;
@@ -1426,6 +2543,12 @@ impl MobileSession {
                 )
             }
             "gatt.unsubscribe" => {
+                if lock(&self.state.exact_leases).is_some() {
+                    return Err(unsupported(
+                        "gatt.unsubscribe",
+                        "exact subscription release is not implemented for wire revision 4",
+                    ));
+                }
                 args.exact(
                     &["peerId", "selector", "consumer", "operationId"],
                     &["budgetMs"],
@@ -1594,8 +2717,25 @@ impl MobileSession {
         operation: &str,
     ) -> Result<String, DesktopError> {
         let core_lease = self.state.core_name(lease);
+        if let Some(table) = lock(&self.state.exact_leases).as_ref() {
+            return if table.records.values().any(|entry| {
+                entry.peer == peer_id
+                    && entry.name == core_lease
+                    && !entry.released
+                    && entry.owner.is_some()
+            }) {
+                Ok(core_lease)
+            } else {
+                Err(error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Connection,
+                    operation,
+                )
+                .with_detail("this session holds no such connection lease"))
+            };
+        }
         match lock(&self.state.leases).get(peer_id) {
-            Some(held) if *held == core_lease => Ok(core_lease),
+            Some(held) if held.name == core_lease => Ok(core_lease),
             _ => Err(error(
                 BleErrorCode::OwnershipDenied,
                 BleErrorDomain::Connection,
@@ -1634,6 +2774,912 @@ impl MobileSession {
         }
     }
 
+    async fn marker_command(
+        &self,
+        peer: &str,
+        collection: u64,
+        action: MarkerAction,
+    ) -> Result<Value, DesktopError> {
+        if !ubm_desktop::RadioBoundary::ordered_marker_write_supported(&self.host.radio) {
+            return Err(unsupported(
+                "gatt.ordered.marker",
+                "ordered marker writes are unavailable",
+            ));
+        }
+        if !self
+            .host
+            .ordered_owners
+            .owns(collection, peer, self.state.id)
+        {
+            return Err(error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.marker",
+            ));
+        }
+        let recorder =
+            lock(&self.host.ordered_recordings)
+                .iter()
+                .find_map(|((session, _), owner)| {
+                    (*session == self.state.id
+                        && owner.peer_id() == peer
+                        && owner.collection_id() == collection)
+                        .then(|| Arc::clone(owner))
+                });
+        let owner = if let Some(recorder) = recorder {
+            recorder.marker_reservation_owner().await.map_err(|cause| {
+                error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Gatt,
+                    "gatt.ordered.marker",
+                )
+                .with_detail(format!("recorder marker authority unavailable: {cause:?}"))
+            })?
+        } else {
+            self.host
+                .central
+                .marker_reservation_owner(peer, collection, None)
+                .await?
+        };
+        match action {
+            MarkerAction::Reserve(reservation_id) => {
+                Ok(serde_json::json!({"handle":owner.reserve(&reservation_id).await?.to_string()}))
+            }
+            MarkerAction::Start {
+                handle,
+                selector,
+                value,
+                with_response,
+            } => ubm_desktop::ordered_wire::encode_marker_write_versioned(
+                &owner.start(handle, selector, value, with_response).await?,
+                1,
+            )
+            .ok_or_else(ordered_encoding_error),
+            MarkerAction::Status(handle) => {
+                ubm_desktop::ordered_wire::encode_marker_write_versioned(
+                    &owner.status(handle).await?,
+                    1,
+                )
+                .ok_or_else(ordered_encoding_error)
+            }
+            MarkerAction::Cancel(handle) => {
+                ubm_desktop::ordered_wire::encode_marker_write_versioned(
+                    &owner.cancel(handle).await?,
+                    1,
+                )
+                .ok_or_else(ordered_encoding_error)
+            }
+            MarkerAction::Forget(handle) => {
+                owner.forget(handle).await?;
+                Ok(Value::Null)
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the wire operation keeps its protocol fields explicit at the dispatch boundary"
+    )]
+    async fn recording_reclaim(
+        &self,
+        action: &str,
+        peer: &str,
+        collection: u64,
+        recording: &str,
+        capability: &str,
+        request: Option<u64>,
+        caller_key: Option<&str>,
+    ) -> Result<Value, DesktopError> {
+        let denied = || {
+            error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.recording-reclaim",
+            )
+        };
+        if !self.host.radio.ordered_reclaim_graph_supported() {
+            return Err(error(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Gatt,
+                "gatt.ordered.recording-reclaim",
+            ));
+        }
+        // Only allocation and reservation need to serialize their lookup and
+        // insertion. Receipt operations use the retained exact owner and must
+        // remain callable while an unrelated acquisition is stalled.
+        let allocation_gate = if action == "next" || action == "reserve" {
+            let mut gates = lock(&self.state.reclaim_guards);
+            gates.retain(|_, gate| gate.strong_count() != 0);
+            let gate = gates.entry(collection).or_default();
+            Some(match gate.upgrade() {
+                Some(existing) => existing,
+                None => {
+                    let created = Arc::new(tokio::sync::Mutex::new(()));
+                    *gate = Arc::downgrade(&created);
+                    created
+                }
+            })
+        } else {
+            None
+        };
+        let _allocation = match &allocation_gate {
+            Some(gate) => Some(gate.lock().await),
+            None => None,
+        };
+        if action == "forget-retire" || action == "ack-forget" {
+            let id = request.ok_or_else(denied)?;
+            let caller_key = caller_key.ok_or_else(denied)?;
+            let mut receipts = lock(&self.state.reclaim_forget_receipts);
+            let receipt_key = (collection, recording.to_owned(), id);
+            if let Some(receipt) = receipts.get(&receipt_key) {
+                if receipt.peer != peer
+                    || receipt.recording != recording
+                    || !reclaim_secret_matches(&receipt.capability, capability)
+                    || receipt.caller_key != caller_key
+                {
+                    return Err(denied());
+                }
+                if action == "ack-forget" {
+                    receipts.remove(&receipt_key);
+                    return Ok(serde_json::json!({"state":"acknowledged"}));
+                }
+                return Ok(serde_json::json!({"state":"forgotten"}));
+            }
+            // An acknowledgement may have succeeded while its response was
+            // lost. Absence is not an authenticated receipt and removes nothing.
+            if action == "ack-forget" {
+                return Ok(serde_json::json!({"state":"absent"}));
+            }
+        }
+        // `next` does not reserve. With a caller key it can replay that
+        // caller's retained ID; a refusal requires a fenced, different
+        // identity. A transport failure never proves absence.
+        if action == "next" {
+            if let Some(entry) = lock(&self.state.reclaim_reservations).get(&collection) {
+                if entry.peer != peer
+                    || entry.recording != recording
+                    || !reclaim_secret_matches(&entry.capability, capability)
+                {
+                    return Err(denied());
+                }
+                if caller_key == Some(entry.caller_key.as_str()) {
+                    return Ok(serde_json::json!({"requestId":entry.id.to_string()}));
+                }
+                if caller_key.is_none() {
+                    return Err(denied());
+                }
+                let failure = error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "gatt.ordered.recording-reclaim",
+                )
+                .with_detail("another reclaim is retained");
+                return Ok(
+                    serde_json::json!({"state":"not-reserved", "error":crate::wire::error_object(&failure)}),
+                );
+            }
+            let result = async {
+                let owner = {
+                    let entries = lock(&self.host.ordered_recordings);
+                    entries
+                        .iter()
+                        .find_map(|((session, id), owner)| {
+                            (id == recording
+                                && owner.peer_id() == peer
+                                && owner.collection_id() == collection
+                                && (*session == 0 || *session == self.state.id))
+                                .then(|| Arc::clone(owner))
+                        })
+                        .ok_or_else(denied)?
+                };
+                let reservation = owner
+                    .reclaim_reservation_owner(capability)
+                    .await
+                    .map_err(|_| denied())?;
+                reservation.next_request_id(capability)
+            }
+            .await;
+            return Ok(match result {
+                Ok(id) => serde_json::json!({"requestId": id.to_string()}),
+                Err(failure) => {
+                    serde_json::json!({"state": "not-reserved", "error": crate::wire::error_object(&failure)})
+                }
+            });
+        }
+        let id = request.ok_or_else(denied)?;
+        let caller_key = caller_key.ok_or_else(denied)?;
+        let retained = lock(&self.state.reclaim_reservations)
+            .get(&collection)
+            .cloned();
+        let exact = retained.as_ref().filter(|entry| {
+            entry.id == id
+                && entry.peer == peer
+                && entry.recording == recording
+                && reclaim_secret_matches(&entry.capability, capability)
+                && entry.caller_key == caller_key
+        });
+        // A mismatched capability with the same request and caller identity
+        // cannot receive a statement that this caller owns nothing.
+        if retained
+            .as_ref()
+            .is_some_and(|entry| entry.caller_key == caller_key && exact.is_none())
+        {
+            return Err(denied());
+        }
+        let (previous, owner, lease, reservation) = if let Some(entry) = exact {
+            (
+                entry.previous,
+                Arc::clone(&entry.recording_owner),
+                entry.lease.clone(),
+                Arc::clone(&entry.owner),
+            )
+        } else {
+            let candidate = {
+                let entries = lock(&self.host.ordered_recordings);
+                entries.iter().find_map(|((session, name), owner)| {
+                    (name == recording
+                        && owner.peer_id() == peer
+                        && owner.collection_id() == collection
+                        && (*session == 0 || *session == self.state.id))
+                        .then(|| (*session, Arc::clone(owner)))
+                })
+            };
+            let Some((previous, owner)) = candidate else {
+                // The fence and missing session receipt prove that this exact
+                // caller has no reservation, even if another session now owns
+                // the recorder mapping.
+                if action == "reserve" {
+                    return Ok(
+                        serde_json::json!({"state":"not-reserved", "error":crate::wire::error_object(&denied())}),
+                    );
+                }
+                return Err(denied());
+            };
+            let Some(lease) = lock(&self.state.leases)
+                .get(peer)
+                .map(|lease| lease.name.clone())
+            else {
+                if action == "reserve" {
+                    return Ok(
+                        serde_json::json!({"state":"not-reserved", "error":crate::wire::error_object(&denied())}),
+                    );
+                }
+                return Err(denied());
+            };
+            let reservation = owner
+                .reclaim_reservation_owner(capability)
+                .await
+                .map_err(|_| denied())?;
+            (previous, owner, lease, reservation)
+        };
+        match action {
+            "reserve" => {
+                let mut entries = lock(&self.state.reclaim_reservations);
+                if exact.is_none() {
+                    let receipts = lock(&self.state.reclaim_forget_receipts);
+                    if entries.len() + receipts.len() >= RECLAIM_RECEIPT_CAPACITY
+                        || receipts.contains_key(&(collection, recording.to_owned(), id))
+                    {
+                        let failure = error(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "gatt.ordered.recording-reclaim",
+                        )
+                        .with_detail("reclaim receipt capacity or identity unavailable");
+                        return Ok(
+                            serde_json::json!({"state":"not-reserved", "error":crate::wire::error_object(&failure)}),
+                        );
+                    }
+                }
+                if let Err(failure) = reservation.reserve(id, capability, &lease, caller_key) {
+                    if exact.is_some() {
+                        return Err(failure);
+                    }
+                    return Ok(
+                        serde_json::json!({"state": "not-reserved", "error": crate::wire::error_object(&failure)}),
+                    );
+                }
+                if exact.is_none() {
+                    entries.insert(
+                        collection,
+                        SessionReclaim {
+                            owner: Arc::clone(&reservation),
+                            recording_owner: Arc::clone(&owner),
+                            previous,
+                            id,
+                            peer: peer.to_owned(),
+                            recording: recording.to_owned(),
+                            capability: capability.to_owned(),
+                            lease: lease.clone(),
+                            caller_key: caller_key.to_owned(),
+                        },
+                    );
+                }
+            }
+            "start" => reservation.start(id, capability, &lease, caller_key)?,
+            "commit" => reservation.commit(id, capability, &lease, caller_key, || {
+                let mut entries = lock(&self.host.ordered_recordings);
+                if !entries
+                    .get(&(previous, recording.to_owned()))
+                    .is_some_and(|current| Arc::ptr_eq(current, &owner))
+                    || !self
+                        .host
+                        .ordered_owners
+                        .reclaim_recording(collection, peer, self.state.id)
+                {
+                    return Err(denied());
+                }
+                if previous != self.state.id {
+                    entries.remove(&(previous, recording.to_owned()));
+                    entries.insert((self.state.id, recording.to_owned()), Arc::clone(&owner));
+                }
+                Ok(())
+            })?,
+            "cancel" => reservation.cancel(id, capability, &lease, caller_key)?,
+            "release" => reservation.release(id, capability, &lease, caller_key)?,
+            "retire" => reservation.retire(id, capability, &lease, caller_key)?,
+            "ack-retire" => {
+                reservation.acknowledge_retirement(id, capability, &lease, caller_key)?;
+                return Ok(serde_json::json!({"state":"acknowledged"}));
+            }
+            "forget-retire" => {
+                let mut entries = lock(&self.state.reclaim_reservations);
+                let entry = entries
+                    .get(&collection)
+                    .filter(|entry| {
+                        entry.id == id
+                            && entry.peer == peer
+                            && entry.recording == recording
+                            && reclaim_secret_matches(&entry.capability, capability)
+                            && entry.lease == lease
+                            && entry.caller_key == caller_key
+                    })
+                    .ok_or_else(denied)?;
+                reservation.forget_retirement(id, capability, &lease, caller_key)?;
+                let receipt = ReclaimForgetReceipt {
+                    peer: entry.peer.clone(),
+                    recording: entry.recording.clone(),
+                    capability: entry.capability.clone(),
+                    caller_key: entry.caller_key.clone(),
+                };
+                lock(&self.state.reclaim_forget_receipts)
+                    .insert((collection, recording.to_owned(), id), receipt);
+                entries.remove(&collection);
+                return Ok(serde_json::json!({"state":"forgotten"}));
+            }
+            "status" => {}
+            _ => return Err(denied()),
+        }
+        use ubm_desktop::reclaim_reservation::ReclaimReservationStatus as S;
+        let (state, committed, failure) =
+            match reservation.status(id, capability, &lease, caller_key)? {
+                S::Reserved => ("reserved", false, None),
+                S::Pending => ("pending", false, None),
+                S::Ready => ("ready", false, None),
+                S::Committed => ("committed", true, None),
+                S::Releasing { mapping_committed } => ("releasing", mapping_committed, None),
+                S::Released { mapping_committed } => ("released", mapping_committed, None),
+                S::ReleaseFailed {
+                    mapping_committed,
+                    error,
+                } => ("release-failed", mapping_committed, Some(error)),
+                S::Failed(error) => ("failed", false, Some(error)),
+                S::Retired { mapping_committed } => ("retired", mapping_committed, None),
+            };
+        Ok(
+            serde_json::json!({"state":state, "mappingCommitted": committed, "error": failure.as_ref().map(crate::wire::error_object)}),
+        )
+    }
+
+    async fn ordered_command(
+        &self,
+        command: crate::ordered_public::OrderedCommand,
+        ctl: OpControl,
+    ) -> Result<Value, DesktopError> {
+        use crate::ordered_public::{GroupAction, OrderedCommand};
+        let central = &self.host.central;
+        let owners = &self.host.ordered_owners;
+        match command {
+            OrderedCommand::Version => Ok(serde_json::json!({"wireVersion": 2})),
+            OrderedCommand::FailureMetadataVersion => Ok(serde_json::json!({"versions": [1]})),
+            OrderedCommand::CapacityVersion => Ok(
+                serde_json::json!({"wireVersion":1,"maximumMaxBytes":ubm_core::contracts::MAX_STREAM_BYTE_CAPACITY}),
+            ),
+            OrderedCommand::Reserve { peer } => {
+                if !lock(&self.state.leases).contains_key(&peer) {
+                    return Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Connection,
+                        "gatt.ordered.reserve",
+                    ));
+                }
+                let (id, capability) = owners.reserve(&peer, self.state.id, || {
+                    central.reserve_ordered_batch(&peer)
+                })?;
+                Ok(
+                    serde_json::json!({"collectionId":id.to_string(), "reclaimCapability":capability}),
+                )
+            }
+            OrderedCommand::Reclaim {
+                peer,
+                id,
+                capability,
+                recording_id: expected_recording_id,
+            } => {
+                if !owners.authenticate(id, &peer, &capability) {
+                    return Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.reclaim",
+                    ));
+                }
+                let recorder = {
+                    let entries = lock(&self.host.ordered_recordings);
+                    entries.iter().find_map(|((session, recording_id), owner)| {
+                        (owner.collection_id() == id
+                            && owner.peer_id() == peer
+                            && (*session == 0 || *session == self.state.id))
+                            .then(|| (*session, recording_id.clone(), Arc::clone(owner)))
+                    })
+                };
+                if recorder.is_some() {
+                    // Recorder handoff requires the retained reservation API.
+                    return Err(error(
+                        BleErrorCode::CapabilityUnsupported,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.reclaim",
+                    ));
+                }
+                // A recorder owned by another live session must never fall through
+                // to ordinary group transfer.
+                if lock(&self.host.ordered_recordings)
+                    .values()
+                    .any(|owner| owner.collection_id() == id && owner.peer_id() == peer)
+                {
+                    return Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.reclaim",
+                    ));
+                }
+                if expected_recording_id.is_some() {
+                    return Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.reclaim",
+                    ));
+                }
+                if !owners.reclaim(id, &peer, self.state.id, &capability) {
+                    return Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.reclaim",
+                    ));
+                }
+                owners
+                    .context(id, &peer, self.state.id)
+                    .ok_or_else(|| {
+                        error(
+                            BleErrorCode::OwnershipDenied,
+                            BleErrorDomain::Gatt,
+                            "gatt.ordered.reclaim",
+                        )
+                    })
+                    .map(|context| context.unwrap_or(Value::Null))
+            }
+            OrderedCommand::Open {
+                peer,
+                id,
+                connection,
+                database,
+                members,
+                items,
+                bytes,
+                controls,
+                context,
+            } => {
+                if !owners.owns(id, &peer, self.state.id)
+                    || owners.completed(id, &peer, self.state.id)
+                {
+                    return Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.open",
+                    ));
+                }
+                let lease = lock(&self.state.leases)
+                    .get(&peer)
+                    .map(|lease| lease.name.clone())
+                    .ok_or_else(|| {
+                        error(
+                            BleErrorCode::OwnershipDenied,
+                            BleErrorDomain::Connection,
+                            "gatt.ordered.open",
+                        )
+                    })?;
+                owners.bind_context(id, &peer, self.state.id, context)?;
+                central
+                    .open_reserved_ordered_batch(
+                        &peer,
+                        id,
+                        &connection,
+                        &database,
+                        &members,
+                        items,
+                        bytes,
+                        controls,
+                        ctl.with_connection_lease(lease),
+                    )
+                    .await?;
+                Ok(Value::Null)
+            }
+            OrderedCommand::IncreaseCapacity {
+                peer,
+                id,
+                generation,
+                max_bytes,
+            } => {
+                if !owners.owns(id, &peer, self.state.id) {
+                    return Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.owner",
+                    ));
+                }
+                let lease = central
+                    .ordered_batch_source_lease(&peer, id)
+                    .await?
+                    .filter(|lease| lease.source_generation == generation)
+                    .ok_or_else(|| {
+                        error(
+                            BleErrorCode::GattStaleHandle,
+                            BleErrorDomain::Gatt,
+                            "gatt.ordered.increase-capacity",
+                        )
+                    })?;
+                let consumer = self
+                    .host
+                    .ordered_consumer_for_lease(&lease)
+                    .ok_or_else(|| {
+                        error(
+                            BleErrorCode::GattStaleHandle,
+                            BleErrorDomain::Gatt,
+                            "gatt.ordered.increase-capacity",
+                        )
+                    })?;
+                let previous = consumer
+                    .increase_byte_capacity(self.state.id, max_bytes)
+                    .await?;
+                Ok(
+                    serde_json::json!({"previousMaxBytes":previous,"maxBytes":max_bytes,"maximumMaxBytes":ubm_core::contracts::MAX_STREAM_BYTE_CAPACITY}),
+                )
+            }
+            OrderedCommand::Group {
+                action,
+                peer,
+                id,
+                delivery,
+                capability,
+            } => {
+                if matches!(action, GroupAction::ForgetGroup) {
+                    let token = capability
+                        .as_deref()
+                        .ok_or_else(|| wire::invalid("args.reclaimCapability"))?;
+                    if !owners.authenticate(id, &peer, token) {
+                        return Err(error(
+                            BleErrorCode::OwnershipDenied,
+                            BleErrorDomain::Cleanup,
+                            "gatt.ordered.forget-group",
+                        ));
+                    }
+                    if owners.absent(id) {
+                        central.forget_ordered_batch(&peer, id).await?;
+                        return Ok(Value::Null);
+                    }
+                }
+                if !owners.owns(id, &peer, self.state.id) {
+                    return Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Gatt,
+                        "gatt.ordered.owner",
+                    ));
+                }
+                let identity = || delivery.ok_or_else(|| wire::invalid("args.deliveryId"));
+                match action {
+                    GroupAction::Poll => {
+                        let d = central.poll_ordered_delivery(&peer, id).await?;
+                        let record = crate::ordered_encoding::encode(d.poll)
+                            .ok_or_else(ordered_encoding_error)?;
+                        Ok(
+                            serde_json::json!({"deliveryId": d.delivery_id.map(|id| id.to_string()), "record": record.to_string()}),
+                        )
+                    }
+                    GroupAction::AckDelivery => {
+                        central
+                            .acknowledge_ordered_delivery(&peer, id, identity()?)
+                            .await?;
+                        Ok(Value::Null)
+                    }
+                    GroupAction::Discard => {
+                        let receipt = central
+                            .discard_ordered_delivery(&peer, id, identity()?)
+                            .await?;
+                        ordered_discard_value(&receipt)
+                    }
+                    GroupAction::PollDiscard => central
+                        .poll_ordered_discard_receipt(&peer, id)
+                        .await?
+                        .as_ref()
+                        .map(ordered_discard_value)
+                        .transpose()
+                        .map(|receipt| receipt.unwrap_or(Value::Null)),
+                    GroupAction::AckDiscard => {
+                        if let Some(receipt) =
+                            central.poll_ordered_discard_receipt(&peer, id).await?
+                            && receipt.receipt_id == identity()?
+                        {
+                            ordered_discard_value(&receipt)?;
+                        }
+                        central
+                            .acknowledge_ordered_discard_receipt(&peer, id, identity()?)
+                            .await?;
+                        Ok(Value::Null)
+                    }
+                    GroupAction::Close => {
+                        let status = central.retry_retained_ordered_batch(&peer, id, ctl).await?;
+                        Ok(Value::from(match status {
+                            ubm_desktop::central::OrderedCleanupOutcome::Released => "released",
+                            ubm_desktop::central::OrderedCleanupOutcome::PendingSource => {
+                                "pending-source"
+                            }
+                            ubm_desktop::central::OrderedCleanupOutcome::PendingDrain => {
+                                "pending-drain"
+                            }
+                        }))
+                    }
+                    GroupAction::AckGroup => {
+                        if !owners.completed(id, &peer, self.state.id) {
+                            central.acknowledge_ordered_batch(&peer, id).await?;
+                            if !owners.mark_completed(id, &peer, self.state.id) {
+                                return Err(error(
+                                    BleErrorCode::LifecycleInvariantViolation,
+                                    BleErrorDomain::Cleanup,
+                                    "gatt.ordered.ack-group",
+                                ));
+                            }
+                        }
+                        Ok(Value::Null)
+                    }
+                    GroupAction::ForgetGroup => {
+                        if !owners.completed(id, &peer, self.state.id) {
+                            return Err(error(
+                                BleErrorCode::LifecycleInvalidState,
+                                BleErrorDomain::Cleanup,
+                                "gatt.ordered.forget-group",
+                            ));
+                        }
+                        central.forget_ordered_batch(&peer, id).await?;
+                        owners.remove(id, &peer, self.state.id);
+                        Ok(Value::Null)
+                    }
+                    GroupAction::Status => {
+                        let cleanup = central.ordered_batch_cleanup_complete(&peer, id).await?;
+                        let lease = central.ordered_batch_source_lease(&peer, id).await?;
+                        let (setup, fence) =
+                            central.retained_ordered_batch_errors(&peer, id).await?;
+                        let generation = lease.map(|lease| match lease.source_generation {
+                            ubm_core::ordered_notifications::SourceGeneration::Counter(value) => {
+                                serde_json::json!({"kind":"counter","value":value.to_string()})
+                            }
+                            ubm_core::ordered_notifications::SourceGeneration::Opaque(value) => {
+                                serde_json::json!({"kind":"opaque","value":value})
+                            }
+                        });
+                        let members: Vec<Value> = central.ordered_batch_member_status(&peer,id).await?.into_iter().map(|member| {
+                            use ubm_desktop::central::OrderedMemberAcquisition;
+                            let acquisition = match member.acquisition { OrderedMemberAcquisition::NotStarted => "not-started", OrderedMemberAcquisition::Acquired => "acquired", OrderedMemberAcquisition::Indeterminate => "indeterminate" };
+                            let delivery = match member.effective_delivery { ObservedDelivery::Notification => "notification", ObservedDelivery::Indication => "indication", ObservedDelivery::Unknown => "unknown" };
+                            serde_json::json!({"memberId":member.member_id.to_string(), "acquisition":acquisition, "effectiveDelivery":delivery, "cleanupReleased":member.cleanup_released, "cleanupError":member.cleanup_error.map(|e| Value::Object(wire::error_object(&e)))})
+                        }).collect();
+                        Ok(
+                            serde_json::json!({"sourceGeneration":generation,"members":members,"cleanupComplete":cleanup,"setupError":setup.map(|e| Value::Object(wire::error_object(&e))),"fenceError":fence.map(|e| Value::Object(wire::error_object(&e)))}),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    async fn disconnect_exact_wire(
+        &self,
+        peer: &str,
+        name: &str,
+        identity: &str,
+        ctl: OpControl,
+    ) -> Result<Value, DesktopError> {
+        let denied = || {
+            cleanup_record(vec![cleanup_failure(
+                "connection",
+                &error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Connection,
+                    "connection.disconnect.admission",
+                ),
+            )])
+        };
+        let (attempt, leader) = {
+            let mut table = lock(&self.state.exact_leases);
+            let Some(entry) = table
+                .as_mut()
+                .and_then(|table| table.records.get_mut(identity))
+            else {
+                return Ok(denied());
+            };
+            if entry.peer != peer || entry.name != name || entry.owner.is_none() {
+                return Ok(denied());
+            }
+            if entry.released {
+                return Ok(cleanup_record(Vec::new()));
+            }
+            if let Some(attempt) = entry
+                .attempt
+                .as_ref()
+                .filter(|attempt| lock(&attempt.result).is_none())
+            {
+                (Arc::clone(attempt), false)
+            } else {
+                let attempt = Arc::new(ExactReleaseAttempt {
+                    result: Mutex::new(None),
+                    changed: Notify::new(),
+                });
+                entry.attempt = Some(Arc::clone(&attempt));
+                (attempt, true)
+            }
+        };
+        if !leader {
+            let wait = async {
+                loop {
+                    let notified = attempt.changed.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if let Some(result) = lock(&attempt.result).clone() {
+                        return Ok(result);
+                    }
+                    notified.await;
+                }
+            };
+            return Ok(
+                match bounded(&ctl, "connection.disconnect.join", wait).await {
+                    Ok(result) => result,
+                    Err(failure) => connection_cleanup_record(&failure),
+                },
+            );
+        }
+        let _leader = ExactReleaseLeader(Arc::clone(&attempt));
+        let result = self
+            .disconnect_exact_leader(peer, name, identity, ctl)
+            .await;
+        *lock(&attempt.result) = Some(result.clone());
+        attempt.changed.notify_waiters();
+        let mut table = lock(&self.state.exact_leases);
+        if let Some(table) = table.as_mut()
+            && table
+                .records
+                .get(identity)
+                .is_some_and(|entry| entry.released)
+        {
+            table.receipts.push_back(identity.to_owned());
+            table.trim_receipts();
+        }
+        Ok(result)
+    }
+
+    async fn disconnect_exact_leader(
+        &self,
+        peer: &str,
+        name: &str,
+        identity: &str,
+        ctl: OpControl,
+    ) -> Value {
+        let gate = self.state.exact_connection_gate(peer);
+        let _gate = match bounded(&ctl, "connection.disconnect.admission", async {
+            Ok(gate.lock().await)
+        })
+        .await
+        {
+            Ok(gate) => gate,
+            Err(failure) => return connection_cleanup_record(&failure),
+        };
+        let denied = || {
+            cleanup_record(vec![cleanup_failure(
+                "connection",
+                &error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Connection,
+                    "connection.disconnect.admission",
+                ),
+            )])
+        };
+        let owner = {
+            let table = lock(&self.state.exact_leases);
+            let Some(entry) = table.as_ref().and_then(|table| table.records.get(identity)) else {
+                return denied();
+            };
+            if entry.peer != peer || entry.name != name {
+                return denied();
+            }
+            if entry.released {
+                return cleanup_record(Vec::new());
+            }
+            let Some(owner) = entry.owner.clone() else {
+                return denied();
+            };
+            owner
+        };
+        let central = &self.host.central;
+        if owner.attachment != central.attachment() {
+            let wait = async {
+                loop {
+                    let notified = self.state.reset_changed.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if lock(&self.state.reset_leases).contains_key(&owner.admission) {
+                        return Ok(());
+                    }
+                    notified.await;
+                }
+            };
+            if let Err(failure) =
+                bounded(&ctl, "connection.disconnect.reset-observation", wait).await
+            {
+                return connection_cleanup_record(&failure);
+            }
+            let failure = lock(&self.state.reset_leases)
+                .get(&owner.admission)
+                .and_then(|(_, _, failure)| failure.clone());
+            if let Some(failure) = failure {
+                return connection_cleanup_record(&failure);
+            }
+        } else if let Err(failure) = central
+            .release_connection_lease_exact(peer, name, &owner.admission, ctl)
+            .await
+        {
+            let reset = lock(&self.state.reset_leases)
+                .get(&owner.admission)
+                .map(|(_, _, failure)| failure.clone());
+            match reset {
+                Some(Some(failure)) => return connection_cleanup_record(&failure),
+                Some(None) => {}
+                None => return connection_cleanup_record(&failure),
+            }
+        }
+        let replacement = {
+            let mut guard = lock(&self.state.exact_leases);
+            let table = guard.as_mut().expect("exact session");
+            if let Some(entry) = table.records.get_mut(identity) {
+                entry.released = true;
+            }
+            table
+                .records
+                .values()
+                .filter(|entry| entry.peer == peer && !entry.released)
+                .filter_map(|entry| entry.owner.as_ref())
+                .find(|other| other.attachment == central.attachment())
+                .cloned()
+        };
+        let mut leases = lock(&self.state.leases);
+        if leases.get(peer) == Some(&owner) {
+            if let Some(replacement) = replacement {
+                leases.insert(peer.to_owned(), replacement);
+            } else {
+                leases.remove(peer);
+            }
+        }
+        drop(leases);
+        lock(&self.state.reset_leases).remove(&owner.admission);
+        cleanup_record(Vec::new())
+    }
+
     async fn execute(
         &self,
         body: Body,
@@ -1648,7 +3694,7 @@ impl MobileSession {
             | Body::Subscribe { peer_id, .. } => {
                 let lease = lock(&self.state.leases)
                     .get(peer_id)
-                    .cloned()
+                    .map(|lease| lease.name.clone())
                     .ok_or_else(|| {
                         error(
                             BleErrorCode::OwnershipDenied,
@@ -1662,6 +3708,105 @@ impl MobileSession {
             _ => ctl,
         };
         match body {
+            Body::TerminalEvidenceReserve {
+                scope,
+                maximum_bytes,
+            } => {
+                let ledger = host.terminal_evidence_ledger().ok_or_else(|| {
+                    unsupported(
+                        "terminal-evidence.reserve",
+                        "trusted terminal evidence storage was not configured",
+                    )
+                })?;
+                let reservation = ledger
+                    .reserve(&scope, maximum_bytes)
+                    .map_err(terminal_evidence_error)?;
+                Ok(
+                    serde_json::json!({"maximumBytes": reservation.maximum_bytes, "reservationId": reservation.reservation_id}),
+                )
+            }
+            Body::TerminalEvidenceCommit {
+                reservation_id,
+                canonical_bytes,
+                digest,
+            } => {
+                let ledger = host.terminal_evidence_ledger().ok_or_else(|| {
+                    unsupported(
+                        "terminal-evidence.commit",
+                        "trusted terminal evidence storage was not configured",
+                    )
+                })?;
+                let committed = ledger
+                    .commit(&reservation_id, &canonical_bytes, digest)
+                    .map_err(terminal_evidence_error)?;
+                Ok(
+                    serde_json::json!({"kind":"committed","ref":committed.reference,"byteLength":committed.byte_length,"digest":terminal_digest_hex(committed.digest),"formatVersion":committed.format_version,"durability":"committed"}),
+                )
+            }
+            Body::TerminalEvidenceRead {
+                reference,
+                maximum_bytes,
+            } => {
+                let ledger = host.terminal_evidence_ledger().ok_or_else(|| {
+                    unsupported(
+                        "terminal-evidence.read",
+                        "trusted terminal evidence storage was not configured",
+                    )
+                })?;
+                let (bytes, digest) = ledger
+                    .read(&reference, maximum_bytes)
+                    .map_err(terminal_evidence_error)?;
+                Ok(
+                    serde_json::json!({"canonicalBytesBase64": wire::encode_base64(&bytes), "digest": terminal_digest_hex(digest)}),
+                )
+            }
+            Body::TerminalEvidenceRelease(reservation_id) => {
+                let ledger = host.terminal_evidence_ledger().ok_or_else(|| {
+                    unsupported(
+                        "terminal-evidence.release",
+                        "trusted terminal evidence storage was not configured",
+                    )
+                })?;
+                let abandonment = ledger
+                    .abandon(&reservation_id)
+                    .map_err(terminal_evidence_error)?;
+                host.release_subscription_terminal_evidence(&reservation_id);
+                Ok(
+                    serde_json::json!({"released":true,"retainedForRecovery":matches!(abandonment, ubm_desktop::terminal_evidence_ledger::TerminalEvidenceAbandonment::RetainedForRecovery)}),
+                )
+            }
+            Body::RecordingReclaim {
+                action,
+                peer,
+                collection,
+                recording,
+                capability,
+                request,
+                caller_key,
+            } => {
+                self.recording_reclaim(
+                    &action,
+                    &peer,
+                    collection,
+                    &recording,
+                    &capability,
+                    request,
+                    caller_key.as_deref(),
+                )
+                .await
+            }
+            Body::ReclaimVersion => Ok(serde_json::json!({
+                "wireVersion": if host.radio.ordered_reclaim_graph_supported() { 2 } else { 0 }
+            })),
+            Body::MarkerVersion => Ok(
+                serde_json::json!({"wireVersion": if ubm_desktop::RadioBoundary::ordered_marker_write_supported(&host.radio) { 1 } else { 0 }}),
+            ),
+            Body::Marker {
+                peer,
+                collection,
+                action,
+            } => self.marker_command(&peer, collection, action).await,
+            Body::Ordered(command) => self.ordered_command(command, ctl).await,
             Body::AdapterState => {
                 let snapshot =
                     bounded(&ctl, "adapter.state", host.radio.adapter_snapshot()).await?;
@@ -1679,8 +3824,14 @@ impl MobileSession {
                 service_uuids,
                 device_addresses,
                 android,
+                terminal_evidence_scope,
                 deadline,
             } => {
+                // The JS core must reserve this exact durable slot before
+                // asking the native owner to activate the source. Validate it
+                // before taking any local admission state or touching radio.
+                host.verify_scan_terminal_evidence_scope(terminal_evidence_scope.as_ref())
+                    .map_err(terminal_evidence_error)?;
                 // Reserve the slot before the first await (X-R2): a second
                 // concurrent start sees `Starting` and is refused, instead
                 // of both joining and the loser orphaning the winner.
@@ -1705,6 +3856,7 @@ impl MobileSession {
                     start_operation_id,
                     service_uuids,
                     device_addresses,
+                    terminal_evidence_scope,
                     deadline,
                     expiry_cancel: OpTicket::new(),
                 };
@@ -2009,6 +4161,18 @@ impl MobileSession {
                 lease,
                 staging,
             } => {
+                let exact = lock(&self.state.exact_leases).is_some();
+                let exact_gate = exact.then(|| self.state.exact_connection_gate(&peer_id));
+                let _exact_gate = if exact {
+                    Some(
+                        bounded(&ctl, "connection.connect.admission", async {
+                            Ok(exact_gate.as_ref().expect("exact gate").lock().await)
+                        })
+                        .await?,
+                    )
+                } else {
+                    None
+                };
                 if !staging.preferred_phy.is_empty()
                     && matches!(
                         self.peer_record(&peer_id)
@@ -2025,17 +4189,100 @@ impl MobileSession {
                     ));
                 }
                 let core_lease = self.state.core_name(&lease);
+                let reservation = if exact {
+                    let mut guard = lock(&self.state.exact_leases);
+                    let table = guard.as_mut().expect("exact session");
+                    if table.records.values().any(|entry| {
+                        entry.peer == peer_id
+                            && entry.name == core_lease
+                            && !entry.released
+                            && entry
+                                .owner
+                                .as_ref()
+                                .is_some_and(|owner| owner.attachment == central.attachment())
+                    }) {
+                        return Err(error(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Connection,
+                            "connection.connect.admission",
+                        )
+                        .with_detail("this lease name is already admitted on the live link"));
+                    }
+                    if table
+                        .records
+                        .values()
+                        .filter(|entry| !entry.released)
+                        .count()
+                        >= table.live_limit
+                    {
+                        return Err(error(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "connection.connect.admission",
+                        )
+                        .with_detail("exact connection live and cleanup capacity exhausted"));
+                    }
+                    let sequence = table.next;
+                    table.next = sequence.checked_add(1).ok_or_else(|| {
+                        error(
+                            BleErrorCode::LifecycleInvariantViolation,
+                            BleErrorDomain::Core,
+                            "connection.connect.admission",
+                        )
+                        .with_detail("exact connection identity exhausted")
+                    })?;
+                    let identity = format!("{}:{sequence}", table.namespace);
+                    table.records.insert(
+                        identity.clone(),
+                        ExactLeaseRecord {
+                            peer: peer_id.clone(),
+                            name: core_lease.clone(),
+                            owner: None,
+                            released: false,
+                            attempt: None,
+                        },
+                    );
+                    Some(ExactLeaseReservation {
+                        table: &self.state.exact_leases,
+                        identity,
+                    })
+                } else {
+                    None
+                };
                 // The peer's connect section (X-R3): stage, dispatch and
                 // cleanup run under mutual exclusion, so a concurrent
                 // same-peer connect can neither overwrite this staging nor
                 // wipe it in its own cleanup. A dead op never stages: the
                 // wait is cancellation- and deadline-aware.
+                #[cfg(test)]
+                self.state
+                    .pause_publication_for_test("connect-before-admission")
+                    .await;
                 let section = host.radio.lock_connect_section(&peer_id, &ctl).await?;
                 host.radio.stage_connect(&peer_id, staging);
-                let connected = central.connect(&peer_id, &core_lease, ctl).await;
+                let mut reset_events = central.adapter_reset_events();
+                let connected = central
+                    .connect_with_admission(&peer_id, &core_lease, ctl)
+                    .await;
                 host.radio.clear_staging(Some(&peer_id), None, false);
                 drop(section);
-                let handle = connected?;
+                let (handle, admission) = connected?;
+                let attachment = admission.attachment().clone();
+                let owner = OwnedLease {
+                    name: core_lease.clone(),
+                    attachment: attachment.clone(),
+                    admission,
+                };
+                if let Some(reservation) = &reservation {
+                    let mut table = lock(&self.state.exact_leases);
+                    table
+                        .as_mut()
+                        .expect("exact session")
+                        .records
+                        .get_mut(&reservation.identity)
+                        .expect("reserved identity")
+                        .owner = Some(owner.clone());
+                }
                 let generation = handle.connection_generation.ok_or_else(|| {
                     error(
                         BleErrorCode::LifecycleInvariantViolation,
@@ -2044,32 +4291,185 @@ impl MobileSession {
                     )
                     .with_detail("connected without a connection generation")
                 })?;
-                lock(&self.state.reset_leases).remove(&peer_id);
-                lock(&self.state.leases).insert(peer_id.clone(), core_lease);
-                host.note_peer(&peer_id, None, "app-reference");
-                Ok(object(vec![
+                #[cfg(test)]
+                self.state.pause_publication_for_test("connect").await;
+                let published = central
+                    .publish_if_attached(&attachment, || {
+                        let mut leases = lock(&self.state.leases);
+                        leases.insert(peer_id.clone(), owner.clone());
+                        host.note_peer(&peer_id, None, "app-reference");
+                    })
+                    .await;
+                if published.is_none() {
+                    // The reset already retired the exact admitted core lease.
+                    // Remember its terminal identity without disturbing a replacement.
+                    let failure =
+                        reset_release_failure(&mut reset_events, &attachment, &peer_id).await;
+                    let mut ended = lock(&self.state.reset_leases);
+                    ended.entry(owner.admission.clone()).or_insert((
+                        peer_id.clone(),
+                        owner,
+                        failure,
+                    ));
+                }
+                let mut result = vec![
                     ("peerKey", Value::from(handle.peer_key)),
                     ("connectionGeneration", Value::from(generation.as_str())),
-                ]))
+                ];
+                if let Some(reservation) = &reservation {
+                    result.push(("releaseIdentity", Value::from(reservation.identity.clone())));
+                }
+                Ok(object(result))
             }
-            Body::Disconnect { peer_id, lease } => {
+            Body::Disconnect {
+                peer_id,
+                lease,
+                release_identity,
+            } => {
                 let core_lease = self.state.core_name(&lease);
+                if let Some(identity) = release_identity {
+                    return self
+                        .disconnect_exact_wire(&peer_id, &core_lease, &identity, ctl)
+                        .await;
+                }
+                let owned = lock(&self.state.leases)
+                    .get(&peer_id)
+                    .cloned()
+                    .filter(|owned| owned.name == core_lease);
+                #[cfg(test)]
+                self.state
+                    .pause_publication_for_test("disconnect-owner")
+                    .await;
+                if owned
+                    .as_ref()
+                    .is_some_and(|owner| owner.attachment == central.attachment())
+                    && lock(&self.state.reset_leases)
+                        .values()
+                        .any(|(peer, old, failure)| {
+                            peer == &peer_id && old.name == core_lease && failure.is_some()
+                        })
                 {
-                    let mut ended = lock(&self.state.reset_leases);
-                    if ended.get(&peer_id) == Some(&core_lease) {
-                        ended.remove(&peer_id);
-                        return Ok(cleanup_record(Vec::new()));
+                    let failure = error(
+                        BleErrorCode::LifecycleInvariantViolation,
+                        BleErrorDomain::Cleanup,
+                        "connection.disconnect.reset-observation",
+                    )
+                    .with_detail(
+                        "lease name identifies both a live owner and an unresolved reset failure",
+                    );
+                    return Ok(connection_cleanup_record(&failure));
+                }
+                if let Some(owned) = owned
+                    .as_ref()
+                    .filter(|owned| owned.attachment != central.attachment())
+                {
+                    let wait = async {
+                        loop {
+                            let notified = self.state.reset_changed.notified();
+                            tokio::pin!(notified);
+                            notified.as_mut().enable();
+                            {
+                                let leases = lock(&self.state.leases);
+                                let ended = lock(&self.state.reset_leases);
+                                if ended.contains_key(&owned.admission) {
+                                    return Ok(());
+                                }
+                                if leases.get(&peer_id) != Some(owned) {
+                                    return Err(error(BleErrorCode::OperationReset, BleErrorDomain::Cleanup,
+                                        "connection.disconnect.reset-observation")
+                                        .with_detail("the original lease changed before reset cleanup was observed"));
+                                }
+                            }
+                            notified.await;
+                        }
+                    };
+                    if let Err(failure) =
+                        bounded(&ctl, "connection.disconnect.reset-observation", wait).await
+                    {
+                        return Ok(connection_cleanup_record(&failure));
                     }
                 }
-                match central
-                    .release_connection_lease(&peer_id, &core_lease, ctl)
-                    .await
+                if owned
+                    .as_ref()
+                    .is_none_or(|owned| owned.attachment != central.attachment())
                 {
+                    let mut ended = lock(&self.state.reset_leases);
+                    let matches: Vec<_> = ended
+                        .iter()
+                        .filter(|(_, (peer, lease, _))| {
+                            peer == &peer_id
+                                && lease.name == core_lease
+                                && owned
+                                    .as_ref()
+                                    .is_none_or(|owner| owner.admission == lease.admission)
+                        })
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    if matches.len() > 1 {
+                        let failure = error(
+                            BleErrorCode::LifecycleInvariantViolation,
+                            BleErrorDomain::Cleanup,
+                            "connection.disconnect.reset-observation",
+                        )
+                        .with_detail("multiple retired operations share this lease name");
+                        return Ok(connection_cleanup_record(&failure));
+                    }
+                    if let Some(id) = matches.first() {
+                        let failure = &ended[id].2;
+                        let failures = failure
+                            .as_ref()
+                            .map_or_else(Vec::new, connection_cleanup_failures);
+                        if failure.is_none() {
+                            ended.remove(id);
+                        }
+                        return Ok(cleanup_record(failures));
+                    }
+                }
+                #[cfg(test)]
+                self.state
+                    .pause_publication_for_test("disconnect-before-central-release")
+                    .await;
+                let Some(owner) = owned.as_ref() else {
+                    let failure = error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Connection,
+                        "connection.disconnect.admission",
+                    );
+                    return Ok(connection_cleanup_record(&failure));
+                };
+                let release = central
+                    .release_connection_lease_exact(&peer_id, &core_lease, &owner.admission, ctl)
+                    .await;
+                // Exercise a structured central error at the public-result boundary;
+                // today's mobile native completion cannot yet carry one.
+                #[cfg(test)]
+                let release = release.map_err(|failure| {
+                    lock(&self.state.disconnect_failure_override)
+                        .take()
+                        .unwrap_or(failure)
+                });
+                match release {
                     Ok(_) => {
-                        lock(&self.state.leases).remove(&peer_id);
+                        let mut leases = lock(&self.state.leases);
+                        if owned
+                            .as_ref()
+                            .is_some_and(|owner| leases.get(&peer_id) == Some(owner))
+                        {
+                            leases.remove(&peer_id);
+                        }
                         Ok(cleanup_record(Vec::new()))
                     }
-                    Err(error) => Ok(cleanup_record(vec![cleanup_failure("connection", &error)])),
+                    Err(error) => {
+                        let mut ended = lock(&self.state.reset_leases);
+                        match ended.get(&owner.admission) {
+                            Some((_, _, Some(failure))) => Ok(connection_cleanup_record(failure)),
+                            Some((_, _, None)) => {
+                                ended.remove(&owner.admission);
+                                Ok(cleanup_record(Vec::new()))
+                            }
+                            None => Ok(connection_cleanup_record(&error)),
+                        }
+                    }
                 }
             }
             Body::Control {
@@ -2227,33 +4627,118 @@ impl MobileSession {
                 selector,
                 consumer,
                 mode,
+                terminal_evidence_scope,
                 recording,
             } => {
-                self.subscribe(peer_id, selector, consumer, mode, recording, ctl)
-                    .await
+                self.subscribe(
+                    peer_id,
+                    selector,
+                    consumer,
+                    mode,
+                    terminal_evidence_scope,
+                    recording,
+                    ctl,
+                )
+                .await
             }
             Body::Unsubscribe {
                 peer_id,
                 selector,
                 consumer,
             } => {
-                let reset = lock(&self.state.reset_subscriptions)
+                let subscription = lock(&self.state.subscriptions)
                     .get(&consumer)
-                    .is_some_and(|s| {
-                        s.peer_id == peer_id && s.scope == scope_of(&peer_id, &selector)
-                    });
-                if reset {
-                    lock(&self.state.reset_subscriptions).remove(&consumer);
+                    .cloned()
+                    .filter(|s| s.peer_id == peer_id && s.scope == scope_of(&peer_id, &selector));
+                if subscription
+                    .as_ref()
+                    .is_some_and(|owner| owner.attachment == central.attachment())
+                    && lock(&self.state.reset_subscriptions)
+                        .values()
+                        .any(|(name, old, failure)| {
+                            name == &consumer
+                                && old.peer_id == peer_id
+                                && old.scope == scope_of(&peer_id, &selector)
+                                && failure.is_some()
+                        })
+                {
+                    return Err(error(BleErrorCode::LifecycleInvariantViolation, BleErrorDomain::Cleanup,
+                        "gatt.unsubscribe.reset-observation").with_detail("consumer name identifies both a live owner and an unresolved reset failure"));
+                }
+                if let Some(owned) = subscription
+                    .as_ref()
+                    .filter(|owned| owned.attachment != central.attachment())
+                {
+                    let wait = async {
+                        loop {
+                            let notified = self.state.reset_changed.notified();
+                            tokio::pin!(notified);
+                            notified.as_mut().enable();
+                            {
+                                let subscriptions = lock(&self.state.subscriptions);
+                                let ended = lock(&self.state.reset_subscriptions);
+                                if ended.contains_key(&owned.admission) {
+                                    return Ok(());
+                                }
+                                if !subscriptions
+                                    .get(&consumer)
+                                    .is_some_and(|current| current.admission == owned.admission)
+                                {
+                                    return Err(error(BleErrorCode::OperationReset, BleErrorDomain::Cleanup,
+                                        "gatt.unsubscribe.reset-observation").with_detail("the original subscription changed before reset cleanup was observed"));
+                                }
+                            }
+                            notified.await;
+                        }
+                    };
+                    bounded(&ctl, "gatt.unsubscribe.reset-observation", wait).await?;
+                }
+                let reset = if subscription
+                    .as_ref()
+                    .is_none_or(|owned| owned.attachment != central.attachment())
+                {
+                    let mut ended = lock(&self.state.reset_subscriptions);
+                    let matches: Vec<_> = ended
+                        .iter()
+                        .filter(|(_, (name, sub, _))| {
+                            name == &consumer
+                                && sub.peer_id == peer_id
+                                && sub.scope == scope_of(&peer_id, &selector)
+                                && subscription
+                                    .as_ref()
+                                    .is_none_or(|owner| owner.admission == sub.admission)
+                        })
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    if matches.len() > 1 {
+                        return Err(error(
+                            BleErrorCode::LifecycleInvariantViolation,
+                            BleErrorDomain::Cleanup,
+                            "gatt.unsubscribe.reset-observation",
+                        )
+                        .with_detail("multiple retired operations share this consumer name"));
+                    }
+                    matches.first().map(|id| {
+                        let failure = ended[id].2.clone();
+                        if failure.is_none() {
+                            ended.remove(id);
+                        }
+                        failure
+                    })
+                } else {
+                    None
+                };
+                if let Some(failure) = reset {
+                    if let Some(failure) = failure {
+                        return Err(failure);
+                    }
                     return Ok(object(vec![
                         ("state", Value::from("released")),
                         // The reset's cleanup disabled it, not this call.
                         ("physicalDisabled", Value::Bool(false)),
                     ]));
                 }
-                let subscription = lock(&self.state.subscriptions).get(&consumer).cloned();
-                let Some(subscription) = subscription
-                    .filter(|s| s.peer_id == peer_id && s.scope == scope_of(&peer_id, &selector))
-                else {
+                let Some(subscription) = subscription else {
                     return Err(error(
                         BleErrorCode::LifecycleInvalidState,
                         BleErrorDomain::Gatt,
@@ -2261,6 +4746,23 @@ impl MobileSession {
                     )
                     .with_detail("no such consumer in this session"));
                 };
+                #[cfg(test)]
+                self.state
+                    .pause_publication_for_test("unsubscribe-before-central-release")
+                    .await;
+                if subscription.attachment != central.attachment() {
+                    let mut ended = lock(&self.state.reset_subscriptions);
+                    if let Some((_, _, failure)) = ended.get(&subscription.admission) {
+                        if let Some(failure) = failure {
+                            return Err(failure.clone());
+                        }
+                        ended.remove(&subscription.admission);
+                        return Ok(object(vec![
+                            ("state", Value::from("released")),
+                            ("physicalDisabled", Value::Bool(false)),
+                        ]));
+                    }
+                }
                 let physical_disabled = if host
                     .recorded_route(&subscription.scope, self.state.id, &consumer)
                     .is_some()
@@ -2284,8 +4786,14 @@ impl MobileSession {
                         )
                         .await?
                 };
-                host.remove_route(&subscription.scope, self.state.id, &consumer);
-                lock(&self.state.subscriptions).remove(&consumer);
+                let mut subscriptions = lock(&self.state.subscriptions);
+                if subscriptions
+                    .get(&consumer)
+                    .is_some_and(|current| current.admission == subscription.admission)
+                {
+                    host.remove_route(&subscription.scope, self.state.id, &consumer);
+                    subscriptions.remove(&consumer);
+                }
                 Ok(object(vec![
                     ("state", Value::from("released")),
                     ("physicalDisabled", Value::Bool(physical_disabled)),
@@ -2499,7 +5007,9 @@ impl MobileSession {
             }
             Body::Reconcile => self.reconcile(&ctl).await,
             Body::Quiesce => {
-                let loss = self.state.outbox.seal();
+                let Some(loss) = self.host.seal_scan_ingress(&self.state) else {
+                    return Ok(object(vec![("state", Value::from("pending"))]));
+                };
                 Ok(object(vec![
                     ("state", Value::from("sealed")),
                     ("afterCutoffItems", Value::from(loss.items)),
@@ -2701,12 +5211,17 @@ impl MobileSession {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the wire operation keeps its protocol fields explicit at the dispatch boundary"
+    )]
     async fn subscribe(
         &self,
         peer_id: String,
         selector: PathSelector,
         consumer: String,
         mode: Option<&'static str>,
+        terminal_evidence_scope: Option<ScanTerminalEvidenceScope>,
         recording: Option<RecordingOptions>,
         ctl: OpControl,
     ) -> Result<Value, DesktopError> {
@@ -2725,6 +5240,11 @@ impl MobileSession {
             pending: &self.state.pending_subscriptions,
             consumer: &consumer,
         };
+        // The source owner verifies the caller's exact subscription reservation
+        // before it enables CCCD; an unreserved or scan-scoped token must never
+        // activate the radio.
+        host.verify_subscription_terminal_evidence_scope(terminal_evidence_scope.as_ref())
+            .map_err(terminal_evidence_error)?;
         let scope = scope_of(&peer_id, &selector);
         let required = match mode {
             Some("require-notification") => Some(DeliveryMode::Notification),
@@ -2898,13 +5418,14 @@ impl MobileSession {
                 .stage_preference(instance_of(&peer_id, &selector), preferred);
         }
         let core_consumer = self.state.core_name(&consumer);
+        let mut reset_events = host.central.adapter_reset_events();
         let subscribed = host
             .central
-            .subscribe(&peer_id, &selector, &core_consumer, radio_requirement, ctl)
+            .subscribe_with_admission(&peer_id, &selector, &core_consumer, radio_requirement, ctl)
             .await;
         host.radio
             .clear_staging(None, Some(&instance_of(&peer_id, &selector)), false);
-        let observed = match subscribed {
+        let (observed, admission) = match subscribed {
             Ok(observed) => observed,
             Err(failure) => {
                 if let Some(recorded) = recorded_route {
@@ -2937,35 +5458,80 @@ impl MobileSession {
                 return Err(failure);
             }
         };
+        let attachment = admission.attachment().clone();
         let delivery = match host.platform {
             MobilePlatform::Android => observed.as_str(),
             MobilePlatform::Apple => ObservedDelivery::Unknown.as_str(),
         };
-        lock(&self.state.subscriptions).insert(
-            consumer.clone(),
-            Subscription {
-                peer_id: peer_id.clone(),
-                selector: selector.clone(),
-                core_consumer: core_consumer.clone(),
-                scope: scope.clone(),
-            },
-        );
-        host.add_route(
-            scope.clone(),
-            Route {
-                session_id: self.state.id,
-                consumer: consumer.clone(),
-                core_consumer,
-                peer_id,
-                selector,
-                delivery,
-                recorded: recorded_route,
-                terminal: None,
-            },
-        );
-        // Values the hub admitted while the enable was in flight are
-        // flushed now instead of waiting for the next notification.
-        host.kick(scope);
+        #[cfg(test)]
+        self.state.pause_publication_for_test("subscribe").await;
+        let subscription = Subscription {
+            peer_id: peer_id.clone(),
+            selector: selector.clone(),
+            core_consumer: core_consumer.clone(),
+            scope: scope.clone(),
+            attachment: attachment.clone(),
+            admission,
+        };
+        let published = host
+            .central
+            .publish_if_attached(&attachment, || {
+                let mut subscriptions = lock(&self.state.subscriptions);
+                subscriptions.insert(consumer.clone(), subscription.clone());
+                host.add_route(
+                    scope.clone(),
+                    Route {
+                        session_id: self.state.id,
+                        consumer: consumer.clone(),
+                        core_consumer,
+                        peer_id,
+                        selector,
+                        delivery,
+                        recorded: recorded_route.clone(),
+                        terminal_evidence_scope: terminal_evidence_scope.clone(),
+                        terminal: None,
+                    },
+                );
+                // Flush values admitted while the enable was in flight.
+                host.kick(scope);
+            })
+            .await;
+        if published.is_none() {
+            let failure =
+                reset_release_failure(&mut reset_events, &attachment, &subscription.peer_id).await;
+            {
+                let mut ended = lock(&self.state.reset_subscriptions);
+                ended.entry(subscription.admission.clone()).or_insert((
+                    consumer.clone(),
+                    subscription,
+                    failure,
+                ));
+            }
+            let terminal = serde_json::json!({"t":"stream-end","consumer":consumer,
+                "reason":"invalidated","droppedItems":0,"droppedBytes":0});
+            self.state.outbox.push_control(terminal.clone());
+            if let Some(recorded) = recorded_route {
+                host.settle_recorded_ingress_drops().await?;
+                let journal = recorded.journal;
+                let metadata = recorded.metadata;
+                let result = ubm_desktop::continuation_journal::run_blocking_result(move || {
+                    journal
+                        .append(&metadata, &terminal)
+                        .map(|_| ())
+                        .map_err(|error| {
+                            journal.mark_collection_failure(&error);
+                            ubm_desktop::continuation::recording_failure(error)
+                        })
+                })
+                .await;
+                self.state
+                    .outbox
+                    .recording_changed(&consumer, &recorded.recording_id);
+                result.map_err(|failure| {
+                    recording_storage_error(&failure, "gatt.subscribe-recorded.terminal-storage")
+                })?;
+            }
+        }
         Ok(object(vec![
             ("consumer", Value::from(consumer.clone())),
             ("delivery", Value::from(delivery)),
@@ -3157,6 +5723,8 @@ impl MobileSession {
     /// and scan membership are the owner's own state.
     async fn reconcile(&self, ctl: &OpControl) -> Result<Value, DesktopError> {
         let host = &*self.host;
+        host.retry_scan_terminal_evidence_debts();
+        host.retry_subscription_terminal_evidence_debts();
         let central = &host.central;
         let snapshot = bounded(ctl, "session.reconcile", host.radio.adapter_snapshot()).await?;
         let updated_at = host.now_ms();
@@ -3231,14 +5799,19 @@ impl MobileSession {
                     // A consumer without an installed route has no stream
                     // left to deliver: it reports closed, never live.
                     ended => {
-                        let (reason, items, bytes) = ended.flatten().unwrap_or(("closed", 0, 0));
-                        object(vec![
+                        let (reason, items, bytes, error) =
+                            ended.flatten().unwrap_or(("closed", 0, 0, None));
+                        let mut result = object(vec![
                             ("consumer", Value::from(consumer)),
                             ("state", Value::from("ended")),
                             ("reason", Value::from(reason)),
                             ("droppedItems", Value::from(items)),
                             ("droppedBytes", Value::from(bytes)),
-                        ])
+                        ]);
+                        if let Some(error) = error {
+                            result["error"] = Value::Object(wire::error_object(&error));
+                        }
+                        result
                     }
                 }
             })
@@ -3288,6 +5861,484 @@ impl MobileSession {
         ]))
     }
 
+    fn recording_handle(&self, handle: &str) -> Result<u64, DesktopError> {
+        let (owner, sequence) = handle
+            .split_once(':')
+            .ok_or_else(|| wire::invalid("handle"))?;
+        let owner: usize = owner.parse().map_err(|_| wire::invalid("handle"))?;
+        let sequence: u64 = sequence.parse().map_err(|_| wire::invalid("handle"))?;
+        if owner != self.state.instance || format!("{owner}:{sequence}") != handle {
+            return Err(error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Cleanup,
+                "recording.handle",
+            ));
+        }
+        Ok(sequence)
+    }
+    fn issued_recording_handle(&self, sequence: u64) -> bool {
+        lock(&self.state.recording_start_last).is_some_and(|last| sequence <= last)
+    }
+    /// Reserve a bounded native handle before any source effect. Active retries
+    /// of the same recording return the same handle after a lost response.
+    pub fn reserve_ordered_recording_start(
+        &self,
+        reservation: &str,
+    ) -> Result<Value, DesktopError> {
+        let [id, caller_key]: [String; 2] =
+            serde_json::from_str(reservation).map_err(|_| wire::invalid("reservation"))?;
+        if id.is_empty() || id.len() > 256 || caller_key.is_empty() || caller_key.len() > 256 {
+            return Err(wire::invalid("recordingId"));
+        }
+        let admission = lock(&self.state.admission);
+        if admission.closing {
+            return Err(error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "recording.reserve",
+            ));
+        }
+        let mut receipts = lock(&self.host.ordered_start_receipts);
+        if let Some(((.., sequence), _)) = receipts.iter().find(|((session, _), entry)| {
+            *session == self.state.id && entry.recording_id == id && entry.caller_key == caller_key
+        }) {
+            return Ok(
+                serde_json::json!({"version":2,"state":"reserved","handle":format!("{}:{sequence}", self.state.instance)}),
+            );
+        }
+        if receipts.len() >= 128 {
+            return Err(error(
+                BleErrorCode::StreamQuota,
+                BleErrorDomain::Stream,
+                "recording.reserve",
+            ));
+        }
+        let mut last = lock(&self.state.recording_start_last);
+        let sequence = match *last {
+            None => 0,
+            Some(value) => value.checked_add(1).ok_or_else(|| {
+                error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "recording.reserve",
+                )
+                .with_detail("recording handles exhausted")
+            })?,
+        };
+        receipts.insert(
+            (self.state.id, sequence),
+            RecordingStartReceipt {
+                recording_id: id,
+                caller_key,
+                owner_collection: None,
+                revoked: false,
+                identity: None,
+                reclaim_capability: None,
+                result: None,
+                failed: false,
+            },
+        );
+        *last = Some(sequence);
+        Ok(
+            serde_json::json!({"version":2,"state":"reserved","handle":format!("{}:{sequence}", self.state.instance)}),
+        )
+    }
+    fn revoke_ordered_recording_starts(&self, id: &str, collection: u64) {
+        for entry in lock(&self.host.ordered_start_receipts).values_mut() {
+            if entry.recording_id == id && entry.owner_collection == Some(collection) {
+                entry.revoked = true;
+            }
+        }
+    }
+
+    pub fn ordered_recording_start_status(&self, handle: &str) -> Result<Value, DesktopError> {
+        let sequence = self.recording_handle(handle)?;
+        let receipts = lock(&self.host.ordered_start_receipts);
+        let Some(entry) = receipts.get(&(self.state.id, sequence)) else {
+            return if self.issued_recording_handle(sequence) {
+                Ok(serde_json::json!({"version":1,"state":"retired","receipt":null}))
+            } else {
+                Err(error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Cleanup,
+                    "recording.start-status",
+                ))
+            };
+        };
+        if entry.revoked {
+            return Ok(serde_json::json!({"version":1,"state":"revoked","receipt":null}));
+        }
+        let (state, receipt) = if entry.failed {
+            ("failed", Value::Null)
+        } else if let Some(result) = &entry.result {
+            ("ready", result.clone())
+        } else if entry.identity.is_some() {
+            ("pending", Value::Null)
+        } else {
+            ("reserved", Value::Null)
+        };
+        Ok(serde_json::json!({"version":1,"state":state,"receipt":receipt}))
+    }
+    pub async fn retire_ordered_recording_start(
+        &self,
+        handle: &str,
+    ) -> Result<Value, DesktopError> {
+        let sequence = self.recording_handle(handle)?;
+        {
+            let receipts = lock(&self.host.ordered_start_receipts);
+            let Some(entry) = receipts.get(&(self.state.id, sequence)) else {
+                return if self.issued_recording_handle(sequence) {
+                    Ok(serde_json::json!({"version":1,"state":"retired"}))
+                } else {
+                    Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Cleanup,
+                        "recording.retire",
+                    ))
+                };
+            };
+            if entry.identity.is_some() && entry.result.is_none() && !entry.failed {
+                return Err(error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "recording.retire",
+                )
+                .with_detail("start receipt remains pending"));
+            }
+        }
+        let _leader = self.state.release_guard.lock().await;
+        let id = {
+            let receipts = lock(&self.host.ordered_start_receipts);
+            let Some(entry) = receipts.get(&(self.state.id, sequence)) else {
+                return if self.issued_recording_handle(sequence) {
+                    Ok(serde_json::json!({"version":1,"state":"retired"}))
+                } else {
+                    Err(error(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Cleanup,
+                        "recording.retire",
+                    ))
+                };
+            };
+            if entry.identity.is_some() && entry.result.is_none() && !entry.failed {
+                return Err(error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "recording.retire",
+                ));
+            }
+            (entry.recording_id.clone(), entry.owner_collection)
+        };
+        let owner =
+            lock(&self.host.ordered_recordings)
+                .iter()
+                .find_map(|((_, recording), owner)| {
+                    (recording == &id.0 && Some(owner.collection_id()) == id.1)
+                        .then(|| Arc::clone(owner))
+                });
+        if let Some(owner) = owner {
+            if owner.start_status()["state"] == "not-started" {
+                match owner.shutdown().await {
+                    Ok(ubm_desktop::ordered_recording::RecordingDriverStatus::Finished) => {
+                        lock(&self.host.ordered_recordings).retain(|(_, recording), current| {
+                            recording != &id.0 || !Arc::ptr_eq(current, &owner)
+                        });
+                        self.host
+                            .ordered_owners
+                            .retire_host_owned(owner.collection_id(), owner.peer_id());
+                    }
+                    result => {
+                        return Err(error(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "recording.retire",
+                        )
+                        .with_detail(format!(
+                            "unopened owner cleanup remains pending: {result:?}"
+                        )));
+                    }
+                }
+            } else {
+                owner.retire_start_receipt().await.map_err(|cause| {
+                    error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Cleanup,
+                        "recording.retire",
+                    )
+                    .with_detail(format!("start receipt retirement failed: {cause:?}"))
+                })?;
+            }
+        }
+        lock(&self.host.ordered_start_receipts).remove(&(self.state.id, sequence));
+        Ok(serde_json::json!({"version":1,"state":"retired"}))
+    }
+
+    /// Reserve and start a supervised ordered recording for this session's
+    /// existing connection lease. The detached task retains its reservation if
+    /// the caller is cancelled during open.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the recording control contract returns its rich durable failure by value"
+    )]
+    pub async fn start_ordered_recording(
+        &self,
+        handle: String,
+        recording_id: String,
+        quota: ubm_desktop::continuation_journal::JournalQuota,
+        declaration: ubm_desktop::ordered_recording::OrderedRecordingDeclaration,
+        control: OpControl,
+    ) -> Result<Value, ubm_desktop::ordered_recording::RecordingError> {
+        use ubm_desktop::ordered_recording::{OrderedRecording, RecordingError};
+        let session = self.clone();
+        tokio::spawn(async move {
+            let identity = declaration.context()?;
+            let sequence = session.recording_handle(&handle).map_err(|_| RecordingError::InvalidIdentity)?;
+            let key = (session.state.id, sequence);
+            {
+                let mut receipts = lock(&session.host.ordered_start_receipts);
+                let Some(entry) = receipts.get_mut(&key) else { return Err(if session.issued_recording_handle(sequence) { RecordingError::ReceiptRetired } else { RecordingError::InvalidIdentity }); };
+                if entry.recording_id != recording_id { return Err(RecordingError::InvalidIdentity); }
+                if entry.revoked { return Err(RecordingError::ReceiptRetired); }
+                if entry.failed { return Err(RecordingError::WorkerFailed); }
+                if let Some(existing) = &entry.identity {
+                    if existing != &(identity.clone(), quota) {
+                        return Err(RecordingError::InvalidIdentity);
+                    }
+                    if let Some(result) = &entry.result {
+                        return Ok(result.clone());
+                    }
+                } else {
+                    entry.identity = Some((identity, quota));
+                }
+            }
+            let _leader = session.state.release_guard.lock().await;
+            let mut start_guard = RecordingStartGuard { host: Arc::clone(&session.host), key, completed: false };
+            let result = async {
+                if let Some(result) = lock(&session.host.ordered_start_receipts).get(&key).and_then(|entry| entry.result.clone()) { return Ok(result); }
+                if lock(&session.state.admission).closing {
+                    return Err(RecordingError::InvalidIdentity);
+                }
+                let lease = lock(&session.state.leases)
+                    .get(&declaration.peer_id)
+                    .map(|lease| lease.name.clone())
+                    .ok_or(RecordingError::InvalidIdentity)?;
+                let _start = session.host.ordered_recording_start_guard.lock().await;
+                let existing = {
+                    let entries = lock(&session.host.ordered_recordings);
+                    let existing = entries
+                        .get(&(session.state.id, recording_id.clone()))
+                        .cloned();
+                    if existing.is_none() && entries.len() >= 128 {
+                        return Err(RecordingError::InvalidIdentity);
+                    }
+                    existing
+                };
+                let peer = declaration.peer_id.clone();
+                let mut reclaim_capability = lock(&session.host.ordered_start_receipts).get(&key).and_then(|entry| entry.reclaim_capability.clone());
+                let owner = if let Some(owner) = existing {
+                    if lock(&session.host.ordered_start_receipts).get(&key).and_then(|entry| entry.owner_collection) != Some(owner.collection_id()) {
+                        return Err(RecordingError::InvalidIdentity);
+                    }
+                    if !owner.matches_start(&declaration, quota)? {
+                        return Err(RecordingError::InvalidIdentity);
+                    }
+                    owner
+                } else {
+                    if session
+                        .host
+                        .recording_registry
+                        .ordered_owner(&recording_id, &session.host.central)
+                        .map_err(RecordingError::Storage)?
+                        .is_some()
+                    {
+                        return Err(RecordingError::InvalidIdentity);
+                    }
+                    let owner = OrderedRecording::prepare(
+                        Arc::new(session.host.central.clone()),
+                        Arc::clone(&session.host.recording_registry),
+                        recording_id.clone(),
+                        quota,
+                        declaration,
+                    )
+                    .await?;
+                    lock(&session.host.ordered_recordings)
+                        .insert((session.state.id, recording_id.clone()), Arc::clone(&owner));
+                    if let Err(cause) = session.host.ordered_owners.reserve(&peer, session.state.id, || Ok(owner.collection_id())) {
+                        match owner.shutdown().await {
+                            Ok(ubm_desktop::ordered_recording::RecordingDriverStatus::Finished) => {
+                                lock(&session.host.ordered_recordings).remove(&(session.state.id, recording_id.clone()));
+                            }
+                            cleanup => return Err(RecordingError::Source(error(BleErrorCode::LifecycleInvalidState, BleErrorDomain::Cleanup, "recording.prepare.cleanup")
+                                .with_detail(format!("owner reservation failed: {cause:?}; unopened owner cleanup remains pending: {cleanup:?}")))),
+                        }
+                        return Err(RecordingError::Source(cause));
+                    }
+                    if let Some(entry) = lock(&session.host.ordered_start_receipts).get_mut(&key) { entry.owner_collection = Some(owner.collection_id()); }
+                    let capability = owner.issue_recovery_capability()?;
+                    if let Some(entry) = lock(&session.host.ordered_start_receipts).get_mut(&key) { entry.reclaim_capability = Some(capability.clone()); }
+                    reclaim_capability = Some(capability);
+                    owner
+                };
+                drop(_start);
+                drop(_leader);
+                match owner.start_receipt(control.with_connection_lease(lease)).await {
+                    Ok(receipt) => Ok(serde_json::json!({"kind":"started", "receipt":receipt, "reclaimCapability":reclaim_capability})),
+                    Err(cause) => Ok(ubm_desktop::ordered_recording::owner_failure_receipt(&recording_id, owner.collection_id(), &cause)),
+                }
+            }.await;
+            let receipt = match result {
+                Ok(receipt) => receipt,
+                Err(cause) => serde_json::json!({"kind":"prepare-failed", "receipt":ubm_desktop::ordered_recording::prepare_failure_receipt(&recording_id, &cause)}),
+            };
+            let revoked = if let Some(entry) = lock(&session.host.ordered_start_receipts).get_mut(&key) {
+                entry.result = Some(receipt.clone());
+                entry.revoked
+            } else { true };
+            start_guard.completed = true;
+            if revoked { Err(RecordingError::ReceiptRetired) } else { Ok(receipt) }
+        })
+        .await
+        .map_err(|_| RecordingError::WorkerFailed)?
+    }
+
+    pub fn ordered_recording_receipt_control(
+        &self,
+        operation: String,
+        id: String,
+        completion: Completion,
+    ) {
+        let session = self.clone();
+        self.host.runtime.spawn(async move {
+            let result = match operation.as_str() {
+                "reserve" => session.reserve_ordered_recording_start(&id),
+                "status" => session.ordered_recording_start_status(&id),
+                "retire" => session.retire_ordered_recording_start(&id).await,
+                _ => Err(wire::invalid("operation")),
+            }
+            .map_err(|error| Value::Object(wire::error_object(&error)));
+            completion(ubm_desktop::continuation::envelope(result));
+        });
+    }
+
+    /// Native callback seam for the canonical shared declaration. Parsing and
+    /// quota validation happen before reservation; the owned start survives the callback waiter.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the native wire entrypoint keeps every serialized protocol field explicit"
+    )]
+    pub fn start_ordered_recording_wire(
+        &self,
+        handle: String,
+        recording_id: String,
+        max_bytes: String,
+        max_records: String,
+        declaration_json: String,
+        budget_ms: u64,
+        completion: Completion,
+    ) {
+        let session = self.clone();
+        self.host.runtime.spawn(async move {
+            let result = async {
+                fn decimal(value: &str) -> Option<u64> {
+                    let parsed: u64 = value.parse().ok()?;
+                    (parsed.to_string() == value).then_some(parsed)
+                }
+                if declaration_json.len() > 65_536 || budget_ms > MAX_TIMEOUT_MS { return Err(ubm_desktop::ordered_recording::RecordingError::InvalidIdentity); }
+                let quota = ubm_desktop::continuation_journal::JournalQuota {
+                    max_bytes: decimal(&max_bytes).ok_or(ubm_desktop::ordered_recording::RecordingError::InvalidIdentity)?,
+                    max_records: decimal(&max_records).ok_or(ubm_desktop::ordered_recording::RecordingError::InvalidIdentity)?,
+                };
+                let context: Value = serde_json::from_str(&declaration_json).map_err(|_| ubm_desktop::ordered_recording::RecordingError::InvalidIdentity)?;
+                let declaration = ubm_desktop::ordered_recording::OrderedRecordingDeclaration::from_context(&context)?;
+                session.start_ordered_recording(handle, recording_id, quota, declaration, OpControl::budget_ms(budget_ms)).await
+            }.await;
+            let answer = result.map_err(|_| serde_json::json!({"code":"lifecycle.invalid-state", "domain":"restoration", "operation":"continuation.recording.start-ordered", "detail":"ordered recording start is not authorized or valid"}));
+            completion(ubm_desktop::continuation::envelope(answer));
+        });
+    }
+
+    /// Authorize recording controls against this exact session-owned supervisor.
+    pub fn ordered_recording_control_wire(
+        &self,
+        id: String,
+        context: bool,
+        completion: Completion,
+    ) {
+        let session = self.clone();
+        self.host.runtime.spawn(async move {
+            let _leader = session.state.release_guard.lock().await;
+            let owner = lock(&session.host.ordered_recordings).get(&(session.state.id, id.clone())).cloned();
+            let owner_collection = owner.as_ref().map(|owner| owner.collection_id());
+            let result = match owner {
+                None => Err(serde_json::json!({"code":"ownership.denied","domain":"restoration","operation":"continuation.recording.ordered","detail":"recording is not owned by this session"})),
+                Some(_) if context => {
+                    let registry = Arc::clone(&session.host.recording_registry);
+                    let context_id = id.clone();
+                    ubm_desktop::continuation_journal::run_blocking_result(move || registry.ordered_context(&context_id).map_err(ubm_desktop::continuation::recording_failure)).await
+                }
+                Some(owner) => {
+                    if matches!(owner.driver_status(), ubm_desktop::ordered_recording::RecordingDriverStatus::Failed(_)) { owner.retry_driver(); }
+                    session.host.recording_registry.stop_ordered_host_receipt(&id).await
+                },
+            };
+            if !context && result.as_ref().ok().and_then(|value| value.get("recording")).and_then(|value| value.get("state")).and_then(Value::as_str).is_some_and(|state| state == "finished" || state == "interrupted")
+                && let Some(collection) = owner_collection {
+                    session.revoke_ordered_recording_starts(&id, collection);
+                }
+            completion(ubm_desktop::continuation::envelope(result));
+        });
+    }
+
+    /// Read the retained supervisor status without starting a second poller.
+    pub fn ordered_recording_status(
+        &self,
+        id: &str,
+    ) -> Option<ubm_desktop::ordered_recording::RecordingDriverStatus> {
+        lock(&self.host.ordered_recordings)
+            .get(&(self.state.id, id.to_owned()))
+            .map(|owner| owner.driver_status())
+    }
+
+    /// Wake a failed or blocked supervisor; ownership is retained until Finished.
+    pub fn retry_ordered_recording(&self, id: &str) -> bool {
+        let owner = lock(&self.host.ordered_recordings)
+            .get(&(self.state.id, id.to_owned()))
+            .cloned();
+        if let Some(owner) = owner {
+            owner.retry_driver();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Request the supervised fence, drain, durable commit and cleanup.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the recording status contract returns its rich durable failure by value"
+    )]
+    pub async fn close_ordered_recording(
+        &self,
+        id: &str,
+    ) -> Result<
+        ubm_desktop::ordered_recording::RecordingDriverStatus,
+        ubm_desktop::ordered_recording::RecordingError,
+    > {
+        let _leader = self.state.release_guard.lock().await;
+        let owner = lock(&self.host.ordered_recordings)
+            .get(&(self.state.id, id.to_owned()))
+            .cloned()
+            .ok_or(ubm_desktop::ordered_recording::RecordingError::InvalidIdentity)?;
+        let result = owner.shutdown().await;
+        if matches!(
+            result,
+            Ok(ubm_desktop::ordered_recording::RecordingDriverStatus::Finished)
+        ) {
+            self.revoke_ordered_recording_starts(id, owner.collection_id());
+        }
+        result
+    }
+
     /// Release everything this session holds on the shared owner. Failed
     /// releases stay held (a second dispose retries them).
     pub(crate) async fn dispose_failures(&self) -> Vec<Value> {
@@ -3335,6 +6386,230 @@ impl MobileSession {
                 Err(error) => failures.push(cleanup_failure("scan", &error)),
             }
         }
+        // Reclaim owns the replacement lease until native permit retirement.
+        // Cancel unpublished reservations and release published ones first.
+        let reclaims: Vec<_> = lock(&self.state.reclaim_reservations)
+            .iter()
+            .map(|(group, entry)| (*group, entry.clone()))
+            .collect();
+        let mut reclaim_pending = false;
+        for (group, entry) in reclaims {
+            use ubm_desktop::reclaim_reservation::ReclaimReservationStatus as S;
+            let status =
+                entry
+                    .owner
+                    .status(entry.id, &entry.capability, &entry.lease, &entry.caller_key);
+            let result = match status {
+                Ok(S::Reserved | S::Pending | S::Ready) => {
+                    entry
+                        .owner
+                        .cancel(entry.id, &entry.capability, &entry.lease, &entry.caller_key)
+                }
+                Ok(S::Committed) => entry.owner.release(
+                    entry.id,
+                    &entry.capability,
+                    &entry.lease,
+                    &entry.caller_key,
+                ),
+                Ok(S::Released { .. } | S::Failed(_) | S::Retired { .. }) => {
+                    match entry
+                        .owner
+                        .retire(entry.id, &entry.capability, &entry.lease, &entry.caller_key)
+                        .and_then(|()| {
+                            entry.owner.acknowledge_retirement(
+                                entry.id,
+                                &entry.capability,
+                                &entry.lease,
+                                &entry.caller_key,
+                            )
+                        })
+                        .and_then(|()| {
+                            entry.owner.forget_retirement(
+                                entry.id,
+                                &entry.capability,
+                                &entry.lease,
+                                &entry.caller_key,
+                            )
+                        }) {
+                        Ok(()) => {
+                            lock(&self.state.reclaim_reservations).remove(&group);
+                            continue;
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                Ok(S::Releasing { .. } | S::ReleaseFailed { .. }) => Ok(()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                failures.push(cleanup_failure("ordered-reclaim", &error));
+                reclaim_pending = true;
+                continue;
+            }
+            match entry
+                .owner
+                .status(entry.id, &entry.capability, &entry.lease, &entry.caller_key)
+            {
+                Err(error) => {
+                    failures.push(cleanup_failure("ordered-reclaim", &error));
+                    reclaim_pending = true;
+                }
+                Ok(S::Released { .. } | S::Failed(_) | S::Retired { .. }) => {
+                    if let Err(error) = entry
+                        .owner
+                        .retire(entry.id, &entry.capability, &entry.lease, &entry.caller_key)
+                        .and_then(|()| {
+                            entry.owner.acknowledge_retirement(
+                                entry.id,
+                                &entry.capability,
+                                &entry.lease,
+                                &entry.caller_key,
+                            )
+                        })
+                        .and_then(|()| {
+                            entry.owner.forget_retirement(
+                                entry.id,
+                                &entry.capability,
+                                &entry.lease,
+                                &entry.caller_key,
+                            )
+                        })
+                    {
+                        failures.push(cleanup_failure("ordered-reclaim", &error));
+                        reclaim_pending = true;
+                    } else {
+                        lock(&self.state.reclaim_reservations).remove(&group);
+                    }
+                }
+                Ok(_) => {
+                    reclaim_pending = true;
+                }
+            }
+        }
+        if reclaim_pending {
+            let pending = error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "session.dispose.reclaim",
+            )
+            .with_detail("reclaim cleanup remains pending");
+            failures.push(cleanup_failure("ordered-reclaim", &pending));
+            *lock(&self.state.last_release) = Some(failures.clone());
+            self.state.release_version.fetch_add(1, Ordering::SeqCst);
+            return failures;
+        }
+        // The recording driver owns the only poller. Keep its session and
+        // connection lease until the exact supervised owner finishes cleanup.
+        let recordings: Vec<(
+            String,
+            Arc<ubm_desktop::ordered_recording::OrderedRecording<crate::foreign::ForeignRadio>>,
+        )> = lock(&host.ordered_recordings)
+            .iter()
+            .filter(|&((session, _id), _owner)| *session == self.state.id)
+            .map(|((_session, id), owner)| (id.clone(), Arc::clone(owner)))
+            .collect();
+        let mut recording_pending = false;
+        for (id, owner) in recordings {
+            let collection = owner.collection_id();
+            let peer = owner.peer_id();
+            let lease_status = owner.connection_lease_status();
+            if matches!(
+                lease_status,
+                ubm_desktop::ordered_recording::RecordingConnectionLeaseStatus::Pending
+            ) && owner.start_status()["state"] != "not-started"
+            {
+                recording_pending = true;
+                let pending = error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "session.dispose.recording",
+                )
+                .with_detail("recorder lease handoff remains pending");
+                failures.push(cleanup_failure("ordered-recording", &pending));
+                continue;
+            }
+            if matches!(
+                lease_status,
+                ubm_desktop::ordered_recording::RecordingConnectionLeaseStatus::Retained { .. }
+            ) && host
+                .ordered_owners
+                .detach_group(collection, peer, self.state.id)
+            {
+                let mut owners = lock(&host.ordered_recordings);
+                if let Some(retained) = owners.remove(&(self.state.id, id.clone())) {
+                    owners.insert((0, id), retained);
+                }
+                continue;
+            }
+            if matches!(
+                owner.driver_status(),
+                ubm_desktop::ordered_recording::RecordingDriverStatus::Failed(_)
+            ) {
+                owner.retry_driver();
+            }
+            let result = owner.shutdown().await;
+            if matches!(
+                result,
+                Ok(ubm_desktop::ordered_recording::RecordingDriverStatus::Finished)
+            ) {
+                lock(&host.ordered_recordings).remove(&(self.state.id, id));
+                host.ordered_owners.retire_host_owned(collection, peer);
+            } else {
+                recording_pending = true;
+                let receipt = ubm_desktop::ordered_recording::stop_receipt(result);
+                let pending = error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "session.dispose.recording",
+                )
+                .with_detail("ordered recording cleanup remains pending");
+                let mut failure = cleanup_failure("ordered-recording", &pending);
+                failure["recordingReceipt"] = receipt;
+                failures.push(failure);
+            }
+        }
+        if recording_pending {
+            *lock(&self.state.last_release) = Some(failures.clone());
+            self.state.release_version.fetch_add(1, Ordering::SeqCst);
+            return failures;
+        }
+        // Ordered source values must be delivered or explicitly discarded before
+        // the connection lease can be released. Keep the original session's
+        // lease while the host-owned receipt is recoverable by capability.
+        let ordered: Vec<_> = host
+            .ordered_owners
+            .groups(self.state.id)
+            .into_iter()
+            .filter(|(group, peer)| {
+                !lock(&host.ordered_recordings)
+                    .values()
+                    .any(|owner| owner.collection_id() == *group && owner.peer_id() == peer)
+            })
+            .collect();
+        if !ordered.is_empty() {
+            for (id, peer) in &ordered {
+                if host.ordered_owners.owns(*id, peer, self.state.id)
+                    && !host.ordered_owners.completed(*id, peer, self.state.id)
+                    && let Err(error) = host
+                        .central
+                        .retry_retained_ordered_batch(peer, *id, OpControl::unbounded())
+                        .await
+                {
+                    failures.push(cleanup_failure("ordered-group", &error));
+                }
+            }
+            host.ordered_owners.detach(self.state.id);
+            let pending = error(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "session.dispose.ordered",
+            )
+            .with_detail("ordered observations or cleanup receipt remain recoverable");
+            failures.push(cleanup_failure("ordered-group", &pending));
+            *lock(&self.state.last_release) = Some(failures.clone());
+            self.state.release_version.fetch_add(1, Ordering::SeqCst);
+            return failures;
+        }
         let subscriptions: Vec<(String, Subscription)> = lock(&self.state.subscriptions)
             .iter()
             .map(|(consumer, subscription)| (consumer.clone(), subscription.clone()))
@@ -3371,20 +6646,52 @@ impl MobileSession {
                 Err(error) => failures.push(cleanup_failure("subscription", &error)),
             }
         }
-        let leases: Vec<(String, String)> = lock(&self.state.leases)
-            .iter()
-            .map(|(peer, lease)| (peer.clone(), lease.clone()))
-            .collect();
-        for (peer_id, lease) in leases {
-            match host
-                .central
-                .release_connection_lease(&peer_id, &lease, OpControl::unbounded())
-                .await
-            {
-                Ok(_) => {
-                    lock(&self.state.leases).remove(&peer_id);
+        let exact_owners = lock(&self.state.exact_leases).as_ref().map(|table| {
+            table
+                .records
+                .iter()
+                .filter(|(_, entry)| !entry.released && entry.owner.is_some())
+                .map(|(identity, entry)| (identity.clone(), entry.peer.clone(), entry.name.clone()))
+                .collect::<Vec<_>>()
+        });
+        if let Some(exact_owners) = exact_owners {
+            for (identity, peer, name) in exact_owners {
+                match self
+                    .disconnect_exact_wire(&peer, &name, &identity, OpControl::unbounded())
+                    .await
+                {
+                    Ok(record) => {
+                        if let Some(items) = record.get("failures").and_then(Value::as_array) {
+                            failures.extend(items.iter().cloned());
+                        }
+                    }
+                    Err(error) => failures.extend(connection_cleanup_failures(&error)),
                 }
-                Err(error) => failures.push(cleanup_failure("connection", &error)),
+            }
+        } else {
+            let leases: Vec<(String, OwnedLease)> = lock(&self.state.leases)
+                .iter()
+                .map(|(peer, lease)| (peer.clone(), lease.clone()))
+                .collect();
+            for (peer_id, lease) in leases {
+                match host
+                    .central
+                    .release_connection_lease_exact(
+                        &peer_id,
+                        &lease.name,
+                        &lease.admission,
+                        OpControl::unbounded(),
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        let mut leases = lock(&self.state.leases);
+                        if leases.get(&peer_id) == Some(&lease) {
+                            leases.remove(&peer_id);
+                        }
+                    }
+                    Err(error) => failures.extend(connection_cleanup_failures(&error)),
+                }
             }
         }
         // A shared scope's leases outlive the session (87/N8); a session
@@ -3395,7 +6702,27 @@ impl MobileSession {
                     .await,
             );
         }
+        // A reset already retired these owners from the live maps. Preserve
+        // failed physical cleanup in the disposal receipt and retain it for
+        // another observation; a successful tombstone can be forgotten.
+        lock(&self.state.reset_subscriptions).retain(|_, (_, _, failure)| {
+            if let Some(failure) = failure {
+                failures.push(cleanup_failure("subscription", failure));
+                true
+            } else {
+                false
+            }
+        });
+        lock(&self.state.reset_leases).retain(|_, (_, _, failure)| {
+            if let Some(failure) = failure {
+                failures.extend(connection_cleanup_failures(failure));
+                true
+            } else {
+                false
+            }
+        });
         if failures.is_empty() {
+            lock(&host.ordered_start_receipts).retain(|(session, _), _| *session != self.state.id);
             host.remove_session(self.state.id);
         }
         *lock(&self.state.last_release) = Some(failures.clone());
@@ -3479,7 +6806,51 @@ struct RecordingOptions {
     max_records: u64,
 }
 
+enum MarkerAction {
+    Reserve(String),
+    Start {
+        handle: u64,
+        selector: PathSelector,
+        value: Vec<u8>,
+        with_response: bool,
+    },
+    Status(u64),
+    Cancel(u64),
+    Forget(u64),
+}
+
 enum Body {
+    TerminalEvidenceReserve {
+        scope: TerminalEvidenceScope,
+        maximum_bytes: u64,
+    },
+    TerminalEvidenceCommit {
+        reservation_id: String,
+        canonical_bytes: Vec<u8>,
+        digest: [u8; 32],
+    },
+    TerminalEvidenceRead {
+        reference: String,
+        maximum_bytes: u64,
+    },
+    TerminalEvidenceRelease(String),
+    ReclaimVersion,
+    RecordingReclaim {
+        action: String,
+        peer: String,
+        collection: u64,
+        recording: String,
+        capability: String,
+        request: Option<u64>,
+        caller_key: Option<String>,
+    },
+    MarkerVersion,
+    Marker {
+        peer: String,
+        collection: u64,
+        action: MarkerAction,
+    },
+    Ordered(crate::ordered_public::OrderedCommand),
     AdapterState,
     ControlCapabilities,
     Counters,
@@ -3490,6 +6861,7 @@ enum Body {
         service_uuids: Vec<String>,
         device_addresses: Vec<String>,
         android: Option<AndroidScanOptions>,
+        terminal_evidence_scope: Option<ScanTerminalEvidenceScope>,
         deadline: Option<tokio::time::Instant>,
     },
     ScanStop(String),
@@ -3508,6 +6880,7 @@ enum Body {
     Disconnect {
         peer_id: String,
         lease: String,
+        release_identity: Option<String>,
     },
     Control {
         peer_id: String,
@@ -3542,6 +6915,7 @@ enum Body {
         selector: PathSelector,
         consumer: String,
         mode: Option<&'static str>,
+        terminal_evidence_scope: Option<ScanTerminalEvidenceScope>,
         recording: Option<RecordingOptions>,
     },
     Unsubscribe {
@@ -3581,6 +6955,62 @@ enum Body {
     Dispose,
 }
 
+fn terminal_digest(value: &str) -> Result<[u8; 32], DesktopError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(wire::invalid("args.digest"));
+    }
+    let mut digest = [0_u8; 32];
+    for (index, slot) in digest.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| wire::invalid("args.digest"))?;
+    }
+    Ok(digest)
+}
+
+fn terminal_digest_hex(digest: [u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn terminal_evidence_error(
+    failure: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError,
+) -> DesktopError {
+    use ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError;
+    match failure {
+        TerminalEvidenceError::Quota => error(
+            BleErrorCode::StreamQuota,
+            BleErrorDomain::Stream,
+            "terminal-evidence",
+        )
+        .with_detail("terminal evidence quota exhausted"),
+        TerminalEvidenceError::Busy => error(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "terminal-evidence",
+        )
+        .with_detail("terminal evidence storage is busy"),
+        TerminalEvidenceError::Missing
+        | TerminalEvidenceError::Unresolved
+        | TerminalEvidenceError::NotStaged => error(
+            BleErrorCode::LifecycleInvalidState,
+            BleErrorDomain::Stream,
+            "terminal-evidence",
+        )
+        .with_detail("terminal evidence reservation is unavailable"),
+        TerminalEvidenceError::Invalid(_) | TerminalEvidenceError::Conflict => error(
+            BleErrorCode::ArgumentInvalid,
+            BleErrorDomain::Stream,
+            "terminal-evidence",
+        )
+        .with_detail("terminal evidence record conflicts with its reservation"),
+        TerminalEvidenceError::Corrupt | TerminalEvidenceError::Storage(_) => error(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "terminal-evidence",
+        )
+        .with_detail("terminal evidence storage failed"),
+    }
+}
+
 struct Command {
     body: Body,
     operation_id: Option<String>,
@@ -3595,6 +7025,2272 @@ mod scan_stop_race_tests {
         WakeSink,
     };
     use std::sync::{OnceLock, Weak};
+
+    async fn reset_then_power_on(host: &MobileHost) {
+        let mut resets = host.inner.central.adapter_reset_events();
+        let mut off = crate::test_common::adapter_on();
+        off.power = crate::AdapterPower::Off;
+        host.ingest(crate::RadioIngress::AdapterState(off));
+        tokio::time::timeout(std::time::Duration::from_secs(5), resets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        host.ingest(crate::RadioIngress::AdapterState(
+            crate::test_common::adapter_on(),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while host.inner.central.adapter_status().lost {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    fn hold_publication(session: &MobileSession, kind: &'static str) -> Arc<PublicationTestGate> {
+        let gate = Arc::new(PublicationTestGate {
+            entered: Notify::new(),
+            resume: Notify::new(),
+        });
+        *lock(&session.state.publication_test_gate) = Some((kind, Arc::clone(&gate)));
+        gate
+    }
+
+    #[tokio::test]
+    async fn reset_observation_without_peer_release_is_not_success() {
+        let radio = crate::test_common::Scripted::polar();
+        let (host, _) = crate::test_common::open(&radio, MobilePlatform::Android).await;
+        let attachment = host.inner.central.attachment();
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(1);
+        sender
+            .send(ubm_desktop::AdapterResetEvent {
+                sequence: 1,
+                power: None,
+                adapter_sequence: None,
+                cause: ubm_desktop::AdapterLossCause::PoweredOff,
+                previous: attachment.clone(),
+                current: attachment.clone(),
+                cancelled_operations: 0,
+                ended_scan: None,
+                released_links: Vec::new(),
+                ended_subscriptions: 0,
+                release_failures: Vec::new(),
+                link_release_failures: Vec::new(),
+            })
+            .unwrap();
+        let failure = reset_release_failure(&mut receiver, &attachment, "unobserved-peer").await;
+        assert!(
+            failure.is_some(),
+            "missing release observation must not report success"
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reset_release_observation_waits_for_actual_completion_beyond_two_minutes() {
+        let radio = crate::test_common::Scripted::polar();
+        let (host, _) = crate::test_common::open(&radio, MobilePlatform::Android).await;
+        let attachment = host.inner.central.attachment();
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(1);
+        tokio::time::pause();
+        let expected = attachment.clone();
+        let observation =
+            tokio::spawn(
+                async move { reset_release_failure(&mut receiver, &expected, "peer").await },
+            );
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(121)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !observation.is_finished(),
+            "elapsed time is not a release result"
+        );
+        sender
+            .send(ubm_desktop::AdapterResetEvent {
+                sequence: 1,
+                power: None,
+                adapter_sequence: None,
+                cause: ubm_desktop::AdapterLossCause::PoweredOff,
+                previous: attachment.clone(),
+                current: attachment,
+                cancelled_operations: 0,
+                ended_scan: None,
+                released_links: vec!["peer".into()],
+                ended_subscriptions: 0,
+                release_failures: Vec::new(),
+                link_release_failures: Vec::new(),
+            })
+            .unwrap();
+        assert!(observation.await.unwrap().is_none());
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_fences_late_successful_connect_publication_after_replacement() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("late-connect").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let gate = hold_publication(&session, "connect");
+        let old_session = session.clone();
+        let old = tokio::spawn(async move {
+            call(
+                &old_session,
+                "connection.connect",
+                &json!({"peerId":POLAR,"lease":"old","operationId":"old"}).to_string(),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        reset_then_power_on(&host).await;
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"new","operationId":"new"}).to_string(),
+        )
+        .await);
+        gate.resume.notify_one();
+        ok(&old.await.unwrap());
+        assert_eq!(
+            lock(&session.state.leases)
+                .get(POLAR)
+                .map(|lease| lease.name.as_str()),
+            Some("s1:new"),
+            "late old success replaced the live lease"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn operation_entering_after_reset_uses_replacement_attachment() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("admit-after-reset").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let gate = hold_publication(&session, "connect-before-admission");
+        let task_session = session.clone();
+        let task = tokio::spawn(async move {
+            call(
+                &task_session,
+                "connection.connect",
+                &json!({"peerId":POLAR,"lease":"new","operationId":"new"}).to_string(),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        reset_then_power_on(&host).await;
+        gate.resume.notify_one();
+        ok(&task.await.unwrap());
+        assert_eq!(
+            lock(&session.state.leases)
+                .get(POLAR)
+                .map(|lease| lease.attachment.clone()),
+            Some(host.inner.central.attachment())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn late_connect_retains_reset_disconnect_failure() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("late-reset-failure").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let gate = hold_publication(&session, "connect");
+        let task_session = session.clone();
+        let task = tokio::spawn(async move {
+            call(
+                &task_session,
+                "connection.connect",
+                &json!({"peerId":POLAR,"lease":"old","operationId":"connect"}).to_string(),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => {
+                Reply::Now(crate::RadioCompletion::Failed(crate::PlatformFailure::new(
+                    crate::FailureKind::Platform,
+                    "injected disconnect failure",
+                )))
+            }
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        gate.resume.notify_one();
+        ok(&task.await.unwrap());
+        let cleanup = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"disconnect"}).to_string(),
+        )
+        .await);
+        assert_eq!(
+            cleanup["state"], "release-failed",
+            "late publication lost reset release failure: {cleanup}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn late_subscription_retains_reset_disconnect_failure() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("late-sub-reset-failure").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"connect"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &session,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"discover"}).to_string(),
+        )
+        .await);
+        let gate = hold_publication(&session, "subscribe");
+        let task_session = session.clone();
+        let task = tokio::spawn(async move {
+            call(&task_session, "gatt.subscribe", &json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"subscribe"}).to_string()).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => {
+                Reply::Now(crate::RadioCompletion::Failed(crate::PlatformFailure::new(
+                    crate::FailureKind::Platform,
+                    "injected disconnect failure",
+                )))
+            }
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        gate.resume.notify_one();
+        ok(&task.await.unwrap());
+        let result = call(&session, "gatt.unsubscribe", &json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"unsubscribe"}).to_string()).await;
+        let (failure, _) = failure(&result);
+        assert_eq!(failure["operation"], "connection.disconnect");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn disconnect_waits_for_inflight_reset_release_result() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("reset-release-inflight").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"connect"}).to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Hold,
+            request => polar_responder(request),
+        }));
+        let mut off = adapter_on();
+        off.power = crate::AdapterPower::Off;
+        host.ingest(crate::RadioIngress::AdapterState(off));
+        let held = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(id) = radio.held_of(crate::RequestKind::Disconnect).first() {
+                    break *id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let task_session = session.clone();
+        let mut task = tokio::spawn(async move {
+            call(
+                &task_session,
+                "connection.disconnect",
+                &json!({"peerId":POLAR,"lease":"old","operationId":"disconnect"}).to_string(),
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut task)
+                .await
+                .is_err(),
+            "disconnect answered before the reset release completed"
+        );
+        radio.answer(
+            held,
+            crate::RadioCompletion::Failed(crate::PlatformFailure::new(
+                crate::FailureKind::Platform,
+                "injected disconnect failure",
+            )),
+        );
+        let cleanup = ok(
+            &tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(cleanup["state"], "release-failed");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_disconnect_failure_is_not_reported_released() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("reset-release-failure").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"connect"}).to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => {
+                Reply::Now(crate::RadioCompletion::Failed(crate::PlatformFailure::new(
+                    crate::FailureKind::Platform,
+                    "injected disconnect failure",
+                )))
+            }
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !lock(&session.state.reset_leases)
+                .values()
+                .any(|(peer, _, _)| peer == POLAR)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let cleanup = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"disconnect"}).to_string(),
+        )
+        .await);
+        assert_eq!(
+            cleanup["state"], "release-failed",
+            "the reset failed to release the old physical connection: {cleanup}"
+        );
+        let retry = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"disconnect-again"}).to_string(),
+        )
+        .await);
+        assert_eq!(
+            retry["state"], "release-failed",
+            "unrepaired cleanup failure must not become success"
+        );
+        let disposed = session.dispose_failures().await;
+        assert!(
+            disposed
+                .iter()
+                .any(|failure| failure.to_string().contains("injected disconnect failure")),
+            "dispose lost reset cleanup failure: {disposed:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_disconnect_exposes_each_structured_cleanup_failure() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("reset-multiple-failures").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"connect"}).to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Now(crate::RadioCompletion::Failed(
+                crate::PlatformFailure::new(crate::FailureKind::Platform, "initial"),
+            )),
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !lock(&session.state.reset_leases)
+                .values()
+                .any(|(peer, _, _)| peer == POLAR)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let first = crate::PlatformFailure::new(crate::FailureKind::PermissionDenied, "first")
+            .to_error(
+                crate::radio::RequestKind::Disconnect,
+                MobilePlatform::Android,
+            );
+        let second = crate::PlatformFailure::new(crate::FailureKind::Unsupported, "second")
+            .to_error(
+                crate::radio::RequestKind::Disconnect,
+                MobilePlatform::Android,
+            );
+        let mut aggregate = ubm_desktop::PlatformDetail::new("android", "cleanup-failures");
+        aggregate.cleanup_failures = vec![first.clone(), second];
+        let combined = first.with_platform(aggregate);
+        for (peer, _, failure) in lock(&session.state.reset_leases).values_mut() {
+            if peer == POLAR {
+                *failure = Some(combined.clone());
+            }
+        }
+        let cleanup = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"disconnect"}).to_string(),
+        )
+        .await);
+        let failures = cleanup["failures"].as_array().unwrap();
+        assert_eq!(
+            failures.len(),
+            2,
+            "each native cause must be delivered separately: {cleanup}"
+        );
+        assert_ne!(failures[0]["code"], failures[1]["code"]);
+        assert!(failures[0].to_string().contains("first"));
+        assert!(failures[1].to_string().contains("second"));
+        let retry = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"disconnect-retry"}).to_string(),
+        )
+        .await);
+        assert_eq!(
+            retry, cleanup,
+            "reset failures must remain retained for retry"
+        );
+        let disposed = session.dispose_failures().await;
+        assert_eq!(
+            disposed, *failures,
+            "disposal must expose the same retained causes"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn normal_disconnect_exposes_each_structured_cleanup_failure() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("normal-multiple-failures").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"connect"}).to_string(),
+        )
+        .await);
+        let first = crate::PlatformFailure::new(crate::FailureKind::PermissionDenied, "first")
+            .to_error(
+                crate::radio::RequestKind::Disconnect,
+                MobilePlatform::Android,
+            );
+        let second = crate::PlatformFailure::new(crate::FailureKind::Unsupported, "second")
+            .to_error(
+                crate::radio::RequestKind::Disconnect,
+                MobilePlatform::Android,
+            );
+        let mut aggregate = ubm_desktop::PlatformDetail::new("android", "cleanup-failures");
+        aggregate.cleanup_failures = vec![first.clone(), second];
+        *lock(&session.state.disconnect_failure_override) = Some(first.with_platform(aggregate));
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Now(crate::RadioCompletion::Failed(
+                crate::PlatformFailure::new(crate::FailureKind::Platform, "boundary failure"),
+            )),
+            request => polar_responder(request),
+        }));
+        let cleanup = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"disconnect"}).to_string(),
+        )
+        .await);
+        let failures = cleanup["failures"].as_array().unwrap();
+        assert_eq!(cleanup["state"], "release-failed");
+        assert_eq!(failures.len(), 2, "{cleanup}");
+        assert_eq!(failures[0]["code"], "permission.denied");
+        assert_eq!(failures[1]["code"], "capability.unsupported");
+        assert_eq!(failures[0]["resourceKind"], "connection");
+        assert_eq!(failures[1]["resourceKind"], "connection");
+        assert!(failures[0]["detail"].as_str().unwrap().contains("first"));
+        assert!(failures[1]["detail"].as_str().unwrap().contains("second"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_reset_disconnect_exposes_each_structured_cleanup_failure() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("v4-reset-multiple", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let connected = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"connect"}).to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Now(crate::RadioCompletion::Failed(
+                crate::PlatformFailure::new(crate::FailureKind::Platform, "initial"),
+            )),
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !lock(&session.state.reset_leases)
+                .values()
+                .any(|(peer, _, _)| peer == POLAR)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let first = crate::PlatformFailure::new(crate::FailureKind::PermissionDenied, "first")
+            .to_error(
+                crate::radio::RequestKind::Disconnect,
+                MobilePlatform::Android,
+            );
+        let second = crate::PlatformFailure::new(crate::FailureKind::Unsupported, "second")
+            .to_error(
+                crate::radio::RequestKind::Disconnect,
+                MobilePlatform::Android,
+            );
+        let mut aggregate = ubm_desktop::PlatformDetail::new("android", "cleanup-failures");
+        aggregate.cleanup_failures = vec![first.clone(), second];
+        for (peer, _, failure) in lock(&session.state.reset_leases).values_mut() {
+            if peer == POLAR {
+                *failure = Some(first.clone().with_platform(aggregate.clone()));
+            }
+        }
+        let args =
+            json!({"peerId":POLAR,"lease":"old","releaseIdentity":connected["releaseIdentity"]})
+                .to_string();
+        let cleanup = ok(&call(&session, "connection.disconnect", &args).await);
+        assert_eq!(cleanup["state"], "release-failed");
+        assert_eq!(cleanup["failures"].as_array().unwrap().len(), 2);
+        assert_eq!(cleanup["failures"][0]["code"], "permission.denied");
+        assert_eq!(cleanup["failures"][1]["code"], "capability.unsupported");
+        assert_eq!(
+            ok(&call(&session, "connection.disconnect", &args).await),
+            cleanup
+        );
+    }
+
+    #[test]
+    fn connection_cleanup_unwraps_nested_aggregates_but_keeps_single_errors() {
+        let first = crate::PlatformFailure::new(crate::FailureKind::PermissionDenied, "first")
+            .to_error(
+                crate::radio::RequestKind::Disconnect,
+                MobilePlatform::Android,
+            );
+        let second = crate::PlatformFailure::new(crate::FailureKind::Unsupported, "second")
+            .to_error(
+                crate::radio::RequestKind::Disconnect,
+                MobilePlatform::Android,
+            );
+        let third = crate::PlatformFailure::new(crate::FailureKind::Busy, "third").to_error(
+            crate::radio::RequestKind::Disconnect,
+            MobilePlatform::Android,
+        );
+        let mut inner = ubm_desktop::PlatformDetail::new("android", "cleanup-failures");
+        inner.cleanup_failures = vec![first.clone(), second.clone()];
+        let mut outer = ubm_desktop::PlatformDetail::new("android", "cleanup-failures");
+        outer.cleanup_failures = vec![first.clone().with_platform(inner), third];
+        let flattened = connection_cleanup_failures(&first.clone().with_platform(outer));
+        assert_eq!(flattened.len(), 3);
+        assert_eq!(flattened[0]["code"], "permission.denied");
+        assert_eq!(flattened[1]["code"], "capability.unsupported");
+        assert!(flattened[2]["detail"].as_str().unwrap().contains("third"));
+        assert_eq!(
+            connection_cleanup_failures(&second),
+            vec![cleanup_failure("connection", &second)]
+        );
+        let empty = first
+            .clone()
+            .with_platform(ubm_desktop::PlatformDetail::new(
+                "android",
+                "cleanup-failures",
+            ));
+        assert_eq!(
+            connection_cleanup_failures(&empty),
+            vec![cleanup_failure("connection", &empty)]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn replacement_connection_preserves_old_reset_failure() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("replacement-failure").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"connect-old"}).to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => {
+                Reply::Now(crate::RadioCompletion::Failed(crate::PlatformFailure::new(
+                    crate::FailureKind::Platform,
+                    "injected disconnect failure",
+                )))
+            }
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !lock(&session.state.reset_leases)
+                .values()
+                .any(|(peer, _, _)| peer == POLAR)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        radio.set_responder(Box::new(polar_responder));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"new","operationId":"connect-new"}).to_string(),
+        )
+        .await);
+        let cleanup = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"disconnect-old"}).to_string(),
+        )
+        .await);
+        assert_eq!(
+            cleanup["state"], "release-failed",
+            "replacement erased old cleanup failure: {cleanup}"
+        );
+        assert_eq!(
+            lock(&session.state.leases)
+                .get(POLAR)
+                .map(|lease| lease.name.clone()),
+            Some(session.state.core_name("new"))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_resets_preserve_each_lease_release_failure() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("two-reset-failures").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        for (lease, message) in [
+            ("old", "first reset failure"),
+            ("new", "second reset failure"),
+        ] {
+            radio.set_responder(Box::new(polar_responder));
+            ok(&call(
+                &session,
+                "connection.connect",
+                &json!({"peerId":POLAR,"lease":lease,"operationId":format!("connect-{lease}")})
+                    .to_string(),
+            )
+            .await);
+            radio.set_responder(Box::new(move |request| match request {
+                crate::RadioRequest::Disconnect { .. } => {
+                    Reply::Now(crate::RadioCompletion::Failed(crate::PlatformFailure::new(
+                        crate::FailureKind::Platform,
+                        message,
+                    )))
+                }
+                request => polar_responder(request),
+            }));
+            reset_then_power_on(&host).await;
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while lock(&session.state.leases).contains_key(POLAR) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        for (lease, message) in [
+            ("old", "first reset failure"),
+            ("new", "second reset failure"),
+        ] {
+            let cleanup = ok(&call(
+                &session,
+                "connection.disconnect",
+                &json!({"peerId":POLAR,"lease":lease,"operationId":format!("release-{lease}")})
+                    .to_string(),
+            )
+            .await);
+            assert_eq!(cleanup["state"], "release-failed", "{cleanup}");
+            assert!(cleanup.to_string().contains(message), "{cleanup}");
+        }
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn same_lease_name_with_unresolved_failure_refuses_ambiguous_disconnect() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("same-name-reset-failure").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"old-connect"}).to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Now(crate::RadioCompletion::Failed(
+                crate::PlatformFailure::new(crate::FailureKind::Platform, "old reset failure"),
+            )),
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while lock(&session.state.leases).contains_key(POLAR) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        radio.set_responder(Box::new(polar_responder));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"new-connect"}).to_string(),
+        )
+        .await);
+        let cleanup = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"new-disconnect"}).to_string(),
+        )
+        .await);
+        assert_eq!(cleanup["state"], "release-failed", "{cleanup}");
+        assert!(
+            cleanup.to_string().contains("both a live owner"),
+            "{cleanup}"
+        );
+        assert!(lock(&session.state.leases).contains_key(POLAR));
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn repeated_same_name_reset_failures_remain_distinct_and_fail_closed() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("same-name-repeated-resets").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        for (operation, message) in [("first", "first failure"), ("second", "second failure")] {
+            radio.set_responder(Box::new(polar_responder));
+            ok(&call(
+                &session,
+                "connection.connect",
+                &json!({"peerId":POLAR,"lease":"same","operationId":operation}).to_string(),
+            )
+            .await);
+            radio.set_responder(Box::new(move |request| match request {
+                crate::RadioRequest::Disconnect { .. } => {
+                    Reply::Now(crate::RadioCompletion::Failed(crate::PlatformFailure::new(
+                        crate::FailureKind::Platform,
+                        message,
+                    )))
+                }
+                request => polar_responder(request),
+            }));
+            reset_then_power_on(&host).await;
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while lock(&session.state.leases).contains_key(POLAR) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(lock(&session.state.reset_leases).len(), 2);
+        let cleanup = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"release"}).to_string(),
+        )
+        .await);
+        assert_eq!(cleanup["state"], "release-failed", "{cleanup}");
+        assert!(
+            cleanup.to_string().contains("multiple retired operations"),
+            "{cleanup}"
+        );
+        let disposed = session.dispose_failures().await;
+        assert!(
+            disposed
+                .iter()
+                .any(|failure| failure.to_string().contains("first failure"))
+        );
+        assert!(
+            disposed
+                .iter()
+                .any(|failure| failure.to_string().contains("second failure"))
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn same_consumer_with_unresolved_failure_refuses_ambiguous_unsubscribe() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("same-consumer-reset-failure").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"connect-old"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &session,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"discover-old"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &session,
+            "gatt.subscribe",
+            &json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"sub-old"})
+                .to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Now(crate::RadioCompletion::Failed(
+                crate::PlatformFailure::new(crate::FailureKind::Platform, "old reset failure"),
+            )),
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while lock(&session.state.subscriptions).contains_key("hr") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        radio.set_responder(Box::new(polar_responder));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"new","operationId":"connect-new"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &session,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"new","operationId":"discover-new"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &session,
+            "gatt.subscribe",
+            &json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"sub-new"})
+                .to_string(),
+        )
+        .await);
+        let cleanup = call(&session, "gatt.unsubscribe", &json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"unsub-new"}).to_string()).await;
+        let (failure, _) = failure(&cleanup);
+        assert!(
+            failure.to_string().contains("both a live owner"),
+            "{failure}"
+        );
+        assert!(lock(&session.state.subscriptions).contains_key("hr"));
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_between_owner_check_and_release_cannot_release_replacement() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("release-admission-reset").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"old-connect"}).to_string(),
+        )
+        .await);
+        let gate = hold_publication(&session, "disconnect-before-central-release");
+        let old_session = session.clone();
+        let old = tokio::spawn(async move {
+            call(
+                &old_session,
+                "connection.disconnect",
+                &json!({"peerId":POLAR,"lease":"same","operationId":"old-disconnect"}).to_string(),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Now(crate::RadioCompletion::Failed(
+                crate::PlatformFailure::new(crate::FailureKind::Platform, "old reset failure"),
+            )),
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while lock(&session.state.leases).contains_key(POLAR) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        radio.set_responder(Box::new(polar_responder));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"new-connect"}).to_string(),
+        )
+        .await);
+        gate.resume.notify_one();
+        let cleanup = ok(&old.await.unwrap());
+        let replacement = lock(&session.state.leases).get(POLAR).cloned().unwrap();
+        assert_eq!(replacement.attachment, host.inner.central.attachment());
+        let report = session.peer_record(POLAR).await.unwrap();
+        assert_eq!(
+            report.connection_state,
+            Some(ConnectionState::Connected),
+            "old release changed the replacement: {cleanup}"
+        );
+        assert_eq!(
+            cleanup["state"], "release-failed",
+            "old release must observe its reset failure: {cleanup}"
+        );
+        assert!(
+            cleanup.to_string().contains("old reset failure"),
+            "{cleanup}"
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_during_recorded_unsubscribe_allows_later_same_name_replacement() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let Some(directory) = recording_test_directory(
+            "session::scan_stop_race_tests::reset_during_recorded_unsubscribe_allows_later_same_name_replacement",
+        ) else {
+            return;
+        };
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        host.continuation()
+            .configure_recording_directory(&directory)
+            .unwrap();
+        let session = host.open_session("recorded-release-reset").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        for (op, id) in [
+            ("connection.connect", "old-connect"),
+            ("gatt.discover", "old-discover"),
+        ] {
+            ok(&call(
+                &session,
+                op,
+                &json!({"peerId":POLAR,"lease":"same","operationId":id}).to_string(),
+            )
+            .await);
+        }
+        ok(&call(&session, "gatt.subscribe-recorded", &json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"old-sub","recording":{"id":"old","maxBytes":1048576,"maxRecords":1000}}).to_string()).await);
+        let gate = hold_publication(&session, "unsubscribe-before-central-release");
+        let old_session = session.clone();
+        let old = tokio::spawn(async move {
+            call(&old_session, "gatt.unsubscribe", &json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"old-unsub"}).to_string()).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while lock(&session.state.subscriptions).contains_key("hr") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // The old operation owns the FIFO slot. Let it observe reset before
+        // asking a replacement discovery to enter behind that slot.
+        gate.resume.notify_one();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), old)
+            .await
+            .unwrap()
+            .unwrap();
+        ok(&result);
+        let disable_count = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| matches!(r, crate::RadioRequest::DisableNotifications { .. }))
+            .count();
+        for (op, id) in [
+            ("connection.connect", "new-connect"),
+            ("gatt.discover", "new-discover"),
+        ] {
+            let args = json!({"peerId":POLAR,"lease":"same","operationId":id}).to_string();
+            let result =
+                tokio::time::timeout(std::time::Duration::from_secs(5), call(&session, op, &args))
+                    .await
+                    .expect("replacement operation blocked behind stale recorded unsubscribe");
+            ok(&result);
+        }
+        let args = json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"new-sub","recording":{"id":"new","maxBytes":1048576,"maxRecords":1000}}).to_string();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            call(&session, "gatt.subscribe-recorded", &args),
+        )
+        .await
+        .expect("replacement subscription blocked behind stale recorded unsubscribe");
+        ok(&result);
+        assert_eq!(
+            lock(&session.state.subscriptions)
+                .get("hr")
+                .map(|s| s.attachment.clone()),
+            Some(host.inner.central.attachment())
+        );
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::DisableNotifications { .. }))
+                .count(),
+            disable_count
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn lost_disconnect_reply_cannot_release_same_name_replacement() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("lost-release-reply", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let old = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"old-connect"}).to_string(),
+        )
+        .await);
+        let old_identity = old["releaseIdentity"]
+            .as_str()
+            .expect("owner-issued release identity");
+        // Discard the successful first reply, as a transport loss would.
+        let released = ok(&call(&session, "connection.disconnect", &json!({"peerId":POLAR,"lease":"same","releaseIdentity":old_identity,"operationId":"old-disconnect"}).to_string()).await);
+        assert_eq!(released["state"], "released");
+        let new = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"new-connect"}).to_string(),
+        )
+        .await);
+        assert_ne!(new["releaseIdentity"], old_identity);
+        let replacement = lock(&session.state.leases)
+            .get(POLAR)
+            .unwrap()
+            .admission
+            .clone();
+        let disconnects = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+            .count();
+        let _ = call(&session, "connection.disconnect", &json!({"peerId":POLAR,"lease":"same","releaseIdentity":old_identity,"operationId":"retry-disconnect"}).to_string()).await;
+        assert_eq!(
+            lock(&session.state.leases)
+                .get(POLAR)
+                .map(|owner| owner.admission.clone()),
+            Some(replacement),
+            "retry of lost old release removed the replacement"
+        );
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            disconnects
+        );
+        assert_eq!(
+            session.peer_record(POLAR).await.unwrap().connection_state,
+            Some(ConnectionState::Connected)
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_disconnect_requires_matching_session_peer_lease_and_identity() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("owner", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        let (other, _) = host
+            .admit_session("other", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let connected = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"connect"}).to_string(),
+        )
+        .await);
+        let identity = connected["releaseIdentity"].as_str().unwrap();
+        let missing = call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"same"}).to_string(),
+        )
+        .await;
+        assert_eq!(failure(&missing).0["code"], "argument.invalid");
+        for malformed in [json!(""), json!(42), json!("x".repeat(129))] {
+            let result = call(
+                &session,
+                "connection.disconnect",
+                &json!({"peerId":POLAR,"lease":"same","releaseIdentity":malformed}).to_string(),
+            )
+            .await;
+            assert_eq!(failure(&result).0["code"], "argument.invalid");
+        }
+        let before = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+            .count();
+        for (target, peer, lease, value) in [
+            (&session, POLAR, "wrong", identity),
+            (&session, "wrong-peer", "same", identity),
+            (&session, POLAR, "same", "unknown"),
+            (&other, POLAR, "same", identity),
+        ] {
+            let result = ok(&call(
+                target,
+                "connection.disconnect",
+                &json!({"peerId":peer,"lease":lease,"releaseIdentity":value}).to_string(),
+            )
+            .await);
+            assert_eq!(result["state"], "release-failed", "{result}");
+        }
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            before
+        );
+        assert!(lock(&session.state.leases).contains_key(POLAR));
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_failed_disconnect_retains_exact_owner_for_retry() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("retry", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let connected = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"connect"}).to_string(),
+        )
+        .await);
+        let identity = connected["releaseIdentity"].as_str().unwrap();
+        session.set_exact_connection_receipt_limit(0).unwrap();
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Now(crate::RadioCompletion::Failed(
+                crate::PlatformFailure::new(crate::FailureKind::Platform, "injected"),
+            )),
+            request => polar_responder(request),
+        }));
+        let args = json!({"peerId":POLAR,"lease":"same","releaseIdentity":identity}).to_string();
+        assert_eq!(
+            ok(&call(&session, "connection.disconnect", &args).await)["state"],
+            "release-failed"
+        );
+        assert!(lock(&session.state.leases).contains_key(POLAR));
+        assert!(
+            lock(&session.state.exact_leases)
+                .as_ref()
+                .unwrap()
+                .records
+                .contains_key(identity),
+            "failed cleanup is not a terminal receipt"
+        );
+        session.set_exact_connection_live_limit(1).unwrap();
+        let refused = call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"other","operationId":"capacity"}).to_string(),
+        )
+        .await;
+        assert_eq!(
+            failure(&refused).0["code"],
+            "lifecycle.invalid-state",
+            "unresolved cleanup still occupies capacity"
+        );
+        radio.set_responder(Box::new(polar_responder));
+        assert_eq!(
+            ok(&call(&session, "connection.disconnect", &args).await)["state"],
+            "released"
+        );
+        assert!(
+            !lock(&session.state.exact_leases)
+                .as_ref()
+                .unwrap()
+                .records
+                .contains_key(identity)
+        );
+        let admitted = call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"other","operationId":"after-retry"}).to_string(),
+        )
+        .await;
+        ok(&admitted);
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_two_leases_on_one_link_release_independently() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("shared", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let first = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"one","operationId":"first"}).to_string(),
+        )
+        .await);
+        let second = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"two","operationId":"second"}).to_string(),
+        )
+        .await);
+        assert_ne!(first["releaseIdentity"], second["releaseIdentity"]);
+        assert_eq!(
+            first["connectionGeneration"],
+            second["connectionGeneration"]
+        );
+        let count = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+            .count();
+        let release =
+            json!({"peerId":POLAR,"lease":"one","releaseIdentity":first["releaseIdentity"]})
+                .to_string();
+        assert_eq!(
+            ok(&call(&session, "connection.disconnect", &release).await)["state"],
+            "released"
+        );
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            count
+        );
+        assert_eq!(
+            ok(&call(&session, "connection.disconnect", &release).await)["state"],
+            "released"
+        );
+        let release =
+            json!({"peerId":POLAR,"lease":"two","releaseIdentity":second["releaseIdentity"]})
+                .to_string();
+        assert_eq!(
+            ok(&call(&session, "connection.disconnect", &release).await)["state"],
+            "released"
+        );
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            count + 1
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_concurrent_disconnects_share_the_terminal_receipt() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("concurrent", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let connected = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"one","operationId":"connect"}).to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Hold,
+            request => polar_responder(request),
+        }));
+        let args =
+            json!({"peerId":POLAR,"lease":"one","releaseIdentity":connected["releaseIdentity"]})
+                .to_string();
+        let first_session = session.clone();
+        let first_args = args.clone();
+        let first = tokio::spawn(async move {
+            call(&first_session, "connection.disconnect", &first_args).await
+        });
+        let held = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(id) = radio.held_of(crate::RequestKind::Disconnect).first() {
+                    break *id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let second_session = session.clone();
+        let second =
+            tokio::spawn(
+                async move { call(&second_session, "connection.disconnect", &args).await },
+            );
+        radio.answer(held, crate::RadioCompletion::Unit);
+        assert_eq!(ok(&first.await.unwrap())["state"], "released");
+        assert_eq!(ok(&second.await.unwrap())["state"], "released");
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            1
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_cancelling_joiner_after_disconnect_dispatch_does_not_cancel_leader() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("cancel-joiner", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let connected = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"one","operationId":"connect"}).to_string(),
+        )
+        .await);
+        let identity = connected["releaseIdentity"].as_str().unwrap();
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Hold,
+            request => polar_responder(request),
+        }));
+        let first_session = session.clone();
+        let first_args =
+            json!({"peerId":POLAR,"lease":"one","releaseIdentity":identity,"operationId":"leader"})
+                .to_string();
+        let first = tokio::spawn(async move {
+            call(&first_session, "connection.disconnect", &first_args).await
+        });
+        let held = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(id) = radio.held_of(crate::RequestKind::Disconnect).first() {
+                    break *id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let second_session = session.clone();
+        let second_args =
+            json!({"peerId":POLAR,"lease":"one","releaseIdentity":identity,"operationId":"joiner"})
+                .to_string();
+        let second = tokio::spawn(async move {
+            call(&second_session, "connection.disconnect", &second_args).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let joined = lock(&session.state.exact_leases)
+                    .as_ref()
+                    .and_then(|table| table.records.get(identity))
+                    .and_then(|entry| entry.attempt.as_ref())
+                    .is_some_and(|attempt| Arc::strong_count(attempt) >= 4);
+                if joined {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        ok(&call(
+            &session,
+            "op.cancel",
+            &json!({"operationId":"joiner"}).to_string(),
+        )
+        .await);
+        let cancelled = ok(
+            &tokio::time::timeout(std::time::Duration::from_secs(5), second)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(cancelled["state"], "release-failed");
+        assert!(lock(&session.state.leases).contains_key(POLAR));
+        radio.answer(held, crate::RadioCompletion::Unit);
+        assert_eq!(ok(&first.await.unwrap())["state"], "released");
+        let retry = call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"one","releaseIdentity":identity,"operationId":"retry"})
+                .to_string(),
+        )
+        .await;
+        assert_eq!(ok(&retry)["state"], "released");
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            1
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_concurrent_disconnects_share_a_failed_attempt() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("concurrent-failure", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let connected = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"one","operationId":"connect"}).to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Hold,
+            request => polar_responder(request),
+        }));
+        let args =
+            json!({"peerId":POLAR,"lease":"one","releaseIdentity":connected["releaseIdentity"]})
+                .to_string();
+        let first_session = session.clone();
+        let first_args = args.clone();
+        let first = tokio::spawn(async move {
+            call(&first_session, "connection.disconnect", &first_args).await
+        });
+        let held = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(id) = radio.held_of(crate::RequestKind::Disconnect).first() {
+                    break *id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let second_session = session.clone();
+        let second_args = args.clone();
+        let second = tokio::spawn(async move {
+            call(&second_session, "connection.disconnect", &second_args).await
+        });
+        let identity = connected["releaseIdentity"].as_str().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let joined = lock(&session.state.exact_leases)
+                    .as_ref()
+                    .and_then(|table| table.records.get(identity))
+                    .and_then(|entry| entry.attempt.as_ref())
+                    .is_some_and(|attempt| Arc::strong_count(attempt) >= 4);
+                if joined {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        radio.set_responder(Box::new(polar_responder));
+        radio.answer(
+            held,
+            crate::RadioCompletion::Failed(crate::PlatformFailure::new(
+                crate::FailureKind::Platform,
+                "shared failure",
+            )),
+        );
+        assert_eq!(ok(&first.await.unwrap())["state"], "release-failed");
+        assert_eq!(ok(&second.await.unwrap())["state"], "release-failed");
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            ok(&call(&session, "connection.disconnect", &args).await)["state"],
+            "released"
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_reset_failure_remains_bound_to_old_identity_after_replacement() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("reset", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let old = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"old"}).to_string(),
+        )
+        .await);
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Now(crate::RadioCompletion::Failed(
+                crate::PlatformFailure::new(crate::FailureKind::Platform, "reset debt"),
+            )),
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while lock(&session.state.leases).contains_key(POLAR) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        radio.set_responder(Box::new(polar_responder));
+        let new = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"new"}).to_string(),
+        )
+        .await);
+        let before = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+            .count();
+        let args = json!({"peerId":POLAR,"lease":"same","releaseIdentity":old["releaseIdentity"]})
+            .to_string();
+        let failure = ok(&call(&session, "connection.disconnect", &args).await);
+        assert_eq!(failure["state"], "release-failed");
+        assert!(failure.to_string().contains("reset debt"));
+        assert_ne!(old["releaseIdentity"], new["releaseIdentity"]);
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            before
+        );
+        assert!(lock(&session.state.leases).contains_key(POLAR));
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_dispose_releases_every_shared_lease() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, record) = host
+            .admit_session("dispose-shared", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        assert_eq!(parse(&record)["wireRevision"], "ubm-mobile-wire/4");
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        for (lease, op) in [("one", "first"), ("two", "second")] {
+            ok(&call(
+                &session,
+                "connection.connect",
+                &json!({"peerId":POLAR,"lease":lease,"operationId":op}).to_string(),
+            )
+            .await);
+        }
+        let result = ok(&call(&session, "session.dispose", "{}").await);
+        assert_eq!(result["state"], "released", "{result}");
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            1
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_subscription_refuses_until_exact_release_is_available() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("subscription-gap", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        for (op, args) in [
+            (
+                "gatt.subscribe",
+                json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"sub"}),
+            ),
+            (
+                "gatt.subscribe-recorded",
+                json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"recorded","recording":{"id":"r","maxBytes":4096,"maxRecords":10}}),
+            ),
+            (
+                "gatt.unsubscribe",
+                json!({"peerId":POLAR,"selector":selector(),"consumer":"hr","operationId":"unsub","releaseIdentity":"unknown"}),
+            ),
+        ] {
+            let result = call(&session, op, &args.to_string()).await;
+            assert_eq!(failure(&result).0["code"], "capability.unsupported", "{op}");
+        }
+        assert!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|r| !matches!(r, crate::RadioRequest::EnableNotifications { .. }))
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_connection_live_capacity_is_configurable_without_evicting_owners() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("live-capacity", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        session.set_exact_connection_live_limit(1).unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let first = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"one","operationId":"one"}).to_string(),
+        )
+        .await);
+        let refused = call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"two","operationId":"refused"}).to_string(),
+        )
+        .await;
+        assert_eq!(failure(&refused).0["code"], "lifecycle.invalid-state");
+        session.set_exact_connection_live_limit(2).unwrap();
+        let second = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"two","operationId":"two"}).to_string(),
+        )
+        .await);
+        session.set_exact_connection_live_limit(0).unwrap();
+        for (lease, identity) in [
+            ("one", &first["releaseIdentity"]),
+            ("two", &second["releaseIdentity"]),
+        ] {
+            let result = call(
+                &session,
+                "connection.disconnect",
+                &json!({"peerId":POLAR,"lease":lease,"releaseIdentity":identity}).to_string(),
+            )
+            .await;
+            assert_eq!(ok(&result)["state"], "released");
+        }
+        let refused = call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"three","operationId":"three"}).to_string(),
+        )
+        .await;
+        assert_eq!(failure(&refused).0["code"], "lifecycle.invalid-state");
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_terminal_receipts_do_not_permanently_block_admission() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("receipt-retention", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let first = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"first","operationId":"first"}).to_string(),
+        )
+        .await);
+        let identity = first["releaseIdentity"].as_str().unwrap();
+        assert_eq!(
+            ok(&call(
+                &session,
+                "connection.disconnect",
+                &json!({"peerId":POLAR,"lease":"first","releaseIdentity":identity}).to_string()
+            )
+            .await)["state"],
+            "released"
+        );
+        // Fill the existing terminal table without issuing a thousand radio operations.
+        {
+            let mut guard = lock(&session.state.exact_leases);
+            let table = guard.as_mut().unwrap();
+            let owner = table.records[identity].owner.clone();
+            for n in 0..1023 {
+                let old = format!("old-{n}");
+                table.records.insert(
+                    old.clone(),
+                    ExactLeaseRecord {
+                        peer: POLAR.into(),
+                        name: format!("old-{n}"),
+                        owner: owner.clone(),
+                        released: true,
+                        attempt: None,
+                    },
+                );
+                table.receipts.push_back(old);
+            }
+        }
+        let replacement = call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"first","operationId":"replacement"}).to_string(),
+        )
+        .await;
+        let replacement = ok(&replacement);
+        assert_ne!(replacement["releaseIdentity"], identity);
+        session.set_exact_connection_receipt_limit(1).unwrap();
+        let before = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+            .count();
+        let retry = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId":POLAR,"lease":"first","releaseIdentity":identity}).to_string(),
+        )
+        .await);
+        assert_eq!(retry["state"], "release-failed");
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            before
+        );
+        assert!(lock(&session.state.leases).contains_key(POLAR));
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_receipt_limit_evicts_oldest_without_touching_replacement() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("receipt-order", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        assert!(session.set_exact_connection_receipt_limit(65_537).is_err());
+        session.set_exact_connection_receipt_limit(1).unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let mut identities = Vec::new();
+        for operation in ["first", "second"] {
+            let result = ok(&call(
+                &session,
+                "connection.connect",
+                &json!({"peerId":POLAR,"lease":"same","operationId":operation}).to_string(),
+            )
+            .await);
+            let identity = result["releaseIdentity"].as_str().unwrap().to_owned();
+            let result = call(
+                &session,
+                "connection.disconnect",
+                &json!({"peerId":POLAR,"lease":"same","releaseIdentity":identity}).to_string(),
+            )
+            .await;
+            assert_eq!(ok(&result)["state"], "released");
+            identities.push(identity);
+        }
+        let replacement = ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"third"}).to_string(),
+        )
+        .await);
+        let count = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+            .count();
+        for (identity, state) in [
+            (&identities[0], "release-failed"),
+            (&identities[1], "released"),
+        ] {
+            let result = call(
+                &session,
+                "connection.disconnect",
+                &json!({"peerId":POLAR,"lease":"same","releaseIdentity":identity}).to_string(),
+            )
+            .await;
+            assert_eq!(ok(&result)["state"], state);
+        }
+        assert_eq!(
+            radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, crate::RadioRequest::Disconnect { .. }))
+                .count(),
+            count
+        );
+        assert_ne!(replacement["releaseIdentity"], identities[1]);
+        assert!(lock(&session.state.leases).contains_key(POLAR));
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn v4_exhausted_identity_counter_refuses_before_radio() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let (session, _) = host
+            .admit_session("identity-limit", "ubm-mobile-wire/4", "{}")
+            .unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        lock(&session.state.exact_leases).as_mut().unwrap().next = u64::MAX;
+        let before = radio.requests.lock().unwrap().len();
+        let result = call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"one","operationId":"connect"}).to_string(),
+        )
+        .await;
+        assert_eq!(failure(&result).0["code"], "lifecycle.invariant-violation");
+        assert_eq!(radio.requests.lock().unwrap().len(), before);
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn delayed_disconnect_retains_its_owner_after_same_name_replacement() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("delayed-disconnect-owner").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"connect-old"}).to_string(),
+        )
+        .await);
+        let gate = hold_publication(&session, "disconnect-owner");
+        let old_session = session.clone();
+        let old = tokio::spawn(async move {
+            call(
+                &old_session,
+                "connection.disconnect",
+                &json!({"peerId":POLAR,"lease":"same","operationId":"disconnect-old"}).to_string(),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Now(crate::RadioCompletion::Failed(
+                crate::PlatformFailure::new(crate::FailureKind::Platform, "old reset failure"),
+            )),
+            request => polar_responder(request),
+        }));
+        reset_then_power_on(&host).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while lock(&session.state.leases).contains_key(POLAR) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        radio.set_responder(Box::new(polar_responder));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"connect-new"}).to_string(),
+        )
+        .await);
+        gate.resume.notify_one();
+        let cleanup = ok(&old.await.unwrap());
+        assert_eq!(cleanup["state"], "release-failed", "{cleanup}");
+        assert!(
+            cleanup.to_string().contains("old reset failure"),
+            "{cleanup}"
+        );
+        assert_eq!(
+            lock(&session.state.leases)
+                .get(POLAR)
+                .map(|lease| lease.attachment.clone()),
+            Some(host.inner.central.attachment())
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_late_connect_does_not_shadow_reused_lease_name() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("same-lease").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        let gate = hold_publication(&session, "connect");
+        let old_session = session.clone();
+        let old = tokio::spawn(async move {
+            call(
+                &old_session,
+                "connection.connect",
+                &json!({"peerId":POLAR,"lease":"same","operationId":"old"}).to_string(),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        reset_then_power_on(&host).await;
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"same","operationId":"new"}).to_string(),
+        )
+        .await);
+        gate.resume.notify_one();
+        ok(&old.await.unwrap());
+        assert_eq!(
+            lock(&session.state.leases)
+                .get(POLAR)
+                .map(|lease| lease.attachment.clone()),
+            Some(host.inner.central.attachment()),
+            "old terminal shadows the replacement lease"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reset_fences_late_successful_subscription_publication_after_replacement() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let old_session = host.open_session("late-sub").unwrap();
+        let replacement = host.open_session("replacement-sub").unwrap();
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: POLAR.into(),
+            address: Some(POLAR.into()),
+            ..Default::default()
+        }));
+        ok(&call(
+            &old_session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"old-connect"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &old_session,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"old","operationId":"old-discover"}).to_string(),
+        )
+        .await);
+        let gate = hold_publication(&old_session, "subscribe");
+        let task_session = old_session.clone();
+        let old = tokio::spawn(async move {
+            call(&task_session, "gatt.subscribe", &json!({"peerId":POLAR,"selector":selector(),"consumer":"old-hr","operationId":"old-sub"}).to_string()).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        reset_then_power_on(&host).await;
+        ok(&call(
+            &replacement,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"new","operationId":"new-connect"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &replacement,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"new","operationId":"new-discover"}).to_string(),
+        )
+        .await);
+        ok(&call(&replacement, "gatt.subscribe", &json!({"peerId":POLAR,"selector":selector(),"consumer":"new-hr","operationId":"new-sub"}).to_string()).await);
+        gate.resume.notify_one();
+        ok(&old.await.unwrap());
+        assert!(
+            !lock(&old_session.state.subscriptions).contains_key("old-hr"),
+            "late old success published a stale subscription"
+        );
+        let records = parse(&old_session.drain(256, 65536));
+        assert!(
+            records["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["t"] == "stream-end"
+                    && record["consumer"] == "old-hr"
+                    && record["reason"] == "invalidated"),
+            "late successful subscription must expose its reset terminal: {records}"
+        );
+    }
 
     #[derive(Default)]
     struct Radio {
@@ -3649,6 +9345,1203 @@ mod scan_stop_race_tests {
         serde_json::from_str(&rx.await.unwrap()).unwrap()
     }
 
+    include!("session_reclaim_concurrency_tests.rs");
+
+    #[tokio::test]
+    async fn marker_reservation_follows_reclaimed_group_without_write() {
+        use crate::test_common::{self, Scripted};
+        let radio = Scripted::polar();
+        let (host, _) = test_common::open(&radio, MobilePlatform::Android).await;
+        let first = host.open_session("marker-first").unwrap();
+        let second = host.open_session("marker-second").unwrap();
+        let before = radio.requests.lock().unwrap().len();
+        let reclaim_version = test_common::ok(
+            &test_common::call(&first, "gatt.ordered.recording-reclaim.version", "{}").await,
+        );
+        assert_eq!(reclaim_version["wireVersion"], 0);
+        assert_eq!(radio.requests.lock().unwrap().len(), before);
+        let version =
+            test_common::ok(&test_common::call(&first, "gatt.ordered.marker.version", "{}").await);
+        assert_eq!(version["wireVersion"], 0);
+        assert_eq!(radio.requests.lock().unwrap().len(), before);
+        let (group, capability) = host
+            .inner
+            .ordered_owners
+            .reserve("peer", first.id(), || {
+                host.inner.central.reserve_ordered_batch("peer")
+            })
+            .unwrap();
+        let base = serde_json::json!({"peerId":"peer","collectionId":group.to_string(),"reservationId":"marker-a"});
+        let gated: Value = serde_json::from_str(
+            &test_common::call(&first, "gatt.ordered.marker.reserve", &base.to_string()).await,
+        )
+        .unwrap();
+        assert_eq!(gated["ok"], false);
+        assert_eq!(gated["error"]["code"], "capability.unsupported");
+        assert_eq!(radio.count(crate::RequestKind::OrderedMarkerWrite), 0);
+        host.inner.radio.enable_marker_for_test();
+        let before = radio.requests.lock().unwrap().len();
+        let reclaim_version = test_common::ok(
+            &test_common::call(&first, "gatt.ordered.recording-reclaim.version", "{}").await,
+        );
+        assert_eq!(reclaim_version["wireVersion"], 2);
+        let denied_reclaim = serde_json::json!({"peerId":"peer","collectionId":group.to_string(),"recordingId":"missing","reclaimCapability":"invalid"});
+        let refusal = test_common::ok(
+            &test_common::call(
+                &first,
+                "gatt.ordered.recording-reclaim.next",
+                &denied_reclaim.to_string(),
+            )
+            .await,
+        );
+        assert_eq!(refusal["state"], "not-reserved");
+        assert_eq!(refusal["error"]["code"], "ownership.denied");
+        let version =
+            test_common::ok(&test_common::call(&first, "gatt.ordered.marker.version", "{}").await);
+        assert_eq!(version["wireVersion"], 1);
+        assert_eq!(radio.requests.lock().unwrap().len(), before);
+        let first_reserve = test_common::ok(
+            &test_common::call(&first, "gatt.ordered.marker.reserve", &base.to_string()).await,
+        );
+        let repeated = test_common::ok(
+            &test_common::call(&first, "gatt.ordered.marker.reserve", &base.to_string()).await,
+        );
+        assert_eq!(first_reserve, repeated);
+        let handle = first_reserve["handle"].as_str().unwrap();
+        let args =
+            serde_json::json!({"peerId":"peer","collectionId":group.to_string(),"handle":handle});
+        let denied: Value = serde_json::from_str(
+            &test_common::call(&second, "gatt.ordered.marker.status", &args.to_string()).await,
+        )
+        .unwrap();
+        assert_eq!(denied["ok"], false);
+        let cleanup =
+            tokio::time::timeout(std::time::Duration::from_secs(2), first.dispose_failures())
+                .await
+                .unwrap();
+        assert!(
+            !cleanup.is_empty(),
+            "pending marker retains group cleanup debt"
+        );
+        let reclaim = serde_json::json!({"peerId":"peer","collectionId":group.to_string(),"reclaimCapability":capability});
+        test_common::ok(
+            &test_common::call(&second, "gatt.ordered.reclaim", &reclaim.to_string()).await,
+        );
+        let status = test_common::ok(
+            &test_common::call(&second, "gatt.ordered.marker.status", &args.to_string()).await,
+        );
+        assert_eq!(status["state"], "pending");
+        let cancelled = test_common::ok(
+            &test_common::call(&second, "gatt.ordered.marker.cancel", &args.to_string()).await,
+        );
+        assert_eq!(cancelled["state"], "not-admitted");
+        assert_eq!(
+            cancelled,
+            test_common::ok(
+                &test_common::call(&second, "gatt.ordered.marker.cancel", &args.to_string()).await
+            )
+        );
+        test_common::ok(
+            &test_common::call(&second, "gatt.ordered.marker.forget", &args.to_string()).await,
+        );
+        let next = serde_json::json!({"peerId":"peer","collectionId":group.to_string(),"reservationId":"marker-b"});
+        let reserved = test_common::ok(
+            &test_common::call(&second, "gatt.ordered.marker.reserve", &next.to_string()).await,
+        );
+        let handle = reserved["handle"].as_str().unwrap();
+        let args =
+            serde_json::json!({"peerId":"peer","collectionId":group.to_string(),"handle":handle});
+        let start = serde_json::json!({"peerId":"peer","collectionId":group.to_string(),"handle":handle,"selector":test_common::selector(),"valueB64":"AQ==","mode":"with-response"});
+        test_common::ok(
+            &test_common::call(&second, "gatt.ordered.marker.start", &start.to_string()).await,
+        );
+        let failed = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let status = test_common::ok(
+                    &test_common::call(&second, "gatt.ordered.marker.status", &args.to_string())
+                        .await,
+                );
+                if status["state"] != "pending" {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(failed["state"], "not-admitted");
+        assert_eq!(
+            failed,
+            test_common::ok(
+                &test_common::call(&second, "gatt.ordered.marker.start", &start.to_string()).await
+            )
+        );
+        test_common::ok(
+            &test_common::call(&second, "gatt.ordered.marker.forget", &args.to_string()).await,
+        );
+        assert_eq!(radio.count(crate::RequestKind::OrderedMarkerWrite), 0);
+    }
+
+    #[tokio::test]
+    async fn session_marker_write_requires_fifo_ack_before_forget() {
+        use crate::test_common::{self, Reply, Scripted};
+        use std::sync::atomic::AtomicUsize;
+        let records = Arc::new(Mutex::new(Vec::<crate::OrderedRecord>::new()));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let source = Arc::clone(&records);
+        let observed = Arc::clone(&writes);
+        let member = crate::OrderedRegistration {
+            member_id: 0,
+            source_member: 11,
+            epoch: 2,
+        };
+        let radio = Scripted::new(Box::new(move |request| match request {
+            RadioRequest::Discover { .. } => {
+                let mut services = test_common::polar_services();
+                services[0].characteristics[0].properties.write = true;
+                Reply::Now(RadioCompletion::DiscoveredScoped {
+                    services,
+                    identity: ubm_desktop::boundary::GattSnapshotIdentity {
+                        owner: "graph".into(),
+                        attachment: 1,
+                        revision: 1,
+                    },
+                })
+            }
+            RadioRequest::OrderedOpen { .. } => Reply::Now(RadioCompletion::OrderedOpened {
+                generation: crate::OrderedSourceGeneration::Counter(7),
+                members: vec![member],
+            }),
+            RadioRequest::OrderedRetainClaim {
+                generation, member, ..
+            } => Reply::Now(RadioCompletion::OrderedClaim {
+                generation: generation.clone(),
+                member: *member,
+            }),
+            RadioRequest::OrderedEnableNotifications { .. } => Reply::Now(
+                RadioCompletion::NotifyEnabled(ObservedDelivery::Notification),
+            ),
+            RadioRequest::OrderedMarkerWrite { marker_id, .. } => {
+                observed.fetch_add(1, Ordering::SeqCst);
+                lock(&source).push(crate::OrderedRecord::Marker {
+                    marker_id: *marker_id,
+                    ordinal: 1,
+                });
+                Reply::Now(RadioCompletion::OrderedMarkerWriteStatus(
+                    crate::OrderedMarkerWriteStatus {
+                        admission: crate::OrderedMarkerAdmission::Admitted { ordinal: 1 },
+                        write: crate::OrderedMarkerWriteState::Settled { failure: None },
+                    },
+                ))
+            }
+            RadioRequest::OrderedCancelMarkerWrite { .. }
+            | RadioRequest::OrderedMarkerWriteSettlement { .. } => Reply::Now(
+                RadioCompletion::OrderedMarkerWriteStatus(crate::OrderedMarkerWriteStatus {
+                    admission: crate::OrderedMarkerAdmission::Admitted { ordinal: 1 },
+                    write: crate::OrderedMarkerWriteState::Settled { failure: None },
+                }),
+            ),
+            RadioRequest::OrderedDrain { .. } => {
+                let values = std::mem::take(&mut *lock(&source));
+                Reply::Now(RadioCompletion::OrderedRecords {
+                    batch_id: (!values.is_empty()).then_some(1),
+                    records: values,
+                })
+            }
+            _ => test_common::polar_responder(request),
+        }));
+        let (host, _) = test_common::open(&radio, MobilePlatform::Android).await;
+        host.inner.radio.enable_marker_for_test();
+        let session = host.open_session("marker-fifo").unwrap();
+        test_common::ok(
+            &test_common::call(
+                &session,
+                "scan.start",
+                r#"{"serviceUuids":[],"duplicatePolicy":"all","operationId":"scan"}"#,
+            )
+            .await,
+        );
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: test_common::POLAR.into(),
+            service_uuids: vec!["180D".into()],
+            ..crate::Advertisement::default()
+        }));
+        test_common::drain_until(&session, |records| {
+            !test_common::of_type(records, "adv").is_empty()
+        })
+        .await;
+        let connected = test_common::ok(&test_common::call(&session, "connection.connect", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"connect"}).to_string()).await);
+        let discovered = test_common::ok(&test_common::call(&session, "gatt.discover", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"discover"}).to_string()).await);
+        let reserved = test_common::ok(
+            &test_common::call(
+                &session,
+                "gatt.ordered.reserve",
+                &serde_json::json!({"peerId":test_common::POLAR}).to_string(),
+            )
+            .await,
+        );
+        let group = reserved["collectionId"].as_str().unwrap();
+        let open = serde_json::json!({"wireVersion":2,"peerId":test_common::POLAR,"collectionId":group,"connectionGeneration":connected["connectionGeneration"],"databaseGeneration":discovered["databaseGeneration"],"publicConnectionGeneration":"public-connection","publicDatabaseGeneration":"public-database","members":[{"memberId":"0","publicMemberId":"a","selector":test_common::selector(),"requestedDelivery":"prefer-notification"}],"maxItems":8,"maxBytes":128,"maxControls":8,"operationId":"open"});
+        test_common::ok(&test_common::call(&session, "gatt.ordered.open", &open.to_string()).await);
+        let reservation = serde_json::json!({"peerId":test_common::POLAR,"collectionId":group,"reservationId":"exact"});
+        let reserved = test_common::ok(
+            &test_common::call(
+                &session,
+                "gatt.ordered.marker.reserve",
+                &reservation.to_string(),
+            )
+            .await,
+        );
+        let handle = reserved["handle"].as_str().unwrap();
+        let marker =
+            serde_json::json!({"peerId":test_common::POLAR,"collectionId":group,"handle":handle});
+        let start = serde_json::json!({"peerId":test_common::POLAR,"collectionId":group,"handle":handle,"selector":test_common::selector(),"valueB64":"AQ==","mode":"with-response"});
+        test_common::ok(
+            &test_common::call(&session, "gatt.ordered.marker.start", &start.to_string()).await,
+        );
+        let status = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let status = test_common::ok(
+                    &test_common::call(&session, "gatt.ordered.marker.status", &marker.to_string())
+                        .await,
+                );
+                if status["state"] != "pending" {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(status["state"], "admitted");
+        assert_eq!(
+            status,
+            test_common::ok(
+                &test_common::call(&session, "gatt.ordered.marker.start", &start.to_string()).await
+            )
+        );
+        assert_eq!(
+            status,
+            test_common::ok(
+                &test_common::call(&session, "gatt.ordered.marker.cancel", &marker.to_string())
+                    .await
+            )
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        let refused: Value = serde_json::from_str(
+            &test_common::call(&session, "gatt.ordered.marker.forget", &marker.to_string()).await,
+        )
+        .unwrap();
+        assert_eq!(refused["ok"], false);
+        host.ingest(crate::RadioIngress::OrderedWake {
+            generation: crate::OrderedSourceGeneration::Counter(7),
+            group_id: group.parse().unwrap(),
+        });
+        let group_args = serde_json::json!({"peerId":test_common::POLAR,"collectionId":group});
+        let delivery = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let delivery = test_common::ok(
+                    &test_common::call(&session, "gatt.ordered.poll", &group_args.to_string())
+                        .await,
+                );
+                if !delivery["deliveryId"].is_null() {
+                    break delivery;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let record: Value = serde_json::from_str(delivery["record"].as_str().unwrap()).unwrap();
+        assert_eq!(record["kind"], "marker");
+        test_common::ok(&test_common::call(&session, "gatt.ordered.ack-delivery", &serde_json::json!({"peerId":test_common::POLAR,"collectionId":group,"deliveryId":delivery["deliveryId"]}).to_string()).await);
+        test_common::ok(
+            &test_common::call(&session, "gatt.ordered.marker.forget", &marker.to_string()).await,
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retired_recording_handles_free_capacity_and_reject_foreign_or_future() {
+        let radio = crate::test_common::Scripted::polar();
+        let (host, _) = crate::test_common::open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("receipt-owner").unwrap();
+        let other = host.open_session("receipt-other").unwrap();
+        let mut handles = Vec::new();
+        for index in 0..128 {
+            handles.push(
+                session
+                    .reserve_ordered_recording_start(
+                        &serde_json::json!([
+                            format!("recording-{index}"),
+                            format!("recording-{index}")
+                        ])
+                        .to_string(),
+                    )
+                    .unwrap()["handle"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+        }
+        assert!(
+            session
+                .reserve_ordered_recording_start(&serde_json::json!(["full", "full"]).to_string())
+                .is_err()
+        );
+        assert!(other.ordered_recording_start_status(&handles[0]).is_err());
+        assert!(
+            other
+                .retire_ordered_recording_start(&handles[0])
+                .await
+                .is_err()
+        );
+        for handle in handles.iter().rev() {
+            session
+                .retire_ordered_recording_start(handle)
+                .await
+                .unwrap();
+        }
+        for handle in &handles {
+            assert_eq!(
+                session
+                    .retire_ordered_recording_start(handle)
+                    .await
+                    .unwrap()["state"],
+                "retired"
+            );
+            assert_eq!(
+                session.ordered_recording_start_status(handle).unwrap()["state"],
+                "retired"
+            );
+        }
+        for index in 0..150 {
+            let handle = session
+                .reserve_ordered_recording_start(
+                    &serde_json::json!([format!("next-{index}"), format!("next-{index}")])
+                        .to_string(),
+                )
+                .unwrap()["handle"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            session
+                .retire_ordered_recording_start(&handle)
+                .await
+                .unwrap();
+        }
+        let future = format!("{}:{}", session.state.instance, 1000);
+        assert!(session.ordered_recording_start_status(&future).is_err());
+        assert!(
+            session
+                .retire_ordered_recording_start(&future)
+                .await
+                .is_err()
+        );
+        assert!(lock(&host.inner.ordered_start_receipts).is_empty());
+        let first = session
+            .reserve_ordered_recording_start(&serde_json::json!(["first", "first"]).to_string())
+            .unwrap()["handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let second = session
+            .reserve_ordered_recording_start(&serde_json::json!(["second", "second"]).to_string())
+            .unwrap()["handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let declaration = ubm_desktop::ordered_recording::OrderedRecordingDeclaration {
+            peer_id: "peer".into(),
+            connection_generation: "connection".into(),
+            database_generation: "database".into(),
+            members: vec![ubm_desktop::ordered_recording::OrderedRecordingMember {
+                member_id: 0,
+                public_member_id: "member".into(),
+                selector: DesktopCentral::<crate::foreign::ForeignRadio>::selector(
+                    "180D",
+                    Some(0),
+                    Some("2A37"),
+                    Some(0),
+                    None,
+                    None,
+                )
+                .unwrap(),
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let quota = ubm_desktop::continuation_journal::JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 100,
+        };
+        for (handle, id) in [(&second, "second"), (&first, "first")] {
+            let answer = session
+                .start_ordered_recording(
+                    handle.clone(),
+                    id.into(),
+                    quota,
+                    declaration.clone(),
+                    OpControl::budget_ms(5000),
+                )
+                .await
+                .unwrap();
+            assert_eq!(answer["kind"], "prepare-failed");
+            assert_eq!(
+                session.ordered_recording_start_status(handle).unwrap()["state"],
+                "ready"
+            );
+            session
+                .retire_ordered_recording_start(handle)
+                .await
+                .unwrap();
+        }
+        *lock(&session.state.recording_start_last) = Some(u64::MAX);
+        assert!(
+            session
+                .reserve_ordered_recording_start(
+                    &serde_json::json!(["overflow", "overflow"]).to_string()
+                )
+                .is_err()
+        );
+        assert!(lock(&host.inner.ordered_start_receipts).is_empty());
+        assert!(session.dispose_failures().await.is_empty());
+        assert!(other.dispose_failures().await.is_empty());
+        let _ = host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn dispose_preserves_session_lease_while_recorder_open_is_pending() {
+        use crate::test_common::{self, Reply, Scripted};
+        use ubm_desktop::continuation_journal::JournalQuota;
+        use ubm_desktop::ordered_recording::{OrderedRecordingDeclaration, OrderedRecordingMember};
+        let radio = Scripted::new(Box::new(|request| match request {
+            RadioRequest::Discover { .. } => Reply::Now(RadioCompletion::DiscoveredScoped {
+                services: test_common::polar_services(),
+                identity: ubm_desktop::boundary::GattSnapshotIdentity {
+                    owner: "graph".into(),
+                    attachment: 1,
+                    revision: 1,
+                },
+            }),
+            RadioRequest::OrderedOpen { .. } => Reply::Hold,
+            _ => test_common::polar_responder(request),
+        }));
+        let (host, _) = test_common::open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("recorder-pending-dispose").unwrap();
+        test_common::ok(
+            &test_common::call(
+                &session,
+                "scan.start",
+                r#"{"serviceUuids":[],"duplicatePolicy":"all","operationId":"scan"}"#,
+            )
+            .await,
+        );
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: test_common::POLAR.into(),
+            service_uuids: vec!["180D".into()],
+            ..crate::Advertisement::default()
+        }));
+        test_common::drain_until(&session, |records| {
+            !test_common::of_type(records, "adv").is_empty()
+        })
+        .await;
+        let connected = test_common::ok(&test_common::call(&session, "connection.connect", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"connect"}).to_string()).await);
+        let discovered = test_common::ok(&test_common::call(&session, "gatt.discover", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"discover"}).to_string()).await);
+        let path = std::env::temp_dir().join(format!(
+            "ubm-mobile-pending-dispose-{}-{}",
+            std::process::id(),
+            session.id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        host.inner
+            .recording_registry
+            .configure_directory(&path)
+            .unwrap();
+        let selector = DesktopCentral::<crate::foreign::ForeignRadio>::selector(
+            "180D",
+            Some(0),
+            Some("2A37"),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: test_common::POLAR.into(),
+            connection_generation: connected["connectionGeneration"].as_str().unwrap().into(),
+            database_generation: discovered["databaseGeneration"].as_str().unwrap().into(),
+            members: vec![OrderedRecordingMember {
+                member_id: 0,
+                public_member_id: "heart-rate".into(),
+                selector,
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let reserved = session
+            .reserve_ordered_recording_start(
+                &serde_json::json!(["pending-dispose", "pending-dispose"]).to_string(),
+            )
+            .unwrap();
+        let handle = reserved["handle"].as_str().unwrap().to_owned();
+        assert_eq!(
+            reserved,
+            session
+                .reserve_ordered_recording_start(
+                    &serde_json::json!(["pending-dispose", "pending-dispose"]).to_string()
+                )
+                .unwrap()
+        );
+        let task = {
+            let session = session.clone();
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                session
+                    .start_ordered_recording(
+                        handle,
+                        "pending-dispose".into(),
+                        JournalQuota {
+                            max_bytes: 1 << 20,
+                            max_records: 100,
+                        },
+                        declaration,
+                        OpControl::budget_ms(5000),
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while radio.held_of(crate::RequestKind::OrderedOpen).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let failures = session.dispose_failures().await;
+        assert!(
+            !failures.is_empty(),
+            "pending recorder handoff must retain cleanup debt"
+        );
+        assert!(lock(&session.state.leases).contains_key(test_common::POLAR));
+        let id = radio.held_of(crate::RequestKind::OrderedOpen)[0];
+        radio.answer(
+            id,
+            RadioCompletion::OrderedOpenFailed {
+                failure: crate::PlatformFailure::new(crate::FailureKind::GattStatus, "injected"),
+                ownership: crate::OrderedOpenOwnership::NotCreated,
+            },
+        );
+        let _ = task.await;
+        for _ in 0..100 {
+            if session.dispose_failures().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!lock(&session.state.leases).contains_key(test_common::POLAR));
+        let _ = host.shutdown().await;
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn direct_terminal_close_revokes_start_receipt() {
+        use crate::test_common::{self, Reply, Scripted};
+        use ubm_desktop::continuation_journal::JournalQuota;
+        use ubm_desktop::ordered_recording::{OrderedRecordingDeclaration, OrderedRecordingMember};
+        let radio = Scripted::new(Box::new(|request| match request {
+            RadioRequest::Discover { .. } => Reply::Now(RadioCompletion::DiscoveredScoped {
+                services: test_common::polar_services(),
+                identity: ubm_desktop::boundary::GattSnapshotIdentity {
+                    owner: "graph".into(),
+                    attachment: 1,
+                    revision: 1,
+                },
+            }),
+            RadioRequest::OrderedOpen { .. } => Reply::Hold,
+            _ => test_common::polar_responder(request),
+        }));
+        let (host, _) = test_common::open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("direct-close-revoke").unwrap();
+        test_common::ok(
+            &test_common::call(
+                &session,
+                "scan.start",
+                r#"{"serviceUuids":[],"duplicatePolicy":"all","operationId":"scan"}"#,
+            )
+            .await,
+        );
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: test_common::POLAR.into(),
+            service_uuids: vec!["180D".into()],
+            ..crate::Advertisement::default()
+        }));
+        test_common::drain_until(&session, |records| {
+            !test_common::of_type(records, "adv").is_empty()
+        })
+        .await;
+        let connected = test_common::ok(&test_common::call(&session, "connection.connect", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"connect"}).to_string()).await);
+        let discovered = test_common::ok(&test_common::call(&session, "gatt.discover", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"discover"}).to_string()).await);
+        let path = std::env::temp_dir().join(format!(
+            "ubm-mobile-recorder-direct-close-{}-{}",
+            std::process::id(),
+            session.id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        host.inner
+            .recording_registry
+            .configure_directory(&path)
+            .unwrap();
+        let selector = DesktopCentral::<crate::foreign::ForeignRadio>::selector(
+            "180D",
+            Some(0),
+            Some("2A37"),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: test_common::POLAR.into(),
+            connection_generation: connected["connectionGeneration"].as_str().unwrap().into(),
+            database_generation: discovered["databaseGeneration"].as_str().unwrap().into(),
+            members: vec![OrderedRecordingMember {
+                member_id: 0,
+                public_member_id: "heart-rate".into(),
+                selector,
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let reservation = serde_json::json!(["direct-close", "caller"]).to_string();
+        let handle = session
+            .reserve_ordered_recording_start(&reservation)
+            .unwrap()["handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let owner = ubm_desktop::ordered_recording::OrderedRecording::prepare(
+            Arc::new(host.inner.central.clone()),
+            Arc::clone(&host.inner.recording_registry),
+            "direct-close".into(),
+            JournalQuota {
+                max_bytes: 1 << 20,
+                max_records: 100,
+            },
+            declaration,
+        )
+        .await
+        .unwrap();
+        host.inner
+            .ordered_owners
+            .reserve(test_common::POLAR, session.state.id, || {
+                Ok(owner.collection_id())
+            })
+            .unwrap();
+        lock(&host.inner.ordered_recordings).insert(
+            (session.state.id, "direct-close".into()),
+            Arc::clone(&owner),
+        );
+        {
+            let sequence = session.recording_handle(&handle).unwrap();
+            let mut receipts = lock(&host.inner.ordered_start_receipts);
+            let entry = receipts.get_mut(&(session.state.id, sequence)).unwrap();
+            entry.owner_collection = Some(owner.collection_id());
+            entry.result = Some(serde_json::json!({"kind":"started"}));
+        }
+        let previous = host.open_session("previous-owner").unwrap();
+        let previous_handle = previous
+            .reserve_ordered_recording_start(&reservation)
+            .unwrap()["handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        {
+            let sequence = previous.recording_handle(&previous_handle).unwrap();
+            let mut receipts = lock(&host.inner.ordered_start_receipts);
+            let entry = receipts.get_mut(&(previous.state.id, sequence)).unwrap();
+            entry.owner_collection = Some(owner.collection_id());
+            entry.result = Some(serde_json::json!({"kind":"started"}));
+        }
+        assert!(matches!(
+            session.close_ordered_recording("direct-close").await,
+            Ok(ubm_desktop::ordered_recording::RecordingDriverStatus::Finished)
+        ));
+        assert_eq!(
+            session.ordered_recording_start_status(&handle).unwrap()["state"],
+            "revoked"
+        );
+        assert_eq!(
+            previous
+                .ordered_recording_start_status(&previous_handle)
+                .unwrap()["state"],
+            "revoked"
+        );
+        previous
+            .retire_ordered_recording_start(&previous_handle)
+            .await
+            .unwrap();
+        assert!(
+            !lock(&host.inner.ordered_recordings)
+                .contains_key(&(session.state.id, "direct-close".into())),
+            "retirement follows the exact owner after transfer"
+        );
+        let _ = session.dispose_failures().await;
+        let _ = host.shutdown().await;
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn failed_prepared_owner_can_retire_and_dispose() {
+        use crate::test_common::{self, Reply, Scripted};
+        use ubm_desktop::continuation_journal::JournalQuota;
+        use ubm_desktop::ordered_recording::{OrderedRecordingDeclaration, OrderedRecordingMember};
+        let radio = Scripted::new(Box::new(|request| match request {
+            RadioRequest::Discover { .. } => Reply::Now(RadioCompletion::DiscoveredScoped {
+                services: test_common::polar_services(),
+                identity: ubm_desktop::boundary::GattSnapshotIdentity {
+                    owner: "graph".into(),
+                    attachment: 1,
+                    revision: 1,
+                },
+            }),
+            RadioRequest::OrderedOpen { .. } => Reply::Hold,
+            _ => test_common::polar_responder(request),
+        }));
+        let (host, _) = test_common::open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("prepared-owner-failure").unwrap();
+        test_common::ok(
+            &test_common::call(
+                &session,
+                "scan.start",
+                r#"{"serviceUuids":[],"duplicatePolicy":"all","operationId":"scan"}"#,
+            )
+            .await,
+        );
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: test_common::POLAR.into(),
+            service_uuids: vec!["180D".into()],
+            ..crate::Advertisement::default()
+        }));
+        test_common::drain_until(&session, |records| {
+            !test_common::of_type(records, "adv").is_empty()
+        })
+        .await;
+        let connected = test_common::ok(&test_common::call(&session, "connection.connect", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"connect"}).to_string()).await);
+        let discovered = test_common::ok(&test_common::call(&session, "gatt.discover", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"discover"}).to_string()).await);
+        let path = std::env::temp_dir().join(format!(
+            "ubm-mobile-recorder-prepared-owner-{}-{}",
+            std::process::id(),
+            session.id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        host.inner
+            .recording_registry
+            .configure_directory(&path)
+            .unwrap();
+        let selector = DesktopCentral::<crate::foreign::ForeignRadio>::selector(
+            "180D",
+            Some(0),
+            Some("2A37"),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: test_common::POLAR.into(),
+            connection_generation: connected["connectionGeneration"].as_str().unwrap().into(),
+            database_generation: discovered["databaseGeneration"].as_str().unwrap().into(),
+            members: vec![OrderedRecordingMember {
+                member_id: 0,
+                public_member_id: "heart-rate".into(),
+                selector,
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        for index in 0..128 {
+            host.inner
+                .ordered_owners
+                .reserve(test_common::POLAR, 999, || Ok(10000 + index))
+                .unwrap();
+        }
+        let handle = session
+            .reserve_ordered_recording_start(
+                &serde_json::json!(["unopened", "unopened"]).to_string(),
+            )
+            .unwrap()["handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let result = session
+            .start_ordered_recording(
+                handle.clone(),
+                "unopened".into(),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 100,
+                },
+                declaration,
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        assert_ne!(result["kind"], "started");
+        session
+            .retire_ordered_recording_start(&handle)
+            .await
+            .unwrap();
+        session
+            .retire_ordered_recording_start(&handle)
+            .await
+            .unwrap();
+        assert!(session.dispose_failures().await.is_empty());
+        assert!(session.dispose_failures().await.is_empty());
+        let _ = host.shutdown().await;
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn recording_reservations_distinguish_callers() {
+        let radio = crate::test_common::Scripted::polar();
+        let (host, _) = crate::test_common::open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("reservation-callers").unwrap();
+        let first = r#"["capture","caller-1"]"#;
+        let second = r#"["capture","caller-2"]"#;
+        let one = session.reserve_ordered_recording_start(first).unwrap();
+        assert_eq!(one, session.reserve_ordered_recording_start(first).unwrap());
+        let two = session.reserve_ordered_recording_start(second).unwrap();
+        assert_ne!(one["handle"], two["handle"]);
+        session
+            .retire_ordered_recording_start(one["handle"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .ordered_recording_start_status(two["handle"].as_str().unwrap())
+                .unwrap()["state"],
+            "reserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_recording_start_retains_supervised_owner() {
+        use crate::test_common::{self, Reply, Scripted};
+        use ubm_desktop::continuation_journal::JournalQuota;
+        use ubm_desktop::ordered_recording::{OrderedRecordingDeclaration, OrderedRecordingMember};
+        let radio = Scripted::new(Box::new(|request| match request {
+            RadioRequest::Discover { .. } => Reply::Now(RadioCompletion::DiscoveredScoped {
+                services: test_common::polar_services(),
+                identity: ubm_desktop::boundary::GattSnapshotIdentity {
+                    owner: "graph".into(),
+                    attachment: 1,
+                    revision: 1,
+                },
+            }),
+            RadioRequest::OrderedOpen { .. } => Reply::Hold,
+            _ => test_common::polar_responder(request),
+        }));
+        let (host, _) = test_common::open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("recorder-cancel").unwrap();
+        test_common::ok(
+            &test_common::call(
+                &session,
+                "scan.start",
+                r#"{"serviceUuids":[],"duplicatePolicy":"all","operationId":"scan"}"#,
+            )
+            .await,
+        );
+        host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+            peer_id: test_common::POLAR.into(),
+            service_uuids: vec!["180D".into()],
+            ..crate::Advertisement::default()
+        }));
+        test_common::drain_until(&session, |records| {
+            !test_common::of_type(records, "adv").is_empty()
+        })
+        .await;
+        let connected = test_common::ok(&test_common::call(&session, "connection.connect", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"connect"}).to_string()).await);
+        let discovered = test_common::ok(&test_common::call(&session, "gatt.discover", &serde_json::json!({"peerId":test_common::POLAR,"lease":"lease-1","operationId":"discover"}).to_string()).await);
+        let path = std::env::temp_dir().join(format!(
+            "ubm-mobile-recorder-cancelled-start-{}-{}",
+            std::process::id(),
+            session.id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        host.inner
+            .recording_registry
+            .configure_directory(&path)
+            .unwrap();
+        let selector = DesktopCentral::<crate::foreign::ForeignRadio>::selector(
+            "180D",
+            Some(0),
+            Some("2A37"),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        let declaration = OrderedRecordingDeclaration {
+            peer_id: test_common::POLAR.into(),
+            connection_generation: connected["connectionGeneration"].as_str().unwrap().into(),
+            database_generation: discovered["databaseGeneration"].as_str().unwrap().into(),
+            members: vec![OrderedRecordingMember {
+                member_id: 0,
+                public_member_id: "heart-rate".into(),
+                selector,
+                delivery: None,
+                preference: None,
+            }],
+            max_items: 8,
+            max_bytes: 128,
+            max_controls: 8,
+        };
+        let retry_declaration = declaration.clone();
+        let reserved = session
+            .reserve_ordered_recording_start(
+                &serde_json::json!(["cancelled-start", "cancelled-start"]).to_string(),
+            )
+            .unwrap();
+        let handle = reserved["handle"].as_str().unwrap().to_owned();
+        assert_eq!(
+            reserved,
+            session
+                .reserve_ordered_recording_start(
+                    &serde_json::json!(["cancelled-start", "cancelled-start"]).to_string()
+                )
+                .unwrap()
+        );
+        let task = {
+            let session = session.clone();
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                session
+                    .start_ordered_recording(
+                        handle,
+                        "cancelled-start".into(),
+                        JournalQuota {
+                            max_bytes: 1 << 20,
+                            max_records: 100,
+                        },
+                        declaration,
+                        OpControl::budget_ms(5000),
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while radio.held_of(crate::RequestKind::OrderedOpen).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        assert_eq!(
+            session.ordered_recording_start_status(&handle).unwrap()["state"],
+            "pending"
+        );
+        assert!(
+            session
+                .retire_ordered_recording_start(&handle)
+                .await
+                .is_err()
+        );
+        assert!(
+            session
+                .ordered_recording_status("cancelled-start")
+                .is_some()
+        );
+        assert!(lock(&session.state.leases).contains_key(test_common::POLAR));
+        let other = host.open_session("other-recorder").unwrap();
+        assert!(other.ordered_recording_start_status(&handle).is_err());
+        assert!(other.retire_ordered_recording_start(&handle).await.is_err());
+        for context in [false, true] {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            other.ordered_recording_control_wire(
+                "cancelled-start".into(),
+                context,
+                Box::new(move |answer| {
+                    let _ = tx.send(answer);
+                }),
+            );
+            let answer: Value = serde_json::from_str(&rx.await.unwrap()).unwrap();
+            assert_eq!(answer["ok"], false);
+            assert_eq!(answer["error"]["code"], "ownership.denied");
+        }
+        let id = radio.held_of(crate::RequestKind::OrderedOpen)[0];
+        radio.answer(
+            id,
+            RadioCompletion::OrderedOpenFailed {
+                failure: crate::PlatformFailure::new(crate::FailureKind::GattStatus, "injected"),
+                ownership: crate::OrderedOpenOwnership::NotCreated,
+            },
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let _guard = session.state.release_guard.lock().await;
+        })
+        .await
+        .unwrap();
+        assert!(
+            session
+                .ordered_recording_status("cancelled-start")
+                .is_some()
+        );
+        let quota = JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 100,
+        };
+        let receipt = session
+            .start_ordered_recording(
+                handle.clone(),
+                "cancelled-start".into(),
+                quota,
+                retry_declaration.clone(),
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt["kind"], "started");
+        assert_eq!(receipt["receipt"]["state"], "setup-failed");
+        assert_eq!(radio.count(crate::RequestKind::OrderedOpen), 1);
+        let repeated = session
+            .start_ordered_recording(
+                handle.clone(),
+                "cancelled-start".into(),
+                quota,
+                retry_declaration.clone(),
+                OpControl::budget_ms(5000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt, repeated);
+        let mut altered = retry_declaration.clone();
+        altered.members[0].public_member_id = "other".into();
+        assert!(
+            session
+                .start_ordered_recording(
+                    handle.clone(),
+                    "cancelled-start".into(),
+                    quota,
+                    altered,
+                    OpControl::budget_ms(5000)
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(radio.count(crate::RequestKind::OrderedOpen), 1);
+        assert_eq!(
+            session.ordered_recording_start_status(&handle).unwrap()["state"],
+            "ready"
+        );
+        // The native start receipt belongs to this collection even if a
+        // reclaim has moved the live supervisor to another session.
+        let owner = {
+            let mut entries = lock(&host.inner.ordered_recordings);
+            let owner = entries
+                .remove(&(session.state.id, "cancelled-start".into()))
+                .unwrap();
+            entries.insert(
+                (other.state.id, "cancelled-start".into()),
+                Arc::clone(&owner),
+            );
+            owner
+        };
+        session
+            .retire_ordered_recording_start(&handle)
+            .await
+            .unwrap();
+        assert_eq!(owner.start_status()["state"], "retired");
+        assert!(
+            lock(&host.inner.ordered_recordings)
+                .contains_key(&(other.state.id, "cancelled-start".into()))
+        );
+        {
+            let mut entries = lock(&host.inner.ordered_recordings);
+            entries.remove(&(other.state.id, "cancelled-start".into()));
+            entries.insert((session.state.id, "cancelled-start".into()), owner);
+        }
+        session
+            .retire_ordered_recording_start(&handle)
+            .await
+            .unwrap();
+        assert_eq!(
+            session.ordered_recording_start_status(&handle).unwrap()["state"],
+            "retired"
+        );
+        assert!(
+            session
+                .ordered_recording_status("cancelled-start")
+                .is_some()
+        );
+        assert!(
+            session
+                .start_ordered_recording(
+                    handle.clone(),
+                    "cancelled-start".into(),
+                    quota,
+                    retry_declaration,
+                    OpControl::budget_ms(5000)
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(radio.count(crate::RequestKind::OrderedOpen), 1);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        session.ordered_recording_control_wire(
+            "cancelled-start".into(),
+            false,
+            Box::new(move |answer| {
+                let _ = tx.send(answer);
+            }),
+        );
+        let stopped: Value = serde_json::from_str(&rx.await.unwrap()).unwrap();
+        assert_eq!(stopped["ok"], true);
+        assert!(stopped["value"]["hostCleanup"]["state"].is_string());
+        assert!(lock(&session.state.leases).contains_key(test_common::POLAR));
+        assert!(
+            host.session(other.id()).is_some(),
+            "stop must not dispose another session"
+        );
+        test_common::ok(&test_common::call(&other, "adapter.state", "{}").await);
+        let mut failures = session.dispose_failures().await;
+        for _ in 0..50 {
+            if failures.is_empty() {
+                break;
+            }
+            assert!(lock(&session.state.leases).contains_key(test_common::POLAR));
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            failures = session.dispose_failures().await;
+        }
+        assert!(
+            failures.is_empty(),
+            "failed source setup remains recoverable: {failures:?}"
+        );
+        assert!(
+            session
+                .ordered_recording_status("cancelled-start")
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&host.shutdown().await).unwrap()["state"],
+            "released"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn dispose_retries_unconfirmed_companion_ui_without_releasing_another_session() {
         let radio = Arc::new(Radio::default());
@@ -3669,7 +10562,9 @@ mod scan_stop_race_tests {
         radio.host.set(Arc::downgrade(&host)).unwrap();
         let session = host.open_session("chooser").unwrap();
         let other = host.open_session("unrelated").unwrap();
+        let mut request_id = None;
         let mut choice = Box::pin(session.host.radio.call_owned_companion(session.id(), |id| {
+            request_id = Some(id);
             RadioRequest::AssociateCompanion {
                 id,
                 name: None,
@@ -3692,7 +10587,7 @@ mod scan_stop_race_tests {
             "unconfirmed UI remains retryable"
         );
         host.complete(
-            1,
+            request_id.expect("the companion request was dispatched"),
             RadioCompletion::Failed(crate::PlatformFailure::new(
                 crate::FailureKind::Cancelled,
                 "UI closed after held queue drained",

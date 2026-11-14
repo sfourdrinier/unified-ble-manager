@@ -7,10 +7,27 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.os.Build
 import com.sfourdrinier.unifiedblemanager.radio.GattConnectAttempt
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
+import com.sfourdrinier.unifiedblemanager.radio.NotificationOwnershipFifo
+import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidNotificationObserver
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidSecurityState
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioAdapterProtocolState
 import com.sfourdrinier.unifiedblemanager.radio.resolveUuidOccurrence
 import java.util.UUID
+
+/** Preserve typed failure identity while keeping arbitrary exception text off the wire. */
+internal fun classifyAndroidNotificationStop(reason: NotificationOwnershipFifo.Stop): RadioFailure = when (reason) {
+  is NotificationOwnershipFifo.Stop.DeliveryUncertain -> {
+    val classified = RustRadioHostAdapter.classify(reason.cause)
+    classified.copy(
+      detail = "Android notification ingress delivery failed",
+      nativeCode = classified.nativeCode ?: "NOTIFICATION_DELIVERY_UNCERTAIN"
+    )
+  }
+  is NotificationOwnershipFifo.Stop.ControlCapacity -> RadioFailure(
+    RadioFailureKind.PLATFORM, null, "Android notification ingress control capacity exhausted",
+    nativeCode = "NOTIFICATION_CONTROL_CAPACITY"
+  )
+}
 
 /**
  * Production [AndroidRadioPort]: the process's one [OwnedAndroidGattRadio]
@@ -18,58 +35,74 @@ import java.util.UUID
  * driver keeps GATT serialization, generation fencing, CCCD arbitration and
  * teardown ownership.
  */
-internal class OwnedRadioPort(
+internal class OwnedRadioPort private constructor(
   private val radio: OwnedAndroidGattRadio,
+  private val orderedPort: OwnedOrderedGroupPort,
   private val log: (String) -> Unit
-) : AndroidRadioPort {
+) : AndroidRadioPort, ScanIdentityRadioPort, ScopedDiscoveryPort, OrderedPhysicalPort, OwnerReceiverRetirementPort, OwnerGraphFencePort, OwnerOrderedStoreSnapshotPort by orderedPort, OrderedGroupPort by orderedPort {
+  constructor(radio: OwnedAndroidGattRadio, log: (String) -> Unit) : this(radio, OwnedOrderedGroupPort(radio), log)
+  private val scanOwner = Any()
+  private val receiverOwner = OwnedAndroidGattRadio.ReceiverOwner()
+  private lateinit var scanEvents: RadioPortEvents
+  private lateinit var notificationObserver: OwnedAndroidNotificationObserver
+  private lateinit var connectionEvents: RadioPortEvents
 
-  override fun setEvents(events: RadioPortEvents) {
-    radio.onProtocolScanResult = { advertisement ->
-      events.onAdvertisement(
-        AdvertisementFacts(
-          peerId = advertisement.deviceId,
-          address = advertisement.deviceId,
-          localName = advertisement.name,
-          rssi = advertisement.rssi,
-          txPower = advertisement.txPower,
-          serviceUuids = advertisement.serviceUuids ?: emptyList(),
-          manufacturerData = advertisement.manufacturerData?.map { it.companyIdentifier to it.value } ?: emptyList(),
-          serviceData = advertisement.serviceData?.map { it.serviceUuid to it.value } ?: emptyList(),
-          connectable = advertisement.connectable,
-          solicitedServiceUuids = advertisement.solicitedServiceUuids,
-          appearance = advertisement.appearance,
-          rawRecord = advertisement.rawRecord?.copyOf(),
-          cachedName = advertisement.cachedName,
-          captureTimestampMs = advertisement.captureTimestampMs
-        )
-      )
-    }
-    // The token-carrying hook, not the 3-parameter one: the observation's connect attempt is what
-    // lets the host adapter tell a prior generation's loss from its pending connect's outcome.
-    radio.onConnectionOutcome = { deviceId, connected, status, attempt ->
-      events.onConnection(deviceId, connected, status, attempt)
-    }
-    radio.onServicesChanged = { deviceId -> events.onServicesChanged(deviceId) }
-    radio.onProtocolNotification = { deviceId, characteristic, value ->
-      val instance = instanceOf(deviceId, characteristic)
-      if (instance == null) {
-        events.onDropped(
-          "notification",
-          "value for ${characteristic.uuid} on $deviceId whose service is no longer in the database"
-        )
-      } else {
-        events.onNotification(instance, value)
+  override fun retireReceivers(): OwnerReceiverRetirement {
+    val result = radio.retireReceiverOwner(receiverOwner)
+    return OwnerReceiverRetirement(result.callbacks, result.failures.map { it.throwable })
+  }
+
+  override fun fenceGraphOwner() = orderedPort.fenceGraphOwner()
+  override fun graphOwnerStatus() = orderedPort.graphOwnerStatus()
+
+  override fun setEvents(events: RadioPortEvents) = radio.registerReceiverOwner(
+    receiverOwner,
+    adapter = { events.onAdapterState(adapterFacts(radio.currentProtocolAdapterState())) },
+    security = { deviceId, state -> events.onSecurity(deviceId, securityFacts(state)) },
+    securityFailure = { deviceId, error -> events.onSecurityFailure(deviceId, error) },
+    platformFact = { ingressClass, detail, count -> events.onDropped(ingressClass, detail, count) }
+  ) {
+    scanEvents = events
+    connectionEvents = events
+    notificationObserver = OwnedAndroidNotificationObserver(
+      owner = receiverOwner,
+      event = { device, _, _, epoch, path, event ->
+        radio.withReceiverOwnerCallback(receiverOwner) {
+          when (event) {
+            is NotificationOwnershipFifo.Event.Value -> {
+              val sourcePath = path ?: throw IllegalStateException("notification source path is unavailable")
+              val sourceEpoch = epoch ?: throw IllegalStateException("notification source epoch is unavailable")
+              events.onNotification(CharacteristicInstance(device, sourcePath.serviceUuid.toString(),
+                sourcePath.serviceOccurrence.toLong(), sourcePath.characteristicUuid.toString(),
+                sourcePath.characteristicOccurrence.toLong()), sourceEpoch, event.bytes.copyOf())
+            }
+            is NotificationOwnershipFifo.Event.Loss ->
+              events.onDropped("notification", "Android notification ingress staging was full", event.items)
+            is NotificationOwnershipFifo.Event.Terminal -> Unit
+          }
+        }
+      },
+      stopped = { device, _, _, epoch, path, reason ->
+        radio.withReceiverOwnerCallback(receiverOwner) {
+          val sourceEpoch = epoch ?: throw IllegalStateException("failed notification source has no enable epoch")
+          val sourcePath = path ?: throw IllegalStateException("failed notification source has no characteristic path")
+          events.onNotificationSourceFailed(CharacteristicInstance(device, sourcePath.serviceUuid.toString(),
+            sourcePath.serviceOccurrence.toLong(), sourcePath.characteristicUuid.toString(),
+            sourcePath.characteristicOccurrence.toLong()), sourceEpoch, classifyAndroidNotificationStop(reason))
+        }
       }
+    )
+    radio.onAdmissionOverflow = { _, notifications, controls ->
+      var failure: Throwable? = null
+      if (notifications > 0) try { events.onDropped("notification", "Android reentrant callback staging overflow", notifications) }
+      catch (error: Throwable) { failure = error }
+      if (controls > 0) try { events.onDropped("control", "Android reentrant callback staging overflow", controls) }
+      catch (error: Throwable) { if (failure == null) failure = error else failure?.addSuppressed(error) }
+      failure?.let { throw it }
     }
-    radio.onSecurityState = { deviceId, state -> events.onSecurity(deviceId, securityFacts(state)) }
-    radio.onSecurityFailure = { deviceId, error -> events.onSecurityFailure(deviceId, error) }
-    radio.onScanFailed = { errorCode -> events.onScanFailed(errorCode) }
-    radio.onAdapterState = { _ -> events.onAdapterState(adapterFacts(radio.currentProtocolAdapterState())) }
     radio.onCleanupFailure = { failure ->
       log("Android cleanup remains retryable operation=${failure.operation}: ${failure.throwable.message}")
     }
-    radio.registerAdapterStateReceiver()
-    radio.registerBondStateReceiver()
   }
 
   override fun adapterState(): AdapterFacts = adapterFacts(radio.currentProtocolAdapterState())
@@ -96,10 +129,16 @@ internal class OwnedRadioPort(
   }
 
   override fun startScan(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int,
-                         legacy: Boolean, reportDelayMs: Long, phy: Int?) {
+                         legacy: Boolean, reportDelayMs: Long, phy: Int?) =
+    startScanWithIdentity(serviceUuids, deviceAddresses, mode, callbackType, legacy, reportDelayMs, phy, java.util.UUID.randomUUID().toString())
+
+  override fun startScanWithIdentity(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int,
+                         legacy: Boolean, reportDelayMs: Long, phy: Int?, scanIdentity: String) {
     requireRadioReady()
     try {
-      radio.startScan(
+      val events = scanEvents
+      radio.startOwnedScan(
+        owner = scanOwner,
         serviceUuids = serviceUuids.toTypedArray(),
         scanMode = mode,
         callbackType = callbackType,
@@ -107,14 +146,35 @@ internal class OwnedRadioPort(
         allowDuplicates = true,
         deviceAddresses = deviceAddresses.toTypedArray(),
         reportDelayMs = reportDelayMs,
-        scanPhy = phy
+        scanPhy = phy,
+        onAdvertisement = { advertisement -> events.onAdvertisement(AdvertisementFacts(
+          peerId = advertisement.deviceId,
+          address = advertisement.deviceId,
+          localName = advertisement.name,
+          rssi = advertisement.rssi,
+          txPower = advertisement.txPower,
+          serviceUuids = advertisement.serviceUuids ?: emptyList(),
+          manufacturerData = advertisement.manufacturerData?.map { it.companyIdentifier to it.value } ?: emptyList(),
+          serviceData = advertisement.serviceData?.map { it.serviceUuid to it.value } ?: emptyList(),
+          connectable = advertisement.connectable,
+          solicitedServiceUuids = advertisement.solicitedServiceUuids,
+          appearance = advertisement.appearance,
+          rawRecord = advertisement.rawRecord?.copyOf(),
+          cachedName = advertisement.cachedName,
+          captureTimestampMs = advertisement.captureTimestampMs,
+          scanIdentity = scanIdentity
+        )) },
+        onFailure = { code, stop -> events.onScanFailed(code, scanIdentity) {
+          val (stale, failure) = stop()
+          RadioScanStop(stale, failure?.throwable)
+        } }
       )
     } catch (error: IllegalArgumentException) {
       throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, error.message ?: "scan settings unsupported", cause = error)
     }
   }
 
-  override fun stopScan(): Throwable? = radio.stopScan()?.throwable
+  override fun stopScan(): Throwable? = radio.stopOwnedScan(scanOwner)?.throwable
 
   override fun supportsConnectPhy(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
   override fun supportsSubrate(): Boolean = radio.subrateAvailable()
@@ -124,23 +184,34 @@ internal class OwnedRadioPort(
 
   override fun connect(peerId: String, autoConnect: Boolean, phyMask: Int, attempt: GattConnectAttempt) {
     requireRadioReady()
-    radio.connect(peerId, autoConnect, phyMask, attempt)
+    val events = connectionEvents
+    radio.connectOwned(peerId, autoConnect, phyMask, attempt, receiverOwner,
+      { device, connected, status, ownerAttempt -> events.onConnection(device, connected, status, ownerAttempt) },
+      { device -> events.onServicesChanged(device) },
+      { device, ownerAttempt -> events.onOrderedLinkFence(device, ownerAttempt) })
   }
 
   override fun disconnect(peerId: String, onComplete: (Throwable?) -> Unit) {
-    radio.disconnect(peerId) { failure -> onComplete(failure?.throwable) }
+    radio.disconnectOwned(peerId, receiverOwner) { failure -> onComplete(failure?.throwable) }
+  }
+
+  override fun cancelConnect(peerId: String, attempt: GattConnectAttempt, onComplete: (Throwable?) -> Unit) {
+    radio.cancelConnect(peerId, attempt) { failure -> onComplete(failure?.throwable) }
   }
 
   override fun discover(peerId: String, onResult: (Result<List<GattServiceNode>>) -> Unit): Long =
-    radio.discover(peerId) { result ->
+    discoverScoped(peerId) { result -> onResult(result.map { it.services }) }
+
+  override fun discoverScoped(peerId: String, onResult: (Result<ScopedGattGraph>) -> Unit): Long =
+    orderedPort.withGraphOwner { radio.discover(peerId) { result ->
       // The driver's own failure crosses as is: a link loss stays an
       // AndroidGattLinkLost, which the host adapter reports as NOT_CONNECTED.
       val failure = result.exceptionOrNull()
       if (failure != null) {
         onResult(Result.failure(failure))
       } else {
-        val services = radio.services(peerId)
-        onResult(runCatching { services.map { service ->
+        onResult(runCatching {
+          val (identity, tree) = radio.withNativeGraph(peerId) { services -> services.map { service ->
           GattServiceNode(
             service.uuid.toString(),
             service.characteristics.map { characteristic ->
@@ -161,9 +232,11 @@ internal class OwnedRadioPort(
               GattIncludedServiceNode(target.uuid.toString(), services.take(index).count { it.uuid == target.uuid }.toLong())
             }
           )
-        } })
+          } }
+          ScopedGattGraph(identity, tree)
+        })
       }
-    }
+    } }
 
   override fun characteristic(instance: CharacteristicInstance): CharacteristicFacts? {
     val target = resolve(instance) ?: return null
@@ -212,9 +285,9 @@ internal class OwnedRadioPort(
     )
   }
 
-  override fun setNotification(instance: CharacteristicInstance, enable: Boolean, mode: String?, onResult: (Result<Unit>) -> Unit): Long {
+  override fun setNotification(instance: CharacteristicInstance, enable: Boolean, mode: String?, epoch: Long?, onResult: (Result<Unit>) -> Unit): Long {
     val path = path(instance)
-    return radio.setNotifyExact(
+    return radio.setNotifyExactOwned(
       instance.peerId,
       path.service,
       path.serviceOccurrence,
@@ -222,8 +295,17 @@ internal class OwnedRadioPort(
       path.characteristicOccurrence,
       enable,
       subscriptionType = mode,
+      sourceEpoch = epoch,
+      observer = notificationObserver,
       onResult = onResult
     )
+  }
+
+  override fun setOrderedNotification(instance: CharacteristicInstance, enable: Boolean, mode: String?, epoch: Long, admission: com.sfourdrinier.unifiedblemanager.radio.AndroidOrderedAdmission?,
+                                      onResult: (Result<Unit>) -> Unit): Long {
+    val path = path(instance)
+    return radio.setNotifyExactRetained(instance.peerId, path.service, path.serviceOccurrence, path.characteristic,
+      path.characteristicOccurrence, enable, mode, epoch, admission, notificationObserver, onResult)
   }
 
   override fun readMtu(peerId: String, onResult: (Result<Int?>) -> Unit): Long = radio.readEffectiveMtu(peerId, onResult)
@@ -315,27 +397,6 @@ internal class OwnedRadioPort(
     val service = resolveUuidOccurrence(radio.services(instance.peerId), path.service, path.serviceOccurrence) { it.uuid }
       ?: return null
     return resolveUuidOccurrence(service.characteristics, path.characteristic, path.characteristicOccurrence) { it.uuid }
-  }
-
-  private fun instanceOf(deviceId: String, characteristic: BluetoothGattCharacteristic): CharacteristicInstance? {
-    val service = characteristic.service ?: return null
-    val serviceOccurrence = radio.services(deviceId)
-      .asSequence()
-      .filter { candidate -> candidate.uuid == service.uuid }
-      .takeWhile { candidate -> candidate !== service }
-      .count()
-    val characteristicOccurrence = service.characteristics
-      .asSequence()
-      .filter { candidate -> candidate.uuid == characteristic.uuid }
-      .takeWhile { candidate -> candidate !== characteristic }
-      .count()
-    return CharacteristicInstance(
-      deviceId,
-      service.uuid.toString(),
-      serviceOccurrence.toLong(),
-      characteristic.uuid.toString(),
-      characteristicOccurrence.toLong()
-    )
   }
 
   private fun requirePhyApi() {

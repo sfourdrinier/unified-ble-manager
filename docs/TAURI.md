@@ -6,6 +6,18 @@ Tauri webviews use the zero-plumbing `createTauriBleManager()` factory, which re
 
 The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The webview never loads a Node addon.
 
+### Trusted native failure evidence
+
+When a trusted desktop host needs retained exact native source-failure evidence, configure
+`FailureEvidenceStoreOptions` in Rust while constructing
+`BtleplugDispatcherOptions`, before the dispatcher can open its central. Its
+directory is selected by trusted application code and must never cross the
+webview IPC boundary. The btleplug desktop owner installs the exact store on
+Windows, macOS, and Linux; an open or write failure remains an explicit source
+failure and is never replaced with volatile retention. The configured directory
+and byte budget are private host retention policy, while the continuation ledger
+remains the durable receipt authority.
+
 After an adapter reset, commands from the ended attachment report `backend.reset`
 before resolving GATT handles or reserving native work. This also applies when
 the lifecycle event invalidates the database before the caller is rebound.
@@ -16,7 +28,7 @@ can settle them without dispatching native I/O.
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.2.2 @tauri-apps/api
+pnpm add unified-ble-manager@5.2.3 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal
@@ -136,21 +148,44 @@ reuse a released handle. Lease retirement clears that lease's ownership scope.
 
 ## How the plugin runs operations
 
+### Durable terminal-evidence recovery
+
+`manager.terminalEvidenceRecovery.list()` preserves its strict contract: if
+any matching retained terminal is still claimed by another live controller, it
+returns a retryable recovery failure rather than a partial list. Use the
+additive `listWithStatus()` when a UI can show partial availability: it returns
+the cold opaque records in `records` and the contended source kinds in
+`busyProducers` (`scan` and/or `subscription`). A later `listWithStatus()`
+refreshes the claim, so a producer disappears from `busyProducers` and its
+records become available as soon as the other controller releases or exits.
+Neither method accepts or exposes a ledger path, durable reference, or host
+recovery lease.
+
+The plugin emits the same [canonical payload representation](NODE.md#durable-terminal-evidence)
+as the shared TypeScript codec, including the conditional escape marker for
+ordinary metadata records that collide with byte tags.
+
 The frontend shares Electron's [connection and GATT recovery contract](ELECTRON.md#connection-and-gatt-recovery):
 invalidation is immediate, cleanup ownership survives failure, and bounded
 child cleanup cannot prevent the scoped parent-release request. Local iterator
 cleanup remains distinct from confirmed native release.
 
-**IPC protocol version.** The webview and the plugin speak IPC protocol 6 and
-each offers exactly that version. Version 5 adds security routes, address
+**IPC protocol version.** The webview and plugin negotiate IPC versions 6
+through 11. Protocol 6 remains usable with a 5.2.1 peer for the common BLE
+routes. Ordered routes require a selected protocol of at least 9 because that
+version adds their individual failure observations and platform metadata.
+Attachment diagnostics and durable peer-failure recovery require a selected
+protocol of 10. Durable terminal-evidence recovery requires 11. Those
+higher-version surfaces are withheld, rather than
+silently reduced, when a lower version is selected. Version 5 adds security routes, address
 targeting, connection intent and platform scan-option forwarding while retaining
 relative `budgetMs` deadlines, error `commit`, subscription `delivery`, connection
 lifecycle events and attachment rebind. The instantiated native authority still
-determines which mechanisms are available. An older protocol 4 host might ignore
-new option fields, so protocol 4 and earlier peers are refused at bootstrap with
+determines which mechanisms are available. Protocol 5 and earlier peers are refused at bootstrap with
 `protocol.incompatible` before any operation runs, whichever side is older.
 Upgrade the npm package and crate together.
-`TAURI_PLUGIN_COMPATIBILITY.ipcProtocol` reports the required version.
+`TAURI_PLUGIN_COMPATIBILITY.ipcProtocolMinimum` and
+`TAURI_PLUGIN_COMPATIBILITY.ipcProtocol` report that supported range.
 
 On eligible Linux characteristics, `acquireWrite()` and `acquireNotifications()`
 use the native central's optional BlueZ acquired transports. The webview sees
@@ -328,9 +363,17 @@ equate a requested release with a successful receipt.
 
 These methods return structured `Result<serde_json::Value, serde_json::Value>`
 answers; preserve failures rather than replacing them with an empty backlog.
-No renderer route is added: expose host-approved operations only through your
-own authenticated application policy. On final application shutdown,
-`authority_shutdown().await` stops native recovery and reports central cleanup.
+For retained peer-source failures only, a trusted host can call
+`enable_peer_failure_recovery_for(authenticated_caller, recording_id).await`.
+That attaches an already-open recording ledger and grants precisely that
+window. The additive `manager.peerFailureRecovery` surface then lists opaque
+host-minted handles and reads/acknowledges them by `handleId`; it never accepts
+a recording path, descriptor, source consumer, or recipient lease from the
+webview. A page reload or window teardown revokes every handle. An unavailable
+original native owner remains a typed acknowledgement failure and leaves the
+durable bytes intact. Without the trusted grant, every recovery route is
+`ownership.denied`. On final application shutdown, `authority_shutdown().await`
+stops native recovery and reports central cleanup.
 
 The default queue is volatile, but a trusted Rust host can opt into durable
 recording. Call `continuation_configure_recording_directory(&private_path)`
@@ -362,6 +405,12 @@ ordering follow the shared [connection observation ownership rules](NODE.md#conn
 Windows PHY reads use the same [runtime-probed observation route](NODE.md#windows-phy-observation);
 PHY requests and selection remain unsupported.
 
-IPC version 6 requires nullable service graph facts and the native
-readiness/acquired-GATT route contract. An older webview or plugin is refused
-at negotiation before radio ownership is admitted.
+The webview and plugin negotiate the highest compatible IPC version in the
+supported 6-through-11 range. Version 6 added nullable service graph facts and
+the native readiness/acquired-GATT route contract; version 9 added the ordered
+route failure-observation and platform-metadata shapes; version 10 added
+attachment diagnostics and durable peer-failure recovery; version 11 added
+durable terminal-evidence recovery. A peer whose offered
+range has no overlap is refused at negotiation before radio ownership is
+admitted. Selecting a lower compatible version does not authorize a
+higher-version route.

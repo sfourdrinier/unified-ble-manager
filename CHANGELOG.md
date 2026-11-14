@@ -2,7 +2,120 @@
 
 # Changelog
 
+- Report host-global native ingress loss separately from exact per-stream overflow counters.
+
 All notable changes to `unified-ble-manager` are documented here.
+
+## [5.2.3] - 2026-11-13
+
+- Add opt-in ordered multi-characteristic notification collection, ordered
+  recording, and durable evidence recovery across the supported host routes.
+  See [the release change breakdown](docs/releases/5.2.3-change-breakdown.md).
+- Repair migration of earlier Apple notification-failure spool formats: preserve
+  legacy rows through the reservation rebuild, recognize SQLite rename formatting,
+  and validate version-8 acknowledgements using their historical schema.
+- Request the Windows handle rights required to provision current-user recovery
+  storage and use the canonical file full-control ACE mask, preserving the
+  existing owner and protected-ACL validation.
+- Protect Windows recording directories without propagating ACL changes to
+  pre-existing recording and authority files, preserving their read/write access.
+- Configure current-user protected storage through the public Windows native
+  continuation path, so ordinary durable recording can attach its recovery sidecar.
+- Preserve same-directory Windows recording setup on repeated and concurrent
+  calls, retaining and validating its installed storage protector. Different
+  directories and explicit protector replacement remain refused.
+- Release terminal-evidence and idle recording database handles after successful
+  Node-API host shutdown, including when JavaScript retains the native wrapper.
+  Saved rows and journals with live owners or unpersisted diagnostics remain retained.
+- Add optional `releaseIdle()` to standalone desktop recording controllers, so
+  completed readers can release cached file handles without deleting saved data.
+- Preserve Web notifications admitted before a same-turn disconnect when terminal
+  evidence is enabled. Explicit owner removal retains its unread-value discard behavior.
+- Validate persisted Web terminal-evidence quota rows before reservation or
+  release arithmetic; malformed rows abort without changing saved evidence.
+- Use valid IndexedDB counts during Web recovery scans, and retain staged or
+  committed evidence when a reattached runtime reservation is released. Only
+  recovery acknowledgement retires those saved rows and their quota.
+- Reclaim an unused Web evidence reservation after its tab closes or crashes
+  through the existing recovery acknowledgement, under its exact exclusive
+  Web Lock. Live owners and staged evidence remain protected.
+- Correct iOS/tvOS terminal-evidence bridge selectors and propagate Swift failures
+  through the existing structured JSON error channel.
+- Compensate a late successful scan start with a physical stop while avoiding
+  a second retirement of an ingress epoch that an early stop already fenced.
+- Preserve immediate scan restart after an OS-ended terminal: the next start
+  waits for the old scan's ingress cleanup using its own budget and signal.
+  Active scans and failed cleanup retain their existing ownership protections.
+- Settle failed scan admission with its original startup error even when
+  releasing the acquired evidence reservation also fails. The cleanup failure
+  remains visible through the existing acquisition lifecycle diagnostic.
+- Reclaim the unused scan stream and its aggregate quota after every
+  pre-adoption failure, including a rejected evidence reservation before radio
+  startup. Repeated failed reservations do not accumulate retained streams.
+- Retain failed pre-adoption evidence release for destruction to retry. A stale
+  scan stops its physical lease before releasing evidence, and a successful
+  stop is not repeated when only evidence release still needs retrying.
+- Retry evidence-only cleanup after subscription enablement fails, allowing
+  replacement admission and destruction to release the retained reservation
+  once storage recovers.
+- Bind authenticated Electron renderer evidence reservations to source startup
+  through internal manager/core plumbing, preserving exact scope ownership and
+  separate source participants for distinct reservations.
+- Preserve native terminal receipts across desktop and Electron wire mapping,
+  and stage scoped N-API V2 notification source failures before delivery using
+  the existing pending-token commit/ACK path. Legacy V1 rejection is unchanged.
+- Preserve commit uncertainty and ordered failure details during terminal
+  evidence hydration. Escape ordinary metadata records that collide with byte
+  tags, using the same canonical representation in TypeScript and Tauri.
+- Refuse exact legacy receipt retirement as corrupt when its required proof was
+  deleted, without recreating an empty receipt table.
+- Preserve 5.2.1 TypeScript consumer shapes for existing GATT, host, diagnostics,
+  continuation status, terminal-reason, and backend error-metadata contracts.
+  New diagnostic detail remains available through additive fields and recovery
+  APIs; the existing status fields keep their original types.
+- Preserve ordered notification ingress and durable terminal evidence across
+  supported host recovery paths, including explicit partial-recovery status
+  when another live controller still owns retained records. This release adds
+  bounded host-private evidence retention and lease fencing; deterministic and
+  native synthetic coverage does not establish physical-radio qualification.
+- Preserve connection-supervisor cleanup ownership when desktop adapter loss
+  interrupts its release with `operation.reset`: wait for readiness, retry the
+  same release with bounded backoff, and only reconnect after it actually
+  releases. Other cleanup failures remain surfaced and terminal.
+- Preserve the original connection-supervisor cleanup error and its platform
+  detail when stopping, including when a later final cleanup succeeds.
+- Retry a successor connection that still answers `adapter.resetting` through
+  the supervisor's normal bounded backoff and attempt budget, rather than
+  treating an early power-on snapshot as a ready reconnect. Powered-off and
+  unavailable adapters retain their readiness-wait behavior.
+- Deduplicate a refused CCCD disable across both Services Changed lifecycle
+  routes: the subscription terminal and its fanout to joined logical database
+  views. The refused cleanup remains visible and is retried only by its
+  explicit owner or another distinct lifecycle authority; neither route issues
+  an implicit native retry.
+- Preserve accepted subscription values and a committed terminal-evidence
+  receipt when a source terminal and a database invalidation race. Lifecycle
+  terminals now drain their admitted FIFO prefix before release; an explicit
+  owner removal still discards its unread values.
+- React Native preserves and hydrates scoped terminal evidence for ordinary and
+  recorded subscriptions, including retryable cleanup of cancelled late starts.
+- Linux discovery cancellation stops read-only graph work before a late reply
+  can publish a database; effectful operations retain their cleanup ownership.
+- Web recording handoff retains a bounded replay request when a retry arrives
+  while its original request is still being processed, without executing it twice.
+- Preserve each notification consumer's first invalidation reason through
+  delayed reads, and match retired connection cleanup to the exact admission.
+- Preserve committed mobile subscription evidence across session removal and
+  authenticate exact scan-cleanup retries after the session is reclaimed.
+- Preserve scan callback ownership across stop and restart, including callbacks
+  already queued by UBM and interrupted cleanup, so those observations are not
+  assigned to a later scan when the queue is drained.
+- Retain and stage an evidence-bound scan terminal before delivering it to the
+  desktop consumer, and preserve the original staging failure and cleanup
+  ownership if durable storage refuses it. Recover scans whose terminal event
+  was missed while their native cleanup is still finishing.
+- Preserve Android callbacks admitted before an owner fence, while keeping
+  queued host requests cancellable before dispatch.
 
 ## [5.2.2] - 2026-11-12
 

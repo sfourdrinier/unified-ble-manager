@@ -12,6 +12,10 @@ unsafe extern "C" {
         label: *const c_char,
         attr: dispatch_queue_attr_t,
     ) -> dispatch_queue_t;
+    pub fn dispatch_async_f(queue: dispatch_queue_t, context: *mut c_void, work: unsafe extern "C" fn(*mut c_void));
+    pub fn dispatch_queue_set_specific(queue: dispatch_queue_t, key: *const c_void, context: *mut c_void, destructor: Option<unsafe extern "C" fn(*mut c_void)>);
+    pub fn dispatch_get_specific(key: *const c_void) -> *mut c_void;
+    pub fn dispatch_release(queue: dispatch_queue_t);
 }
 
 // TODO: Do we need to link to AppKit here?

@@ -222,17 +222,31 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     expect(boundary.destroyed).toBe(true)
   })
 
+  test('finishes a successful scan stop after its admitted observation prefix', async () => {
+    const { backend, boundary } = await backendFixture()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('ordered-stop', 'client', 'corebluetooth:scan'))
+    const observations = scan.observations[Symbol.asyncIterator]()
+
+    boundary.emitAdvertisement()
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(observations.next()).resolves.toMatchObject({ done: false, value: { kind: 'value' } })
+    await expect(observations.next()).resolves.toMatchObject({
+      done: false,
+      value: { kind: 'terminal', reason: 'owner-released' }
+    })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
   test('rejects when-available before dispatch on a direct-only CoreBluetooth boundary', async () => {
     const { backend, boundary } = await backendFixture()
     const peerId = await observedPeerId(backend)
     const connect = jest.spyOn(boundary, 'connect')
 
     await expect(
-      backend.connections.connect(
-        peerId,
-        opaqueId('queued-client', 'client', 'corebluetooth:queued'),
-        { ...operation(), intent: 'when-available' }
-      )
+      backend.connections.connect(peerId, opaqueId('queued-client', 'client', 'corebluetooth:queued'), {
+        ...operation(),
+        intent: 'when-available'
+      })
     ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     expect(connect).not.toHaveBeenCalled()
     await backend.destroy()
@@ -760,12 +774,12 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     const subscription = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
     const nativeStopNotify = boundary.stopNotify.bind(boundary)
     let stopFailuresRemaining = 2
-    boundary.stopNotify = async address => {
+    boundary.stopNotify = async (address, claim) => {
       if (stopFailuresRemaining > 0) {
         stopFailuresRemaining -= 1
         throw new Error('The deterministic final notification stop failed')
       }
-      await nativeStopNotify(address)
+      await nativeStopNotify(address, claim)
     }
 
     const firstUnsubscribe = backend.gatt.unsubscribe(subscription, {
@@ -787,12 +801,83 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     await backend.destroy()
   })
 
+  test('a stale physical claim cannot release its replacement', async () => {
+    const boundary = new InMemoryCoreBluetoothBoundary({ serviceUuid, characteristicUuid })
+    const address = {
+      nativePeerId: 'peer',
+      serviceUuid,
+      serviceOccurrence: 0,
+      characteristicUuid,
+      characteristicOccurrence: 0
+    }
+    const oldClaim = { id: 'old' }
+    const newClaim = { id: 'new' }
+    const onValue = jest.fn()
+    await boundary.startNotify(address, () => undefined, oldClaim)
+    await boundary.stopNotify(address, oldClaim)
+    await boundary.startNotify(address, onValue, newClaim)
+    await boundary.stopNotify(address, oldClaim)
+    expect(boundary.notificationHandlers.size).toBe(1)
+    await boundary.stopNotify(address, newClaim)
+    expect(boundary.notificationHandlers.size).toBe(0)
+  })
+
+  test('shares compatible delivery and accounts source loss per owner', async () => {
+    const { backend, boundary } = await backendFixture()
+    let sourceEvent
+    boundary.startNotifyWithMode = async (address, mode, onValue, onSourceEvent, claim) => {
+      sourceEvent = onSourceEvent
+      await boundary.startNotify(address, onValue, claim)
+    }
+    const peerId = await observedPeerId(backend)
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('loss-owner', 'client', 'corebluetooth:test'),
+      operation()
+    )
+    const database = await backend.gatt.discover(lease.connection, operation())
+    const characteristic = (await database.snapshot()).characteristics[0].path
+    const first = await database.subscribe(characteristic, { ...operation(), delivery: delivery(4, 'drop-oldest') })
+    const second = await database.subscribe(characteristic, { ...operation(), delivery: delivery(4, 'error') })
+    expect(boundary.startNotifyCalls).toBe(1)
+    sourceEvent({ kind: 'loss', lostItems: 2, lostBytes: 7 })
+    expect((await first.values[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'overflow',
+      policy: 'drop-newest',
+      droppedItems: 2,
+      droppedBytes: 7
+    })
+    expect((await second.values[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 2,
+      droppedBytes: 7
+    })
+    expect(boundary.stopNotifyCalls).toBe(0)
+    sourceEvent({
+      kind: 'terminated',
+      error: {
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'subscribe',
+        retryability: 'never',
+        platform: { domain: 'jni', code: 'stream.terminated', safeMessage: 'delivery failed', metadata: {} }
+      }
+    })
+    expect((await first.values[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: { platform: { domain: 'jni', code: 'stream.terminated', safeMessage: 'delivery failed' } }
+    })
+    await backend.destroy()
+  })
+
   test('forwards the resolved indication mode to the CoreBluetooth boundary', async () => {
     const { backend, boundary } = await backendFixture()
     const observedModes = []
-    boundary.startNotifyWithMode = async (address, mode, onValue) => {
+    boundary.startNotifyWithMode = async (address, mode, onValue, onSourceEvent, claim) => {
       observedModes.push(mode)
-      await boundary.startNotify(address, onValue)
+      await boundary.startNotify(address, onValue, claim)
     }
     const peerId = await observedPeerId(backend)
     const lease = await backend.connections.connect(
@@ -1371,12 +1456,12 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     await database.subscribe(snapshot.characteristics[0].path, { ...operation(), delivery: delivery() })
     const nativeStopNotify = boundary.stopNotify.bind(boundary)
     let stopNotifyFailuresRemaining = 1
-    boundary.stopNotify = async address => {
+    boundary.stopNotify = async (address, claim) => {
       if (stopNotifyFailuresRemaining > 0) {
         stopNotifyFailuresRemaining -= 1
         throw new Error('The test notification cleanup failed')
       }
-      await nativeStopNotify(address)
+      await nativeStopNotify(address, claim)
     }
     const lossState = {
       availability: 'unavailable',

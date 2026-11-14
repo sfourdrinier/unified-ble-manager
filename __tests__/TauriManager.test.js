@@ -17,7 +17,7 @@ class FakeChannel {
 }
 
 function negotiated(axis) {
-  const selected = { axis, value: axis === 'ipc-protocol' ? 6 : 1 }
+  const selected = { axis, value: axis === 'ipc-protocol' ? 10 : 1 }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -146,6 +146,14 @@ function bootstrap(effectiveMtuEntry) {
   }
 }
 
+function terminalEvidenceBootstrap() {
+  const value = { axis: 'ipc-protocol', value: 11 }
+  const range = { axis: 'ipc-protocol', minimum: value, maximum: value }
+  const result = bootstrap()
+  result.versions.ipcProtocol = { axis: 'ipc-protocol', selected: value, localRange: range, remoteRange: range }
+  return result
+}
+
 function streamValue(streamId, value, eventId = `${streamId}-event`) {
   FakeChannel.current.emit({
     rendererLease: { leaseId: 'tauri-lease-1', generation: 'tauri-lease-generation-1' },
@@ -168,6 +176,311 @@ function advertisement(peerId, localName, rssi) {
 }
 
 describe('Tauri v2 public manager', () => {
+  test('recovers durable terminal evidence through opaque handles after a fresh renderer lease', async () => {
+    let acknowledged = false
+    let duplicateBusyProducers = false
+    const invoke = jest.fn(async (_command, { request }) => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: terminalEvidenceBootstrap() }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'terminalEvidence.recovery.listWithStatus') {
+        expect(request.envelope.payload).toEqual({ version: 1 })
+        return {
+          kind: 'route',
+          payload: acknowledged
+            ? { records: [], busyProducers: [] }
+            : {
+                records: [
+                  { handle: 'opaque-recovery-handle', producer: 'scan', byteLength: 3, digest: 'a'.repeat(64), formatVersion: 1 }
+                ],
+                busyProducers: duplicateBusyProducers ? ['subscription', 'subscription'] : ['subscription']
+              }
+        }
+      }
+      if (request.envelope.command === 'terminalEvidence.recovery.list') {
+        expect(request.envelope.payload).toEqual({ version: 1 })
+        return {
+          kind: 'route',
+          payload: acknowledged
+            ? { records: [] }
+            : {
+                records: [
+                  { handle: 'opaque-recovery-handle', producer: 'scan', byteLength: 3, digest: 'a'.repeat(64), formatVersion: 1 }
+                ]
+              }
+        }
+      }
+      if (request.envelope.command === 'terminalEvidence.recovery.read') {
+        expect(request.envelope.payload).toEqual({ version: 1, handle: 'opaque-recovery-handle', maximumBytes: 3 })
+        return { kind: 'route', payload: { kind: 'committed', canonicalBytes: new Uint8Array([1, 2, 3]), digest: 'a'.repeat(64) } }
+      }
+      if (request.envelope.command === 'terminalEvidence.recovery.ack') {
+        expect(request.envelope.payload).toEqual({ version: 1, handle: 'opaque-recovery-handle' })
+        acknowledged = true
+        return { kind: 'route', payload: { state: 'released' } }
+      }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const first = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const [record] = await first.terminalEvidenceRecovery.list()
+    expect(record).toEqual({
+      handle: 'opaque-recovery-handle', producer: 'scan', byteLength: 3, digest: 'a'.repeat(64), formatVersion: 1
+    })
+    await expect(first.terminalEvidenceRecovery.listWithStatus()).resolves.toEqual({
+      records: [record],
+      busyProducers: ['subscription']
+    })
+    duplicateBusyProducers = true
+    await expect(first.terminalEvidenceRecovery.listWithStatus()).rejects.toThrow(
+      'protocol.malformed: tauri.terminal-evidence-recovery.list-with-status'
+    )
+    await first.destroy()
+
+    const lateReader = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    await expect(lateReader.terminalEvidenceRecovery.read(record.handle, 3)).resolves.toEqual({
+      canonicalBytes: new Uint8Array([1, 2, 3]), digest: 'a'.repeat(64)
+    })
+    await expect(lateReader.terminalEvidenceRecovery.acknowledge(record.handle)).resolves.toBeUndefined()
+    await expect(lateReader.terminalEvidenceRecovery.list()).resolves.toEqual([])
+    await lateReader.destroy()
+  })
+
+  test('uses opaque durable peer-failure recovery handles without sending source authority to the host', async () => {
+    const invoke = jest.fn(async (_command, { request }) => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'peerFailureRecovery.list') {
+        return {
+          kind: 'route',
+          payload: {
+            recoveries: [
+              {
+                handleId: 'opaque-host-handle',
+                peerId: 'peer-private',
+                selector: {
+                  serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb',
+                  serviceOccurrence: '0',
+                  characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb',
+                  characteristicOccurrence: '0'
+                },
+                contiguousRead: '0',
+                acknowledged: false,
+                producerAck: 'not-started'
+              }
+            ]
+          }
+        }
+      }
+      if (request.envelope.command === 'peerFailureRecovery.read') {
+        expect(request.envelope.payload).toEqual({ handleId: 'opaque-host-handle', offset: '0' })
+        return {
+          kind: 'route',
+          payload: { offset: '0', nextOffset: '3', bytes: new Uint8Array([1, 2, 3]), done: true }
+        }
+      }
+      if (request.envelope.command === 'peerFailureRecovery.ack') {
+        expect(request.envelope.payload).toEqual({ handleId: 'opaque-host-handle' })
+        return { kind: 'route', payload: { acknowledged: true } }
+      }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const [recovery] = await manager.peerFailureRecovery.list()
+    expect(recovery).toMatchObject({
+      handleId: 'opaque-host-handle',
+      peerId: 'peer-private',
+      producerAck: 'not-started'
+    })
+    expect(recovery).not.toHaveProperty('consumer')
+    expect(recovery).not.toHaveProperty('recipientLease')
+    await expect(manager.peerFailureRecovery.read(recovery.handleId, '0')).resolves.toMatchObject({
+      bytes: new Uint8Array([1, 2, 3])
+    })
+    await expect(manager.peerFailureRecovery.acknowledge(recovery.handleId)).resolves.toBeUndefined()
+    await manager.destroy()
+  })
+
+  test('uses only opaque v10 scan-recovery aliases', async () => {
+    const invoke = jest.fn(async (_command, { request }) => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'scanFailureRecovery.list')
+        return { kind: 'route', payload: { recoveries: [{ handleId: 'recovery-alias' }] } }
+      if (request.envelope.command === 'scanFailureRecovery.owners') {
+        expect(request.envelope.payload).toEqual({ recoveryId: 'recovery-alias' })
+        return {
+          kind: 'route',
+          payload: {
+            owners: [
+              {
+                handleId: 'owner-alias',
+                prepared: true,
+                producerFinished: true,
+                rawRetired: false,
+                rawReleased: false,
+                memberCount: 1,
+                released: false
+              }
+            ]
+          }
+        }
+      }
+      if (request.envelope.command === 'scanFailureRecovery.head')
+        return {
+          kind: 'route',
+          payload: { head: { handleId: 'head-alias', contiguousRead: '0', acknowledged: false } }
+        }
+      if (request.envelope.command === 'scanFailureRecovery.read') {
+        expect(request.envelope.payload).toEqual({ recoveryId: 'recovery-alias', handleId: 'head-alias', offset: '0' })
+        return { kind: 'route', payload: { offset: '0', nextOffset: '2', bytes: new Uint8Array([7, 8]), done: true } }
+      }
+      if (request.envelope.command === 'scanFailureRecovery.cleanup.retire')
+        return { kind: 'route', payload: { completed: true } }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const [recoveryId] = await manager.scanFailureRecovery.list()
+    expect(recoveryId).toBe('recovery-alias')
+    const [owner] = await manager.scanFailureRecovery.owners(recoveryId)
+    expect(owner).toMatchObject({ handleId: 'owner-alias', memberCount: 1 })
+    const head = await manager.scanFailureRecovery.head(recoveryId, owner.handleId, 0)
+    await expect(manager.scanFailureRecovery.read(recoveryId, head.handleId, '0')).resolves.toMatchObject({
+      bytes: new Uint8Array([7, 8])
+    })
+    await expect(manager.scanFailureRecovery.retireCleanup(recoveryId, 'cleanup-alias')).resolves.toBeUndefined()
+    await manager.destroy()
+  })
+
+  test('projects only canonical raw recovery values and bounds token windows before IPC', async () => {
+    const identity = {
+      host: '0b'.repeat(16),
+      scan: '0c'.repeat(16),
+      start: '0d'.repeat(16),
+      sourceGeneration: '0e'.repeat(16),
+      occurrence: '0f'.repeat(16)
+    }
+    const invoke = jest.fn(async (_command, { request }) => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'scanFailureRecovery.raw.info')
+        return { kind: 'route', payload: { info: { identity, memberCount: 1, tokenCount: 2 } } }
+      if (request.envelope.command === 'scanFailureRecovery.raw.member')
+        return { kind: 'route', payload: { member: { recipient: '10'.repeat(16), delivery: '11'.repeat(16) } } }
+      if (request.envelope.command === 'scanFailureRecovery.raw.token')
+        return { kind: 'route', payload: { token: { kind: 'bytes', total: '3', bytes: new Uint8Array([1, 2, 3]) } } }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    await expect(manager.scanFailureRecovery.rawInfo('recovery', 'owner')).resolves.toEqual({
+      identity,
+      memberCount: 1,
+      tokenCount: 2
+    })
+    await expect(manager.scanFailureRecovery.rawMember('recovery', 'owner', 0)).resolves.toEqual({
+      member: { recipient: '10'.repeat(16), delivery: '11'.repeat(16) }
+    })
+    await expect(manager.scanFailureRecovery.rawToken('recovery', 'owner', 0, 0, 3)).resolves.toEqual({
+      kind: 'bytes',
+      total: '3',
+      bytes: new Uint8Array([1, 2, 3])
+    })
+    await expect(manager.scanFailureRecovery.rawToken('recovery', 'owner', 0, 0, 0)).rejects.toThrow('argument.invalid')
+    await expect(manager.scanFailureRecovery.rawToken('recovery', 'owner', 0, 0, 65_537)).rejects.toThrow(
+      'argument.invalid'
+    )
+    expect(
+      invoke.mock.calls.filter(([, argument]) => argument.request.envelope?.command === 'scanFailureRecovery.raw.token')
+    ).toHaveLength(1)
+    await manager.destroy()
+  })
+
+  test('rejects malformed raw recovery IPC values without exposing them', async () => {
+    const invoke = jest.fn(async (_command, { request }) => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'scanFailureRecovery.raw.info')
+        return { kind: 'route', payload: { info: { host: '0b'.repeat(16), memberCount: -1, tokenCount: 1 } } }
+      if (request.envelope.command === 'scanFailureRecovery.raw.member')
+        return { kind: 'route', payload: { member: { recipient: 'not-hex', delivery: '11'.repeat(16) } } }
+      if (request.envelope.command === 'scanFailureRecovery.raw.token')
+        return { kind: 'route', payload: { token: { kind: 'bytes', total: '01', bytes: new Uint8Array([1]) } } }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    await expect(manager.scanFailureRecovery.rawInfo('recovery', 'owner')).rejects.toThrow('protocol.malformed')
+    await expect(manager.scanFailureRecovery.rawMember('recovery', 'owner', 0)).rejects.toThrow('protocol.malformed')
+    await expect(manager.scanFailureRecovery.rawToken('recovery', 'owner', 0, 0, 1)).rejects.toThrow(
+      'protocol.malformed'
+    )
+    await manager.destroy()
+  })
+
+  test('records an ownerless CoreBluetooth source diagnostic through the attachment stream without a public listener', async () => {
+    const invoke = jest.fn(async (_command, { request }) => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    // This is the native plugin projection of an unassociated CoreBluetooth
+    // callback: it has no accepted graph, connection, or public listener.
+    streamValue(
+      'attachment',
+      {
+        kind: 'diagnostic-warning',
+        schemaVersion: 1,
+        code: 'gatt.source-uncertain',
+        sequence: 41,
+        peerId: 'corebluetooth-private-peer',
+        error: {
+          code: 'platform.failure',
+          domain: 'gatt',
+          operation: 'gatt.source',
+          platform: {
+            domain: 'corebluetooth',
+            code: 'CBErrorUnknown',
+            safeMessage: 'unassociated callback',
+            metadata: { source: 'didModifyServices' }
+          },
+          retryability: 'never'
+        }
+      },
+      'ownerless-corebluetooth-source-41'
+    )
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(manager.diagnostics.snapshot().trace.records).toContainEqual(
+      expect.objectContaining({
+        kind: 'attachment',
+        event: 'diagnostic-warning:gatt.source-uncertain',
+        cause: 'platform.failure',
+        redactedPeer: true,
+        redactedPayload: true
+      })
+    )
+    expect(manager.diagnostics.warnings()).toContainEqual({
+      code: 'gatt.source-uncertain',
+      cause: 'platform.failure',
+      platform: {
+        domain: 'corebluetooth',
+        code: 'CBErrorUnknown',
+        safeMessage: 'unassociated callback',
+        metadata: { source: 'didModifyServices' }
+      }
+    })
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toContain('event.ack')
+    await manager.destroy()
+  })
+
   test.each(['advertisement', 'device-state'])(
     'scan IPC preserves exact %s origin without inventing provenance',
     async origin => {
@@ -1351,7 +1664,7 @@ describe('Tauri v2 public manager', () => {
     ).rejects.toMatchObject({ code: 'protocol.malformed' })
 
     const outOfRangeVersionBootstrap = bootstrap()
-    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 7 }
+    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 11 }
     const outOfRangeVersionInvoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: outOfRangeVersionBootstrap }))
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: outOfRangeVersionInvoke, Channel: FakeChannel })
@@ -1416,12 +1729,12 @@ describe('Tauri v2 public manager', () => {
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
 
     invoke.mockClear()
-    await expect(
-      createTauriBleManagerWithEnvironment(
-        { invoke, Channel: FakeChannel },
-        { diagnostics: { traceMaximumRecords: 8 } }
-      )
-    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+    const diagnosticManager = await createTauriBleManagerWithEnvironment(
+      { invoke, Channel: FakeChannel },
+      { diagnostics: { traceMaximumRecords: 8 } }
+    )
+    expect(diagnosticManager.diagnostics.snapshot().trace.records).toEqual([])
+    await diagnosticManager.destroy()
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
   })
 
@@ -1679,11 +1992,11 @@ describe('Tauri deadline and native retryability through the IPC manager', () =>
   })
 })
 
-// PR210-73: the webview/plugin wire changed (relative `budgetMs`, `commit` on
-// errors, subscribe `delivery`, lifecycle events), so the IPC protocol is 3.
-// A mixed pair fails at bootstrap as protocol.incompatible, never later as
-// protocol.malformed on its first operation.
-describe('Tauri IPC protocol version 6', () => {
+// A mixed pair before protocol 6 fails at bootstrap as protocol.incompatible,
+// never later as protocol.malformed on its first operation. Versions 6 through
+// 10 keep ordinary BLE routes interoperable; individual newer features gate
+// themselves at their introduction revision.
+describe('Tauri IPC protocol version 11', () => {
   function versionAxes(ipcProtocol) {
     const bootstrapValue = bootstrap()
     const selected = { axis: 'ipc-protocol', value: ipcProtocol }
@@ -1692,11 +2005,11 @@ describe('Tauri IPC protocol version 6', () => {
     return bootstrapValue
   }
 
-  test('the webview offers exactly IPC protocol 6', async () => {
+  test('the webview offers ordinary BLE IPC protocols 6 through 11', async () => {
     const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri/compatibility')
     const { IPC_PROTOCOL_VERSION } = require('../src/ipc/protocol')
-    expect(IPC_PROTOCOL_VERSION).toBe(6)
-    expect(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol).toBe(6)
+    expect(IPC_PROTOCOL_VERSION).toBe(11)
+    expect(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol).toBe(11)
 
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
@@ -1710,18 +2023,19 @@ describe('Tauri IPC protocol version 6', () => {
     expect(offer.ipcProtocol).toEqual({
       axis: 'ipc-protocol',
       minimum: { axis: 'ipc-protocol', value: 6 },
-      maximum: { axis: 'ipc-protocol', value: 6 }
+      maximum: { axis: 'ipc-protocol', value: 11 }
     })
     await manager.destroy()
   })
 
-  test('an old plugin that cannot serve protocol 4 fails as protocol.incompatible before any operation', async () => {
+  test.each([6, 7, 8, 9, 10, 11])('a protocol %s plugin is admitted for ordinary BLE routes', async protocolVersion => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
       if (request.kind !== 'bootstrap') throw new Error(`unexpected ${request.kind}`)
-      // A protocol-3 plugin (5.0 pre-rebind) negotiates only 3 against the offer.
+      // These plugin revisions remain compatible for ordinary BLE routes.
       const range = request.offer.ipcProtocol
-      if (range.minimum.value > 3 || range.maximum.value < 3) {
+      if (range.minimum.value > protocolVersion || range.maximum.value < protocolVersion) {
         return {
           kind: 'failure',
           error: {
@@ -1733,14 +2047,13 @@ describe('Tauri IPC protocol version 6', () => {
           }
         }
       }
-      return { kind: 'bootstrap', bootstrap: versionAxes(3) }
+      return { kind: 'bootstrap', bootstrap: versionAxes(protocolVersion) }
     })
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
 
-    await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toMatchObject({
-      code: 'protocol.incompatible'
-    })
-    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap'])
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    await manager.destroy()
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
   })
 
   test.each([3, 4, 5])('plugin selecting protocol %s is refused as incompatible and released', async oldVersion => {

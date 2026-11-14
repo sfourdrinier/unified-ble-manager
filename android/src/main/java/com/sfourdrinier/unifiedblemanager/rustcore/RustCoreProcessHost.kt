@@ -24,21 +24,92 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
+data class SelectedScanFailureRecoveryBinding(
+  val generation: Long,
+  val binding: Long
+)
+
 /**
- * The process owner of the Rust mobile host: installs it exactly once
- * (`nativeInstallHost`) with the one [RustRadioHostAdapter] over the one
- * [OwnedAndroidGattRadio], and routes Rust wakes to whichever module
- * instance holds the session. The host outlives React contexts (reload,
- * several managers); sessions are the per-manager leases.
+ * Owns one Rust mobile binding and its [RustRadioHostAdapter] over an
+ * [OwnedAndroidGattRadio], and routes wakes to the module holding each
+ * session. The production shared host outlives React contexts; failed
+ * unpublished installs retain their port until native cleanup succeeds.
  */
 class RustCoreProcessHost(
-  private val core: MobileCorePort,
+  core: MobileCorePort,
   private val radioHost: () -> MobileCoreBridge.RadioHost,
   private val scheduleCleanup: (Long, Runnable) -> Unit = { delayMs, task ->
     cleanupExecutor.schedule(task, delayMs, TimeUnit.MILLISECONDS)
   },
   private val log: (String) -> Unit
 ) {
+  @Volatile var core: MobileCorePort = core
+    private set
+  private var coreFactory: (() -> MobileCorePort)? = null
+  private var failedInstall = false
+  private var installCleanupScheduled = false
+  private var installCleanupAttempts = 0
+  private var failedInstallNativeCleanupPending = false
+  private var installRadioCleanup: (() -> Boolean)? = null
+
+  /** Retain the driver before adapter construction can register a receiver. */
+  private fun ownInstallingRadio(radio: OwnedAndroidGattRadio) {
+    check(installRadioCleanup == null) { "install already owns a radio" }
+    installRadioCleanup = {
+      val result = radio.destroy()
+      result.failures.forEach { log("failed-install radio cleanup ${it.operation}: ${it.throwable.javaClass.name}: ${it.throwable.message}") }
+      result.failures.isEmpty()
+    }
+  }
+
+  internal fun createOwnedAdapter(
+    core: MobileCorePort, radio: OwnedAndroidGattRadio, background: BackgroundPort,
+    companion: () -> CompanionPort?, presence: () -> com.sfourdrinier.unifiedblemanager.presence.PresencePort?,
+    radioExecutor: java.util.concurrent.Executor, serviceExecutor: java.util.concurrent.Executor,
+    adapterLog: (String) -> Unit
+  ): RustRadioHostAdapter {
+    ownInstallingRadio(radio)
+    return RustRadioHostAdapter(core, OwnedRadioPort(radio, adapterLog), background, companion, presence,
+      radioExecutor, serviceExecutor, adapterLog)
+  }
+
+  @Synchronized internal fun setCoreFactory(factory: () -> MobileCorePort) { coreFactory = factory }
+
+  @Synchronized private fun retryFailedInstallCleanup() {
+    installCleanupScheduled = false
+    if (!failedInstall) return
+    val nativeCleared = try { !failedInstallNativeCleanupPending || core.cleanupFailedInstall() } catch (error: Throwable) {
+      log("failed-install cleanup failed: ${error.javaClass.name}: ${error.message}")
+      false
+    }
+    if (nativeCleared) failedInstallNativeCleanupPending = false
+    val cleared = nativeCleared && try { installRadioCleanup?.invoke() ?: true } catch (error: Throwable) {
+      log("failed-install radio cleanup failed: ${error.javaClass.name}: ${error.message}")
+      false
+    }
+    if (cleared) {
+      installRadioCleanup = null
+      core = checkNotNull(coreFactory).invoke()
+      failedInstall = false
+      installCleanupAttempts = 0
+      notifyRecoveryHint()
+    } else {
+      log("failed-install cleanup remains pending; retaining its binding and radio")
+      scheduleInstallCleanup()
+    }
+  }
+
+  private fun scheduleInstallCleanup() {
+    if (installCleanupScheduled) return
+    installCleanupScheduled = true
+    installCleanupAttempts++
+    try {
+      scheduleCleanup(cleanupRetryDelay(installCleanupAttempts), Runnable { retryFailedInstallCleanup() })
+    } catch (error: RuntimeException) {
+      installCleanupScheduled = false
+      log("failed-install cleanup scheduling failed: ${error.javaClass.name}: ${error.message}")
+    }
+  }
   private var presenceForeground: PresenceForegroundContinuation? = null
   private val routes = ConcurrentHashMap<Long, (Long) -> Unit>()
   private val unroutedWakes = AtomicLong()
@@ -85,6 +156,15 @@ class RustCoreProcessHost(
   private var continuationExecutor: NativeContinuationBinding? = null
   private var recordingDirectory: (() -> java.io.File)? = null
   private var recordingConfigured = false
+  // A recovery attach is not a renderer capability.  The embedding native
+  // application must nominate a recording id while it owns process setup;
+  // TurboModule calls can neither enumerate nor add this set.
+  private val trustedScanRecoveryRecordingIds = ConcurrentHashMap.newKeySet<String>()
+  @Volatile private var selectedScanRecoveryRecordingId: String? = null
+  private val scanRecoverySelectionGeneration = AtomicLong(0L)
+  private val scanRecoverySelectionObservers = ConcurrentHashMap.newKeySet<(Long) -> Unit>()
+  /** Serializes native alias revocation with publication of a replacement selection. */
+  private val scanRecoverySelectionLock = Any()
 
   /** Native application-private path only; never sourced from a JS declaration. */
   fun attachRecordingDirectory(directory: () -> java.io.File) { recordingDirectory = directory }
@@ -119,6 +199,138 @@ class RustCoreProcessHost(
     return core.continuationRecordingControl(operation, id, token, maxItems, maxBytes)
   }
 
+  /**
+   * Native bootstrap policy for a durable scan-recovery recording.  Recording
+   * ids are names only: paths, sidecars and recovery credentials remain in
+   * Rust's protected registry.  This is deliberately internal so React
+   * Native/Expo JavaScript cannot turn an arbitrary string into authority.
+   */
+  internal fun authorizeScanFailureRecoveryRecording(recordingId: String) {
+    require(recordingId.isNotEmpty() && recordingId.length <= 512 &&
+      recordingId.none { it == '/' || it == '\\' || it == '\u0000' }) {
+      "scan recovery recording id is not a native recording name"
+    }
+    trustedScanRecoveryRecordingIds.add(recordingId)
+  }
+
+  /**
+   * Native embedding bootstrap only.  This selects one already-authorized
+   * app-private recording for the lifecycle of this process host.  Renderers
+   * can subsequently ask to open the selected recovery but can never supply,
+   * enumerate, or learn this recording id.
+   */
+  internal fun selectScanFailureRecoveryRecording(recordingId: String) {
+    authorizeScanFailureRecoveryRecording(recordingId)
+    synchronized(scanRecoverySelectionLock) {
+      // `scan_recovery` is keyed by binding, not by recording name. Revoke it
+      // before A can be replaced by B or a new generation becomes observable;
+      // direct Turbo calls then fail in the same JNI slot lock as JSI calls.
+      val previousRecordingId = this.selectedScanRecoveryRecordingId
+      if (previousRecordingId != null) {
+        scanFailureRecoveryPort(previousRecordingId).revokeScanFailureRecovery()
+      }
+      selectedScanRecoveryRecordingId = recordingId
+      val generation = scanRecoverySelectionGeneration.incrementAndGet()
+      scanRecoverySelectionObservers.forEach { observer -> observer(generation) }
+    }
+  }
+
+  /** Native embedding observers use this to replace a stale JSI snapshot. */
+  fun addScanFailureRecoverySelectionObserver(observer: (Long) -> Unit) {
+    scanRecoverySelectionObservers.add(observer)
+  }
+
+  fun removeScanFailureRecoverySelectionObserver(observer: (Long) -> Unit) {
+    scanRecoverySelectionObservers.remove(observer)
+  }
+
+  /** Opens only a pre-authorized app-private recording through the exact JNI binding. */
+  fun scanFailureRecoveryPort(recordingId: String): JniBoundContinuationPort {
+    if (!trustedScanRecoveryRecordingIds.contains(recordingId)) {
+      throw RustCoreRejection("ownership.denied", "restoration", "scan.failure-recovery.attach", "recording was not authorized by the native host")
+    }
+    configureRecordingStorage()
+    ensureInstalled()
+    val bound = core as? JniBoundMobileCorePort
+      ?: throw RustCoreRejection("capability.unsupported", "restoration", "scan.failure-recovery.attach", "loaded mobile core has no binding-scoped recovery bridge")
+    return bound.scanFailureRecoveryPort()
+  }
+
+  /** Opens the native-bootstrap-selected recovery and returns only opaque JNI handles. */
+  fun openSelectedScanFailureRecovery(): String {
+    val recordingId = selectedScanRecoveryRecordingId
+      ?: throw RustCoreRejection("capability.unsupported", "restoration", "scan.failure-recovery.open", "No trusted scan recovery recording was selected by the native host")
+    return scanFailureRecoveryPort(recordingId).scanFailureRecoveryAttach(recordingId)
+  }
+
+  /**
+   * Returns the selected native-only recording identity to the RustCore
+   * module's private JSI bridge. It is deliberately internal: no TurboModule
+   * method or JavaScript caller can supply, inspect, or enumerate it.
+   */
+  fun selectedScanFailureRecoveryRecordingId(): String =
+    selectedScanRecoveryRecordingId
+      ?: throw RustCoreRejection("capability.unsupported", "restoration", "scan.failure-recovery.read", "No trusted scan recovery recording was selected by the native host")
+
+  /** Captures one exact selection and JNI binding for a JSI HostObject. */
+  fun selectedScanFailureRecoveryBinding(): SelectedScanFailureRecoveryBinding {
+    val generation = scanRecoverySelectionGeneration.get()
+    check(generation > 0L) { "scan recovery recording has not been selected" }
+    val port = scanFailureRecoveryPort(selectedScanFailureRecoveryRecordingId())
+    return SelectedScanFailureRecoveryBinding(generation, port.bindingIdentity())
+  }
+
+  /**
+   * Copies a page only while the exact selection and JNI binding captured by
+   * the JSI HostObject remain current. Both checks run before and after the
+   * JNI call so replacement cannot make a captured HostObject read new state.
+   */
+  fun readSelectedScanFailureRecoveryPage(
+    headId: String,
+    offset: String,
+    expectedSelectionGeneration: Long,
+    expectedBinding: Long
+  ): MobileCoreBridge.ScanFailureRecoveryPage {
+    fun currentPort(): JniBoundContinuationPort {
+      check(scanRecoverySelectionGeneration.get() == expectedSelectionGeneration) {
+        "scan recovery selection was replaced"
+      }
+      val port = scanFailureRecoveryPort(selectedScanFailureRecoveryRecordingId())
+      check(port.bindingIdentity() == expectedBinding) { "scan recovery binding was replaced" }
+      return port
+    }
+    val result = currentPort().scanFailureRecoveryReadPage(headId, offset)
+    currentPort()
+    return result
+  }
+
+  /**
+   * Reads a single raw-source token only while the JSI snapshot's selection
+   * and exact JNI binding remain current.  This deliberately mirrors the page
+   * fence: a captured HostObject must never start reading a replacement
+   * recording after application selection changes.
+   */
+  fun readSelectedScanFailureRecoveryRawToken(
+    ownerId: String,
+    tokenIndex: Int,
+    offset: String,
+    maxBytes: String,
+    expectedSelectionGeneration: Long,
+    expectedBinding: Long
+  ): MobileCoreBridge.ScanFailureRecoveryRawToken {
+    fun currentPort(): JniBoundContinuationPort {
+      check(scanRecoverySelectionGeneration.get() == expectedSelectionGeneration) {
+        "scan recovery selection was replaced"
+      }
+      val port = scanFailureRecoveryPort(selectedScanFailureRecoveryRecordingId())
+      check(port.bindingIdentity() == expectedBinding) { "scan recovery binding was replaced" }
+      return port
+    }
+    val result = currentPort().rawToken(ownerId, tokenIndex, offset, maxBytes)
+    currentPort()
+    return result
+  }
+
   /** Rust's single wake sink for the process. */
   val wake = MobileCoreBridge.WakeListener { sessionId ->
     val route = routes[sessionId]
@@ -135,10 +347,26 @@ class RustCoreProcessHost(
   @Synchronized
   fun ensureInstalled() {
     synchronized(cleanupLock) { retainedCleanups.keys.toList() }.forEach { scheduleRetainedCleanup(it, 0L) }
+    if (failedInstall) {
+      scheduleInstallCleanup()
+      throw RustCoreRejection("lifecycle.invalid-state", "core", "host.install", "Previous host installation cleanup is still pending")
+    }
     if (core.hostInstalled()) return
-    val radio = radioHost()
-    installedAdapter = radio as? RustRadioHostAdapter
-    core.installHost(radio, wake, OWNER, ADAPTER_LABEL)
+    var installStarted = false
+    try {
+      val radio = radioHost()
+      installStarted = true
+      core.installHost(radio, wake, OWNER, ADAPTER_LABEL)
+      installedAdapter = radio as? RustRadioHostAdapter
+      installRadioCleanup = null
+    } catch (failure: Throwable) {
+      if (coreFactory != null) {
+        failedInstall = true
+        failedInstallNativeCleanupPending = installStarted
+        scheduleInstallCleanup()
+      }
+      throw failure
+    }
   }
 
   /** Presence appearance persistence (written by the presence service, drained at session open). */
@@ -365,6 +593,19 @@ class RustCoreProcessHost(
       }
     }
 
+    /** Each factory invocation owns one port, including its unpublished cleanup. */
+    internal fun bound(
+      radio: (MobileCorePort) -> MobileCoreBridge.RadioHost,
+      schedule: (Long, Runnable) -> Unit = { delay, task -> cleanupExecutor.schedule(task, delay, TimeUnit.MILLISECONDS) },
+      log: (String) -> Unit,
+      portFactory: () -> JniBoundMobileCorePort = { JniBoundMobileCorePort() }
+    ): RustCoreProcessHost {
+      lateinit var host: RustCoreProcessHost
+      host = RustCoreProcessHost(portFactory(), { radio(host.core) }, schedule, log)
+      host.setCoreFactory(portFactory)
+      return host
+    }
+
     /** The production process host, created on first use from the application context. */
     @JvmStatic
     @Synchronized
@@ -376,18 +617,18 @@ class RustCoreProcessHost(
       )
       val foreground = PresenceForegroundContinuation(backgroundLeases)
       lateinit var host: RustCoreProcessHost
-      host = RustCoreProcessHost(
-        JniMobileCorePort,
-        {
-          RustRadioHostAdapter(
-            core = JniMobileCorePort,
-            radio = OwnedRadioPort(OwnedAndroidGattRadio(application), ::log),
+      host = bound(
+        { core ->
+          val driver = OwnedAndroidGattRadio(application)
+          host.createOwnedAdapter(
+            core = core,
+            radio = driver,
             background = ForegroundServiceBackgroundPort(backgroundLeases),
             companion = { host.companionChooser() },
             presence = { CompanionPresenceObserver.application(application, foreground::releaseOrThrow) },
             radioExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ubm-rust-radio") },
             serviceExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ubm-rust-services") },
-            log = ::log
+            adapterLog = ::log
           )
         },
         log = ::log

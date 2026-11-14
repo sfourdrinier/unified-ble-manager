@@ -161,7 +161,13 @@ describe('IPC renderer fail-closed behavior', () => {
         scan: async () => {
           throw new Error('the IPC scan must not be reached')
         },
-        adapterState: async () => ({})
+        adapterState: async () => ({}),
+        diagnostics: () => ({
+          snapshot: () => ({ trace: { records: [] }, resourceCounters: {} }),
+          resourceCounters: () => ({}),
+          startTrace: () => ({ stop: async () => ({ records: [] }) }),
+          warnings: () => []
+        })
       },
       {
         capabilities: capabilitySnapshot,

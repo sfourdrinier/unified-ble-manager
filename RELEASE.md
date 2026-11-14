@@ -276,6 +276,23 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
+## Releasing 5.2.3
+
+The planned 5.2.3 release follows the separate 5.2.2 publication and adds ordered notification collection and recording
+APIs, and preserves durable terminal evidence across supported host recovery
+paths. It adds bounded host-private evidence retention and lease fencing,
+including explicit partial-recovery status when another live controller owns
+retained records.
+Deterministic and native synthetic coverage does not establish physical-radio
+qualification. The version is prepared in source and is not a claim of
+publication.
+
+Qualify the frozen release commit with the required local validation above,
+independent review, sealed-package checks, and hosted cross-platform CI. After
+it reaches current `main` and the required gates pass, the normal tag-driven
+trusted-publisher workflow publishes it. Verify the published package using the
+post-release checks below.
+
 ## Releasing 5.2.2
 
 The planned 5.2.2 patch fixes React Native single-flight drain ownership at
@@ -290,16 +307,9 @@ trusted-publisher release. Verify publication with the post-release checks.
 
 ## Releasing 5.2.1
 
-The planned 5.2.1 patch reports unknown desktop characteristic security
-requirements as `unknown` when permission flags are unavailable. Discovery
-coverage is deterministic; this does not change backend evidence labels.
-The version is prepared in source and is not a claim of publication.
-
-Qualify the frozen release commit with the required local validation above,
-independent review, sealed-package checks, and hosted cross-platform CI. After
-it reaches current `main` and the required gates pass, the normal tag-driven
-trusted-publisher workflow publishes it. Verify the published package using the
-post-release checks below.
+The 5.2.1 patch reports unknown desktop characteristic security requirements
+as `unknown` when permission flags are unavailable. Discovery coverage is
+deterministic; this did not change backend evidence labels.
 
 ## Releasing 5.2.0
 
@@ -1282,7 +1292,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.2.2
+version=5.2.3
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1303,8 +1313,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.2.2` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.2.2` after
+  `unified-ble-manager@5.2.3` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.2.3` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

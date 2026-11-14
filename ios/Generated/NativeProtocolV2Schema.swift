@@ -3,7 +3,7 @@
 import Foundation
 
 public let nativeProtocolVersion: UInt32 = 2
-public let nativeProtocolABIVersion: UInt32 = 7
+public let nativeProtocolABIVersion: UInt32 = 8
 public let nativeProtocolControlSurfaceVersion: UInt32 = 2
 public let maximumControlRecordBytes: Int = 262144
 public let maximumBinaryPayloadBytes: Int = 524288
@@ -95,6 +95,8 @@ public enum EventKinds: UInt16, CaseIterable, Sendable {
   case restorationAvailable = 7
   case diagnostic = 8
   case securityStateChanged = 9
+  case notificationLoss = 10
+  case notificationTerminated = 11
 }
 
 public enum TerminalOutcomes: UInt16, CaseIterable, Sendable {
@@ -122,6 +124,13 @@ public enum WriteModes: UInt16, CaseIterable, Sendable {
 public enum NotificationDeliveryModes: UInt16, CaseIterable, Sendable {
   case notification = 1
   case indication = 2
+}
+
+public enum NotificationDeliveryConstraints: UInt16, CaseIterable, Sendable {
+  case preferNotification = 1
+  case preferIndication = 2
+  case requireNotification = 3
+  case requireIndication = 4
 }
 
 public enum ConnectionPriorities: UInt16, CaseIterable, Sendable {
@@ -277,6 +286,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .command, fieldID: 19, name: "pairTransport", type: "enum:pairTransports", required: false),
     FieldDescriptor(record: .command, fieldID: 20, name: "connectionIntent", type: "enum:connectionIntents", required: false),
     FieldDescriptor(record: .command, fieldID: 21, name: "notificationDeliveryMode", type: "enum:notificationDeliveryModes", required: false),
+    FieldDescriptor(record: .command, fieldID: 22, name: "notificationDeliveryConstraint", type: "enum:notificationDeliveryConstraints", required: false),
     FieldDescriptor(record: .terminal, fieldID: 1, name: "correlation", type: "record:operationCorrelation", required: true),
     FieldDescriptor(record: .terminal, fieldID: 2, name: "outcome", type: "enum:terminalOutcomes", required: true),
     FieldDescriptor(record: .terminal, fieldID: 3, name: "cause", type: "string", required: false),
@@ -337,6 +347,8 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .event, fieldID: 15, name: "adapterState", type: "record:adapterStateSnapshot", required: false),
     FieldDescriptor(record: .event, fieldID: 16, name: "peerId", type: "string", required: false),
     FieldDescriptor(record: .event, fieldID: 17, name: "bondState", type: "enum:securityBondStates", required: false),
+    FieldDescriptor(record: .event, fieldID: 18, name: "lostItems", type: "uint64", required: false),
+    FieldDescriptor(record: .event, fieldID: 19, name: "lostBytes", type: "uint64", required: false),
     FieldDescriptor(record: .error, fieldID: 1, name: "code", type: "string", required: true),
     FieldDescriptor(record: .error, fieldID: 2, name: "domain", type: "string", required: true),
     FieldDescriptor(record: .error, fieldID: 3, name: "operation", type: "string", required: true),

@@ -10,7 +10,7 @@ The root import does not open an adapter. Pick the entrypoint for your OS:
 | `unified-ble-manager/node/winrt`         | Windows | shared Rust core over WinRT         |
 | `unified-ble-manager/node/bluez`         | Linux   | shared Rust core over BlueZ         |
 
-All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.2.2`. Verify publication in the npm registry. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux. Bun 1.4.2 loads that same addon: `bun scripts/ci/bun-desktop-host-smoke.js` opens the synthetic central and closes it, and `--list-adapters` lists the OS adapters. On glibc Linux x64 that listing returned both host adapters. `scripts/ci/bun-desktop-h10-session.js` is an opt-in session for a simulator named exactly `SIM Polar H10 0001`. On macOS Apple Silicon, Bun 1.4.2 scanned, connected, read, wrote, notified, and disconnected through CoreBluetooth. On glibc Linux x64 the same GATT session completed over BlueZ and `setEventWaker` ran. Against the installed `5.87-ubm.4` daemon, disconnect after discovery returned `lease-released-protected` and left the link up, which Node does on that stack as well. Source `5.87-ubm.6` ends a finished read or write hold when the call completes. That daemon was installed and the same H10 session then returned `lease-released-indeterminate` and left the link up, because profile-probe auto-connect bookkeeping was recorded as an unknown holder. Source `5.87-ubm.7` does not treat that bookkeeping as a hold on an exclusive link this process created, and that exclusive release stops kernel auto-connect for an untrusted device. Installing it changed the same H10 disconnect to `lease-released-protected` and left the link up: the controller had already initiated the bonded link, and the lease adopted it as borrowed. Source `5.87-ubm.8` releases a locally initiated link when no other application hold remains. Installing it, the same H10 session reported disconnect `released` and close `released`, and the link was down. Bun is not a separate radio backend, and this does not change a platform evidence label.
+All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.2.3`. Verify publication in the npm registry. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux. Bun 1.4.2 loads that same addon: `bun scripts/ci/bun-desktop-host-smoke.js` opens the synthetic central and closes it, and `--list-adapters` lists the OS adapters. On glibc Linux x64 that listing returned both host adapters. `scripts/ci/bun-desktop-h10-session.js` is an opt-in session for a simulator named exactly `SIM Polar H10 0001`. On macOS Apple Silicon, Bun 1.4.2 scanned, connected, read, wrote, notified, and disconnected through CoreBluetooth. On glibc Linux x64 the same GATT session completed over BlueZ and `setEventWaker` ran. Against the installed `5.87-ubm.4` daemon, disconnect after discovery returned `lease-released-protected` and left the link up, which Node does on that stack as well. Source `5.87-ubm.6` ends a finished read or write hold when the call completes. That daemon was installed and the same H10 session then returned `lease-released-indeterminate` and left the link up, because profile-probe auto-connect bookkeeping was recorded as an unknown holder. Source `5.87-ubm.7` does not treat that bookkeeping as a hold on an exclusive link this process created, and that exclusive release stops kernel auto-connect for an untrusted device. Installing it changed the same H10 disconnect to `lease-released-protected` and left the link up: the controller had already initiated the bonded link, and the lease adopted it as borrowed. Source `5.87-ubm.8` releases a locally initiated link when no other application hold remains. Installing it, the same H10 session reported disconnect `released` and close `released`, and the link was down. Bun is not a separate radio backend, and this does not change a platform evidence label.
 
 macOS desktop support is Apple Silicon (`arm64`) only. Windows and Linux desktop support includes `arm64` and `x64`.
 Intel macOS desktop is outside the UBM support policy; this is a package policy,
@@ -41,6 +41,70 @@ If there is no adapter, the factory throws `adapter.unavailable`. If more than o
 
 On `SIGINT`/`SIGTERM`, await `manager.destroy()`. Then scan/connect/GATT with the same `BleManager` helpers as React Native.
 
+### Durable terminal evidence
+
+Terminal evidence is opt-in at both boundaries: `terminalEvidence` bounds the
+public canonical record and durable retained capacity; `terminalEvidenceStore`
+is a trusted Node/Electron-main-owned native ledger. Provide both to any
+one-call Node factory. The directory and decimal `maxBytes` are never
+renderer-supplied values and are opened before scan or subscription activation.
+If the ledger is absent, a requested terminal-evidence scan or subscription
+fails with `capability.unsupported`; the package never silently downgrades it.
+
+```ts
+const manager = await createCoreBluetoothBleManager({
+  terminalEvidence: { maximumCanonicalBytes: 4096, maximumDurableBytes: 1_048_576 },
+  terminalEvidenceStore: { directory: '/var/lib/my-app/ubm-terminal-evidence', maxBytes: '1048576' }
+})
+```
+
+After a process restart, the returned Node manager exposes the same desktop
+recovery shape as Electron and Tauri: `list`, non-destructive `read`, then
+explicit `acknowledge`. Handles are opaque, local to that manager instance,
+and cannot be reused after restart or acknowledgement. The trusted host owner
+selects recoverable rows internally; applications never provide a recipient or
+producer claim. Keep the same private ledger directory (and, when supplied,
+the same `owner`) when reopening it.
+
+```ts
+for (const record of await manager.terminalEvidenceRecovery.list()) {
+  const value = await manager.terminalEvidenceRecovery.read(record.handle, record.byteLength)
+  await persistExactly(value.canonicalBytes, value.digest) // application durability boundary
+  await manager.terminalEvidenceRecovery.acknowledge(record.handle)
+}
+```
+
+Reading never retires a record. Call `acknowledge` only after the exact bytes
+and digest have been durably consumed; an interrupted application may list and
+read the record again on its next start.
+
+Canonical payloads keep receipt `formatVersion: 1`. A payload containing an
+ordinary singleton `$bytes` record also carries root `encodingVersion: 2`:
+actual byte values retain their hex tag, while each ordinary singleton
+`$bytes` value is wrapped in a one-element array. The marker makes those cases
+unambiguous without reserving metadata keys. Unmarked saved payloads retain
+their legacy decoding behavior. Hydration validates and preserves optional
+error `commit` and `orderedFailure` evidence as well as platform metadata.
+
+For an evidence-bound desktop scan, the host stages the canonical terminal
+record before delivering the terminal to JavaScript. A staged record can be
+recovered after a restart even if the normal commit has not completed. If
+staging fails, the scan reports the source failure and retains any unfinished
+cleanup; it does not claim that an unstaged record is recoverable.
+
+Evidence-bound N-API V2 subscriptions also stage ordinary source failures
+after their buffered values drain. The provider normalizes the original native
+error, commits the matching canonical bytes, and acknowledges the pending
+token before delivering the terminal. Its internal terminal operation identity
+keeps native staging and provider encoding identical. Unbound failures and the
+legacy V1 polling rejection retain their existing behavior.
+
+`list()` remains strict: if another live recovery controller holds a producer
+lane, it reports that contention instead of pretending the lane is empty. For
+an additive, non-blocking refresh use `listWithStatus()`. It returns the cold
+records it could acquire and `busyProducers` (`scan` and/or `subscription`) for
+lanes currently held elsewhere; retry that lane after its controller closes.
+
 ### Load and identity failures
 
 The addon is found only from the installed package's own location: never through the process cwd, never from another platform's or architecture's binary, and never through a TypeScript fallback. Before any radio call, the host checks the binary's `nativeBuildIdentity()` against the identity the package was sealed with: contract revision, source digest, binding schema, target, and release profile.
@@ -59,6 +123,13 @@ The addon is found only from the installed package's own location: never through
 ### Scan observations
 
 The core queues reports only while a scan is live and clears the queue when a scan starts or stops, and the provider refuses (with a `scan-observation-foreign` diagnostic) any observation the core queued for another scan. A report is not necessarily a fresh over-air advertisement: scan admission can reobserve known OS device state. Each native observation's `receivedAtMonotonicMs` is when the core received it, on the host's clock, not when the host took it. `provenance` distinguishes `platform-raw`, `platform-derived`, and `core-merged`. The OS's merged device state (BlueZ `Device1`, a known-device report) is `platform-derived`; a single advertisement's own data is `platform-raw` on WinRT and `platform-derived` on CoreBluetooth (a parsed advertisement dictionary) and BlueZ.
+
+Scan ownership is captured at native callback ingress and cleanup fences the
+accepted callbacks before a replacement scan takes ownership. This identifies
+when the host delivered an observation to UBM; it does not establish when a
+radio packet was received. In particular, CoreBluetooth does not provide an
+over-the-air scan generation for a callback first delivered after a new scan
+has started.
 
 Public scan observations preserve this provenance and the optional exact `origin`:
 `advertisement` or `device-state`. The latter may contain the OS's cached service
@@ -314,6 +385,12 @@ and `maximumWriteLength('without-response')` still report
 `capability.unavailable`, not an invented measurement. Explicit
 prepared/reliable transactions remain refused.
 
+Characteristic operation properties and access requirements are separate facts.
+When the desktop source does not report the security flags needed to determine
+read or write access, that requirement is `unknown`, even if the operation is
+supported. CoreBluetooth and WinRT property-only discovery does not establish
+that a read or write avoids OS-managed pairing.
+
 ### Parity with the 4.x desktop backends
 
 Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backends offered is tracked in `DESKTOP_RUST_CORE_PARITY`, which `unified-ble-manager/testing` exports (no production entrypoint exports it). Runtime registration reads the instantiated central's `runtimeCapabilityStates`, not the static OS diagnostic table, and is narrowed to mechanisms this provider wires. The native snapshot accepts all four canonical states. Connection refusals retain `unavailable` versus `unsupported` and the instance's reason; a native `supported` mechanism does not by itself promote the public provider's deterministic evidence label.
@@ -365,6 +442,20 @@ resources, not another manager or the native continuation. Trusted main-process
 routers can use `host.createInternalManager()` with the same ownership authority.
 The ordinary one-call manager factories keep their existing lifetime semantics.
 
+### Trusted WinRT native failure evidence
+
+`createWinRtBleManager`, `createWinRtProcessHost`,
+`createNativeWinRtBackendProvider`, and the Electron-main WinRT provider accept
+the host-only `failureEvidenceStore: { directory, maxBytes }` option. It is
+installed in the native WinRT manager before the radio opens, using the
+specified private directory and decimal positive byte budget. Pass it only
+from trusted Node or Electron-main code; renderer IPC has no corresponding
+option and must never carry a filesystem path. Supplying it to CoreBluetooth
+or BlueZ fails `capability.unsupported` before an addon/radio open, rather
+than silently attaching only the continuation ledger. This store retains exact
+native source evidence; it does not replace the separately configured durable
+continuation ledger or its receipt lifecycle.
+
 Use `host.continuation` for native execution and explicit backlog claims.
 `host.continuationAccess` is the narrow canonical-envelope bridge for an
 authenticated renderer: preparation and acknowledgement remain separate.
@@ -396,11 +487,12 @@ export `createNativeContinuationRecordingController` for ID-only offline journal
 controls. These helpers do not install a transport or authenticate its caller:
 the trusted host must enforce sender authorization and response bounds.
 
-Run the claim helper on the receiving side. It decodes the prepared bytes
-before acknowledging, never acknowledges a malformed or undelivered prepared
-response, and retains decoded values with `disposed: false` if acknowledgement
-is uncertain. Do not replace this handshake with a main-process `claim()` call
-whose already-acknowledged result can be lost when a renderer disappears.
+Run the claim helper on the receiving side. It returns each decoded retained
+prefix without acknowledging it. After the application accepts every record,
+call its `acknowledge()` and retry that same function if the reply is uncertain.
+Claim again until the receipt reports disposal, including cleanup-generated tails.
+Coordinate a single consumer across bridge instances. See [BACKGROUND.md](BACKGROUND.md)
+for migration and in-memory recovery limits.
 
 For a recorder that must keep collecting while its UI is absent, the trusted
 host can attach a native continuation controller to its **already-open** Rust
@@ -446,7 +538,7 @@ await continuation.execute({
 async function finishRecording() {
   const backlog = await continuation.claim({ maxItems: 256, maxBytes: 65536 })
   console.info(backlog.values, backlog.streamEnds, backlog.afterCutoffLoss)
-  if (!backlog.disposed) throw new Error(backlog.disposeFailure ?? 'Native cleanup is still owned')
+  // Process the complete decoded backlog; inspect cleanup outcome.
   return backlog
 }
 
@@ -465,11 +557,14 @@ for the same radio.
 `status()` exposes the bounded queued-data count, the last collection error and
 the native recovery outcome. Recovery runs in Rust without a JavaScript pump,
 using the same declared selectors and authoritative retryability as mobile.
-`claim()` seals intake, strictly decodes the prepared backlog, then acknowledges
-the handoff; it ends this recording generation. An uncertain acknowledgement
-returns the decoded values with `disposed: false`, never hides them in a rejected
-promise. Preserve those values and retry cleanup. Report control loss, overflow
-terminals and after-cutoff loss; a buffer is not a promise of lossless recording.
+`claim()` seals intake, decodes the complete native backlog and automatically
+acknowledges it. Inspect the returned cleanup outcome. The additive
+`claimRetainedV1()` instead returns an ordered retained prefix for the caller to
+process before explicit acknowledgement; repeat until the receipt confirms
+cleanup. It requires separately versioned native operations and fails closed
+when they are absent. See [the handoff contract](BACKGROUND.md#draining-what-the-wake-collected)
+for retry, lifecycle and loss semantics. Report control loss, overflow terminals
+and after-cutoff loss; a buffer is not a promise of lossless recording.
 
 The default backlog is bounded process memory, **not durable storage**. For
 opt-in durable collection, first call `continuation.recordings(privateDirectory)`
@@ -490,6 +585,12 @@ radio. It verifies the native binding identity as usual. The journal is plaintex
 [durable storage contract](BACKGROUND.md) for bounds, protection and failure
 semantics. Generic declared `setup` steps can restore an application protocol
 after resubscription; UBM itself contains no Polar command recipe.
+
+An independently opened desktop recording controller may expose additive
+`releaseIdle()`. It releases eligible cached native file handles for that private
+directory without deleting durable rows. Handles with live owners or unfinished
+evidence remain retained; later recording calls reopen released journals from
+their existing bytes.
 
 Keep the owning process and central alive while collecting. OS service registration, process
 relaunch and persistence of the standing declaration remain explicit host
@@ -599,6 +700,17 @@ Physical checks still outstanding: a peripheral session per OS (scan, connect, d
 ## Electron
 
 Do not load a Node radio factory from a renderer. See [`ELECTRON.md`](ELECTRON.md).
+
+## Trusted peer-notification failure recovery
+
+The desktop Rust provider's expert recovery handle returns a
+`DesktopPeerNotificationFailureRecoveryOffer`. Its `descriptor` is the opaque
+source-time read/ack authority; its `error` is the original typed producer
+error, including platform metadata and ordered metadata entries. Hosts must
+not replace that error with a generic recovery failure. After a transient
+durable-stage refusal, only the trusted Node or Electron-main host may invoke
+the provider's recovery path to retry the retained offer; renderer code has no
+direct retry route. Read the exact retained bytes and acknowledge explicitly.
 
 ## Maintainers
 

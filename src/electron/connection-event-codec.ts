@@ -25,6 +25,12 @@ export type DecodedConnectionEventStreamItem =
       readonly replacedItems: number
     }
   | {
+      readonly kind: 'source-loss'
+      readonly scope: 'host-global'
+      readonly source: 'notification-ingress' | 'advertisement-ingress'
+      readonly lostRecords: number
+    }
+  | {
       readonly kind: 'terminal'
       readonly reason:
         | 'closed'
@@ -92,6 +98,21 @@ export function decodeConnectionEventStreamItem(item: SerializableRecord): Decod
       droppedItems: item.droppedItems,
       droppedBytes: item.droppedBytes,
       replacedItems: item.replacedItems
+    })
+  }
+  if (item.kind === 'source-loss') {
+    if (
+      item.scope !== 'host-global' ||
+      (item.source !== 'notification-ingress' && item.source !== 'advertisement-ingress') ||
+      !isNonNegativeSafeInteger(item.lostRecords)
+    ) {
+      throw contractError('protocol.malformed', 'ipc', 'electron-renderer.connection-events-source-loss')
+    }
+    return Object.freeze({
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: item.source,
+      lostRecords: item.lostRecords
     })
   }
   if (item.kind === 'terminal') {

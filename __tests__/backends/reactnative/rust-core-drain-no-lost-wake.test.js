@@ -102,7 +102,7 @@ async function stopDrained(router, controlled) {
 describe('the deterministic owner wakes every armed arrival (arm, empty, record in between)', () => {
   test('a record arriving during an in-flight drain wakes exactly once and drains next', async () => {
     const native = new DeterministicRustCoreNative({ platform: 'android', drainResolution: 'native-task' })
-    const admission = JSON.parse(await native.openSession('owner-a', 'ubm-mobile-wire/2'))
+    const admission = JSON.parse(await native.openSession('owner-a', 'ubm-mobile-wire/3'))
     const sessionId = String(admission.sessionId)
     const session = native.sessions.get(sessionId)
     native.push(session, { t: 'value', consumer: 'c0', valueB64: 'AA==', delivery: 'notification' })
@@ -131,7 +131,7 @@ describe('the deterministic owner wakes every armed arrival (arm, empty, record 
 
   test('an empty drain arms; a later push disarms and wakes', async () => {
     const native = new DeterministicRustCoreNative({ platform: 'android' })
-    const admission = JSON.parse(await native.openSession('owner-b', 'ubm-mobile-wire/2'))
+    const admission = JSON.parse(await native.openSession('owner-b', 'ubm-mobile-wire/3'))
     const sessionId = String(admission.sessionId)
     const session = native.sessions.get(sessionId)
     const drained = JSON.parse(await native.drain(sessionId, 256, 65536))
@@ -150,7 +150,7 @@ describe('the deterministic owner wakes every armed arrival (arm, empty, record 
 
   test('a synchronous burst wakes once; every record drains in ordinal order', async () => {
     const native = new DeterministicRustCoreNative({ platform: 'android' })
-    const admission = JSON.parse(await native.openSession('owner-c', 'ubm-mobile-wire/2'))
+    const admission = JSON.parse(await native.openSession('owner-c', 'ubm-mobile-wire/3'))
     const sessionId = String(admission.sessionId)
     const session = native.sessions.get(sessionId)
     let wakes = 0

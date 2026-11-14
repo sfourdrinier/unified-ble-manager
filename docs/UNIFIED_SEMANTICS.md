@@ -201,7 +201,13 @@ identity even after graph replacement. A refused unsubscribe remains owned and
 retryable; only confirmed unsubscribe or end of its physical connection
 generation discharges that obligation, not a merely logical lease-release
 receipt or stale-handle error. Releasing it must not release another owner's
-connection lease.
+connection lease. A Services Changed transition can first end a subscription
+stream, then fan out to multiple joined logical database views; all of those
+lifecycle routes share its one physical cleanup attempt, including a refused
+result. A later explicit owner removal, manager teardown, connection-end
+invalidation, or a distinct lifecycle action may retry the retained obligation,
+but another recipient of that same transition MUST NOT issue an implicit native
+retry.
 
 <!-- SEM-COVERAGE: SEM-ADAPTER -->
 
@@ -289,7 +295,9 @@ observation stream, and a terminal outcome.
 Source and evidence-matching failures retain the same structured cause in the
 observation terminal and discovery-event iterator. Buffered discovery events
 drain before the iterator rejects; subscribers created after failure receive
-the retained cause. Ordinary stop or iterator return completes normally.
+the retained cause. An error-policy overflow likewise delivers already accepted
+discovery events before reporting overflow. Ordinary stop or iterator return
+completes normally.
 
 The shared service-UUID planner treats a singleton `services.any` as a required
 service, just like an `all` entry. Native filtering uses only services required
@@ -362,15 +370,19 @@ record, not independent advertising and scan-response PDUs. Raw bytes count
 toward delivery byte budgets and coalescing identity; subscribers receive
 independent copies. Without the option the public projection omits that field.
 
-`stop` is idempotent. The first stop transition closes ingress, asks the backend
-to stop, settles the session, then releases physical ownership. A later stop
-returns the same terminal record. The stop resolution happens-before release of
-the session owner. Callbacks already entered before ingress closure MAY complete
-internal cleanup but MUST NOT reach consumers afterward. An implementation MUST
-NOT deliver a scan observation after scan stop resolves. Scan start, stop,
-abort, adapter-off, backend reset, and destroy are arbitrated by Section 13.
+`stop` is idempotent. A backend reports `released` only after it has ended
+admission at the producer's ordered cutoff and enqueued exactly one terminal
+behind every observation accepted through that cutoff. Those observations remain
+in FIFO order for the consumer, even when read after stop resolves; callers do
+not need to consume them for the stop fence to settle. A native source terminal,
+including its error and evidence, remains authoritative; otherwise the backend
+enqueues `owner-released`. Later observations must not enter the session. A
+`release-failed` result retains the source for a later retry. Closing the
+observation view explicitly discards its queued values and reports their count
+on its terminal. Scan start, stop, abort, adapter-off, backend reset, and destroy
+are arbitrated by Section 13.
 
-Abort and deadline close scan ingress through the same stopping path and return
+Abort and deadline request scan ingress closure through the same stopping path and return
 one terminal record with `operation.aborted` or `operation.timed-out`. A connect,
 adoption, discovery, or GATT operation MUST NOT implicitly stop a valid scan.
 If coexistence is unavailable on a backend, the backend reports that capability
@@ -568,6 +580,14 @@ on the first enable; a characteristic offering only the other mode still
 subscribes in that supported mode. A hard requirement overrides the preference.
 Joining a live enable does not rewrite its mode for a preference. WinRT passes
 the selected configuration explicitly to its first CCCD write.
+Web Bluetooth's `startNotifications()` specifies the CCCD setting it requests:
+notification when that property is available, indication otherwise. That setting
+is separate from the provenance and delivery mode of a later DOM event. Since
+the browser does not identify an event's mode, Web refuses a hard mode with
+`capability.limited` when the property exists; a missing requested property
+remains `gatt.property-not-supported`. This applies to ordinary and ordered
+subscriptions, including joins. A soft preference does not change the browser's
+selection algorithm.
 Physical CCCD enablement is reference counted by
 the adapter owner. A failed enable rolls back the consumer registration and
 reports no ready event. Removal first closes consumer ingress, then decrements
@@ -604,6 +624,12 @@ has an independently declared aggregate byte quota. Admission is denied or an
 overflow policy is applied before any quota is exceeded. Consumer delivery order
 is ingress ordinal order after the declared policy is applied. No queue may grow
 merely because a consumer stops reading.
+
+For public scan views, returning a subscriber iterator abandons that
+subscriber's queued values and controls and releases its reservations. Closing
+the observation stream instead leaves a closed terminal available to an existing
+iterator; its control reservation remains charged until that terminal is read
+or the iterator is returned.
 
 | Stream                  | Default capacity | Default policy                                  | Overflow accounting                                                 |
 | ----------------------- | ---------------: | ----------------------------------------------- | ------------------------------------------------------------------- |
@@ -695,7 +721,7 @@ does not report it. Output larger than an advertised limit is a backend protocol
 failure and invalidates the affected attachment.
 
 For React Native, bytes cross the `UnifiedBleRustCore` TurboModule as strict
-RFC 4648 padded base64 inside the JSON wire text (`ubm-mobile-wire/2`,
+RFC 4648 padded base64 inside the JSON wire text (`ubm-mobile-wire/3`,
 docs/MOBILE_RUST_WIRE.md). One pure codec encodes exactly the bytes of the
 `Uint8Array` view (a subarray sends only its own bytes) and decodes into an
 independent `Uint8Array`, with no `Buffer` or `atob`. Size is checked before
@@ -705,7 +731,15 @@ value.
 
 A notification value reports how it arrived: `delivery` is `notification`,
 `indication`, or `unknown` when the platform does not report it (CoreBluetooth,
-BlueZ). A backend never reports a delivery the platform did not report.
+BlueZ, and Web Bluetooth). A backend never reports a delivery the platform did
+not report. Web Bluetooth also dispatches `characteristicvaluechanged` for a
+successful `readValue()`; the same event carries remote updates without saying
+which caused it. The backend routes each such observed event to ordinary and
+ordered subscribers with `read-or-notification` provenance and `unknown` delivery,
+without provenance-based deduplication or filtering. Delivery remains subject to
+each stream's bounded overflow and lifecycle rules, with loss reported as applicable.
+The separately returned `readValue()` result remains the read operation's own
+`read-response`, not an attribution of the DOM event.
 
 The versioned command record carries concrete scan settings (service filters,
 duplicate policy, scan mode, callback type, and legacy-scan selection) and a
@@ -824,7 +858,7 @@ published after all state invalidations needed to make later use fail.
 | backend reset / queued work                                 | reset; no dispatch                                                                                                              |
 | backend reset / native work                                 | first guarded contender; reset winner invalidates attachment and suppresses later completion                                    |
 | adapter loss or authorization revocation / success response | first ingress contender; adapter winner invalidates attachment before settlement                                                |
-| scan stop / observation                                     | stop if ingress closed first; otherwise observation may be delivered before stop settles                                        |
+| scan stop / observation                                     | accepted prefix remains readable through the ordered cutoff; later observations are excluded                                    |
 | scan deadline or abort / observation                        | first ingress contender; deadline/abort winner closes scan ingress and suppresses later observation                             |
 | chooser deadline or abort / selected peer                   | first ingress contender; deadline/abort winner suppresses late selection and grants no scope                                    |
 | subscription remove / value                                 | remove if ingress closed first; otherwise value may be delivered before removal settles                                         |
@@ -1383,7 +1417,7 @@ backend and live evidence where their truth depends on a physical stack:
 | Scenario                                     | Deterministic assertion                                                                     | Live evidence needed                          |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------- |
 | scan → connect → continue scan               | connection acquisition preserves the active scan and its owner/overflow state               | controller coexistence behavior where claimed |
-| scan stop with queued callback               | no post-stop observation                                                                    | controller callback ordering                  |
+| scan stop with queued callback               | accepted prefix remains readable; callbacks beyond the cutoff are excluded                  | controller callback ordering                  |
 | two devices connect and operate concurrently | different-peer work may progress concurrently while same-peer serialization remains ordered | controller multi-link behavior                |
 | two peer observations                        | distinct identity/provenance/merge behavior                                                 | raw observation fields                        |
 | two-client scan arbitration                  | second ordinary request fails; shared release cannot stop another lease                     | host-global scan-controller behavior          |
@@ -1424,7 +1458,7 @@ The following are absolute prohibitions:
 - MUST reject an incompatible negotiated version before radio work begins.
 - MUST reject a stale handle before dispatching it to a backend.
 - MUST NOT deliver a value after subscription removal resolves.
-- MUST NOT deliver a scan observation after scan stop resolves.
+- MUST NOT admit a scan observation beyond its ordered stop cutoff; previously accepted values remain readable.
 - MUST NOT select a duplicate UUID occurrence by first match, cache order, or
   an unspecified platform lookup.
 - MUST NOT translate cancellation to a generic busy error, and MUST NOT claim
@@ -1544,3 +1578,88 @@ positive safe-integer ordinals. Malformed metadata terminates the private stream
 and releases its host watch. During Tauri parameter-watch opening, a continuity
 gap discards queued pre-gap observations before the fresh read; observations
 arriving during that read remain ordered afterward under the original request budget.
+
+### Host-global ingress loss
+
+A `source-loss` stream control reports a delta of native ingress records lost
+before routing. Its `scope` is `host-global` and its `source` identifies
+notification or advertisement ingress. The same notice may reach multiple
+candidate streams: it does not establish which stream lost a record, and its
+count must not be summed across streams. Exact per-stream `overflow` and
+terminal counters exclude this uncertainty. With the `error` policy, a
+candidate stream reports the notice and terminates with `overflow`.
+
+Public scan `events` retains its original union and skips drop-policy overflow;
+source loss rejects it. The explicitly subscribed `lossAwareEventsV1` view
+delivers source-loss controls and `stream-loss` snapshots with separate
+cumulative upstream and per-subscriber counters. Upstream counts can recur
+across views and must not be summed. A drop-policy notice does not end delivery;
+event iterator source failure or terminal overflow rejects with the delivered
+error when available. `useDiscoveredPeers` reports loss as `stream.overflow` and continues
+updating peers while delivery continues, so its list may be incomplete. A
+terminal error takes precedence over the earlier warning and retains its
+reported error detail.
+
+### Peer notification ingress loss
+
+A peer-scoped `source-loss` control identifies `peerId` and the native source
+`generation` as an unsigned 64-bit decimal string. `skippedRecords` is an
+unsigned 64-bit decimal string when the source knows the count, or `null` when
+the extent is unknown. The count applies to the shared peer source, not to an
+individual characteristic. A notice can therefore appear on multiple affected
+streams and must not be added across them or treated as an exact per-stream
+loss count. Within a stream the control is ordered with the source's admitted
+values. It is nonterminal under all overflow policies; if the bounded control
+path cannot retain the evidence, it terminates with `source-failed` rather than
+silently claiming continuity. Loss-aware and ordered-control views retain that
+control. Retained controls are charged by their canonical serialized bytes to
+the stream and aggregate byte budgets; the stream keeps its reserved terminal
+headroom. If either budget cannot admit the next control, it reports
+`source-failed` with a stream quota error before publishing that control. A legacy projection that cannot expose the control ends after its
+admitted prefix with an errorless `overflow` terminal, without attributing the
+shared source loss to that individual stream. A later authoritative terminal
+still retains its own reason, error, and committed evidence.
+
+### Ordered notification collections
+
+`GattDatabase.subscribeOrdered` owns one bounded FIFO across the selected
+characteristic instances. Its decimal ordinals describe acceptance by the
+connection-owned host ingress, not peripheral transmission order. Setup and
+values carry a tagged source generation, and values carry a source membership
+and epoch, when the host supplies them; `null` means that identity is
+unavailable. Loss and terminal records preserve
+uncertainty and source evidence rather than implying complete history.
+Marker records carry a canonical decimal marker ID and ingress ordinal in the
+same FIFO; this record type alone does not advertise a marker-write operation.
+
+Where offered, `increaseByteCapacity` increases the existing collection's
+byte budget without acknowledging evidence. The desktop direct native route
+negotiates capacity wire version 1 and binds the request to the retained
+collection and source generation. Repeating an increase is safe; it cannot
+reduce the budget. This does not provide bounded extraction of evidence beyond
+the supported budget or establish capacity recovery across Electron or Tauri.
+
+When a producer and reader negotiate ordered failure observations, each retained
+failure or rejection is a separate nonterminal record, including repeated
+identical observations. Its failure, rejection, membership, loss and tail
+uncertainty stay together. Evidence split from the first source terminal keeps
+its source position ahead of later failure observations. An omission record
+reports only known omission.
+The source is sealed and its retained controls drained before the final
+terminal is published; each delivery and its discard receipt replay unchanged.
+Older formats may contain a terminal failure summary instead; do not reconstruct
+individual observations from that summary. Integration and qualification across
+all hosts remain in progress.
+
+Failed setup returns initial observations and a retained stream for later
+accepted observations and the final terminal. Initial observations are not
+repeated in that stream. `close()` reports cleanup and permits retry; it does
+not discard unread observations. If a ready setup loses admission and its
+compensating close rejects, the failed setup retains the admission error, a
+failed group cleanup receipt, and the stream for observation and close retry.
+`discard()` fences and accounts unread values,
+bytes and controls after source seal, retaining known loss and terminal
+evidence in its cleanup receipt. Returning an iterator uses the same discard
+path. A pending cleanup retains ownership for retry and reports an uncertain
+tail rather than claiming that unread data was discarded. Discard counts are
+cumulative receipts across retries and must not be added together.

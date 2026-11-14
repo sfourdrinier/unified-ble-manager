@@ -1,6 +1,6 @@
 // __tests__/backends/reactnative/rust-core-wire.golden.test.js
 //
-// PR210-12: golden vectors bind the two halves of `ubm-mobile-wire/2`.
+// PR210-12: golden vectors bind the two halves of `ubm-mobile-wire/3`.
 // `crates/ubm-mobile/golden/wire-vectors.json` holds envelope and drain
 // text produced by the Rust owner itself (crates/ubm-mobile/tests/golden.rs,
 // checked by `cargo test -p ubm-mobile`); every vector must parse through
@@ -34,7 +34,7 @@ function ok(result, what) {
   return result.value
 }
 
-describe('ubm-mobile-wire/2 golden vectors (Rust-generated)', () => {
+describe('ubm-mobile-wire/3 golden vectors (Rust-generated)', () => {
   it('speaks the same wire revision', () => {
     expect(golden.wireRevision).toBe(wire.WIRE_REVISION)
   })
@@ -42,6 +42,19 @@ describe('ubm-mobile-wire/2 golden vectors (Rust-generated)', () => {
   it('covers every op of the TS op table', () => {
     const covered = new Set(golden.invokes.map(vector => vector.op))
     expect(wire.WIRE_OPS.filter(op => !covered.has(op))).toEqual([])
+  })
+
+  it('contains successful scripted ordered-group results and explicit capability refusals', () => {
+    const byName = Object.fromEntries(golden.invokes.map(vector => [vector.name, vector]))
+    for (const name of ['ordered reserve', 'ordered open', 'ordered status', 'ordered poll', 'ordered close']) {
+      expect(byName[name]).toMatchObject({ expect: 'value' })
+    }
+    for (const name of ['ordered marker reserve unsupported', 'ordered recording reclaim next unsupported']) {
+      expect(JSON.parse(byName[name].envelope)).toMatchObject({
+        ok: false,
+        error: { code: 'capability.unsupported' }
+      })
+    }
   })
 
   const known = golden.invokes.filter(vector => wire.WIRE_OPS.includes(vector.op))
@@ -149,7 +162,14 @@ describe('ubm-mobile-wire/2 golden vectors (Rust-generated)', () => {
       })
     }
     const kinds = records.map(record => record.t)
-    expect(kinds.indexOf('link')).toBeLessThan(kinds.indexOf('stream-end'))
+    const lossBatch = golden.drains.find(batch => batch.name === 'link loss')
+    const lossKinds = ok(wire.parseDrainText(lossBatch.text, lossBatch.lastOrdinal), 'link loss').records.map(
+      record => record.t
+    )
+    expect(lossKinds.indexOf('link')).toBeLessThan(lossKinds.indexOf('stream-end'))
+    expect(records.find(record => record.t === 'stream-end' && record.reason === 'source-failed')).toMatchObject({
+      error: { code: 'platform.failure', domain: 'platform', operation: 'gatt.notification.source' }
+    })
     for (const t of ['adv', 'value', 'adapter', 'security', 'restored', 'ingress-drop', 'link', 'stream-end']) {
       expect(kinds).toContain(t)
     }

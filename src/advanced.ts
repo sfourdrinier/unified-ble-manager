@@ -62,6 +62,7 @@ export type {
   StreamItem,
   StreamValue,
   StreamOverflowNotice,
+  StreamSourceLossNotice,
   StreamTerminalNotice,
   OverflowPolicy
 } from './backend-contract/streams'

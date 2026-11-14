@@ -15,10 +15,12 @@ import type { CleanupRecord } from '../backend-contract/errors'
 import type { IpcEnvelope } from '../backend-contract/electron'
 import type { IpcOperationCorrelation, OwnedBytes, SerializableRecord } from '../backend-contract/primitives'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
+import { markAuthenticatedElectronTerminalEvidenceStageFailure } from '../ipc/electron-terminal-evidence-wire'
 import { validateCapabilitySnapshot } from '../backend-contract/capabilities'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import {
   createIpcBootstrapRequest,
+  isIpcAttachmentDiagnosticWarningItem,
   isIpcAttachmentReboundItem,
   IPC_ATTACHMENT_STREAM_ID,
   IPC_CLIENT_COMPATIBILITY_OFFER
@@ -40,6 +42,8 @@ import type {
   ElectronRendererIpcTransport
 } from './protocol'
 import type { IpcClientLeaseIdentity } from '../backend-contract/ipc'
+
+export class OrderedAdmissionCancellationError extends AggregateError {}
 
 const rendererEventLimits = Object.freeze({
   itemCapacity: capacity(128),
@@ -198,8 +202,10 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
       payload: relativeBudgetPayload(request.payload, 'electron-renderer'),
       binaryPayload
     }
+    let cancellation: Promise<void> | null = null
     const abort = () => {
-      this.requestCancellation(correlation).catch(error => {
+      cancellation = this.requestCancellation(correlation)
+      cancellation.catch(error => {
         console.error('[ElectronRendererBleClient] Cancellation route failed:', error)
       })
     }
@@ -213,6 +219,19 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
         throw contractError('protocol.malformed', 'ipc', 'electron-renderer.route-response')
       }
       return { correlation, payload: response.payload }
+    } catch (error) {
+      if (request.command === 'gatt.ordered.open') {
+        if (cancellation === null) cancellation = this.requestCancellation(correlation)
+        try {
+          await cancellation
+        } catch (cancellationError) {
+          throw new OrderedAdmissionCancellationError(
+            [error, cancellationError],
+            'Ordered admission cancellation could not be confirmed'
+          )
+        }
+      }
+      throw error
     } finally {
       request.signal?.removeEventListener('abort', abort)
     }
@@ -500,6 +519,23 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
       this.eventsStream.closeWithReason('source-failed', failure.normalized)
       return
     }
+    if (event.item.terminalEvidenceStageFailed !== undefined) {
+      if (
+        event.item.terminalEvidenceStageFailed !== true ||
+        event.item.kind !== 'terminal' ||
+        event.item.reason !== 'source-failed' ||
+        event.item.evidence !== undefined
+      ) {
+        this.enqueueAcknowledgement(event.eventId)
+        this.eventsStream.closeWithReason(
+          'source-failed',
+          contractError('protocol.malformed', 'ipc', 'electron-renderer.terminal-evidence-stage-failure-wire')
+            .normalized
+        )
+        return
+      }
+      markAuthenticatedElectronTerminalEvidenceStageFailure(event.item)
+    }
     this.eventsStream.emit(payload, bytes)
     this.routeConnectionEvent(event)
     if (this.lifecycle === 'releasing') {
@@ -522,6 +558,11 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     event: ElectronBleIpcEvent
   ): void {
     const item = event.item
+    // Protocol 10 sends graph-less native-source warnings on the attachment
+    // stream. They are transport diagnostics, not attachment advances; the
+    // shared IPC manager records them in public diagnostics below the renderer
+    // boundary. Do not emit a spurious rebind-refusal diagnostic here.
+    if (isIpcAttachmentDiagnosticWarningItem(item)) return
     if (
       !isIpcAttachmentReboundItem<Attachment>(item) ||
       item.value.previousAttachmentId !== String(bootstrap.attachmentId) ||
@@ -579,6 +620,10 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
           droppedBytes: resourceCount(item.droppedBytes),
           replacedItems: resourceCount(item.replacedItems)
         })
+        return
+      }
+      if (item.kind === 'source-loss') {
+        subscription.stream.observeSourceLoss({ ...item, lostRecords: resourceCount(item.lostRecords) })
         return
       }
       subscription.stream.finishWithReason(item.reason)

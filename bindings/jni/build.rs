@@ -6,5 +6,8 @@
 include!("../ubm_build_identity.rs");
 
 fn main() {
+    // The JVM round-trip harness enables this via RUSTFLAGS; it is not a
+    // Cargo feature because it must not affect published JNI feature sets.
+    println!("cargo::rustc-check-cfg=cfg(ubm_jni_roundtrip)");
     ubm_build_identity::emit("jni");
 }

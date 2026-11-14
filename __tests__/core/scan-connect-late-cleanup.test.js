@@ -1,5 +1,6 @@
 const { attachBleBackend, createBleManager, createManagerOwnershipAuthority } = require('../../src/manager/ble-manager')
 const { DEFAULT_BLE_MANAGER_OPTIONS } = require('../../src/manager/ble-manager')
+const { contractError } = require('../../src/backend-contract/errors')
 const { capacity, deadline, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')
 const { awaitSignal } = require('../helpers/async')
@@ -72,6 +73,9 @@ function createCloser(resourceKind, operation, policy) {
       if (policy === 'fail-then-succeed') {
         return attempts === 1 ? releaseFailedRecord(resourceKind, operation) : releasedRecord()
       }
+      if (policy === 'fail-twice-then-succeed') {
+        return attempts <= 2 ? releaseFailedRecord(resourceKind, operation) : releasedRecord()
+      }
       return releasedRecord()
     }
   }
@@ -102,18 +106,20 @@ function peer() {
   return opaqueId('deterministic-peer', 'peer', 'deterministic')
 }
 
-function managerOptions(fixture) {
+function managerOptions(fixture, options = {}) {
   return {
     ...DEFAULT_BLE_MANAGER_OPTIONS,
     now: () => fixture.controller.clock.now(),
     timer: {
       scheduleAt: (deadlineValue, action) => fixture.controller.clock.scheduleAt(deadlineValue, action)
-    }
+    },
+    ...options
   }
 }
 
-async function createOwningFixture() {
+async function createOwningFixture(options = {}, configureBackend = () => {}) {
   const fixture = createDeterministicTestBackend()
+  configureBackend(fixture.backend)
   const attached = await attachBleBackend(fixture.backend, compatibility())
   const manager = await createBleManager(
     {
@@ -123,7 +129,7 @@ async function createOwningFixture() {
       ownerMode: 'owning'
     },
     createManagerOwnershipAuthority(attached),
-    managerOptions(fixture)
+    managerOptions(fixture, options)
   )
   return { fixture, manager }
 }
@@ -264,6 +270,165 @@ const acquisitions = [
 ]
 
 describe('pending scan/connect acquisition ownership', () => {
+  test('terminal-evidence reservation rejection releases every pre-admission scan stream', async () => {
+    const reserve = jest.fn(async () => {
+      throw contractError('platform.failure', 'stream', 'test.scan-terminal-evidence.reserve')
+    })
+    const { fixture, manager } = await createOwningFixture(
+      { terminalEvidence: { maximumCanonicalBytes: 512 } },
+      backend => {
+        backend.scanner.reserveTerminalEvidence = reserve
+        backend.scanner.start = jest.fn(async () => {
+          throw new Error('scan radio must not start after evidence admission rejects')
+        })
+      }
+    )
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(settle(fixture.controller, manager.scan(scanOptions()))).rejects.toMatchObject({
+        normalized: { code: 'platform.failure', operation: 'test.scan-terminal-evidence.reserve' }
+      })
+    }
+
+    expect(reserve).toHaveBeenCalledTimes(3)
+    expect(fixture.backend.scanner.start).not.toHaveBeenCalled()
+    expect(manager.core.aggregateQuota.retainedBytes()).toBe(0)
+    expect(manager.core.aggregateQuota.streams.size).toBe(0)
+    expect(Number(manager.localResourceCounters().scanConsumers)).toBe(0)
+    expect(Number(manager.localResourceCounters().activeScanControllers)).toBe(0)
+    await flushMicrotasks()
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('failed scan admission settles while a pre-adoption evidence release failure is traced', async () => {
+    const startupFailure = contractError('scan.start-failed', 'scan', 'test.scan-start')
+    let releaseAttempts = 0
+    const release = jest.fn(async () => {
+      releaseAttempts += 1
+      if (releaseAttempts <= 2) throw new Error('evidence store unavailable')
+    })
+    const { fixture, manager } = await createOwningFixture(
+      { terminalEvidence: { maximumCanonicalBytes: 512 } },
+      backend => {
+        backend.scanner.reserveTerminalEvidence = jest.fn(async request => ({
+          maximumBytes: request.maximumBytes,
+          commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+          release
+        }))
+        backend.scanner.start = jest.fn(async () => {
+          throw startupFailure
+        })
+      }
+    )
+
+    const pending = manager.scan(scanOptions())
+    const outcome = pending.then(
+      value => ({ state: 'fulfilled', value }),
+      error => ({ state: 'rejected', error })
+    )
+    let settled = false
+    void outcome.then(() => {
+      settled = true
+    })
+    for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
+      fixture.controller.clock.runUntilIdle()
+      await Promise.resolve()
+    }
+
+    expect(settled).toBe(true)
+    await expect(outcome).resolves.toMatchObject({
+      state: 'rejected',
+      error: { normalized: startupFailure.normalized }
+    })
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(Number(manager.localResourceCounters().scanConsumers)).toBe(0)
+    expect(Number(manager.localResourceCounters().activeScanControllers)).toBe(0)
+    expect(manager.traces()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          transition: 'scan-admission-terminal-evidence-release-terminal-evidence',
+          cause: 'platform.failure'
+        })
+      ])
+    )
+    await flushMicrotasks()
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'release-failed' })
+    expect(release).toHaveBeenCalledTimes(2)
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
+    expect(release).toHaveBeenCalledTimes(3)
+  })
+
+  test('stale scan cleanup retries the physical lease before releasing terminal evidence', async () => {
+    const closer = createCloser('scan', 'scan-stale-admission-release', 'fail-then-succeed')
+    const release = jest.fn(async () => {})
+    const { manager, fixture } = await createOwningFixture(
+      { terminalEvidence: { maximumCanonicalBytes: 512 } },
+      backend => {
+        backend.scanner.reserveTerminalEvidence = jest.fn(async request => ({
+          maximumBytes: request.maximumBytes,
+          commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+          release
+        }))
+      }
+    )
+    const gate = installScanAcquisition(fixture.backend, closer)
+    const pending = manager.scan(scanOptions())
+
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.cancelled-by-destroy' } })
+    gate.release()
+    await settle(fixture.controller, gate.leaseCreated)
+    await awaitSignal(closer.firstAttempt, 'the stale scan lease cleanup to run')
+    await flushMicrotasks()
+    expect(closer.attempts()).toBe(1)
+    expect(release).not.toHaveBeenCalled()
+
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
+    expect(closer.attempts()).toBe(2)
+    expect(release).toHaveBeenCalledTimes(1)
+  })
+
+  test('stale scan evidence retry does not repeat a released physical lease', async () => {
+    const closer = createCloser('scan', 'scan-stale-admission-release', 'always-succeed')
+    let releaseAttempts = 0
+    let reportFirstRelease
+    const firstRelease = new Promise(resolve => {
+      reportFirstRelease = resolve
+    })
+    const release = jest.fn(async () => {
+      releaseAttempts += 1
+      if (releaseAttempts === 1) reportFirstRelease()
+      if (releaseAttempts === 1) throw new Error('evidence store unavailable')
+    })
+    const { manager, fixture } = await createOwningFixture(
+      { terminalEvidence: { maximumCanonicalBytes: 512 } },
+      backend => {
+        backend.scanner.reserveTerminalEvidence = jest.fn(async request => ({
+          maximumBytes: request.maximumBytes,
+          commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+          release
+        }))
+      }
+    )
+    const gate = installScanAcquisition(fixture.backend, closer)
+    const pending = manager.scan(scanOptions())
+
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.cancelled-by-destroy' } })
+    gate.release()
+    await settle(fixture.controller, gate.leaseCreated)
+    await awaitSignal(closer.firstAttempt, 'the stale scan lease cleanup to run')
+    fixture.controller.clock.runUntilIdle()
+    await flushMicrotasks()
+    await awaitSignal(firstRelease, 'the stale scan terminal-evidence release to run')
+    expect(closer.attempts()).toBe(1)
+    expect(release).toHaveBeenCalledTimes(1)
+
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
+    expect(closer.attempts()).toBe(1)
+    expect(release).toHaveBeenCalledTimes(2)
+  })
+
   test.each(acquisitions)('destroy during pending $name retains a failed late lease for retry', async acquisition => {
     const closer = createCloser(acquisition.resourceKind, acquisition.operation, 'fail-then-succeed')
     const { manager, fixture } = await createOwningFixture()
@@ -285,6 +450,30 @@ describe('pending scan/connect acquisition ownership', () => {
 
     await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'released' })
     expect(closer.attempts()).toBe(2)
+  })
+
+  test.each(acquisitions)('a second failed late $name cleanup keeps the owning backend available for a third retry', async acquisition => {
+    const closer = createCloser(acquisition.resourceKind, acquisition.operation, 'fail-twice-then-succeed')
+    const { manager, fixture } = await createOwningFixture()
+    const gate = acquisition.install(fixture.backend, closer)
+    const destroy = jest.spyOn(fixture.backend, 'destroy')
+    const pending = acquisition.start(manager, null)
+
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.cancelled-by-destroy' } })
+    gate.release()
+    await settle(fixture.controller, gate.leaseCreated)
+    await awaitSignal(closer.firstAttempt, `the late ${acquisition.name} cleanup to run`)
+    await flushMicrotasks()
+    expect(closer.attempts()).toBe(1)
+
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'release-failed' })
+    expect(closer.attempts()).toBe(2)
+    expect(destroy).not.toHaveBeenCalled()
+
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'released' })
+    expect(closer.attempts()).toBe(3)
+    expect(destroy).toHaveBeenCalledTimes(1)
   })
 
   test.each(acquisitions)(

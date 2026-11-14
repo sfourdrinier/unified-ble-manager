@@ -47,6 +47,7 @@ fn link_ended(kind: &ubm_desktop::LifecycleKind) -> bool {
         ubm_desktop::LifecycleKind::LinkLost
             | ubm_desktop::LifecycleKind::Released { .. }
             | ubm_desktop::LifecycleKind::AdapterLost
+            | ubm_desktop::LifecycleKind::HostReset
     )
 }
 

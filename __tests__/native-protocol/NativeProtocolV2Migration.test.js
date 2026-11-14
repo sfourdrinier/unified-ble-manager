@@ -17,11 +17,11 @@ function filesUnder(relativeDirectory) {
 }
 
 describe('native protocol v2 migration', () => {
-  test('requires ABI 7 and preserves every previously assigned wire ID', () => {
+  test('requires ABI 8 and preserves every previously assigned wire ID', () => {
     const schema = JSON.parse(read('native/protocol/schema/native-protocol-v2.json'))
     const manifest = JSON.parse(read('native/protocol/schema/native-protocol-v2-abi.json'))
-    expect(schema.abiVersion).toBe(7)
-    expect(manifest.version).toBe(7)
+    expect(schema.abiVersion).toBe(8)
+    expect(manifest.version).toBe(8)
     expect(manifest.recordKinds).toEqual(expect.objectContaining({
       attachment: 1,
       connectionPath: 2,
@@ -34,6 +34,8 @@ describe('native protocol v2 migration', () => {
     expect(manifest.enums.commandKinds).toEqual(expect.objectContaining({ requestPriority: 20, enumerateBondedPeers: 24 }))
     expect(manifest.enums.resultKinds).toEqual(expect.objectContaining({ priority: 18, phy: 19, bondedPeers: 20 }))
     expect(manifest.fields.command).toEqual(expect.objectContaining({ pairTransport: 19, connectionIntent: 20 }))
+    expect(manifest.enums.eventKinds).toEqual(expect.objectContaining({ notificationLoss: 10, notificationTerminated: 11 }))
+    expect(manifest.fields.event).toEqual(expect.objectContaining({ lostItems: 18, lostBytes: 19 }))
     expect(manifest.fields.result).toEqual(expect.objectContaining({ effectiveMtu: 22, bondedPeers: 23 }))
   })
 

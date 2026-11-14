@@ -49,7 +49,7 @@ const CLAIM_JSON = JSON.stringify({
       { more: false }
     )
   ],
-  disposed: true,
+  disposed: false,
   afterCutoffLoss: { items: 0, bytes: 0 }
 })
 
@@ -183,7 +183,7 @@ describe('continuation claim path', () => {
 
     expect(backlog.values).toHaveLength(1)
     expect(backlog.disposed).toBe(false)
-    expect(backlog.disposeFailure).toMatch(/acknowledgement/i)
+    expect(backlog.disposeFailure).toContain('continuation acknowledgement uncertain')
     await host.manager.destroy()
   })
 
@@ -199,7 +199,7 @@ describe('continuation claim path', () => {
 
     expect(backlog.values).toHaveLength(1)
     expect(backlog.disposed).toBe(false)
-    expect(backlog.disposeFailure).toMatch(/acknowledgement/i)
+    expect(backlog.disposeFailure).toContain('continuation acknowledgement uncertain')
     await host.manager.destroy()
   })
 
@@ -230,12 +230,12 @@ describe('continuation claim path', () => {
     const host = await managerHost(native)
 
     const first = await host.services.claimContinuationBacklog()
+    expect(first.disposeFailure).toContain('continuation acknowledgement uncertain')
     const receipt = await host.services.claimContinuationBacklog()
-
     expect(first.values).toHaveLength(1)
-    expect(first.disposed).toBe(false)
-    expect(receipt.values).toEqual([])
+    expect(receipt.values).toHaveLength(0)
     expect(receipt.disposed).toBe(true)
+    expect(prepares).toBe(2)
     await host.manager.destroy()
   })
 
@@ -313,24 +313,28 @@ describe('continuation claim path', () => {
       })
     ]
     const acknowledgements = []
-    native.prepareContinuationClaim = async () => prepared.shift()
-    native.acknowledgeContinuationClaim = async token => {
+    native.prepareRetainedContinuationClaimV1 = async () => prepared.shift()
+    native.acknowledgeRetainedContinuationClaimV1 = async token => {
       acknowledgements.push(token)
       return JSON.stringify(token === 'prefix'
         ? { disposed: false, afterCutoffLoss: { items: 0, bytes: 0 }, disposeFailure: 'continuation drain batch malformed: more is missing or not boolean' }
         : { disposed: true, afterCutoffLoss: { items: 0, bytes: 0 }, disposeFailure: null })
     }
+    native.retireRetainedContinuationClaimReceiptV1 = async () => JSON.stringify({})
     native.continuationStatus = async () => STATUS_JSON
     const host = await managerHost(native)
 
-    const prefix = await host.services.claimContinuationBacklog()
-    const tail = await host.services.claimContinuationBacklog()
+    const prefix = await host.services.claimContinuationRetainedV1()
+    expect((await prefix.acknowledge()).disposed).toBe(false)
+    await prefix.retireReceipt()
+    const tail = await host.services.claimContinuationRetainedV1()
 
     expect(prefix.values.map(value => value.consumer)).toEqual(['ubm-continuation-0'])
     expect(prefix.disposed).toBe(false)
     expect(prefix.disposeFailure).toMatch(/malformed/)
     expect(tail.values.map(value => value.consumer)).toEqual(['ubm-continuation-0'])
-    expect(tail.disposed).toBe(true)
+    expect((await tail.acknowledge()).disposed).toBe(true)
+    await tail.retireReceipt()
     expect(acknowledgements).toEqual(['prefix', 'tail'])
     await host.manager.destroy()
   })

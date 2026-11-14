@@ -33,6 +33,34 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 use ubm_core::contracts::{MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, OperationId};
 
+// Scoped to one notification cleanup poll. Backends that have a cancellable
+// pre-native lock mark that wait explicitly; other boundaries retain the
+// conservative rule that their first poll can have dispatched an effect.
+tokio::task_local! {
+    static NOTIFICATION_CLEANUP_START: Arc<std::sync::atomic::AtomicU8>;
+}
+
+pub(crate) async fn track_notification_cleanup<F: std::future::Future>(
+    state: Arc<std::sync::atomic::AtomicU8>,
+    work: F,
+) -> F::Output {
+    NOTIFICATION_CLEANUP_START.scope(state, work).await
+}
+
+#[cfg(feature = "btleplug")]
+pub(crate) fn notification_cleanup_waiting_for_lock() {
+    let _ = NOTIFICATION_CLEANUP_START.try_with(|state| {
+        let _ = state.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst);
+    });
+}
+
+#[cfg(feature = "btleplug")]
+pub(crate) fn notification_cleanup_passed_lock() {
+    let _ = NOTIFICATION_CLEANUP_START.try_with(|state| {
+        let _ = state.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst);
+    });
+}
+
 /// Liveness backstop for connect, discover and GATT verbs when the caller
 /// gave no budget. Not a caller deadline.
 pub const LIVENESS_OP: Duration = Duration::from_secs(120);
@@ -322,11 +350,32 @@ impl OpTicket {
     /// Record that the adapter was reset under this operation and wake its
     /// driver (finding 57). A settled operation is left alone.
     pub(crate) fn mark_reset(&self) {
-        if self.is_settled() {
+        let state = self.lock();
+        if matches!(*state, TicketState::Settled) {
             return;
         }
         self.0.reset.store(true, Ordering::SeqCst);
+        drop(state);
         self.wake();
+    }
+
+    /// Make cancellation and a poll of a physical operation one decision.
+    /// The closure must not acquire this ticket's lock.
+    pub(crate) fn start_if_active<T>(&self, start: impl FnOnce() -> T) -> Option<T> {
+        let state = self.lock();
+        if matches!(
+            &*state,
+            TicketState::Pending {
+                cancel_requested: true
+            } | TicketState::Admitted {
+                cancel_requested: true,
+                ..
+            } | TicketState::Settled
+        ) || self.is_reset()
+        {
+            return None;
+        }
+        Some(start())
     }
 
     /// Whether the adapter was reset under this operation.
@@ -592,6 +641,24 @@ mod tests {
             Some(op("op-1")),
             "the refused op id stays attributable"
         );
+    }
+
+    #[test]
+    fn cancelled_ticket_refuses_physical_start() {
+        let ticket = OpTicket::new();
+        ticket.request_cancel();
+        let called = std::cell::Cell::new(false);
+        assert_eq!(ticket.start_if_active(|| called.set(true)), None);
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn reset_ticket_refuses_physical_start() {
+        let ticket = OpTicket::new();
+        ticket.mark_reset();
+        let called = std::cell::Cell::new(false);
+        assert_eq!(ticket.start_if_active(|| called.set(true)), None);
+        assert!(!called.get());
     }
 
     #[test]

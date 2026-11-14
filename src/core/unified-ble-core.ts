@@ -1,6 +1,7 @@
 // src/core/unified-ble-core.ts
 
 import { BackendContractError, contractError } from '../backend-contract/errors'
+import { isTerminalEvidenceStageFailure } from './terminal-evidence-stage-failure'
 import {
   assertAttachedBackend,
   type BackendAttachment,
@@ -45,10 +46,11 @@ import type { FeatureId } from '../backend-contract/capabilities'
 import type { SecurityBackend } from '../backend-contract/security'
 import type { ConnectionLifecycleTerminalCause } from '../backend-contract/connection-lifecycle'
 import { AggregateStreamQuota } from './aggregate-stream-quota'
-import { CoreBoundedStream } from './bounded-stream'
+import { CoreBoundedStream, type CoreStreamClaimConsumer } from './bounded-stream'
 import { CoreOperationCoordinator } from './operation-coordinator'
 import { ResourceLedger } from './resource-ledger'
 import { CoreSubscription, SubscriptionRegistry } from './subscription-registry'
+import { takeTrustedTerminalEvidenceScope } from '../manager/trusted-terminal-evidence'
 import { CoreTraceRecorder, type CoreTraceResource } from './trace-recorder'
 import { CoreLifecycleObserver, createRetainedCleanup } from './core-lifecycle-observer'
 import { CoreConnection, CoreGattDatabase } from './core-gatt-handles'
@@ -66,6 +68,7 @@ import { discoverCoreGattDatabase } from './core-discovery'
 import type { CurrentCharacteristicPath, CurrentDescriptorPath } from './current-gatt-paths'
 import {
   advertisementByteLength,
+  advertisementDeliveryByteLength,
   advertisementPayloadByteLength,
   awaitWithOperationAdmission,
   activateScanLifetime,
@@ -85,6 +88,8 @@ import {
   lifecycleCauseFromBackendDisconnect
 } from './connection-lifecycle-rules'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
+import { TerminalEvidenceAdmission, type TerminalEvidenceReservation } from './terminal-evidence'
+import { hydrateTerminalEvidence } from './terminal-evidence-codec'
 export { DEFAULT_CORE_MAXIMUM_VALUE_BYTES } from './unified-ble-core-helpers'
 export type { CoreDeadlineHandle, CoreDeadlineScheduler } from './unified-ble-core-helpers'
 
@@ -119,12 +124,26 @@ function connectDeadlineError(deadlineMs: number): BackendContractError {
   return new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
 }
 
+function terminalEvidenceScopeMatches(
+  actual: { readonly managerId: string; readonly operationId: string; readonly incarnation: string },
+  expected: { readonly managerId: string; readonly operationId: string; readonly incarnation: string } | null
+): boolean {
+  return (
+    expected !== null &&
+    actual.managerId === expected.managerId &&
+    actual.operationId === expected.operationId &&
+    actual.incarnation === expected.incarnation
+  )
+}
+
 export interface UnifiedBleCoreOptions {
   readonly now: () => number
   readonly maximumValueBytes: ByteLimit
   readonly maximumAggregateRetainedBytes: number
   readonly traceMaximumRecords: number
   readonly traceMaximumBytes: number
+  /** Opt-in finite native-source terminal evidence reservation. */
+  readonly terminalEvidence?: { readonly maximumCanonicalBytes: number }
   /** Optional host-neutral scheduler used for active scan deadline enforcement. */
   readonly timer?: CoreDeadlineScheduler
 }
@@ -142,10 +161,20 @@ interface TrackedScan<Attachment extends string> extends CoreScanSession<Attachm
   readonly stream: CoreBoundedStream<AdvertisementObservation<Attachment>>
   readonly ownsPhysicalController: boolean
   stopInFlight: Promise<CleanupRecord> | null
+  sourceCompletion: Promise<void> | null
   released: boolean
+  sourceDone: boolean
   activeAbortListener: (() => void) | null
   activeAbortSignal: AbortSignal | null
   activeDeadline: CoreDeadlineHandle | null
+  terminalEvidence: TerminalEvidenceReservation | null
+  terminalEvidenceRelease: Promise<void> | null
+  terminalEvidenceDrainTracked: boolean
+  terminalEvidenceScope: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  } | null
 }
 
 interface CoreGattDiscovery<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
@@ -179,12 +208,18 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   private readonly attachmentListeners = new Set<AttachmentAdvanceListener<Attachment>>()
   private readonly resourceLedger = new ResourceLedger()
   private readonly trace: CoreTraceRecorder
+  private readonly diagnosticWarnings: {
+    readonly code: string
+    readonly detail: import('../backend-contract/primitives').SerializableRecord
+  }[] = []
   private readonly lifecycleObserver: CoreLifecycleObserver
   private readonly aggregateQuota: AggregateStreamQuota
   private readonly operationCoordinator: CoreOperationCoordinator<Attachment>
   private readonly connectionControls: CoreConnectionControls<Attachment, Identity>
   private readonly featureRegistry
   private readonly scans = new Map<string, TrackedScan<Attachment>>()
+  /** Reservations outlive physical scan ownership until their terminal is drained. */
+  private readonly scanTerminalEvidence = new Set<TrackedScan<Attachment>>()
   private readonly connections = new Map<string, CoreConnection<Attachment, Identity>>()
   private readonly connectionReleases = new Map<string, Promise<CleanupRecord>>()
   private readonly subscriptions: SubscriptionRegistry<Attachment, Identity>
@@ -238,6 +273,8 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       trace: this.trace,
       now: options.now,
       maximumValueBytes: options.maximumValueBytes,
+      terminalEvidence: options.terminalEvidence,
+      managerId: String(construction.managerId),
       isPathCurrent: path => this.isCurrentPath(path)
     })
   }
@@ -323,6 +360,13 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
 
   traceDocument(): DiagnosticTraceDocument {
     return this.trace.snapshotDocument()
+  }
+
+  backendDiagnosticWarnings(): readonly {
+    readonly code: string
+    readonly detail: import('../backend-contract/primitives').SerializableRecord
+  }[] {
+    return this.diagnosticWarnings.map(warning => Object.freeze({ ...warning, detail: { ...warning.detail } }))
   }
 
   monotonicNow(): number {
@@ -493,20 +537,24 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       // path fails closed for every caller, not only the public manager.
       throw contractError('capability.unsupported', 'scan', 'unified-core.scan.platform-options')
     }
+    const delegatedTerminalEvidenceScope = takeTrustedTerminalEvidenceScope(options)
     const admissionEpoch = this.admissionEpoch
     const stream = new CoreBoundedStream<AdvertisementObservation<Attachment>>(
       options.delivery,
-      options.delivery.overflowPolicy
+      options.delivery.overflowPolicy,
+      true
     )
     this.aggregateQuota.register(stream)
     return new Promise((resolve, reject) => {
       let cancelled = false
+      const admissionAbort = new AbortController()
       let deadlineHandle: CoreDeadlineHandle | null = null
       const cancel = (error: BackendContractError) => {
         if (cancelled) {
           return
         }
         cancelled = true
+        admissionAbort.abort()
         deadlineHandle?.cancel()
         options.signal?.removeEventListener('abort', onAbort)
         reject(error)
@@ -523,16 +571,49 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         )
       }
       const acquire = async () => {
+        let terminalEvidenceAdmission: TerminalEvidenceAdmission | null = null
+        let terminalEvidence: TerminalEvidenceReservation | null = null
+        let terminalEvidenceScope: {
+          readonly managerId: string
+          readonly operationId: string
+          readonly incarnation: string
+        } | null = null
         const releaseStream = () => {
           stream.closeWithReason('owner-released')
           this.aggregateQuota.unregister(stream)
         }
         try {
+          if (delegatedTerminalEvidenceScope !== null) {
+            terminalEvidenceScope = delegatedTerminalEvidenceScope
+          } else if (this.options.terminalEvidence !== undefined) {
+            const reserve = this.backend.scanner.reserveTerminalEvidence
+            if (reserve === undefined)
+              throw contractError('capability.unsupported', 'scan', 'unified-core.scan.terminal-evidence')
+            const scope = {
+              managerId: String(this.construction.managerId),
+              operationId: String(
+                this.requireIdFactory().operationCorrelation(`terminal-evidence-${this.nextOperationValue()}`)
+              ),
+              incarnation: String(this.nextOperationValue())
+            }
+            terminalEvidenceScope = scope
+            const admission = new TerminalEvidenceAdmission(
+              { reserve: request => reserve.call(this.backend.scanner, request) },
+              {
+                producer: 'scan',
+                maximumBytes: this.options.terminalEvidence.maximumCanonicalBytes,
+                formatVersion: 1,
+                scope
+              }
+            )
+            terminalEvidenceAdmission = admission
+            await admission.reserve()
+            terminalEvidence = admission.takeReservation()
+          }
           let lease: ScanLease<Attachment, string>
           try {
-            lease = await this.startOrJoinScan(options)
+            lease = await this.startOrJoinScan({ ...options, signal: admissionAbort.signal }, terminalEvidenceScope)
           } catch (error) {
-            releaseStream()
             throw error instanceof BackendContractError
               ? error
               : contractError('scan.start-failed', 'scan', 'unified-core.scan')
@@ -544,16 +625,37 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
               cancel(closed)
             }
             this.pendingScanAcquisitions.delete(cancel)
-            await this.compensateUnadoptedLease(lease.stop.bind(lease), 'scan', 'scan-stale-admission-release')
+            const evidence = terminalEvidence
+            const cleanup = await this.compensateUnadoptedScanAdmission(
+              lease.stop.bind(lease),
+              evidence === null ? null : evidence.release.bind(evidence),
+              'scan-stale-admission-release'
+            )
+            if (cleanup.state === 'released') terminalEvidence = null
             return
           }
-          resolve(this.adoptScan(lease, stream, options))
+          resolve(this.adoptScan(lease, stream, options, terminalEvidence, terminalEvidenceScope))
         } catch (error) {
+          releaseStream()
           if (!cancelled) {
             reject(error)
-          } else {
-            throw error
           }
+          // The caller's admission error must settle independently of the
+          // compensating evidence release. The lifecycle observer retains
+          // failed cleanup for destruction to retry without leaving the
+          // public scan promise pending.
+          const evidence = terminalEvidence
+          const admission = terminalEvidenceAdmission
+          await this.compensateUnadoptedScanAdmission(
+            null,
+            evidence !== null
+              ? evidence.release.bind(evidence)
+              : admission === null
+                ? null
+                : admission.release.bind(admission),
+            'scan-admission-terminal-evidence-release'
+          )
+          if (cancelled) throw error
         } finally {
           deadlineHandle?.cancel()
           this.pendingScanAcquisitions.delete(cancel)
@@ -662,11 +764,16 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     if (this.destroyResult !== null) {
       return this.destroyResult
     }
-    const destruction = this.releaseResources().then(async released => {
-      if (released.state === 'release-failed' || this.construction.ownerMode === 'borrowing') {
-        return released
-      }
-      return this.destroyBackend()
+    const destruction = this.releaseResources().then(async resources => {
+      if (this.construction.ownerMode === 'borrowing') return resources
+      // Destruction is the owning manager's final authority boundary. A child
+      // release debt stays visible and retryable, but cannot leave the native
+      // session alive after its owner is gone.
+      const backend = await this.destroyBackend()
+      const failures = [...resources.failures, ...backend.failures]
+      const result: CleanupRecord =
+        failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
+      return result
     })
     this.destroyResult = retryableCleanup(destruction, () => {
       this.destroyResult = null
@@ -1032,7 +1139,8 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   async invalidateDatabase(
     database: CoreGattDatabase<Attachment, Identity>,
     reason: 'connection-lost' | 'owner-released',
-    changeReason: import('../backend-contract/gatt').GattDatabaseChangedEvent['reason'] | null = null
+    changeReason: import('../backend-contract/gatt').GattDatabaseChangedEvent['reason'] | null = null,
+    retainFailedDatabaseCleanup = false
   ): Promise<CleanupRecord> {
     const alreadyPending = database.connection.isPendingDatabaseCleanup(database)
     if (!database.isAttached() && !alreadyPending) {
@@ -1045,7 +1153,11 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       }
     }
     const subscriptionReason = changeReason === 'service-changed' ? 'service-changed' : reason
-    const cleanup = await this.subscriptions.invalidateDatabase(database.path, subscriptionReason)
+    const cleanup = await this.subscriptions.invalidateDatabase(
+      database.path,
+      subscriptionReason,
+      retainFailedDatabaseCleanup
+    )
     if (cleanup.state === 'released') {
       database.connection.completeDatabaseCleanup(database)
     }
@@ -1100,33 +1212,93 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     scan: TrackedScan<Attachment>,
     source: BoundedAsyncStream<AdvertisementObservation<Attachment>>
   ): Promise<void> {
+    const claimReader: CoreStreamClaimConsumer<AdvertisementObservation<Attachment>> | null =
+      source instanceof CoreBoundedStream ? source.claimConsumer() : null
+    const iterator = claimReader === null ? source[Symbol.asyncIterator]() : null
+    let sourceExhausted = false
     try {
-      for await (const item of source) {
-        if (scan.released || this.coreState !== 'ready') {
-          return
-        }
-        if (item.kind === 'value') {
-          const observation = cloneObservation(item.value, this.options.maximumValueBytes)
-          const outcome = this.aggregateQuota.emit(
-            scan.stream,
-            observation,
-            advertisementByteLength(observation),
-            String(observation.device.id),
-            advertisementPayloadByteLength(observation)
-          )
-          if (outcome.terminated) {
-            await this.stopScan(scan)
+      try {
+        while (true) {
+          const claimed = claimReader === null ? null : await claimReader.next()
+          const next = iterator === null ? null : await iterator.next()
+          if (claimed?.kind === 'done' || next?.done === true) {
+            sourceExhausted = true
+            break
+          }
+          const claim = claimed?.kind === 'claim' ? claimed.claim : null
+          const item = claim?.item ?? (claimed?.kind === 'control' ? claimed.item : next?.value)
+          if (item === undefined) {
+            throw contractError('lifecycle.invariant-violation', 'scan', 'unified-core.scan-source-read')
+          }
+          if (item.kind === 'source-loss') {
+            // Core claim readers preserve the source ordering boundary. Do
+            // not forward this through the observer first: that would place
+            // loss ahead of an already accepted queued value downstream.
+            scan.stream.observeSourceLoss(item)
+            continue
+          }
+          if (item.kind === 'value') {
+            let outcome
+            try {
+              const observation = cloneObservation(item.value, this.options.maximumValueBytes)
+              outcome = this.aggregateQuota.emit(
+                scan.stream,
+                observation,
+                advertisementDeliveryByteLength(observation),
+                String(observation.device.id),
+                advertisementPayloadByteLength(observation),
+                advertisementByteLength(observation)
+              )
+            } catch (error) {
+              claim?.rollback()
+              throw error
+            }
+            // A nonterminal rejection is an applied delivery policy (for
+            // example drop-newest), not a request to retry the occurrence.
+            // Aggregate refusal terminates the stream and retains the claim.
+            if (outcome.terminated && !outcome.accepted) claim?.rollback()
+            else claim?.commit()
+            if (outcome.terminated) {
+              await this.stopScan(scan, true)
+              return
+            }
+          }
+          if (item.kind === 'overflow') {
+            scan.stream.observeSourceOverflow(item)
+          }
+          if (item.kind === 'terminal') {
+            if (
+              isTerminalEvidenceStageFailure(item.error) &&
+              (item.reason !== 'source-failed' || item.evidence !== undefined)
+            ) {
+              throw contractError(
+                'protocol.violation',
+                'scan',
+                'unified-core.scan.terminal-evidence-stage-failure-shape'
+              )
+            }
+            if (
+              scan.terminalEvidenceScope !== null &&
+              (item.evidence === undefined ||
+                item.evidence.producer !== 'scan' ||
+                !terminalEvidenceScopeMatches(item.evidence.scope, scan.terminalEvidenceScope)) &&
+              !(
+                item.reason === 'source-failed' &&
+                item.evidence === undefined &&
+                isTerminalEvidenceStageFailure(item.error)
+              )
+            ) {
+              throw contractError('protocol.violation', 'scan', 'unified-core.scan.terminal-evidence-missing')
+            }
+            scan.stream.observeSourceTerminal(item)
+            scan.stream.finishWithReason(item.reason, item.error ?? null, item.evidence)
+            await this.stopScan(scan, true)
             return
           }
         }
-        if (item.kind === 'overflow') {
-          scan.stream.observeSourceOverflow(item)
-        }
-        if (item.kind === 'terminal') {
-          scan.stream.closeWithReason(item.reason, item.error ?? null)
-          await this.stopScan(scan)
-          return
-        }
+      } finally {
+        claimReader?.close()
+        if (!sourceExhausted && iterator !== null) await iterator.return()
       }
     } catch (error) {
       const code = error instanceof BackendContractError ? error.normalized.code : 'platform.failure'
@@ -1140,13 +1312,19 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         dispatchedOperations: 0,
         quarantinedOperations: 0
       })
-      scan.stream.closeWithReason('source-failed')
-      await this.stopScan(scan)
+      scan.stream.finishWithReason('source-failed', error instanceof BackendContractError ? error.normalized : null)
+      await this.stopScan(scan, true)
+    } finally {
+      if (!scan.stream.isTerminal()) scan.stream.finishWithReason(scan.released ? 'owner-released' : 'source-failed')
+      scan.sourceDone = true
+      if (scan.released) this.releaseScanStreamQuotaWhenDrained(scan)
     }
   }
 
   private applyBackendEvent(event: BackendEvent<Attachment>): void {
     if (event.kind === 'diagnostic-warning') {
+      this.diagnosticWarnings.push(Object.freeze({ code: event.code, detail: event.detail }))
+      if (this.diagnosticWarnings.length > 256) this.diagnosticWarnings.shift()
       recordBackendDiagnostic(this.trace, this.options.now, event)
       return
     }
@@ -1175,7 +1353,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         if (database !== null && database.matchesDatabasePath(event.database)) {
           this.operationCoordinator.cancelQueue(String(connection.resource.connectionId), 'disconnected')
           this.lifecycleObserver.observeCleanup(
-            this.invalidateDatabase(database, 'connection-lost', 'service-changed'),
+            this.invalidateDatabase(database, 'connection-lost', 'service-changed', true),
             'database-changed-cleanup'
           )
         }
@@ -1295,28 +1473,38 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     }
   }
 
-  private async stopScan(scan: TrackedScan<Attachment>): Promise<CleanupRecord> {
+  private async stopScan(scan: TrackedScan<Attachment>, sourceTerminal = false): Promise<CleanupRecord> {
     if (scan.released) {
       return { state: 'released', failures: [] }
     }
     if (scan.stopInFlight !== null) {
+      // The source pump can observe its terminal while a caller waits for the
+      // physical stop. It must not await that caller's fence here: the caller
+      // is itself awaiting this pump.
+      if (sourceTerminal) return { state: 'released', failures: [] }
       return scan.stopInFlight
     }
-    scan.stream.closeWithReason('owner-released')
     deactivateScanLifetime(scan)
-    const stop = this.stopScanPhysical(scan)
+    const stop = this.stopScanPhysical(scan).then(async result => {
+      if (result.state === 'released' && !sourceTerminal) {
+        // A conforming ScanLease resolves successful stop only after its source
+        // terminal is enqueued. Await our forwarding of that ordered prefix so
+        // public callers cannot observe a successful stop with a hanging view.
+        await scan.sourceCompletion
+      }
+      if (result.state === 'released') this.finalizeStoppedScan(scan)
+      return result
+    })
     scan.stopInFlight = stop
-    stop.then(
-      result => {
+    const clearStopInFlight = stop.then(
+      () => {
         scan.stopInFlight = null
-        if (result.state === 'released') {
-          this.finalizeStoppedScan(scan)
-        }
       },
       () => {
         scan.stopInFlight = null
       }
     )
+    this.lifecycleObserver.observeBackground(clearStopInFlight, 'scan', 'scan-stop-clear-in-flight')
     return stop
   }
 
@@ -1344,7 +1532,10 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       return
     }
     scan.released = true
-    this.aggregateQuota.unregister(scan.stream)
+    // The lease's successful stop fence has already enqueued the terminal in
+    // the source. Core must not replace it: an immediate local terminal could
+    // discard an upstream value accepted before the fence or native evidence.
+    this.releaseScanStreamQuotaWhenDrained(scan)
     this.scans.delete(String(scan.leaseId))
     this.resourceLedger.decrement('scanConsumers')
     if (scan.ownsPhysicalController) {
@@ -1352,9 +1543,56 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     }
   }
 
-  private async startOrJoinScan(options: ScanOptions<Attachment, string>): Promise<ScanLease<Attachment, string>> {
+  private releaseScanStreamQuotaWhenDrained(scan: TrackedScan<Attachment>): void {
+    if (scan.terminalEvidenceDrainTracked) return
+    scan.terminalEvidenceDrainTracked = true
+    scan.stream.onRetainedValuesDrained(() => {
+      this.aggregateQuota.unregister(scan.stream)
+      if (scan.terminalEvidence !== null) {
+        // Terminal evidence stays owned until the terminal is drained; a
+        // physical stop only ends the producer, never a late reader's proof.
+        this.lifecycleObserver.observeBackground(
+          this.releaseScanTerminalEvidence(scan),
+          'scan',
+          'scan-terminal-evidence-release'
+        )
+      }
+    })
+  }
+
+  /** Releases a reservation once; a rejected attempt retains it for a cleanup retry. */
+  private releaseScanTerminalEvidence(scan: TrackedScan<Attachment>): Promise<void> {
+    if (scan.terminalEvidenceRelease !== null) return scan.terminalEvidenceRelease
+    const reservation = scan.terminalEvidence
+    if (reservation === null) return Promise.resolve()
+    const release = reservation.release().then(
+      () => {
+        scan.terminalEvidence = null
+        this.scanTerminalEvidence.delete(scan)
+      },
+      error => {
+        scan.terminalEvidenceRelease = null
+        throw error
+      }
+    )
+    scan.terminalEvidenceRelease = release
+    return release
+  }
+
+  private async startOrJoinScan(
+    options: ScanOptions<Attachment, string>,
+    terminalEvidenceScope: {
+      readonly managerId: string
+      readonly operationId: string
+      readonly incarnation: string
+    } | null
+  ): Promise<ScanLease<Attachment, string>> {
     if (options.sharing.mode === 'owner') {
-      const ownerOptions: OwnerScanOptions<Attachment, string> = { ...options, sharing: options.sharing }
+      const ownerOptions: OwnerScanOptions<Attachment, string> = {
+        ...options,
+        sharing: options.sharing,
+        ...(terminalEvidenceScope === null ? {} : { terminalEvidenceScope })
+      }
       return this.backend.scanner.start(ownerOptions, this.construction.clientId)
     }
     return this.backend.scanner.join(options.sharing.sharedLeaseId, options.sharing.token, this.construction.clientId)
@@ -1363,7 +1601,13 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   private adoptScan(
     lease: ScanLease<Attachment, string>,
     stream: CoreBoundedStream<AdvertisementObservation<Attachment>>,
-    options: ScanOptions<Attachment, string>
+    options: ScanOptions<Attachment, string>,
+    terminalEvidence: TerminalEvidenceReservation | null,
+    terminalEvidenceScope: {
+      readonly managerId: string
+      readonly operationId: string
+      readonly incarnation: string
+    } | null
   ): TrackedScan<Attachment> {
     const tracked: TrackedScan<Attachment> = {
       scanSessionId: lease.scanSessionId,
@@ -1374,13 +1618,25 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       stream,
       ownsPhysicalController: options.sharing.mode === 'owner',
       stopInFlight: null,
+      sourceCompletion: null,
       released: false,
+      sourceDone: false,
       activeAbortListener: null,
       activeAbortSignal: null,
       activeDeadline: null,
+      terminalEvidence,
+      terminalEvidenceRelease: null,
+      terminalEvidenceDrainTracked: false,
+      terminalEvidenceScope,
       stop: () => this.stopScan(tracked)
     }
     this.scans.set(String(lease.leaseId), tracked)
+    if (terminalEvidence !== null) this.scanTerminalEvidence.add(tracked)
+    if (this.options.terminalEvidence !== undefined && this.backend.scanner.readTerminalEvidence !== undefined) {
+      stream.setTerminalEvidenceHydrator(notice =>
+        hydrateTerminalEvidence(this.backend.scanner, notice, this.options.terminalEvidence!.maximumCanonicalBytes)
+      )
+    }
     this.resourceLedger.increment('scanConsumers')
     if (tracked.ownsPhysicalController) {
       this.resourceLedger.increment('activeScanControllers')
@@ -1393,11 +1649,9 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       () => this.stopScan(tracked),
       (cleanup, transition) => this.lifecycleObserver.observeCleanup(cleanup, transition)
     )
-    this.lifecycleObserver.observeBackground(
-      this.forwardScanSource(tracked, lease.observations),
-      'scan',
-      'scan-source-pump'
-    )
+    const sourceCompletion = this.forwardScanSource(tracked, lease.observations)
+    tracked.sourceCompletion = sourceCompletion
+    this.lifecycleObserver.observeBackground(sourceCompletion, 'scan', 'scan-source-pump')
     return tracked
   }
 
@@ -1414,6 +1668,38 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     if (result.state === 'released') {
       this.lifecycleObserver.dropCleanup(retained)
     }
+  }
+
+  /** Retains pre-adoption scan cleanup until its physical lease and evidence settle in order. */
+  private async compensateUnadoptedScanAdmission(
+    stop: (() => Promise<CleanupRecord>) | null,
+    releaseEvidence: (() => Promise<void>) | null,
+    transition: string
+  ): Promise<CleanupRecord> {
+    if (stop === null && releaseEvidence === null) return { state: 'released', failures: [] }
+    let pendingStop = stop
+    let pendingEvidenceRelease = releaseEvidence
+    const retained = createRetainedCleanup('scan', transition, async () => {
+      if (pendingStop !== null) {
+        const physical = await pendingStop()
+        if (physical.state === 'release-failed') return physical
+        pendingStop = null
+      }
+      if (pendingEvidenceRelease === null) return { state: 'released', failures: [] }
+      const evidence = await this.lifecycleObserver.captureCleanup(
+        pendingEvidenceRelease().then(() => ({ state: 'released' as const, failures: [] })),
+        'scan',
+        `${transition}-terminal-evidence`
+      )
+      if (evidence.state === 'released') pendingEvidenceRelease = null
+      return evidence
+    })
+    this.lifecycleObserver.retainCleanup(retained)
+    const cleanup = retained.retry()
+    this.lifecycleObserver.observeCleanup(cleanup, transition)
+    const result = await this.lifecycleObserver.captureCleanup(cleanup, 'scan', transition)
+    if (result.state === 'released') this.lifecycleObserver.dropCleanup(retained)
+    return result
   }
 
   private async destroyOwnedResources(cause: ConnectionLifecycleTerminalCause): Promise<CleanupRecord> {
@@ -1461,6 +1747,29 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     for (const scan of [...this.scans.values()]) {
       const result = await this.lifecycleObserver.captureCleanup(this.stopScan(scan), 'scan', 'destroy-scan')
       failures.push(...result.failures)
+      // Destroy closes every consumer view, so no later reader can own a
+      // terminal receipt. Join the reservation release before reporting the
+      // manager clean: otherwise a host can delete its ledger while native
+      // release is still using it.
+      scan.stream.closeWithReason('owner-released')
+      const evidence = await this.lifecycleObserver.captureCleanup(
+        this.releaseScanTerminalEvidence(scan).then(() => ({ state: 'released' as const, failures: [] })),
+        'scan',
+        'destroy-scan-terminal-evidence'
+      )
+      failures.push(...evidence.failures)
+    }
+    // A caller may already have stopped the physical scan: it is then absent
+    // from `scans` while its terminal reservation is still owned by the
+    // source pump. Destruction owns that last release too.
+    for (const scan of [...this.scanTerminalEvidence]) {
+      scan.stream.closeWithReason('owner-released')
+      const evidence = await this.lifecycleObserver.captureCleanup(
+        this.releaseScanTerminalEvidence(scan).then(() => ({ state: 'released' as const, failures: [] })),
+        'scan',
+        'destroy-stopped-scan-terminal-evidence'
+      )
+      failures.push(...evidence.failures)
     }
     for (const connection of [...this.connections.values()]) {
       const result = await this.lifecycleObserver.captureCleanup(
