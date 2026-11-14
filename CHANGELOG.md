@@ -8,6 +8,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.2.3] - 2026-11-13
 
+- Report an absent native recording journal as `storage.not-found` on lookup
+  after validating its configured directory, without creating a journal.
+
 - Add opt-in ordered multi-characteristic notification collection, ordered
   recording, and durable evidence recovery across the supported host routes.
   See [the release change breakdown](docs/releases/5.2.3-change-breakdown.md).

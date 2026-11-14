@@ -1063,6 +1063,12 @@ The digest and membership checks detect the changes they compare; they do not
 authenticate coordinated changes to data and stored identity or establish the
 original content of rows not yet prepared.
 
+When lookup finds the journal leaf absent while the configured directory remains
+valid, recording controls report `platform.failure` with `platform.domain` of
+`sqlite`, `platform.metadata.storageKind` of `storage.not-found`, and operation
+`lookup`. Other inspection failures and a changed directory are not reported as
+absence. Lookup does not create a missing journal.
+
 Logical clear does not reclaim physical allocation or securely erase payloads.
 SQLite may retain freed pages in the recording file; `status().bytes` measures
 retained logical records, not the file's filesystem allocation. Closing an
