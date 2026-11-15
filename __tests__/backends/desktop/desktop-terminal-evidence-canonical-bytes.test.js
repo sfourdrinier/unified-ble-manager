@@ -196,61 +196,67 @@ test.each(['joined', 'owner'])('node manager %s stop publishes scoped native evi
 
 const PLATFORMS = ['bluez', 'corebluetooth', 'winrt']
 
-test('one joined stage failure preserves its source debt while the owner commits its own terminal', async () => {
-  await withLedger('bluez', async ({ backend, stage, harness }) => {
-    const ownerScope = scalarScope('failure-owner')
-    const joinedScope = scalarScope('failure-joined')
-    const ownerReservation = await backend.scanner.reserveTerminalEvidence({
-      producer: 'scan',
-      maximumBytes: 1024,
-      formatVersion: 1,
-      scope: ownerScope
-    })
-    const joinedReservation = await backend.scanner.reserveTerminalEvidence({
-      producer: 'scan',
-      maximumBytes: 1024,
-      formatVersion: 1,
-      scope: joinedScope
-    })
-    const owner = await backend.scanner.start(
-      scanOptions({ terminalEvidenceScope: ownerScope, sharing: { mode: 'owner', allowSharing: true } })
+if (process.env.UBM_RETAINED_TERMINAL_FIXTURE_DIRECTORY) {
+  test('one joined stage failure preserves its source debt while the owner commits its own terminal', async () => {
+    await withLedger(
+      'bluez',
+      async ({ backend, stage, harness }) => {
+        const ownerScope = scalarScope('failure-owner')
+        const joinedScope = scalarScope('failure-joined')
+        const ownerReservation = await backend.scanner.reserveTerminalEvidence({
+          producer: 'scan',
+          maximumBytes: 1024,
+          formatVersion: 1,
+          scope: ownerScope
+        })
+        const joinedReservation = await backend.scanner.reserveTerminalEvidence({
+          producer: 'scan',
+          maximumBytes: 1024,
+          formatVersion: 1,
+          scope: joinedScope
+        })
+        const owner = await backend.scanner.start(
+          scanOptions({ terminalEvidenceScope: ownerScope, sharing: { mode: 'owner', allowSharing: true } })
+        )
+        const joined = await backend.scanner.join(owner.leaseId, owner.shareToken, undefined, joinedScope)
+        const binds = harness.calls.filter(([name]) => name === 'bindTerminalEvidenceRecipient')
+        const [reservationId, recipient] = binds[1][1]
+        await stage.stageTerminalEvidence(reservationId, recipient, Uint8Array.from([1, 2, 3]))
+        const ownerNext = nextItem(owner.observations[Symbol.asyncIterator](), 5000)
+        const joinedNext = nextItem(joined.observations[Symbol.asyncIterator](), 5000)
+        await stage.stageScanTerminated(true, 'original sibling terminal')
+        expect(await ownerNext).toMatchObject({
+          kind: 'terminal',
+          reason: 'source-failed',
+          error: { platform: { safeMessage: 'original sibling terminal' } },
+          evidence: { producer: 'scan', scope: ownerScope }
+        })
+        expect(await joinedNext).toMatchObject({
+          kind: 'terminal',
+          reason: 'source-failed',
+          error: { code: 'argument.invalid' }
+        })
+        await ownerReservation.release()
+        const partial = await backend.recoverTerminalEvidenceForHostWithStatus('partial-scan-recovery')
+        expect(partial.busyProducers).toContain('scan')
+        expect(partial.records).toHaveLength(1)
+        const recovered = await backend.readRecoveredTerminalEvidence(partial.records[0].reference, 1024)
+        expect(decodeTerminalEvidence(recovered.canonicalBytes)).toMatchObject({
+          scope: ownerScope,
+          terminal: { error: { platform: { safeMessage: 'original sibling terminal' } } }
+        })
+        await backend.releaseTerminalEvidenceRecoveryLease('partial-scan-recovery')
+        await expect(joinedReservation.release()).rejects.toThrow()
+        const retained = await stage.takeScanTerminalEvent()
+        expect(retained).toMatchObject({
+          detail: 'original sibling terminal',
+          joinedTerminalEvidence: [{ reservationId, stageFailure: expect.any(String) }]
+        })
+      },
+      true
     )
-    const joined = await backend.scanner.join(owner.leaseId, owner.shareToken, undefined, joinedScope)
-    const binds = harness.calls.filter(([name]) => name === 'bindTerminalEvidenceRecipient')
-    const [reservationId, recipient] = binds[1][1]
-    await stage.stageTerminalEvidence(reservationId, recipient, Uint8Array.from([1, 2, 3]))
-    const ownerNext = nextItem(owner.observations[Symbol.asyncIterator](), 5000)
-    const joinedNext = nextItem(joined.observations[Symbol.asyncIterator](), 5000)
-    await stage.stageScanTerminated(true, 'original sibling terminal')
-    expect(await ownerNext).toMatchObject({
-      kind: 'terminal',
-      reason: 'source-failed',
-      error: { platform: { safeMessage: 'original sibling terminal' } },
-      evidence: { producer: 'scan', scope: ownerScope }
-    })
-    expect(await joinedNext).toMatchObject({
-      kind: 'terminal',
-      reason: 'source-failed',
-      error: { code: 'argument.invalid' }
-    })
-    await ownerReservation.release()
-    const partial = await backend.recoverTerminalEvidenceForHostWithStatus('partial-scan-recovery')
-    expect(partial.busyProducers).toContain('scan')
-    expect(partial.records).toHaveLength(1)
-    const recovered = await backend.readRecoveredTerminalEvidence(partial.records[0].reference, 1024)
-    expect(decodeTerminalEvidence(recovered.canonicalBytes)).toMatchObject({
-      scope: ownerScope,
-      terminal: { error: { platform: { safeMessage: 'original sibling terminal' } } }
-    })
-    await backend.releaseTerminalEvidenceRecoveryLease('partial-scan-recovery')
-    await expect(joinedReservation.release()).rejects.toThrow()
-    const retained = await stage.takeScanTerminalEvent()
-    expect(retained).toMatchObject({
-      detail: 'original sibling terminal',
-      joinedTerminalEvidence: [{ reservationId, stageFailure: expect.any(String) }]
-    })
   })
-})
+}
 
 test.each(['joined', 'owner'])(
   '%s error overflow commits its exact native terminal before publishing',
@@ -386,14 +392,49 @@ function scopeUtf16le(producer, evidenceScope) {
   return bytes
 }
 
-async function withLedger(platform, run) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-canonical-'))
+function runRetainedLedgerProcess() {
+  const { spawnSync } = require('node:child_process')
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-retained-terminal-'))
+  try {
+    const child = spawnSync(
+      process.execPath,
+      [
+        require.resolve('jest/bin/jest'),
+        '--config',
+        'jest.package.config.js',
+        '--runInBand',
+        '--runTestsByPath',
+        __filename
+      ],
+      {
+        cwd: path.resolve(__dirname, '../../..'),
+        env: { ...process.env, UBM_RETAINED_TERMINAL_FIXTURE_DIRECTORY: directory },
+        encoding: 'utf8',
+        timeout: 25000,
+        maxBuffer: 1024 * 1024
+      }
+    )
+    if (child.error) throw child.error
+    if (child.status !== 0) throw new Error(`retained terminal fixture failed: ${child.stdout}\n${child.stderr}`)
+  } finally {
+    // The child owns deliberately unreleased native handles until process exit.
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+}
+
+async function withLedger(platform, run, retainsDebt = false) {
+  const retainedDirectory = process.env.UBM_RETAINED_TERMINAL_FIXTURE_DIRECTORY
+  if (retainsDebt && !retainedDirectory) throw new Error('retained debt requires process isolation')
+  const directory = retainsDebt
+    ? fs.mkdtempSync(path.join(retainedDirectory, 'ledger-'))
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-canonical-'))
   const opened = await openBackend(platform, { terminalEvidenceStore: { directory, maxBytes: '8192' } })
   try {
     return await run(opened)
   } finally {
-    await opened.backend.destroy()
-    fs.rmSync(directory, { recursive: true, force: true })
+    const disposal = await opened.backend.destroy()
+    if (retainsDebt) expect(disposal).toMatchObject({ state: 'release-failed' })
+    else fs.rmSync(directory, { recursive: true, force: true })
   }
 }
 
@@ -412,8 +453,12 @@ async function withNativeLedger(platform, run) {
   }
 }
 
-async function withPublicLedger(platform, run) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-public-'))
+async function withPublicLedger(platform, run, retainsDebt = false) {
+  const retainedDirectory = process.env.UBM_RETAINED_TERMINAL_FIXTURE_DIRECTORY
+  if (retainsDebt && !retainedDirectory) throw new Error('retained debt requires process isolation')
+  const directory = retainsDebt
+    ? fs.mkdtempSync(path.join(retainedDirectory, 'ledger-'))
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-terminal-public-'))
   const harness = require('../../helpers/desktop-rust-core-harness').realBinding(platform)
   const now = () => performance.now()
   const provider = createTestDesktopRustCoreBackendProvider({
@@ -435,8 +480,9 @@ async function withPublicLedger(platform, run) {
   try {
     return await run({ manager, stage: harness.opened.at(-1), harness })
   } finally {
-    await manager.destroy()
-    fs.rmSync(directory, { recursive: true, force: true })
+    const disposal = await manager.destroy()
+    if (retainsDebt) expect(disposal).toMatchObject({ state: 'release-failed' })
+    else fs.rmSync(directory, { recursive: true, force: true })
   }
 }
 
@@ -548,31 +594,41 @@ test.each(PLATFORMS)(
   }
 )
 
-test.each(PLATFORMS)('%s public manager preserves the exact scan terminal staging conflict', async platform => {
-  await withPublicLedger(platform, async ({ manager, stage, harness }) => {
-    const prefix = DESKTOP_RUST_CORE_PROFILES[platform].operationPrefix
-    const scan = await manager.scan()
-    const observations = scan.observations[Symbol.asyncIterator]()
-    const bind = harness.calls.find(([name]) => name === 'bindTerminalEvidenceRecipient')[1]
-    const reservationId = bind[0]
-    const recipient = bind[1]
-    const earlier = Uint8Array.from([0x65, 0x61, 0x72, 0x6c, 0x69, 0x65, 0x72])
-    expect(typeof recipient).toBe('string')
-    await stage.stageTerminalEvidence(reservationId, recipient, earlier)
+if (process.env.UBM_RETAINED_TERMINAL_FIXTURE_DIRECTORY) {
+  test.each(PLATFORMS)('%s public manager preserves the exact scan terminal staging conflict', async platform => {
+    await withPublicLedger(
+      platform,
+      async ({ manager, stage, harness }) => {
+        const prefix = DESKTOP_RUST_CORE_PROFILES[platform].operationPrefix
+        const scan = await manager.scan()
+        const observations = scan.observations[Symbol.asyncIterator]()
+        const bind = harness.calls.find(([name]) => name === 'bindTerminalEvidenceRecipient')[1]
+        const reservationId = bind[0]
+        const recipient = bind[1]
+        const earlier = Uint8Array.from([0x65, 0x61, 0x72, 0x6c, 0x69, 0x65, 0x72])
+        expect(typeof recipient).toBe('string')
+        await stage.stageTerminalEvidence(reservationId, recipient, earlier)
 
-    await stage.stageScanTerminated(true, 'conflicting stage must remain visible')
-    expect(await nextItem(observations, 5000)).toMatchObject({
-      kind: 'terminal',
-      reason: 'source-failed',
-      error: { code: 'argument.invalid', operation: `${prefix}.scan.terminal-evidence-stage` }
-    })
+        await stage.stageScanTerminated(true, 'conflicting stage must remain visible')
+        expect(await nextItem(observations, 5000)).toMatchObject({
+          kind: 'terminal',
+          reason: 'source-failed',
+          error: { code: 'argument.invalid', operation: `${prefix}.scan.terminal-evidence-stage` }
+        })
 
-    // The original source terminal still needs staging. Releasing its only
-    // reservation here would erase the unresolved native recovery debt.
-    await expect(stage.releaseTerminalEvidence(reservationId)).rejects.toThrow()
-    expect(stage.retryFailedScanEvidence(recipient).failures).toHaveLength(1)
-    const retained = await stage.takeScanTerminalEvent()
-    expect(retained).toMatchObject({ kind: 'stage-failed', detail: 'conflicting stage must remain visible' })
-    await scan.stop()
+        // The original source terminal still needs staging. Releasing its only
+        // reservation here would erase the unresolved native recovery debt.
+        await expect(stage.releaseTerminalEvidence(reservationId)).rejects.toThrow()
+        expect(stage.retryFailedScanEvidence(recipient).failures).toHaveLength(1)
+        const retained = await stage.takeScanTerminalEvent()
+        expect(retained).toMatchObject({ kind: 'stage-failed', detail: 'conflicting stage must remain visible' })
+        await scan.stop()
+      },
+      true
+    )
   })
-})
+}
+
+if (!process.env.UBM_RETAINED_TERMINAL_FIXTURE_DIRECTORY) {
+  test('retained terminal conflicts preserve debt through process teardown', runRetainedLedgerProcess)
+}
