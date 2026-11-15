@@ -519,7 +519,7 @@ pub(crate) struct DurableScanFailureRawCut {
     pub(crate) tokens: Vec<ubm_core::oversized_evidence::EvidenceToken>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RegistryState {
     directory: Option<PathBuf>,
     directory_identity: Option<(u64, u64)>,
@@ -1898,6 +1898,26 @@ impl JournalRegistry {
         Ok(directory.join(format!("{id}.sqlite")))
     }
 
+    fn inspect_file(state: &RegistryState, id: &str, path: &Path) -> Result<std::fs::Metadata> {
+        std::fs::symlink_metadata(path)
+            .map_err(|failure| Self::inspection_failure(state, id, failure))
+    }
+
+    fn inspection_failure(
+        state: &RegistryState,
+        id: &str,
+        failure: std::io::Error,
+    ) -> JournalError {
+        if failure.kind() == std::io::ErrorKind::NotFound {
+            // A vanished or replaced directory is not a missing recording.
+            return match Self::location(state, id) {
+                Ok(_) => error("storage.not-found", "recording file does not exist"),
+                Err(failure) => failure,
+            };
+        }
+        error("storage.io", "recording file cannot be inspected")
+    }
+
     /// Opens the registry-wide host-private terminal-evidence ledger. The
     /// trusted configured directory chooses the path; callers never do.
     pub fn terminal_evidence_ledger(
@@ -1951,10 +1971,11 @@ impl JournalRegistry {
             .map_err(|_| error("storage.io", "recording registry interrupted"))?;
         let path = Self::location(&state, id)?;
         let scan_recovery_storage = state.scan_recovery_storage.clone();
+        let snapshot = state.clone();
         drop(state);
         let mut authorities = authorities()?;
         if let Some(journal) = authorities.journals.get(&path) {
-            journal.validate_path(&path)?;
+            journal.validate_path(&snapshot, id, &path)?;
             if journal.quota != quota || journal.declaration != encoded(declaration, 65536)? {
                 return Err(error(
                     "storage.identity",
@@ -2235,15 +2256,17 @@ impl JournalRegistry {
             .map_err(|_| error("storage.io", "recording registry interrupted"))?;
         let path = Self::location(&state, id)?;
         let scan_recovery_storage = state.scan_recovery_storage.clone();
+        let snapshot = state.clone();
         drop(state);
         let mut authorities = authorities()?;
         if let Some(journal) = authorities.journals.get(&path) {
-            journal.validate_path(&path)?;
+            journal
+                .validate_path(&snapshot, id, &path)
+                .map_err(|failure| failure.at("lookup"))?;
             let journal = journal.clone();
             authorities.maintain(0);
             return Ok(journal);
         }
-        authorities.admission()?;
         if authorities.ordered_owners.contains_key(&path) {
             return Err(error(
                 "storage.owner-conflict",
@@ -2256,8 +2279,8 @@ impl JournalRegistry {
                 "exact legacy recovery retains this recording",
             ));
         }
-        let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|_| error("storage.io", "recording file cannot be inspected").at("lookup"))?;
+        let metadata =
+            Self::inspect_file(&snapshot, id, &path).map_err(|failure| failure.at("lookup"))?;
         if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > (1 << 29) {
             return Err(error(
                 "storage.permission",
@@ -2265,6 +2288,7 @@ impl JournalRegistry {
             )
             .at("lookup"));
         }
+        authorities.admission()?;
         let authority = lock_authority(&path)?;
         // Read only bounded identity before the full quota/schema/integrity open.
         // READ_ONLY without CREATE prevents missing IDs creating empty journals.
@@ -8133,9 +8157,8 @@ impl ContinuationJournal {
         &self.recording_id
     }
 
-    fn validate_path(&self, path: &Path) -> Result<()> {
-        let metadata = std::fs::symlink_metadata(path)
-            .map_err(|_| error("storage.permission", "recording authority path changed"))?;
+    fn validate_path(&self, state: &RegistryState, id: &str, path: &Path) -> Result<()> {
+        let metadata = JournalRegistry::inspect_file(state, id, path)?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(error(
                 "storage.permission",
@@ -13501,6 +13524,27 @@ pub(crate) fn remove_idle_fixture_directory(directory: &Path) {
 #[cfg(test)]
 mod authority_tests {
     use super::*;
+
+    #[test]
+    fn inspection_does_not_treat_other_io_errors_as_missing() {
+        let state = RegistryState::default();
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Other,
+        ] {
+            let failure = JournalRegistry::inspection_failure(
+                &state,
+                "recording",
+                std::io::Error::from(kind),
+            );
+            let envelope = crate::continuation::recording_failure(failure.at("lookup"));
+            assert_eq!(
+                envelope["platform"]["metadata"]["storageKind"],
+                "storage.io"
+            );
+            assert_eq!(envelope["platform"]["metadata"]["operation"], "lookup");
+        }
+    }
 
     fn fixture_timestamp() -> u64 {
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

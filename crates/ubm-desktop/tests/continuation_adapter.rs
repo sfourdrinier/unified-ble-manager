@@ -1,3 +1,4 @@
+// crates/ubm-desktop/tests/continuation_adapter.rs
 //! Deterministic boundary evidence, not physical-radio qualification.
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
@@ -1058,13 +1059,46 @@ async fn native_collection_and_replayable_claim_need_no_ui() {
             }),
         "legacy projection must retain its original V1 shape: {legacy_records:?}"
     );
-    assert_eq!(
-        executor
-            .acknowledge_claim(legacy_claim["claimToken"].as_str().unwrap())
+    let mut legacy_receipt = executor
+        .acknowledge_claim(legacy_claim["claimToken"].as_str().unwrap())
+        .await
+        .unwrap();
+    // Disposal can produce terminal records after the first prefix was sealed.
+    // Transfer each retained tail before expecting the source to be released.
+    for _ in 0..16 {
+        assert_eq!(
+            legacy_receipt["afterCutoffLoss"],
+            json!({"items":0,"bytes":0})
+        );
+        if legacy_receipt["disposed"] == true {
+            break;
+        }
+        assert_eq!(
+            legacy_receipt["disposeFailure"], "continuation cleanup has a retained unread tail",
+            "claim: {legacy_claim}; receipt: {legacy_receipt}"
+        );
+        let tail = executor.prepare_claim(256, 1 << 20).await.unwrap();
+        assert!(
+            tail["batches"].as_array().is_some_and(|batches| {
+                batches.iter().any(|batch| {
+                    let batch: Value = serde_json::from_str(batch.as_str().unwrap()).unwrap();
+                    batch["records"]
+                        .as_array()
+                        .is_some_and(|records| !records.is_empty())
+                })
+            }),
+            "retained cleanup tail must be transferred: {tail}"
+        );
+        legacy_receipt = executor
+            .acknowledge_claim(tail["claimToken"].as_str().unwrap())
             .await
-            .unwrap()["disposed"],
-        true
+            .unwrap();
+    }
+    assert_eq!(
+        legacy_receipt["disposed"], true,
+        "claim: {legacy_claim}; receipt: {legacy_receipt}"
     );
+    assert!(!central.boundary().link_connected(PEER));
     central.shutdown().await;
 
     // V2 owns a separate session: the legacy acknowledgement consumed its
