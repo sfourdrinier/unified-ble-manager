@@ -4,6 +4,11 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.2.4] - 2026-11-15
+
+- Recover cold registries from released v1 journals without ordered-owner
+  lookup, preserving schema, raw records and pending cursors.
+
 ## [5.2.3] - 2026-11-14
 
 - Bound React Native and Electron ordered-recording startup across negotiation,

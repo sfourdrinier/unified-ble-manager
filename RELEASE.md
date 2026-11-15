@@ -276,6 +276,18 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
+## Releasing 5.2.4
+
+The planned 5.2.4 patch repairs cold registry recovery for released v1
+journals by skipping ordered-owner lookup while preserving the journal schema,
+raw records and pending cursors. This version change does not alter backend
+support labels or qualification claims.
+
+Qualify the frozen release commit through the required local checks, review,
+sealed-package checks and hosted cross-platform CI before the normal
+tag-driven trusted-publisher release. Verify publication with the post-release
+checks below.
+
 ## Releasing 5.2.3
 
 The planned 5.2.3 release follows the separate 5.2.2 publication and adds ordered notification collection and recording
