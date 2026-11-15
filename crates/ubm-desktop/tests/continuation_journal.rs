@@ -809,7 +809,7 @@ fn process_exit_releases_authority_and_cold_reopen_preserves_rows() {
 }
 
 #[test]
-fn registry_missing_lookup_preserves_files_and_recovers_cached_owner() {
+fn registry_missing_lookup_preserves_files_and_rejects_changed_directory() {
     let path = path();
     let directory = path.parent().unwrap();
     let registry = JournalRegistry::default();
@@ -830,7 +830,18 @@ fn registry_missing_lookup_preserves_files_and_recovers_cached_owner() {
     let failure = registry.get("missing").err().unwrap();
     assert_ne!(failure.kind, "storage.not-found");
     std::fs::rename(&moved, directory).unwrap();
+}
 
+// SQLite's Windows handles do not share deletion; renaming an open journal is
+// a Unix filesystem scenario. Missing cold lookups and I/O classification run
+// on every platform.
+#[cfg(unix)]
+#[test]
+fn registry_missing_cached_lookup_retains_owner_and_recovers_after_restore() {
+    let path = path();
+    let directory = path.parent().unwrap();
+    let registry = JournalRegistry::default();
+    registry.configure_directory(directory).unwrap();
     let journal = registry.open("cached", &json!({}), quota()).unwrap();
     journal.append(&json!({}), &json!({"value":1})).unwrap();
     let original = directory.join("cached.sqlite");

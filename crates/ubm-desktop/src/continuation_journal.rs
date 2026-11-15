@@ -13527,9 +13527,7 @@ mod authority_tests {
 
     #[test]
     fn inspection_does_not_treat_other_io_errors_as_missing() {
-        let registry = JournalRegistry::default();
-        registry.configure_directory(&std::env::temp_dir()).unwrap();
-        let state = registry.state.lock().unwrap();
+        let state = RegistryState::default();
         for kind in [
             std::io::ErrorKind::PermissionDenied,
             std::io::ErrorKind::Other,
