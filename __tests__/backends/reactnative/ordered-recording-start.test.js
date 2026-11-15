@@ -150,3 +150,107 @@ test('retiring a cached start observes revocation before discarding its receipt'
   expect(revoked).toHaveBeenCalledTimes(1)
   expect(native.orderedRecordingRetire).toHaveBeenCalledTimes(1)
 })
+
+test.each(['abort', 'deadline'])('held version is bounded by %s and cannot admit late', async control => {
+  jest.useFakeTimers()
+  try {
+    const native = session(); let release
+    native.orderedRecordingVersion.mockImplementation(() => new Promise(resolve => { release = resolve }))
+    const admit = jest.fn(); const controller = new AbortController()
+    const handle = createReactNativeOrderedRecordingStart(native, undefined, admit)
+    const pending = handle.start({ ...input, budgetMs: 50, signal: controller.signal })
+    const rejected = expect(pending).rejects.toMatchObject({ normalized: { code: control === 'abort' ? 'operation.aborted' : 'operation.timed-out' } })
+    if (control === 'abort') controller.abort(); else jest.advanceTimersByTime(50)
+    await rejected
+    release(1); await Promise.resolve(); await Promise.resolve()
+    expect(admit).not.toHaveBeenCalled()
+    expect(native.orderedRecordingReserve).not.toHaveBeenCalled()
+  } finally { jest.useRealTimers() }
+})
+
+test.each(['abort', 'deadline'])('held reservation is bounded by %s and can be retired after its late reply', async control => {
+  jest.useFakeTimers()
+  try {
+    const native = session(); let release
+    native.orderedRecordingReserve.mockImplementation(() => new Promise(resolve => { release = resolve }))
+    const controller = new AbortController(); const handle = createReactNativeOrderedRecordingStart(native)
+    const pending = handle.start({ ...input, budgetMs: 50, signal: controller.signal })
+    await Promise.resolve(); await Promise.resolve()
+    const rejected = expect(pending).rejects.toMatchObject({ normalized: { code: control === 'abort' ? 'operation.aborted' : 'operation.timed-out' } })
+    if (control === 'abort') controller.abort(); else jest.advanceTimersByTime(50)
+    await rejected
+    expect(await handle.status()).toEqual({ state: 'pending' })
+    release(envelope({ version: 2, state: 'reserved', handle: 'native-handle' }))
+    await handle.retire()
+    expect(native.orderedRecordingStart).not.toHaveBeenCalled()
+    expect(native.orderedRecordingRetire).toHaveBeenCalledWith('native-handle')
+  } finally { jest.useRealTimers() }
+})
+
+test('fresh retry joins held reservation without allowing interrupted attempt to start', async () => {
+  const native = session(); let release
+  native.orderedRecordingReserve.mockImplementation(() => new Promise(resolve => { release = resolve }))
+  const handle = createReactNativeOrderedRecordingStart(native); const controller = new AbortController()
+  const first = handle.start({ ...input, signal: controller.signal })
+  await Promise.resolve(); await Promise.resolve()
+  controller.abort()
+  await expect(first).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+  const second = handle.start(input)
+  await Promise.resolve(); await Promise.resolve()
+  release(envelope({ version: 2, state: 'reserved', handle: 'native-handle' }))
+  expect(await second).toEqual(receipt)
+  expect(native.orderedRecordingReserve).toHaveBeenCalledTimes(1)
+  expect(native.orderedRecordingStart).toHaveBeenCalledTimes(1)
+})
+
+test('stalled native start times out and retains its late receipt', async () => {
+  jest.useFakeTimers()
+  try {
+    const native = session(); let release
+    native.orderedRecordingStart.mockImplementation(() => new Promise(resolve => { release = resolve }))
+    const retain = jest.fn(); const handle = createReactNativeOrderedRecordingStart(native, retain)
+    const pending = handle.start({ ...input, budgetMs: 50 })
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    const rejected = expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+    jest.advanceTimersByTime(50); await rejected
+    release(envelope(wireReceipt)); await Promise.resolve(); await Promise.resolve()
+    expect(retain).toHaveBeenCalledWith('18446744073709551615', 'private-capability')
+    expect(await handle.status()).toEqual({ state: 'result', result: receipt })
+  } finally { jest.useRealTimers() }
+})
+
+test.each(['version', 'reservation'])('expired %s continuation cannot progress before the deadline timer runs', async phase => {
+  const native = session(); let release; let clock = 0
+  const method = phase === 'version' ? native.orderedRecordingVersion : native.orderedRecordingReserve
+  method.mockImplementation(() => new Promise(resolve => { release = resolve }))
+  const admit = jest.fn()
+  const handle = createReactNativeOrderedRecordingStart(native, undefined, admit, undefined, () => clock)
+  const pending = handle.start({ ...input, budgetMs: 50 })
+  await Promise.resolve(); await Promise.resolve()
+  clock = 51
+  release(phase === 'version' ? 1 : envelope({ version: 2, state: 'reserved', handle: 'native-handle' }))
+  await expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+  if (phase === 'version') {
+    expect(admit).not.toHaveBeenCalled()
+    expect(native.orderedRecordingReserve).not.toHaveBeenCalled()
+  } else {
+    expect(native.orderedRecordingStart).not.toHaveBeenCalled()
+    await handle.retire()
+    expect(native.orderedRecordingRetire).toHaveBeenCalledWith('native-handle')
+  }
+})
+
+test('expiry during native negotiation setup observes its late continuation', async () => {
+  const native = session(); let release; let clock = 0
+  native.orderedRecordingVersion.mockImplementation(() => {
+    clock = 51
+    return new Promise(resolve => { release = resolve })
+  })
+  const admit = jest.fn()
+  const handle = createReactNativeOrderedRecordingStart(native, undefined, admit, undefined, () => clock)
+  await expect(handle.start({ ...input, budgetMs: 50 })).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+  release(1)
+  await new Promise(resolve => setImmediate(resolve))
+  expect(admit).not.toHaveBeenCalled()
+  expect(native.orderedRecordingReserve).not.toHaveBeenCalled()
+})

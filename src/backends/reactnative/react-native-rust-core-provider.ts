@@ -4247,7 +4247,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
               this.#orderedRecordingReclaims.delete(recordingId)
               this.#publicRecordingOwners.delete(recordingId)
             }
-          }
+          },
+          this.now
         )
         let markerFactory: NonNullable<OrderedNotificationStream['reserveMarkerWrite']> | null = null
         const acceptResult = (result: import('../../core/ordered-recording-start').OrderedRecordingStartResult) => {

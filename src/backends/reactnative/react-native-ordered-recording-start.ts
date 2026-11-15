@@ -1,5 +1,6 @@
 // src/backends/reactnative/react-native-ordered-recording-start.ts
 import { contractError } from '../../backend-contract/errors'
+import { deadline as operationDeadline } from '../../backend-contract/primitives'
 import {
   isRecordingId,
   MAX_RECORDING_BYTES,
@@ -8,6 +9,7 @@ import {
   MIN_RECORDING_RECORDS
 } from '../../backend-contract/continuation-recording-bounds'
 import { parseNativeControlEnvelope, failureEnvelopeError } from '../../core/recording-wire'
+import { awaitWithOperationAdmission } from '../../core/unified-ble-core-helpers'
 import { parseOrderedRecordingContext } from '../../core/ordered-recording'
 import { parseOrderedRecordingStartResult } from '../../core/ordered-recording-start'
 import type { OrderedRecordingStartResult } from '../../core/ordered-recording-start'
@@ -84,7 +86,8 @@ export function createReactNativeOrderedRecordingStart(
   session: ReactNativeRustCoreSession,
   retain: (collectionId: string, capability: string) => void = () => undefined,
   admit: (id: string) => void = () => undefined,
-  onRevoked: () => void = () => undefined
+  onRevoked: () => void = () => undefined,
+  now: () => number = () => performance.now()
 ) {
   let callerKey: string | null = null
   let recordingId: string | null = null
@@ -148,82 +151,93 @@ export function createReactNativeOrderedRecordingStart(
       const expected = JSON.stringify([input.id, input.maxBytes, input.maxRecords, declaration])
       if (identity !== null && identity !== expected)
         throw contractError('lifecycle.invalid-state', 'restoration', 'react-native.ordered-recording.identity')
-      await check()
-      if (retired || retireRequested)
-        throw contractError('lifecycle.invalid-state', 'restoration', 'react-native.ordered-recording.retired')
-      if (input.signal?.aborted)
-        throw contractError('operation.aborted', 'gatt', 'react-native.ordered-recording.start')
-      // Negotiation can overlap another start on this handle. Recheck identity
-      // after the await, before either attempt claims the public owner.
-      if (identity !== null && identity !== expected)
-        throw contractError('lifecycle.invalid-state', 'restoration', 'react-native.ordered-recording.identity')
-      admit(input.id)
-      identity = expected
-      recordingId = input.id
-      memberCount = declaration.members.length
-      callerKey ??= nextReactNativeReservationKey()
-      if (nativeHandle === null) {
-        const reserve = session.orderedRecordingReserve
-        if (reserve === undefined)
-          throw contractError('protocol.incompatible', 'boundary', 'react-native.ordered-recording.reserve')
-        if (reserveInFlight === null) {
-          reserveAttempted = true
-          const flight = (async () => {
-            const reply = decode(await reserve.call(session, reservation(input.id)))
-            if (
-              typeof reply !== 'object' ||
-              reply === null ||
-              Reflect.get(reply, 'version') !== 2 ||
-              Reflect.get(reply, 'state') !== 'reserved' ||
-              typeof Reflect.get(reply, 'handle') !== 'string' ||
-              Reflect.get(reply, 'handle').length === 0 ||
-              Object.keys(reply).length !== 3
-            )
-              throw contractError('protocol.malformed', 'boundary', 'react-native.ordered-recording.reserve')
-            nativeHandle = Reflect.get(reply, 'handle')
-          })()
-          reserveInFlight = flight
-          flight.then(
-            () => {
-              if (reserveInFlight === flight) reserveInFlight = null
-            },
-            () => {
-              if (reserveInFlight === flight) reserveInFlight = null
-            }
-          )
-        }
-        await reserveInFlight
+      let activeWait = true
+      const deadline = operationDeadline(now() + input.budgetMs)
+      const assertActiveWait = () => {
+        if (!activeWait || input.signal?.aborted)
+          throw contractError('operation.aborted', 'gatt', 'react-native.ordered-recording.start')
+        if (now() >= deadline)
+          throw contractError('operation.timed-out', 'gatt', 'react-native.ordered-recording.start')
       }
-      if (retired || retireRequested)
-        throw contractError('lifecycle.invalid-state', 'restoration', 'react-native.ordered-recording.retired')
-      if (input.signal?.aborted)
-        throw contractError('operation.aborted', 'gatt', 'react-native.ordered-recording.start')
-      const budgetMs = input.refreshBudget()
-      const start = session.orderedRecordingStart
-      if (start === undefined)
-        throw contractError('protocol.incompatible', 'boundary', 'react-native.ordered-recording.start')
-      if (nativeHandle === null)
-        throw contractError('protocol.malformed', 'boundary', 'react-native.ordered-recording.reserve')
-      dispatched = true
-      const pending = start
-        .call(session, nativeHandle, input.id, String(input.maxBytes), String(input.maxRecords), serialized, budgetMs)
-        .then(text => {
-          const parsed = parseMobileStartResult(decode(text), input.id, memberCount, retain)
-          result = parsed
-          return parsed
-        })
-      if (input.signal === null) return pending
-      const listener: { remove?: () => void } = {}
-      const cancelled = new Promise<never>((_, reject) => {
-        const onAbort = () => reject(contractError('operation.aborted', 'gatt', 'react-native.ordered-recording.start'))
-        input.signal?.addEventListener('abort', onAbort, { once: true })
-        listener.remove = () => input.signal?.removeEventListener('abort', onAbort)
-        if (input.signal?.aborted) onAbort()
-      })
+      const run = async (): Promise<OrderedRecordingStartResult> => {
+        await check()
+        assertActiveWait()
+        if (retired || retireRequested)
+          throw contractError('lifecycle.invalid-state', 'restoration', 'react-native.ordered-recording.retired')
+        // Negotiation can overlap another start on this handle. Recheck identity
+        // after the await, before either attempt claims the public owner.
+        if (identity !== null && identity !== expected)
+          throw contractError('lifecycle.invalid-state', 'restoration', 'react-native.ordered-recording.identity')
+        admit(input.id)
+        identity = expected
+        recordingId = input.id
+        memberCount = declaration.members.length
+        callerKey ??= nextReactNativeReservationKey()
+        if (nativeHandle === null) {
+          const reserve = session.orderedRecordingReserve
+          if (reserve === undefined)
+            throw contractError('protocol.incompatible', 'boundary', 'react-native.ordered-recording.reserve')
+          if (reserveInFlight === null) {
+            reserveAttempted = true
+            const flight = (async () => {
+              const reply = decode(await reserve.call(session, reservation(input.id)))
+              if (
+                typeof reply !== 'object' ||
+                reply === null ||
+                Reflect.get(reply, 'version') !== 2 ||
+                Reflect.get(reply, 'state') !== 'reserved' ||
+                typeof Reflect.get(reply, 'handle') !== 'string' ||
+                Reflect.get(reply, 'handle').length === 0 ||
+                Object.keys(reply).length !== 3
+              )
+                throw contractError('protocol.malformed', 'boundary', 'react-native.ordered-recording.reserve')
+              nativeHandle = Reflect.get(reply, 'handle')
+            })()
+            reserveInFlight = flight
+            flight.then(
+              () => {
+                if (reserveInFlight === flight) reserveInFlight = null
+              },
+              () => {
+                if (reserveInFlight === flight) reserveInFlight = null
+              }
+            )
+          }
+          await reserveInFlight
+        }
+        assertActiveWait()
+        if (retired || retireRequested)
+          throw contractError('lifecycle.invalid-state', 'restoration', 'react-native.ordered-recording.retired')
+        const budgetMs = input.refreshBudget()
+        const start = session.orderedRecordingStart
+        if (start === undefined)
+          throw contractError('protocol.incompatible', 'boundary', 'react-native.ordered-recording.start')
+        if (nativeHandle === null)
+          throw contractError('protocol.malformed', 'boundary', 'react-native.ordered-recording.reserve')
+        dispatched = true
+        const pending = start
+          .call(session, nativeHandle, input.id, String(input.maxBytes), String(input.maxRecords), serialized, budgetMs)
+          .then(text => {
+            const parsed = parseMobileStartResult(decode(text), input.id, memberCount, retain)
+            result = parsed
+            return parsed
+          })
+        return pending
+      }
+      const pending = run()
       try {
-        return await Promise.race([pending, cancelled])
+        return await awaitWithOperationAdmission(
+          pending,
+          { signal: input.signal, deadline },
+          now,
+          'react-native.ordered-recording.start'
+        )
       } finally {
-        listener.remove?.()
+        activeWait = false
+        // The shared wait can reject at its initial control check, before it
+        // observes pending. Late work still retains identity/receipts above;
+        // observe its completion after the caller's control result wins.
+        pending.catch(() => undefined)
       }
     },
     async status(): Promise<
