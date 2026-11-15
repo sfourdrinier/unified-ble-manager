@@ -8,6 +8,8 @@ All notable changes to `unified-ble-manager` are documented here.
 
 - Recover cold registries from released v1 journals without ordered-owner
   lookup, preserving schema, raw records and pending cursors.
+- Allow retry after an Apple connection failure has already released its native
+  claim; retain cleanup failures while connection or notification work is pending.
 
 ## [5.2.3] - 2026-11-14
 

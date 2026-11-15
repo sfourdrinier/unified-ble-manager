@@ -301,6 +301,7 @@ try {
     '--connection-cancel-collision',
     '--connection-pending-release',
     '--connection-cross-peer-collision',
+    '--connection-failure-compensation',
     '--connection-failure-retry',
     '--connection-stale-callback',
     '--connection-terminal-fence',

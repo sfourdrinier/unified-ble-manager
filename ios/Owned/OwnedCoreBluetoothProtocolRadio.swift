@@ -480,6 +480,17 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     }
     let key = ObjectIdentifier(owner)
     guard let claim = connectionClaims[peerIdentifier]?[key], claim.owner === owner else {
+      // A failed native connect may already have removed its claim before Rust compensates.
+      // Only an idle, known peripheral can acknowledge that cleanup without owning a claim.
+      if peripheral.state == .disconnected &&
+          (connectionClaims[peerIdentifier]?.isEmpty ?? true) &&
+          connectionEpochs[peerIdentifier] == nil && pendingConnect[peerIdentifier] == nil &&
+          pendingConnectionTerminals[peerIdentifier] == nil &&
+          !orderedOverflowDisconnectPending.contains(peerIdentifier) &&
+          connectionGenerationAvailable(peerIdentifier, isConnected: false) &&
+          !retiredNotificationOwners.values.contains(where: { $0.address.peerIdentifier == peerIdentifier }) {
+        completion(nil); return
+      }
       completion(error(code: 1007, message: "This borrower does not own the connection")); return
     }
     if (connectionClaims[peerIdentifier]?.count ?? 0) > 1 &&
