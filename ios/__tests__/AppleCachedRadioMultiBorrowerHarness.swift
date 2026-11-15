@@ -1941,6 +1941,78 @@ private final class LegacyFailureBorrower: NSObject, OwnedCoreBluetoothProtocolR
       print("Cross-peer operation identity passed")
       return
     }
+    if CommandLine.arguments.contains("--restored-connecting-cancel") {
+      guard let central = class_createInstance(ScanCentral.self, 0) as? ScanCentral,
+            let peripheral = class_createInstance(Peripheral.self, 0) as? Peripheral else { fatalError("fixture") }
+      _ = Unmanaged.passRetained(central); _ = Unmanaged.passRetained(peripheral)
+      let peer = peerID.uuidString
+      var firstCalls = 0, secondCalls = 0
+      radio.queue.sync {
+        connectionState = .connecting
+        radio.central = central; radio.peripheralByIdentifier[peer] = peripheral
+        radio.connectionEpochs[peer] = UUID(); radio.unfencedConnections.insert(peer)
+        radio.restoredPeerIdentifiers.append(peer)
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "first") { _ in firstCalls += 1 }
+        radio.connectOnQueue(owner: second, route: second, peerIdentifier: peer, operationIdentifier: "second") { _ in secondCalls += 1 }
+        let firstResult = radio.cancelConnectionOperation("first", owner: first)
+        precondition(firstResult?["state"] as? String == "released" && cancelledConnections == 0,
+          "one borrower cannot cancel the other borrower's restored operation")
+        let secondResult = radio.cancelConnectionOperation("second", owner: second)
+        precondition(secondResult?["state"] as? String == "retryable" && cancelledConnections > 0,
+          "last cancellation must wait for the native terminal callback")
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "blocked") { error in
+          precondition(error?.code == 1025, "cleanup must fence a replacement")
+        }
+        connectionState = .disconnected
+        radio.centralManager(central, didFailToConnect: peripheral, error: NSError(domain: "fixture", code: 33))
+        precondition(firstCalls == 0 && secondCalls == 0 && radio.pendingCancellationCleanup.isEmpty)
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "retry") { error in
+          precondition(error == nil); firstCalls += 1
+        }
+        precondition(startedConnections == 1, "terminal callback permits one new connect")
+        connectionState = .connected
+        radio.centralManager(central, didConnect: peripheral)
+        precondition(firstCalls == 1)
+      }
+      print("Restored connecting cancellation passed")
+      return
+    }
+    if CommandLine.arguments.contains("--restored-connecting-handoff") ||
+       CommandLine.arguments.contains("--restored-connecting-failure") {
+      guard let central = class_createInstance(ScanCentral.self, 0) as? ScanCentral,
+            let peripheral = class_createInstance(Peripheral.self, 0) as? Peripheral else { fatalError("fixture") }
+      _ = Unmanaged.passRetained(central); _ = Unmanaged.passRetained(peripheral)
+      let peer = peerID.uuidString
+      var firstAnswers: [Int] = [], secondAnswers: [Int] = []
+      radio.queue.sync {
+        connectionState = .connecting
+        radio.central = central; radio.peripheralByIdentifier[peer] = peripheral
+        radio.connectionEpochs[peer] = UUID(); radio.unfencedConnections.insert(peer)
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "not-restored") { error in
+          precondition(error?.code == 1025, "unrestored native connect remains fenced")
+        }
+        radio.restoredPeerIdentifiers.append(peer)
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "first") { error in
+          firstAnswers.append(error?.code ?? 0)
+        }
+        radio.connectOnQueue(owner: second, route: second, peerIdentifier: peer, operationIdentifier: "second") { error in
+          secondAnswers.append(error?.code ?? 0)
+        }
+        precondition(startedConnections == 0 && firstAnswers.isEmpty && secondAnswers.isEmpty,
+          "restored operation must be joined without a second connect or early completion")
+        if CommandLine.arguments.contains("--restored-connecting-failure") {
+          connectionState = .disconnected
+          radio.centralManager(central, didFailToConnect: peripheral, error: NSError(domain: "fixture", code: 33))
+          precondition(firstAnswers == [33] && secondAnswers == [33] && radio.connectionClaims[peer] == nil)
+        } else {
+          connectionState = .connected
+          radio.centralManager(central, didConnect: peripheral)
+          precondition(firstAnswers == [0] && secondAnswers == [0])
+        }
+      }
+      print("Restored connecting handoff passed")
+      return
+    }
     if CommandLine.arguments.contains("--connection-failure-compensation") {
       guard let central = class_createInstance(ScanCentral.self, 0) as? ScanCentral,
             let peripheral = class_createInstance(Peripheral.self, 0) as? Peripheral else { fatalError("fixture") }

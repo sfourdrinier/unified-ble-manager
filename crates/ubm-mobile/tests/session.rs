@@ -4179,6 +4179,83 @@ async fn android_claims_presence_restored_peers_once_per_process() {
     assert_eq!(error["code"], "argument.invalid", "maxPeers is required");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undispatched_connect_refusal_does_not_create_cleanup_debt() {
+    let mut connects = 0;
+    let radio = Scripted::new(Box::new(move |request| match request {
+        ubm_mobile::RadioRequest::Connect { .. } => {
+            connects += 1;
+            if connects == 1 {
+                Reply::Now(RadioCompletion::Failed(PlatformFailure::not_dispatched(
+                    FailureKind::PeerUnknown,
+                    "native connect was refused before dispatch",
+                )))
+            } else {
+                Reply::Now(RadioCompletion::Unit)
+            }
+        }
+        ubm_mobile::RadioRequest::Disconnect { .. } => Reply::Now(RadioCompletion::Failed(
+            PlatformFailure::not_dispatched(FailureKind::PeerUnknown, "no native connection"),
+        )),
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Apple).await;
+    let session = host.open_session("undispatched-connect").unwrap();
+    let first = call(
+        &session,
+        "connection.connect",
+        &json!({"peerId": POLAR, "lease": "first", "operationId": "first"}).to_string(),
+    )
+    .await;
+    let (error, _) = failure(&first);
+    assert_eq!(error["code"], "peer.not-found");
+    assert_eq!(error["operation"], "connection.connect");
+    assert_eq!(radio.count(RequestKind::Disconnect), 0);
+    let retry = ok(&call(
+        &session,
+        "connection.connect",
+        &json!({"peerId": POLAR, "lease": "retry", "operationId": "retry"}).to_string(),
+    )
+    .await);
+    assert!(retry["connectionGeneration"].is_string());
+    assert_eq!(radio.count(RequestKind::Connect), 2);
+    assert_eq!(radio.count(RequestKind::Disconnect), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uncertain_connect_retains_failed_cleanup_before_retry() {
+    let radio = Scripted::new(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::Connect { .. } => Reply::Now(RadioCompletion::Failed(
+            PlatformFailure::new(FailureKind::Platform, "native connect outcome uncertain"),
+        )),
+        ubm_mobile::RadioRequest::Disconnect { .. } => Reply::Now(RadioCompletion::Failed(
+            PlatformFailure::new(FailureKind::Platform, "native cleanup refused"),
+        )),
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Apple).await;
+    let session = host.open_session("uncertain-connect").unwrap();
+    failure(
+        &call(
+            &session,
+            "connection.connect",
+            &json!({"peerId": POLAR, "lease": "first", "operationId": "first"}).to_string(),
+        )
+        .await,
+    );
+    assert_eq!(radio.count(RequestKind::Disconnect), 1);
+    failure(
+        &call(
+            &session,
+            "connection.connect",
+            &json!({"peerId": POLAR, "lease": "retry", "operationId": "retry"}).to_string(),
+        )
+        .await,
+    );
+    assert_eq!(radio.count(RequestKind::Disconnect), 2);
+    assert_eq!(radio.count(RequestKind::Connect), 1);
+}
+
 /// Finding 194 (mobile owner): a connect whose budget expires while the radio
 /// holds it must not wedge its peer. The expiry reports the connection
 /// failure (finding 161: the peer did not answer), the owner's pending claim

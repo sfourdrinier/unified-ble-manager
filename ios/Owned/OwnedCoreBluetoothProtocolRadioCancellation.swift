@@ -118,6 +118,7 @@ extension OwnedCoreBluetoothProtocolRadio {
     for (peer, claims) in connectionClaims {
       guard let claim = claims[key], claim.owner === owner,
             claim.pending?.operationIdentifier == operation else { continue }
+      traceConnectionState("connect-cancel", peer: peer)
       connectionClaims[peer]?.removeValue(forKey: key)
       if connectionClaims[peer]?.isEmpty == false { return ["state": "released", "failures": []] as NSDictionary }
       connectionClaims.removeValue(forKey: peer)

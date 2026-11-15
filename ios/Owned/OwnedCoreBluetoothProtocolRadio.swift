@@ -385,6 +385,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   func connectOnQueue(owner: AnyObject, route: OwnedCoreBluetoothProtocolRadioDelegate?, peerIdentifier: String,
                       operationIdentifier: String, completion: @escaping (NSError?) -> Void) {
+    traceConnectionState("connect-admission", peer: peerIdentifier)
     guard requireUsable(completion) else { return }
     guard let identifier = OwnedCoreBluetoothKnownPeerLookup.identifier(peerIdentifier) else {
       completion(error(code: 1005, message: "The requested CoreBluetooth peripheral is unknown")); return
@@ -418,6 +419,25 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       retrieve: { central.retrievePeripherals(withIdentifiers: [$0]) }, identifierOf: { $0.identifier }) else {
       completion(error(code: 1005, message: "The requested CoreBluetooth peripheral is unknown")); return
     }
+    // iOS restores pending OS connects without a borrower waiter. Join that same
+    // operation; never dispatch a second physical connect for the handoff.
+    if restoredPeerIdentifiers.contains(peerIdentifier), cached === peripheral, peripheral.state == .connecting,
+       (connectionClaims[peerIdentifier]?.isEmpty ?? true), pendingConnect[peerIdentifier] == nil,
+       (releasingConnectionClaims[peerIdentifier]?.isEmpty ?? true),
+       connectionEpochs[peerIdentifier] != nil, unfencedConnections.contains(peerIdentifier),
+       !retiredNotificationOwners.values.contains(where: { $0.address.peerIdentifier == peerIdentifier }),
+       !pendingCancellationCleanup.values.contains(where: { cleanup in
+         cleanup.notificationDesiredStates.keys.contains(where: { $0.peerIdentifier == peerIdentifier }) ||
+           cleanup.notificationAwaitingCallbacks.contains(where: { $0.peerIdentifier == peerIdentifier }) ||
+           cleanup.retiredNotificationObjects.contains(where: { self.retiredNotificationOwners[$0]?.address.peerIdentifier == peerIdentifier })
+       }) {
+      connectionClaims[peerIdentifier, default: [:]][key] = ConnectionClaim(owner: owner, route: route,
+        pending: PendingVoid(operationIdentifier: operationIdentifier, completion: completion))
+      pendingConnect[peerIdentifier] = PendingVoid(operationIdentifier: "connect-physical-\(UUID().uuidString)") { [weak self] failure in
+        self?.settleConnectionClaims(peerIdentifier, failure: failure)
+      }
+      return
+    }
     guard connectionGenerationAvailable(peerIdentifier, isConnected: peripheral.state == .connected) else {
       completion(error(code: 1025, message: "The previous connection generation is awaiting its terminal callback")); return
     }
@@ -436,6 +456,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     pendingConnect[peerIdentifier] = PendingVoid(operationIdentifier: "connect-physical-\(UUID().uuidString)") { [weak self] failure in
       self?.settleConnectionClaims(peerIdentifier, failure: failure)
     }
+    traceConnectionState("connect-dispatched", peer: peerIdentifier)
     central.connect(peripheral, options: nil)
   }
 
@@ -469,8 +490,19 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       operationIdentifier: operationIdentifier, completion: completion) }
   }
 
+  // Opt-in connection-state evidence contains no peer IDs, payloads or error messages.
+  func traceConnectionState(_ event: String, peer: String) {
+    guard ProcessInfo.processInfo.environment["UBM_NATIVE_DIAGNOSTICS"] == "1" else { return }
+    NSLog("UBM connection state event=%@ state=%ld cached=%d claims=%ld connectPending=%d cancellationPending=%d terminalPending=%d unfenced=%d epoch=%d",
+      event, peripheralByIdentifier[peer]?.state.rawValue ?? -1, peripheralByIdentifier[peer] != nil,
+      connectionClaims[peer]?.count ?? 0, pendingConnect[peer] != nil,
+      pendingCancellationCleanup.values.contains(where: { $0.peerIdentifiers.contains(peer) }),
+      pendingConnectionTerminals[peer] != nil, unfencedConnections.contains(peer), connectionEpochs[peer] != nil)
+  }
+
   func disconnectOnQueue(owner: AnyObject, peerIdentifier: String, operationIdentifier: String,
                          completion: @escaping (NSError?) -> Void) {
+    traceConnectionState("disconnect", peer: peerIdentifier)
     guard requireUsable(completion) else { return }
     guard let peripheral = peripheralByIdentifier[peerIdentifier] else {
       completion(error(code: 1007, message: "The requested CoreBluetooth peripheral is unknown")); return
@@ -1276,6 +1308,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
     let identifier = peripheral.identifier.uuidString
+    traceConnectionState(peripheralByIdentifier[identifier] === peripheral ? "connect-current-callback" : "connect-stale-callback", peer: identifier)
     guard peripheralByIdentifier[identifier] === peripheral else { return }
     if let gate = orderedGraphPermitGates[identifier], gate.isHolding {
       let epoch = connectionEpochs[identifier]
@@ -1313,6 +1346,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
     let identifier = peripheral.identifier.uuidString
+    traceConnectionState(peripheralByIdentifier[identifier] === peripheral ? "connect-failed-current-callback" : "connect-failed-stale-callback", peer: identifier)
     guard peripheralByIdentifier[identifier] === peripheral else { return }
     if let gate = orderedGraphPermitGates[identifier], gate.isHolding {
       let failure = error as NSError?
@@ -1344,6 +1378,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
     let identifier = peripheral.identifier.uuidString
+    traceConnectionState(peripheralByIdentifier[identifier] === peripheral ? "disconnect-current-callback" : "disconnect-stale-callback", peer: identifier)
     guard let current = peripheralByIdentifier[identifier], current === peripheral else { return }
     if let gate = orderedGraphPermitGates[identifier], gate.isHolding {
       let failure = error as NSError?
