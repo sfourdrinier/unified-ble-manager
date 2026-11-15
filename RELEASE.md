@@ -1304,7 +1304,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.2.3
+version=5.2.4
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1325,8 +1325,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.2.3` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.2.3` after
+  `unified-ble-manager@5.2.4` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.2.4` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

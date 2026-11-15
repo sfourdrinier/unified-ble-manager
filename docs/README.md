@@ -129,9 +129,9 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 
 ## Release candidate accounting
 
-| Document                                                                   | What it is                                                                                                                                                          | Status  |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| [`releases/5.2.3-change-breakdown.md`](releases/5.2.3-change-breakdown.md) | Exact `origin/main` to frozen-candidate composition, capability inventory, generated/artifact separation, and compatibility corrections; not qualification evidence | Current |
+| Document                                                                   | What it is                                                                                                                                                          | Status     |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| [`releases/5.2.3-change-breakdown.md`](releases/5.2.3-change-breakdown.md) | Exact `origin/main` to frozen-candidate composition, capability inventory, generated/artifact separation, and compatibility corrections; not qualification evidence | Historical |
 
 ## Policy, security, and process
 
