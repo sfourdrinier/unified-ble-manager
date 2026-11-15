@@ -6510,28 +6510,21 @@ impl UbmCentral {
                 .joined_scan_evidence
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let ids: Vec<String> = joined
-                .local_debts
-                .iter()
-                .filter_map(|(id, debt)| {
-                    (debt.binding.recipient.as_deref() == Some(recipient.as_str()))
-                        .then(|| id.clone())
-                })
-                .collect();
-            for id in ids {
-                let debt = joined.local_debts.get(&id).expect("local debt exists");
+            joined.local_debts.retain(|id, debt| {
+                if debt.binding.recipient.as_deref() != Some(recipient.as_str()) {
+                    return true;
+                }
                 match ledger
-                    .stage(&id, &recipient, &debt.canonical)
-                    .and_then(|()| ledger.abandon(&id))
+                    .stage(id, &recipient, &debt.canonical)
+                    .and_then(|()| ledger.abandon(id))
                 {
-                    Ok(_) => {
-                        joined.local_debts.remove(&id);
-                    }
+                    Ok(_) => false,
                     Err(error) => {
-                        retry_failures.push(terminal_evidence_error(error, OP).wire_message())
+                        retry_failures.push(terminal_evidence_error(error, OP).wire_message());
+                        true
                     }
                 }
-            }
+            });
         }
         let mut pending = self
             .pending_scan_terminals
@@ -8283,7 +8276,14 @@ impl UbmCentral {
         let binding = self
             .configure_terminal_evidence(binding, options.terminal_operation.as_deref(), OP)
             .map_err(to_napi)?
-            .expect("scope supplied");
+            .ok_or_else(|| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::ProtocolViolation.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "terminal evidence scope was not configured",
+                ))
+            })?;
         self.central
             .with_operational_scan(&options.operation_id, || {
                 let mut joined = self
@@ -8365,12 +8365,10 @@ impl UbmCentral {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if joined.operation_id.as_deref() == Some(options.operation_id.as_str()) {
-                let debt = joined
-                    .local_debts
-                    .iter()
-                    .find_map(|(id, debt)| (debt.binding.scope == scope).then(|| id.clone()));
-                if let Some(id) = debt {
-                    let debt = joined.local_debts.get(&id).expect("debt exists").clone();
+                let debt = joined.local_debts.iter().find_map(|(id, debt)| {
+                    (debt.binding.scope == scope).then(|| (id.clone(), debt.clone()))
+                });
+                if let Some((id, debt)) = debt {
                     let receipt = commit_joined_release(&ledger, &debt)?;
                     joined.local_debts.remove(&id);
                     return Ok(receipt);
@@ -8398,18 +8396,19 @@ impl UbmCentral {
                     .find(|binding| binding.scope == scope)
                     .cloned()
             };
-            if joined.operation_id.as_deref() != Some(options.operation_id.as_str())
-                || joined.ended
-                || binding.is_none()
-            {
-                return Err(to_napi(DispatchError::new(
-                    BleErrorCode::LifecycleInvalidState.as_str(),
-                    BleErrorDomain::Scan.as_str(),
-                    OP,
-                    "scan evidence is terminal or not attached",
-                )));
-            }
-            let binding = binding.expect("checked");
+            let binding = binding
+                .filter(|_| {
+                    joined.operation_id.as_deref() == Some(options.operation_id.as_str())
+                        && !joined.ended
+                })
+                .ok_or_else(|| {
+                    to_napi(DispatchError::new(
+                        BleErrorCode::LifecycleInvalidState.as_str(),
+                        BleErrorDomain::Scan.as_str(),
+                        OP,
+                        "scan evidence is terminal or not attached",
+                    ))
+                })?;
             let id = binding.reservation_id.clone();
             let canonical = canonical_joined_local_terminal(
                 &binding,
@@ -16463,15 +16462,16 @@ mod tests {
             .expect("staged evidence remains readable");
         assert_eq!(staged.len(), 1);
         assert_eq!(staged[0].canonical_bytes, earlier);
-        let pending = central
-            .pending_scan_terminals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        assert_eq!(
-            pending.front().expect("source terminal retained").detail,
-            "must not overwrite"
-        );
-        drop(pending);
+        {
+            let pending = central
+                .pending_scan_terminals
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            assert_eq!(
+                pending.front().expect("source terminal retained").detail,
+                "must not overwrite"
+            );
+        }
         assert!(central
             .release_terminal_evidence(reservation.reservation_id)
             .await

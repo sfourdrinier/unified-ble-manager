@@ -5789,6 +5789,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     }
 
     /// Bind host-owned source state to the allocated scan before ingress is armed.
+    // Keep the existing scan arguments plus its preactivation callback together.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_scan_platform_with_admission<F>(
         &self,
         owner: &str,
