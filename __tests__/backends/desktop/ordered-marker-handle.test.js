@@ -287,3 +287,93 @@ test('deadline cancellation prevents retries from starting a late reservation', 
     jest.useRealTimers()
   }
 })
+
+test.each(['abort', 'explicit'])('%s settles a stalled start with native cancellation result', async method => {
+  let finishStart
+  const stalled = new Promise(resolve => {
+    finishStart = resolve
+  })
+  const actual = { state: 'not-admitted', error: null }
+  const transport = {
+    reserve: jest.fn(async () => '3'),
+    start: jest.fn(() => stalled),
+    status: jest.fn(async () => actual),
+    cancel: jest.fn(async () => actual),
+    forget: jest.fn(async () => {})
+  }
+  const handle = createOrderedMarkerReservations(
+    transport,
+    target => target,
+    () => 0,
+    () => 'key'
+  )()
+  const controller = new AbortController()
+  const pending = handle.start({}, Uint8Array.from([1]), 'with-response', { signal: controller.signal, deadline: null })
+  for (let i = 0; i < 6; i++) await Promise.resolve()
+  if (method === 'abort') controller.abort()
+  else expect(await handle.cancel()).toEqual(actual)
+  expect(await pending).toEqual(actual)
+  finishStart({ state: 'pending' })
+  expect(await handle.status()).toEqual(actual)
+  await handle.forget()
+})
+
+test('stalled start reports native cancellation failure', async () => {
+  const transport = {
+    reserve: jest.fn(async () => '3'),
+    start: jest.fn(() => new Promise(() => {})),
+    status: jest.fn(),
+    cancel: jest.fn(async () => {
+      throw new Error('cancel failed')
+    }),
+    forget: jest.fn(async () => {})
+  }
+  const handle = createOrderedMarkerReservations(
+    transport,
+    target => target,
+    () => 0,
+    () => 'key'
+  )()
+  const controller = new AbortController()
+  const pending = handle.start({}, Uint8Array.from([1]), 'with-response', { signal: controller.signal, deadline: null })
+  for (let i = 0; i < 6; i++) await Promise.resolve()
+  const rejected = expect(pending).rejects.toThrow('cancel failed')
+  controller.abort()
+  await rejected
+  await expect(handle.cancel()).rejects.toThrow('cancel failed')
+  await handle.forget()
+})
+
+test('a retry uses its current abort signal after a lost reservation response', async () => {
+  let reportStarted
+  const started = new Promise(resolve => {
+    reportStarted = resolve
+  })
+  const actual = { state: 'not-admitted', error: null }
+  const transport = {
+    reserve: jest.fn().mockRejectedValueOnce(new Error('lost reply')).mockResolvedValue('3'),
+    start: jest.fn(() => {
+      reportStarted()
+      return new Promise(() => {})
+    }),
+    cancel: jest.fn(async () => actual),
+    status: jest.fn(async () => actual),
+    forget: jest.fn(async () => {})
+  }
+  const handle = createOrderedMarkerReservations(
+    transport,
+    target => target,
+    () => 0,
+    () => 'key'
+  )()
+  const target = {}
+  await expect(handle.start(target, Uint8Array.of(1), 'with-response', controls)).rejects.toThrow('lost reply')
+  const controller = new AbortController()
+  const retry = handle.start(target, Uint8Array.of(1), 'with-response', { signal: controller.signal, deadline: null })
+  await started
+  controller.abort()
+  await expect(retry).resolves.toEqual(actual)
+  expect(transport.reserve.mock.calls).toEqual([['key'], ['key']])
+  expect(transport.cancel).toHaveBeenCalledTimes(1)
+  await handle.forget()
+})

@@ -52,6 +52,7 @@ export function createOrderedMarkerReservations<Target, Selector>(
     }
     let cancellationRequested = false
     let cancelTask: Promise<{ readonly status: OrderedMarkerWriteStatus } | { readonly error: unknown }> | null = null
+    const cancelWaiters = new Set<(task: NonNullable<typeof cancelTask>) => void>()
     let watchedSignal: AbortSignal | null = null
     let abortListener: (() => void) | null = null
     const cancelNative = async (): Promise<OrderedMarkerWriteStatus> => {
@@ -67,16 +68,19 @@ export function createOrderedMarkerReservations<Target, Selector>(
     }
     const requestCancel = () => {
       cancellationRequested = true
-      if (cancelTask === null)
+      if (cancelTask === null) {
         cancelTask = cancelNative().then(
           status => ({ status }),
           error => ({ error })
         )
+        for (const waiter of cancelWaiters) waiter(cancelTask)
+      }
       return cancelTask
     }
     const cancelResult = async () => {
-      const pending = await requestCancel()
-      cancelTask = null
+      const task = requestCancel()
+      const pending = await task
+      if (cancelTask === task) cancelTask = null
       if ('error' in pending) throw pending.error
       return pending.status
     }
@@ -136,23 +140,45 @@ export function createOrderedMarkerReservations<Target, Selector>(
           if (watchedSignal?.aborted) return cancelResult()
           return result
         }
-        if (deadline === null) return run()
         return new Promise((resolveStart, rejectStart) => {
-          const timer = setTimeout(
-            () => {
-              expired = true
-              requestCancel()
-              rejectStart(contractError('operation.timed-out', 'gatt', 'ordered.marker'))
-            },
-            Math.max(0, deadline - now())
-          )
+          let timer: ReturnType<typeof setTimeout> | null = null
+          const cleanup = () => {
+            cancelWaiters.delete(onCancel)
+            controls.signal?.removeEventListener('abort', onAbort)
+            if (timer !== null) clearTimeout(timer)
+          }
+          const onAbort = () => {
+            requestCancel()
+          }
+          const onCancel = (task: NonNullable<typeof cancelTask>) => {
+            task.then(result => {
+              cleanup()
+              if ('error' in result) rejectStart(result.error)
+              else resolveStart(result.status)
+            })
+          }
+          cancelWaiters.add(onCancel)
+          if (cancelTask !== null) onCancel(cancelTask)
+          controls.signal?.addEventListener('abort', onAbort, { once: true })
+          if (controls.signal?.aborted) onAbort()
+          if (deadline !== null) {
+            timer = setTimeout(
+              () => {
+                expired = true
+                requestCancel()
+                cleanup()
+                rejectStart(contractError('operation.timed-out', 'gatt', 'ordered.marker'))
+              },
+              Math.max(0, deadline - now())
+            )
+          }
           run().then(
             result => {
-              clearTimeout(timer)
+              cleanup()
               resolveStart(result)
             },
             error => {
-              clearTimeout(timer)
+              cleanup()
               rejectStart(error)
             }
           )

@@ -83,3 +83,28 @@ test('deadline bounds a pending native start and requests cancellation of the re
     jest.useRealTimers()
   }
 })
+
+test('abort settles a stalled native start with its cancellation result', async () => {
+  const actual = { state: 'not-admitted', error: null }
+  const invoke = jest.fn(op => {
+    if (op === 'gatt.ordered.marker.reserve') return Promise.resolve({ handle: '8' })
+    if (op === 'gatt.ordered.marker.start') return new Promise(() => {})
+    if (op === 'gatt.ordered.marker.cancel' || op === 'gatt.ordered.marker.status') return Promise.resolve(actual)
+    return Promise.resolve(null)
+  })
+  const marker = createReactNativeOrderedMarkerReservations(
+    invoke,
+    'peer',
+    '3',
+    () => ({ serviceUuid: 's', characteristicUuid: 'c' }),
+    () => 0,
+    () => 'key'
+  )()
+  const controller = new AbortController()
+  const pending = marker.start({}, Uint8Array.from([1]), 'with-response', { signal: controller.signal, deadline: null })
+  for (let i = 0; i < 6; i++) await Promise.resolve()
+  controller.abort()
+  expect(await pending).toEqual(actual)
+  expect(await marker.status()).toEqual(actual)
+  await marker.forget()
+})

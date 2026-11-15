@@ -1132,9 +1132,46 @@ async fn scan_start_accepts_and_retains_terminal_evidence_scope() {
     .await);
     assert_eq!(
         released,
-        json!({"released": true, "retainedForRecovery": false})
+        json!({"released": true, "retainedForRecovery": true})
     );
     ok(&call(&session, "session.dispose", "{}").await);
+    let recovery = host
+        .terminal_evidence_recovery_selected()
+        .expect("select retained scan evidence");
+    let page = recovery
+        .list(8, 65_536)
+        .expect("recover stopped scan terminal");
+    assert!(!page.more);
+    assert_eq!(page.entries.len(), 1);
+    let entry = &page.entries[0];
+    assert_eq!(entry.scope.operation_id, "terminal-scan-1");
+    assert_eq!(entry.scope.incarnation, "1");
+    assert_eq!(
+        entry
+            .scope
+            .scope_utf16le
+            .as_deref()
+            .map(ubm_mobile::wire::encode_base64),
+        Some(raw_scope)
+    );
+    let retained = recovery
+        .read(entry, 0, 65_536)
+        .expect("read exact retained terminal");
+    assert!(retained.done);
+    let terminal: Value = serde_json::from_slice(&retained.bytes).expect("retained terminal JSON");
+    assert_eq!(terminal["t"], "scan-end");
+    assert_eq!(terminal["reason"], "owner-released");
+    recovery
+        .acknowledge(entry)
+        .expect("acknowledge retained terminal");
+    assert!(
+        recovery
+            .list(8, 65_536)
+            .expect("list after acknowledgement")
+            .entries
+            .is_empty()
+    );
+    recovery.close().expect("release recovery controller");
     assert_eq!(parse(&host.shutdown().await)["state"], "released");
 }
 

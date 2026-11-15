@@ -1,10 +1,10 @@
+// src/ipc/manager.ts
 import { parseOrderedRecordingFailure } from '../core/ordered-recording'
 import {
   isTerminalEvidenceStageFailure,
   rehydrateTrustedTerminalEvidenceStageFailure
 } from '../core/terminal-evidence-stage-failure'
 import { isAuthenticatedElectronTerminalEvidenceStageFailure } from './electron-terminal-evidence-wire'
-// src/ipc/manager.ts
 import { isCanonicalIngressOrdinal } from '../core/ordered-notification-contract'
 import { accountOrderedDiscard } from '../core/ordered-notification-stream'
 import { parseOrderedRecordingStartResult } from '../core/ordered-recording-start'
@@ -3354,6 +3354,27 @@ export class IpcGattDatabase {
       const markerHandle = await reserve()
       return decode(await this.manager.route(`${prefix}.${action}`, { ...(await owner()), markerHandle }))
     }
+    type CancelOutcome = { status: Awaited<ReturnType<typeof query>> } | { error: unknown }
+    let cancelTask: Promise<CancelOutcome> | null = null
+    const cancelWaiters = new Set<(task: Promise<CancelOutcome>) => void>()
+    const requestCancel = (): Promise<CancelOutcome> => {
+      cancellationRequested = true
+      if (cancelTask === null) {
+        cancelTask = query('cancel').then(
+          status => ({ status }),
+          error => ({ error })
+        )
+        for (const waiter of cancelWaiters) waiter(cancelTask)
+      }
+      return cancelTask
+    }
+    const cancelResult = async () => {
+      const task = requestCancel()
+      const outcome = await task
+      if (cancelTask === task) cancelTask = null
+      if ('error' in outcome) throw outcome.error
+      return outcome.status
+    }
     return {
       start: async (
         target: PortableCurrentCharacteristicPath,
@@ -3364,39 +3385,101 @@ export class IpcGattDatabase {
         if (retired || retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.marker.retired')
         if (cancelledBeforeStart) return { state: 'not-admitted' as const, error: null }
         if (options.signal?.aborted) throw contractError('operation.aborted', 'gatt', 'ipc.marker.start')
+        if (options.deadline != null && options.deadline <= this.monotonicNow())
+          throw contractError('operation.timed-out', 'gatt', 'ipc.marker.start')
         const characteristicHandle = this.characteristicForPath(target).handle
         const bytes = ownBytes(value, byteLimit(value.byteLength))
-        const markerHandle = await reserve()
-        if (retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.marker.retired')
-        if (cancellationRequested) {
-          const status = decode(await this.manager.route(`${prefix}.cancel`, { ...(await owner()), markerHandle }))
-          if (status.state === 'idle' || status.state === 'retired')
+        let observedCancel: Promise<CancelOutcome> | null = null
+        const afterCancellation = async () => {
+          const outcome = observedCancel !== null ? await observedCancel : { status: await cancelResult() }
+          if ('error' in outcome) throw outcome.error
+          if (outcome.status.state === 'idle' || outcome.status.state === 'retired')
             throw contractError('protocol.malformed', 'ipc', 'ipc.marker.cancel-status')
+          return outcome.status
+        }
+        const run = async () => {
+          const markerHandle = await reserve()
+          if (retired || retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.marker.retired')
+          if (cancellationRequested) {
+            return afterCancellation()
+          }
+          const fields = await owner()
+          if (retired || retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.marker.retired')
+          if (cancellationRequested) return afterCancellation()
+          const result = await this.route(
+            `${prefix}.start`,
+            {
+              ...fields,
+              markerHandle,
+              characteristicHandle,
+              withResponse: mode === 'with-response',
+              deadline: options.deadline
+            },
+            bytes,
+            options.signal ?? undefined
+          )
+          const status = decode(result)
+          if (status.state === 'idle' || status.state === 'retired')
+            throw contractError('protocol.malformed', 'ipc', 'ipc.marker.start-status')
           return status
         }
-        if (options.signal?.aborted) {
-          await this.manager.route(`${prefix}.cancel`, { ...(await owner()), markerHandle })
-          throw contractError('operation.aborted', 'gatt', 'ipc.marker.start')
-        }
-        const result = await this.route(
-          `${prefix}.start`,
-          {
-            ...(await owner()),
-            markerHandle,
-            characteristicHandle,
-            withResponse: mode === 'with-response',
-            deadline: options.deadline
-          },
-          bytes,
-          options.signal ?? undefined
-        )
-        const status = decode(result)
-        if (status.state === 'idle' || status.state === 'retired')
-          throw contractError('protocol.malformed', 'ipc', 'ipc.marker.start-status')
-        return status
+        return new Promise<Awaited<ReturnType<typeof run>>>((resolve, reject) => {
+          let settled = false
+          let timer: { cancel: () => void } | null = null
+          const cleanup = () => {
+            timer?.cancel()
+            options.signal?.removeEventListener('abort', onAbort)
+            cancelWaiters.delete(onCancel)
+          }
+          const interrupt = (code: 'operation.aborted' | 'operation.timed-out') => {
+            if (settled) return
+            settled = true
+            observedCancel = requestCancel()
+            cleanup()
+            reject(contractError(code, 'gatt', 'ipc.marker.start'))
+          }
+          const onCancel = (task: Promise<CancelOutcome>) => {
+            observedCancel = task
+            task.then(outcome => {
+              if (settled) return
+              settled = true
+              cleanup()
+              if ('error' in outcome) reject(outcome.error)
+              else if (outcome.status.state === 'idle' || outcome.status.state === 'retired')
+                reject(contractError('protocol.malformed', 'gatt', 'ipc.marker.cancel-status'))
+              else resolve(outcome.status)
+            })
+          }
+          const onAbort = () => interrupt('operation.aborted')
+          cancelWaiters.add(onCancel)
+          if (cancelTask !== null) onCancel(cancelTask)
+          options.signal?.addEventListener('abort', onAbort, { once: true })
+          if (options.deadline != null)
+            timer = this.scheduleDeadline(options.deadline, () => interrupt('operation.timed-out'))
+          run().then(
+            result => {
+              if (!settled) {
+                settled = true
+                cleanup()
+                resolve(result)
+              }
+            },
+            error => {
+              if (!settled) {
+                settled = true
+                cleanup()
+                reject(error)
+              }
+            }
+          )
+        })
       },
-      status: () => query('status'),
-      cancel: () => query('cancel'),
+      status: async () => {
+        if (retired) return { state: 'retired' as const }
+        if (cancelTask !== null) await cancelResult()
+        return query('status')
+      },
+      cancel: () => (retired ? Promise.resolve({ state: 'retired' as const }) : cancelResult()),
       forget: async () => {
         if (retired) return
         if (retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.marker.retiring')
