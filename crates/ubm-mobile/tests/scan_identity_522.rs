@@ -1,3 +1,4 @@
+// crates/ubm-mobile/tests/scan_identity_522.rs
 //! Public-session scan attribution regressions.
 mod common;
 
@@ -835,10 +836,32 @@ async fn failure_during_start_keeps_pending_start_identity() {
         ubm_mobile::IngressStatus::Accepted
     );
     radio.answer(generation, ubm_mobile::RadioCompletion::Unit);
-    let started = ok(&pending.await.unwrap());
+    let response = pending.await.unwrap();
+    let started = if parse(&response)["ok"] == true {
+        Some(ok(&response))
+    } else {
+        // Source failure can retire membership before the native start ACK.
+        let (error, commit) = failure(&response);
+        assert_eq!(error["code"], "scan.start-failed");
+        assert_eq!(error["domain"], "scan");
+        assert_eq!(error["operation"], "scan.start");
+        assert_eq!(
+            error["detail"],
+            "the host ended the scan while it was starting"
+        );
+        assert_eq!(commit, Value::Null);
+        None
+    };
     let records = collect(&session, "scan-end", 1).await;
     let terminal = of_type(&records, "scan-end")[0];
-    assert_eq!(terminal["operationId"], started["operationId"]);
+    assert!(
+        terminal["operationId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    if let Some(started) = started {
+        assert_eq!(terminal["operationId"], started["operationId"]);
+    }
     assert_eq!(terminal["startOperationId"], "early-start");
     assert_eq!(terminal["generation"], generation.to_string());
     assert_eq!(terminal["error"]["detail"], "early failure");
