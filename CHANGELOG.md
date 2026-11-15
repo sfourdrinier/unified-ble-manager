@@ -2,11 +2,14 @@
 
 # Changelog
 
-- Report host-global native ingress loss separately from exact per-stream overflow counters.
-
 All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.2.3] - 2026-11-14
+
+- Preserve pending native quiescence as a retryable continuation lifecycle state;
+  retain records and claim state until the native cutoff is sealed.
+- Report host-global native ingress loss separately from exact per-stream
+  overflow counters.
 
 - Bind joined scan leases to their own native terminal-evidence reservations,
   preserving the source terminal and each lease's exact recovery scope.

@@ -622,8 +622,10 @@ returning a queued selected peer.
 `session.quiesce` returns `pending` while this session has scan observations
 or a scan failure captured before the cutoff but still owned by ingress, or
 while the cutoff cannot be acquired immediately. The caller may retry; a held
-producer is not evidence of a seal. Once those records have been routed in
-order, the operation returns `sealed` with the existing after-cutoff loss
+producer is not evidence of a seal. Continuation claim preparation reports this
+as `lifecycle.invalid-state` with `caller-decides` retryability; it retains the
+selected claim mode and does not drain or publish a claim until the cutoff
+seals. Once those records have been routed in order, the operation returns `sealed` with the existing after-cutoff loss
 counters. A scan terminal captured after that cutoff is not emitted into the
 sealed collection. Native scan-stop cleanup remains a separate outcome and a
 seal does not prove that cleanup completed.

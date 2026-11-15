@@ -1122,11 +1122,22 @@ async fn durable_peer_failure_routes_require_trusted_owner_grant_and_teardown_re
     assert_eq!(field(&listed, "recoveries"), &IpcValue::Array(vec![]));
 
     harness.dispatcher.release_caller(harness.caller.clone());
+    let owner = harness
+        .dispatcher
+        .peer_failure_recovery_owner(&harness.caller, "test.recovery-owner")
+        .expect_err("teardown synchronously revokes the trusted grant");
+    assert_eq!(owner.code, BleErrorCode::OwnershipDenied);
     let revoked = harness
         .route("peerFailureRecovery.list", "durable-revoked", vec![], None)
         .await
         .expect_err("caller teardown revokes durable recovery access");
-    assert_eq!(revoked.code, BleErrorCode::OwnershipDenied);
+    // Asynchronous caller removal may win before the worker's protocol gate.
+    // Both outcomes deny the route; neither may return recovery records.
+    assert!(matches!(
+        (revoked.code, revoked.domain),
+        (BleErrorCode::OwnershipDenied, "restoration" | "ipc")
+            | (BleErrorCode::CapabilityUnsupported, "restoration")
+    ));
 }
 
 /// A trusted host's attach may wait on durable storage.  Teardown (and a

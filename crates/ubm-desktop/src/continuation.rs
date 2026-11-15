@@ -1419,6 +1419,11 @@ impl NativeContinuation {
             receipt["afterCutoffLoss"].clone()
         } else {
             let cutoff = invoke(&state, "session.quiesce", json!({})).await?;
+            if cutoff["state"] == "pending" {
+                let mut error = failure("lifecycle.invalid-state", "quiescence is pending");
+                error["retryability"] = json!("caller-decides");
+                return Err(error);
+            }
             if cutoff["state"] != "sealed" {
                 return Err(failure("platform.failure", "quiesce did not seal"));
             }
@@ -2645,6 +2650,114 @@ mod idle_recovery_tests {
         fn acknowledge_drain(&self, _: u64) -> Result<()> {
             unreachable!()
         }
+    }
+
+    #[derive(Default)]
+    struct PendingSession {
+        cutoff: std::sync::atomic::AtomicUsize,
+        drains: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ContinuationHost for PendingSession {
+        fn open_session(&self) -> Result<Arc<dyn ContinuationSession>> {
+            unreachable!("the test installs its session directly")
+        }
+    }
+
+    impl ContinuationSession for PendingSession {
+        fn legacy_claim_compatible(&self) -> bool {
+            true
+        }
+        fn call<'a>(&'a self, op: &'a str, _: &'a str) -> ContinuationFuture<'a> {
+            Box::pin(async move {
+                assert_eq!(op, "session.quiesce");
+                match self.cutoff.load(Ordering::SeqCst) {
+                    0 => envelope(Ok(json!({"state":"pending"}))),
+                    1 => envelope(Ok(
+                        json!({"state":"sealed","afterCutoffItems":2,"afterCutoffBytes":3}),
+                    )),
+                    2 => envelope(Err(failure("platform.failure", "real failure"))),
+                    _ => envelope(Ok(json!({"state":"unexpected"}))),
+                }
+            })
+        }
+        fn claim_drain(&self, _: u32, _: u32) -> Result<Option<DrainClaim>> {
+            self.drains.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+        fn claim_drain_v1(
+            &self,
+            _: &LegacyEvidenceOwner,
+            _: u32,
+            _: u32,
+        ) -> Option<Result<Option<DrainClaim>>> {
+            Some(self.claim_drain(0, 0))
+        }
+        fn has_retained_tail(&self) -> Result<bool> {
+            Ok(false)
+        }
+        fn acknowledge_drain(&self, _: u64) -> Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_quiescence_preserves_claim_until_caller_retries() {
+        for mode in [
+            ClaimMode::Legacy,
+            ClaimMode::RetainedV1,
+            ClaimMode::RetainedV2,
+        ] {
+            let session = Arc::new(PendingSession::default());
+            let engine = NativeContinuation::new(session.clone());
+            engine.state.lock().await.session = Some(session.clone());
+            let error = engine.prepare_claim_mode(mode, 10, 1024).await.unwrap_err();
+            assert_eq!(error["code"], "lifecycle.invalid-state");
+            assert_eq!(error["retryability"], "caller-decides");
+            let wire: Value = serde_json::from_str(&envelope(Err(error))).unwrap();
+            assert_eq!(wire["retryability"], "caller-decides");
+            assert_eq!(wire["error"]["code"], "lifecycle.invalid-state");
+            {
+                let state = engine.state.lock().await;
+                assert!(state.claim_mode == Some(mode));
+                assert!(!state.sealed && state.prepared.is_none());
+            }
+            assert!(!engine.recovery_stopped.load(Ordering::SeqCst));
+            assert_eq!(session.drains.load(Ordering::SeqCst), 0);
+            session.cutoff.store(1, Ordering::SeqCst);
+            let claim = engine.prepare_claim_mode(mode, 10, 1024).await.unwrap();
+            assert_eq!(claim["afterCutoffLoss"], json!({"items":2,"bytes":3}));
+            assert!(claim["claimToken"].is_string());
+            assert_eq!(
+                engine.prepare_claim_mode(mode, 10, 1024).await.unwrap(),
+                claim
+            );
+            assert_eq!(session.drains.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn quiescence_real_failure_is_propagated() {
+        let session = Arc::new(PendingSession::default());
+        session.cutoff.store(2, Ordering::SeqCst);
+        let engine = NativeContinuation::new(session.clone());
+        engine.state.lock().await.session = Some(session.clone());
+        let error = engine.prepare_claim(10, 1024).await.unwrap_err();
+        assert_eq!(error["code"], "platform.failure");
+        assert_eq!(error["detail"], "real failure");
+        assert_eq!(session.drains.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_quiescence_does_not_seal_or_drain() {
+        let session = Arc::new(PendingSession::default());
+        session.cutoff.store(3, Ordering::SeqCst);
+        let engine = NativeContinuation::new(session.clone());
+        engine.state.lock().await.session = Some(session.clone());
+        let error = engine.prepare_claim(10, 1024).await.unwrap_err();
+        assert_eq!(error["code"], "platform.failure");
+        assert!(!engine.state.lock().await.sealed);
+        assert_eq!(session.drains.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
