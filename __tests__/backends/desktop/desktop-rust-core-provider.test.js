@@ -1,3 +1,4 @@
+// __tests__/backends/desktop/desktop-rust-core-provider.test.js
 'use strict'
 
 // PR210-02 / 30 / 31 + desktop parity: the one desktop Rust provider over
@@ -232,6 +233,43 @@ test('desktop recovery status returns cold evidence while explicitly naming a li
     await recovery.backend.destroy()
     await source.backend.destroy()
   } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test.each([
+  ['strict', 'recoverTerminalEvidence', 'recoverTerminalEvidenceForHost'],
+  ['status', 'recoverTerminalEvidenceWithStatus', 'recoverTerminalEvidenceForHostWithStatus']
+])('desktop %s recovery does not overlap producer reads sharing the native authority gate', async (_label, nativeMethod, backendMethod) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-recovery-gate-'))
+  const opened = await openBackend('corebluetooth', {
+    owner: 'recovery-gate-owner', terminalEvidenceStore: { directory, maxBytes: '4096' }
+  })
+  const native = opened.backend.central
+  const recover = native[nativeMethod]
+  let active = 0
+  let maximumActive = 0
+  const producers = []
+  native[nativeMethod] = async options => {
+    active += 1
+    maximumActive = Math.max(maximumActive, active)
+    producers.push(options.producer)
+    try {
+      // Native calls run on worker threads. Hold this boundary for one turn
+      // so accidental concurrent entry is deterministic, without OS timing.
+      await new Promise(resolve => setImmediate(resolve))
+      return await recover.call(native, options)
+    } finally {
+      active -= 1
+    }
+  }
+  try {
+    await opened.backend[backendMethod]('recovery-gate-lease')
+    expect(producers).toEqual(['scan', 'subscription'])
+    expect(maximumActive).toBe(1)
+  } finally {
+    native[nativeMethod] = recover
+    await opened.backend.destroy()
     fs.rmSync(directory, { recursive: true, force: true })
   }
 })

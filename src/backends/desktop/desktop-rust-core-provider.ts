@@ -3073,11 +3073,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       const retry = this.central.retryFailedScanEvidence?.(recipient)
       const failure = retry?.failures[0]
       if (failure !== undefined) throw desktopRustCoreError(new Error(failure), this.op('terminal-evidence.scan-retry'))
-      const groups = await Promise.all(
-        (['scan', 'subscription'] as const).map(producer =>
-          recover.call(this.central, { producer, recipient, leaseId })
-        )
-      )
+      // Both producer lanes acquire the ledger's nonblocking authority gate.
+      // Enumerate sequentially so this request cannot contend with itself.
+      const producers: ('scan' | 'subscription')[] = ['scan', 'subscription']
+      const groups: Awaited<ReturnType<typeof recover>>[] = []
+      for (const producer of producers) {
+        groups.push(await recover.call(this.central, { producer, recipient, leaseId }))
+      }
       const recovered = []
       for (const record of groups.flat()) {
         if (
@@ -3156,12 +3158,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       const scanRetryPending = (retry?.failures.length ?? 0) > 0
       for (const failure of retry?.failures ?? [])
         this.noteBackgroundFailure('scan-terminal-retry-pending', new Error(failure))
-      const groups = await Promise.all(
-        (['scan', 'subscription'] as const).map(async producer => ({
-          producer,
-          page: await recover.call(this.central, { producer, recipient, leaseId })
-        }))
-      )
+      // Use the same serial gate discipline as strict recovery enumeration.
+      const producers: ('scan' | 'subscription')[] = ['scan', 'subscription']
+      const groups: { producer: 'scan' | 'subscription'; page: Awaited<ReturnType<typeof recover>> }[] = []
+      for (const producer of producers) {
+        groups.push({ producer, page: await recover.call(this.central, { producer, recipient, leaseId }) })
+      }
       const records = [] as {
         reservationId: string
         producer: 'scan' | 'subscription'

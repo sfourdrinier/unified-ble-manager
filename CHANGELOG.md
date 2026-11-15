@@ -6,6 +6,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.2.3] - 2026-11-14
 
+- Enumerate desktop evidence producer lanes sequentially to avoid contending
+  with the recovery request's own native authority gate.
+
 - Bound native and IPC marker startup and public retry waits by caller controls
   while retaining exact reservation and cancellation ownership. Live abort rejects
   without waiting for native replies; explicit cancellation retains actual source
