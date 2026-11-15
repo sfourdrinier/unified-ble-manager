@@ -1410,11 +1410,22 @@ class PublicGattDatabase implements GattDatabase {
               request.value.some((byte, index) => byte !== value[index]))
           )
             throw contractError('lifecycle.invalid-state', 'gatt', 'public-gatt.ordered-marker.retry')
+          const now = () => this.source.monotonicNow()
+          const controls = normalizeOperationOptions(startOptions, now)
           // An admitted marker owns its exact receipt. Retrying that receipt is
           // an observation, not a new GATT operation, so a later source loss
           // must not make that exact receipt stale.
           if (request !== null) {
-            const status = await handle.status()
+            if (controls.signal?.aborted)
+              throw contractError('operation.aborted', 'gatt', 'public-gatt.ordered-marker.retry-status')
+            if (controls.deadline !== null && controls.deadline <= now())
+              throw contractError('operation.timed-out', 'gatt', 'public-gatt.ordered-marker.retry-status')
+            const status = await awaitWithOperationAdmission(
+              handle.status(),
+              controls,
+              now,
+              'public-gatt.ordered-marker.retry-status'
+            )
             if (isInternalOrderedMarkerWriteStatus(status) && status.state === 'admitted')
               return publicOrderedMarkerStatus(status)
           }
@@ -1423,7 +1434,6 @@ class PublicGattDatabase implements GattDatabase {
             throw contractError('argument.invalid', 'gatt', 'public-gatt.ordered-marker.target')
           const path = orderedCharacteristicPaths.get(target)
           if (path === undefined) throw contractError('argument.invalid', 'gatt', 'public-gatt.ordered-marker.target')
-          const controls = normalizeOperationOptions(startOptions, () => this.source.monotonicNow())
           const copied = new Uint8Array(value)
           bound = target
           request ??= { target, value: copied, mode }
