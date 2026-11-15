@@ -192,7 +192,15 @@ export function decodeWinRtScanPlatformOptions(value: unknown, operation: string
 export type OwnerScanOptions<Attachment extends string, Lease extends string> = Omit<
   ScanOptions<Attachment, Lease>,
   'sharing'
-> & { readonly sharing: OwnerScanSharing }
+> & {
+  readonly sharing: OwnerScanSharing
+  /** Host-private binding for the durable terminal-evidence reservation owned by this scan. */
+  readonly terminalEvidenceScope?: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  }
+}
 export interface AdvertisementInput {
   readonly bytes: BorrowedBytes
 }

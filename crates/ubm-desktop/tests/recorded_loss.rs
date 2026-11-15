@@ -1,11 +1,15 @@
 // crates/ubm-desktop/tests/recorded_loss.rs
 use serde_json::json;
 use ubm_desktop::continuation_journal::{ContinuationJournal, JournalQuota, RecordedLoss};
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
 
 #[test]
 fn partial_batch_loss_is_atomic_and_survives_reopen() {
-    let directory = std::env::temp_dir().join(format!("ubm-recorded-loss-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
+    let test = "partial_batch_loss_is_atomic_and_survives_reopen";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
     let path = directory.join("journal.sqlite");
     let quota = JournalQuota {
         max_bytes: 1 << 20,
@@ -57,5 +61,5 @@ fn partial_batch_loss_is_atomic_and_survives_reopen() {
     );
     assert_eq!(status["collectionFailure"]["persisted"], true);
     drop(journal);
-    std::fs::remove_dir_all(directory).unwrap();
+    recording_fixture::complete_fixture_process(&directory);
 }

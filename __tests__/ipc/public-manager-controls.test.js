@@ -1,4 +1,5 @@
 const { IpcPublicManagerAdapter } = require('../../src/ipc/public-manager')
+const { emptyIpcDiagnostics } = require('../helpers/ipc-diagnostics')
 
 function descriptor(id, state, limitations = []) {
   return { id, state, limitations }
@@ -202,6 +203,7 @@ function setup(readinessState, deferredState, parametersState, priorityState, ph
   const ipc = {
     capabilities: capabilitySnapshot,
     bootstrap: { discovery: { kind: 'continuous-scan' } },
+    diagnostics: emptyIpcDiagnostics,
     connect: async () => base,
     adapterState: async () => ({})
   }
@@ -290,6 +292,7 @@ describe('IPC public connection controls', () => {
       const ipc = {
         capabilities: capabilitySnapshot,
         bootstrap: { discovery: { kind: 'continuous-scan' } },
+        diagnostics: emptyIpcDiagnostics,
         connect: async (_peerId, options) => {
           calls.connect.push(options)
           await onConnect()
@@ -378,6 +381,7 @@ describe('IPC public connection controls', () => {
     const ipc = {
       capabilities: capabilitySnapshot,
       bootstrap: { discovery: { kind: 'continuous-scan' } },
+      diagnostics: emptyIpcDiagnostics,
       connect: async (_peerId, options) => {
         captured.push(options)
         return base

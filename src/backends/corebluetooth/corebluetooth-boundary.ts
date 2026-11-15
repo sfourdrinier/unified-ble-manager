@@ -6,6 +6,7 @@ import type {
   ConnectionPriority,
   PhyPreference
 } from '../../backend-contract/connection-controls'
+import type { NormalizedBleError } from '../../backend-contract/errors'
 import type { ConnectionIntent } from '../../backend-contract/backend'
 
 /**
@@ -139,6 +140,15 @@ export interface CoreBluetoothPhyRequestResult {
 /** Concrete CCCD delivery mode selected by the shared GATT contract. */
 export type CoreBluetoothNotificationDeliveryMode = 'notification' | 'indication'
 
+export type CoreBluetoothNotificationSourceEvent =
+  | { readonly kind: 'loss'; readonly lostItems: number; readonly lostBytes: number }
+  | { readonly kind: 'terminated'; readonly error: NormalizedBleError }
+
+/** Identity of one physical notification enablement, retained until its release settles. */
+export interface CoreBluetoothNotificationClaim {
+  readonly id: string
+}
+
 export interface CoreBluetoothBoundary {
   /** Declares whether this concrete boundary can honor queued Android-style connects. */
   readonly connectionIntentCapabilities?: Readonly<{ whenAvailable: 'available' | 'unsupported' }>
@@ -171,14 +181,21 @@ export interface CoreBluetoothBoundary {
   write(address: CoreBluetoothCharacteristicAddress, bytes: Uint8Array, withResponse: boolean): Promise<void>
   readDescriptor?(address: CoreBluetoothDescriptorAddress): Promise<Uint8Array>
   writeDescriptor?(address: CoreBluetoothDescriptorAddress, bytes: Uint8Array): Promise<void>
-  startNotify(address: CoreBluetoothCharacteristicAddress, onValue: (bytes: Uint8Array) => void): Promise<void>
+  startNotify(
+    address: CoreBluetoothCharacteristicAddress,
+    onValue: (bytes: Uint8Array) => void,
+    claim: CoreBluetoothNotificationClaim
+  ): Promise<void>
   /** Optional exact delivery-mode extension; legacy boundaries remain source-compatible. */
   startNotifyWithMode?(
     address: CoreBluetoothCharacteristicAddress,
     mode: CoreBluetoothNotificationDeliveryMode,
-    onValue: (bytes: Uint8Array) => void
+    onValue: (bytes: Uint8Array) => void,
+    onSourceEvent: ((event: CoreBluetoothNotificationSourceEvent) => void) | undefined,
+    claim: CoreBluetoothNotificationClaim,
+    constraint?: import('../../backend-contract/operations').SubscriptionOptions['deliveryMode']
   ): Promise<void>
-  stopNotify(address: CoreBluetoothCharacteristicAddress): Promise<void>
+  stopNotify(address: CoreBluetoothCharacteristicAddress, claim: CoreBluetoothNotificationClaim): Promise<void>
   onDisconnect(listener: (nativePeerId: string, safeMessage: string | null) => void): () => void
   /** Emits when the peer's GATT Services Changed indication invalidates the discovered database. */
   onDatabaseChanged?(listener: (nativePeerId: string) => void): () => void

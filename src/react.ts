@@ -24,6 +24,7 @@ import {
 import type { BleAdapterState, BleAdapterStateWatch } from './public/ble-adapter'
 import type { GattCharacteristic, GattSubscribeOptions, GattSubscription, GattValueEvent } from './public/gatt'
 import { BleError } from './public/errors'
+import { BleCleanupError } from './public/error-bridge'
 import type { BleCapabilities, CapabilityDescriptor, FeatureId } from './public/capabilities'
 import { adapterWatchOwnershipInspectors } from './public/react-adapter-watch-inspect'
 import { normalizeScanQuery } from './public/scan-query'
@@ -58,8 +59,10 @@ export interface UseBleReadinessResult {
 }
 
 export interface UseDiscoveredPeersResult {
+  /** May be incomplete after a loss warning, even while the scan remains active. */
   readonly peers: readonly BlePeer[]
   readonly state: 'idle' | 'starting' | 'active' | 'stopped' | 'failed'
+  /** Loss is reported as stream.overflow; a later terminal failure takes precedence. */
   readonly error: Error | null
 }
 
@@ -792,7 +795,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
         if (next.done || !active) return
         const item = next.value
         if (item.kind === 'terminal') {
-          consumeError = overflowError ?? mapScanTerminal(item)
+          consumeError = mapScanTerminal(item)
           return
         }
         if (item.kind === 'overflow') {
@@ -846,8 +849,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
         }
         session = await manager.scan(stableOptions)
         observationIterator = session.observations[Symbol.asyncIterator]()
-        eventIterator =
-          session.events === undefined || session.events === null ? null : session.events[Symbol.asyncIterator]()
+        eventIterator = session.events?.[Symbol.asyncIterator]() ?? null
         if (eventIterator === null) eventsReturned = true
         if (!active) {
           await stopRun()
@@ -860,12 +862,14 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
           setResult({
             peers: [],
             state: consumeError === null ? 'stopped' : 'failed',
-            error: overflowError ?? consumeError
+            error: consumeError ?? overflowError
           })
         }
       } catch (reason) {
-        consumeError = overflowError ?? toError(reason)
-        if (isCurrentGeneration()) {
+        consumeError = toError(reason)
+        const wasActive = active
+        active = false
+        if (wasActive && isCurrentGeneration()) {
           setResult({ peers: snapshotPeers(), state: 'failed', error: consumeError })
         }
         await stopRun()
@@ -878,7 +882,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
         () =>
           stopRun().then(() => {
             if (!isCurrentGeneration()) return
-            setResult({ peers: [], state: 'idle', error: overflowError ?? consumeError })
+            setResult({ peers: [], state: 'idle', error: consumeError ?? overflowError })
           }),
         reportError
       )
@@ -1132,19 +1136,20 @@ function mapScanTerminal(item: PublicStreamTerminalNotice): Error | null {
   ) {
     return null
   }
+  if (item.error !== undefined && item.error !== null) {
+    return new BleError(item.error.code, item.error.domain, item.error.operation, {
+      platform: item.error.platform,
+      retryability: item.error.retryability,
+      commit: item.error.commit ?? null,
+      ...(item.error.orderedFailure === undefined ? {} : { orderedFailure: item.error.orderedFailure })
+    })
+  }
   if (item.reason === 'overflow') return streamOverflowError('react.useDiscoveredPeers.observations')
   if (item.reason === 'connection-lost') {
     return contractError('connection.lost', 'connection', 'react.useDiscoveredPeers')
   }
   if (item.reason === 'service-changed') {
     return contractError('gatt.stale-handle', 'gatt', 'react.useDiscoveredPeers')
-  }
-  if (item.error !== undefined && item.error !== null) {
-    return new BleError(item.error.code, item.error.domain, item.error.operation, {
-      platform: item.error.platform,
-      retryability: item.error.retryability,
-      commit: item.error.commit ?? null
-    })
   }
   return streamClosedError('react.useDiscoveredPeers')
 }
@@ -1355,7 +1360,7 @@ function parkScanStop(manager: BleManager, session: ScanSession): void {
   if (bucket.scan === null) {
     const entry: RetainedHookCleanup = {
       kind: 'scan',
-      retry: () => session.stop(),
+      retry: () => releaseScanSession(session),
       ownerKey: session,
       inFlight: null,
       lastError: null,
@@ -1381,7 +1386,7 @@ async function completeScanStop(
 ): Promise<CleanupResult> {
   const entry = managerCleanups(manager).scan
   try {
-    const cleanup = await session.stop()
+    const cleanup = await releaseScanSession(session)
     if (entry !== null) {
       if (cleanup.state === 'release-failed') {
         entry.lastError = reportCleanupFailure(cleanup, report, 'scan session stop')
@@ -1401,6 +1406,30 @@ async function completeScanStop(
     }
     return cleanup
   }
+}
+
+async function releaseScanSession(session: ScanSession): Promise<CleanupRecord> {
+  const results: CleanupRecord[] = []
+  const errors: unknown[] = []
+  try {
+    results.push(await session.stop())
+  } catch (error) {
+    errors.push(error)
+  }
+  try {
+    results.push(await session.observations.close())
+  } catch (error) {
+    errors.push(error)
+  }
+  const failures = results.filter(result => result.state === 'release-failed')
+  if (errors.length > 0) {
+    for (const failure of failures) errors.push(new BleCleanupError(failure))
+    if (errors.length === 1) throw errors[0]
+    throw new AggregateError(errors, 'BLE scan cleanup failed')
+  }
+  if (failures.length === 1) return failures[0]!
+  if (failures.length > 1) return { state: 'release-failed', failures: failures.flatMap(failure => failure.failures) }
+  return { state: 'released', failures: [] }
 }
 
 async function executeRetainedRetry(

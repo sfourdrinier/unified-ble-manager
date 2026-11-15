@@ -69,6 +69,11 @@ export interface PortableWritePolicy extends PortableOperationOptions {
 }
 
 export interface PortableSubscriptionOptions extends PortableOperationOptions {
+  readonly terminalEvidenceScope?: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  }
   readonly delivery: {
     readonly itemCapacity: number
     readonly byteCapacity: number
@@ -252,6 +257,9 @@ export interface PortableMaximumWriteLengthObservation {
 }
 
 export interface PortableNotificationValue {
+  readonly sourceGeneration?: string
+  readonly sourceOrdinal?: string
+  readonly provenance?: import('../backend-contract/gatt').NotificationProvenance
   /** The receiver owns an independent mutable byte copy. */
   readonly value: Uint8Array
   readonly delivery: 'notification' | 'indication' | 'unknown'
@@ -272,6 +280,21 @@ export interface PortableStreamOverflowNotice {
   readonly droppedItems: number
   readonly droppedBytes: number
   readonly replacedItems: number
+}
+
+export interface PortableStreamSourceLossNotice {
+  readonly kind: 'source-loss'
+  readonly scope: 'host-global'
+  readonly source: 'notification-ingress' | 'advertisement-ingress'
+  readonly lostRecords: number
+}
+
+export interface PortableStreamPeerSourceLossNotice {
+  readonly kind: 'source-loss'
+  readonly scope: 'peer'
+  readonly peerId: string
+  readonly generation: string
+  readonly skippedRecords: string | null
 }
 
 export interface PortableStreamTerminalNotice {
@@ -409,6 +432,44 @@ export interface DiscoveredGattDatabaseHandle {
     bytes: Readonly<Uint8Array>,
     options: PortableWritePolicy
   ): Promise<PortableWriteReceipt>
+  reserveOrderedRecordingStart?(): {
+    start(
+      members: readonly {
+        readonly memberId: string
+        readonly path: PortableCurrentCharacteristicPath
+        readonly deliveryMode: NonNullable<PortableSubscriptionOptions['deliveryMode']>
+      }[],
+      options: PortableRecordedSubscriptionOptions
+    ): Promise<import('../core/ordered-recording-start').OrderedRecordingStartResult>
+    status(): Promise<
+      | { readonly state: 'pending' | 'unknown' | 'failed' | 'retired' }
+      | {
+          readonly state: 'result'
+          readonly result: import('../core/ordered-recording-start').OrderedRecordingStartResult
+        }
+    >
+    retire(): Promise<void>
+    recoveryHandle?(): import('../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle
+    reserveMarkerWrite?(): import('../core/ordered-marker-wire').OrderedMarkerWriteHandle<PortableCurrentCharacteristicPath>
+  }
+  reserveOrderedRecordingReclaim?(
+    handle: import('../core/ordered-recording-reclaim').OrderedRecordingRecoveryHandle
+  ): import('../core/ordered-recording-reclaim').OrderedRecordingReclaimHandle<
+    import('../core/ordered-recording-reclaim').OrderedRecordingReclaimReceipt
+  >
+  reserveOrderedRecordingMarker?(
+    recordingId: string
+  ): import('../core/ordered-marker-wire').OrderedMarkerWriteHandle<PortableCurrentCharacteristicPath>
+  subscribeOrdered?(
+    members: readonly {
+      readonly memberId: string
+      readonly path: PortableCurrentCharacteristicPath
+      readonly deliveryMode: NonNullable<PortableSubscriptionOptions['deliveryMode']>
+    }[],
+    options: PortableSubscriptionOptions
+  ): Promise<
+    import('../core/ordered-notification-contract').OrderedNotificationSetup<PortableCurrentCharacteristicPath>
+  >
   subscribe(path: PortableCurrentCharacteristicPath, options: PortableSubscriptionOptions): Promise<SubscriptionHandle>
   subscribeRecorded?(
     path: PortableCurrentCharacteristicPath,

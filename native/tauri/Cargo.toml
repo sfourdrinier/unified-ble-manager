@@ -2,7 +2,7 @@
 
 [package]
 name = "tauri-plugin-unified-ble-manager"
-version = "5.2.2"
+version = "5.2.3"
 description = "Cross-platform Tauri v2 Bluetooth Low Energy plugin for Unified BLE Manager"
 authors = ["Unified BLE Manager contributors"]
 license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
@@ -21,6 +21,7 @@ futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 schemars = "0.8"
 serde_json = "1"
+sha2 = "0.10"
 tauri = { version = "2", default-features = false }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 # F01: the plugin schedules BLE ops through the shared desktop authority
@@ -31,6 +32,7 @@ ubm-desktop = { path = "../../crates/ubm-desktop" }
 uuid = "1"
 
 [dev-dependencies]
+ubm-desktop = { path = "../../crates/ubm-desktop", features = ["reclaim-test-support"] }
 tauri-utils = { version = "2", features = ["build"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
 

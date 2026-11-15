@@ -81,6 +81,63 @@ describe('Tauri v2 IPC transport', () => {
     })
   })
 
+  test('projects lone-surrogate terminal scope strings only with a lossless UTF-16LE sidecar', async () => {
+    let request
+    const invoke = jest.fn(async (_command, args) => {
+      request = args.request
+      return { kind: 'route', payload: { kind: 'reserved', reservationId: 'r', maximumBytes: 1 } }
+    })
+    const { TauriBleIpcTransport, decodeTauriWireValue } = require('../src/tauri/transport')
+    const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
+    const managerId = 'manager\ud800'
+    const literalReplacement = 'operation\ufffd'
+    await transport.invoke({
+      kind: 'route',
+      envelope: {
+        command: 'terminalEvidence.reserve',
+        payload: {
+          version: 1,
+          producer: 'scan',
+          maximumBytes: 1,
+          formatVersion: 1,
+          scope: { managerId, operationId: literalReplacement, incarnation: 'incarnation' }
+        }
+      }
+    })
+    const scope = decodeTauriWireValue(request).envelope.payload.scope
+    expect(scope.managerId).toBe('manager\ufffd')
+    expect(scope.operationId).toBe(literalReplacement)
+    expect(scope.scopeUtf16le).toBeInstanceOf(Uint8Array)
+    const bytes = scope.scopeUtf16le
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    expect(view.getUint32(0, true)).toBe(4)
+    expect(view.getUint32(4, true)).toBe(managerId.length)
+    expect(view.getUint32(8, true)).toBe(literalReplacement.length)
+    expect(view.getUint32(12, true)).toBe('incarnation'.length)
+  })
+
+  test.each([
+    ['wrong flag', { kind: 'terminal', reason: 'source-failed', terminalEvidenceStageFailed: false }],
+    ['wrong kind', { kind: 'value', terminalEvidenceStageFailed: true }],
+    ['wrong reason', { kind: 'terminal', reason: 'closed', terminalEvidenceStageFailed: true }],
+    [
+      'receipt evidence',
+      { kind: 'terminal', reason: 'source-failed', terminalEvidenceStageFailed: true, evidence: { ref: 'x' } }
+    ]
+  ])('rejects a malformed authenticated Tauri stage-failure envelope with %s', (_label, item) => {
+    const { TauriBleIpcTransport } = require('../src/tauri/transport')
+    const transport = new TauriBleIpcTransport({ invoke: jest.fn(), Channel: FakeChannel })
+    transport.subscribe(() => undefined)
+    expect(() =>
+      transport.eventChannel.emit({
+        eventId: 'stage-failure',
+        streamId: 'scan',
+        rendererLease: { leaseId: 'lease-1', generation: 'generation-1' },
+        item
+      })
+    ).toThrow('tauri.transport.terminal-evidence-stage-failure-wire')
+  })
+
   // Regression: Tauri deserializes every Channel command argument into a new
   // Rust Channel bound to the same JS callback id. Dropping any of them evals
   // `{ end: true, index }`, which unregisters the shared callback and kills the

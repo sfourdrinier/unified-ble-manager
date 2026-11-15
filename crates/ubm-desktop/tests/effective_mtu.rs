@@ -25,7 +25,10 @@ async fn connected(peer_id: &str) -> DesktopCentral<FakeRadio> {
     let central = DesktopCentral::open(FakeRadio::new(), "parity-host")
         .await
         .expect("open");
-    central.boundary().push_event(advertisement(peer_id));
+    central
+        .boundary()
+        .push_event(advertisement(peer_id))
+        .expect("synthetic event admission failed");
     central
         .connect(peer_id, "lease-a", OpControl::budget_ms(5000))
         .await

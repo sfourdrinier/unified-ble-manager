@@ -37,8 +37,9 @@ async fn open_events(
     platform: MobilePlatform,
 ) -> (Arc<MobileHost>, Arc<EventWakes>) {
     let wakes = Arc::new(EventWakes::default());
+    let registry = Arc::new(JournalRegistry::default());
     let host = Arc::new(
-        MobileHost::open(
+        MobileHost::open_with_recording_registry(
             radio.clone(),
             wakes.clone(),
             HostOptions {
@@ -47,6 +48,7 @@ async fn open_events(
                 adapter_label: "scripted".into(),
             },
             tokio::runtime::Handle::current(),
+            registry,
         )
         .await
         .unwrap(),
@@ -256,6 +258,15 @@ async fn mobile_recording_controller_transport() {
             }
             if op == "restart" {
                 let registry = Arc::new(JournalRegistry::default());
+                #[cfg(windows)]
+                registry
+                    .configure_directory_with_scan_recovery_storage(
+                        &directory,
+                        Arc::new(
+                            ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+                        ),
+                    )
+                    .unwrap();
                 registry.configure_directory(&directory).unwrap();
                 restarted = Some(registry);
                 respond(json!({"ok":true,"value":true}));
@@ -317,14 +328,27 @@ async fn mobile_recording_controller_transport() {
                 .clone()
         );
     }
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
-    assert_eq!(
-        engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
-            .await
-            .unwrap()["disposed"],
-        true
-    );
+    // Legacy claim acknowledgement can legitimately report that final
+    // disposal is still owned while the cleanup path emits its last durable
+    // records. Reclaim each resulting prefix until the protocol confirms the
+    // source is released; do not mistake the first acknowledgement for that
+    // stronger receipt.
+    let disposed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let claim = engine.prepare_claim(256, 65536).await.unwrap();
+            let receipt = engine
+                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+                .await
+                .unwrap();
+            if receipt["disposed"] == true {
+                return receipt;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("continuation cleanup did not reach a terminal disposal receipt");
+    assert_eq!(disposed["disposed"], true);
     ok(&call(&other, "session.dispose", "{}").await);
     host.shutdown().await;
     drop(restarted);
@@ -516,14 +540,22 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
         "sustained intake:250 ordered telemetry values+1 setup response,5 lower-rate peer values,5 security controls,1 lifecycle transition; worst delay={worst:?}; journal/native notification loss=0; retained journal rows={}",
         status["records"]
     );
-    let claim = engine.prepare_claim(256, 65536).await.unwrap();
-    assert_eq!(
-        engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
-            .await
-            .unwrap()["disposed"],
-        true
-    );
+    let disposed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let claim = engine.prepare_claim(256, 65536).await.unwrap();
+            let receipt = engine
+                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+                .await
+                .unwrap();
+            if receipt["disposed"] == true {
+                return receipt;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("continuation cleanup did not reach a terminal disposal receipt");
+    assert_eq!(disposed["disposed"], true);
     ok(&call(&other, "session.dispose", "{}").await);
     host.shutdown().await;
     drop(engine);

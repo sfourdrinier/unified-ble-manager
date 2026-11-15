@@ -20,7 +20,7 @@ import type {
   WriteRequest,
   WriteResult
 } from '../../backend-contract/operations'
-import { byteLimit, opaqueId, ownBytes, type OwnedBytes } from '../../backend-contract/primitives'
+import { byteLimit, opaqueId, ownBytes, resourceCount, type OwnedBytes } from '../../backend-contract/primitives'
 import type { CoreBluetoothCharacteristicAddress, CoreBluetoothDescriptorAddress } from './corebluetooth-boundary'
 import { withCoreBluetoothCleanupTimeout } from './corebluetooth-cleanup'
 import { CoreBoundedStream } from '../../core/bounded-stream'
@@ -190,7 +190,8 @@ export class CoreBluetoothGattOperations {
       request.operation,
       'direct-gatt.gatt.subscribe',
       async execution => {
-        const key = `${addressKey(address)}|${mode}`
+        const key = addressKey(address)
+        const generation = `${String(path.connectionGeneration)}|${String(path.databaseGeneration)}`
         let physical = this.backend.subscriptions.get(key)
         if (physical?.state === 'removing') {
           if (physical.removal === null) {
@@ -209,15 +210,28 @@ export class CoreBluetoothGattOperations {
           }
           physical = this.backend.subscriptions.get(key)
         }
+        if (physical !== undefined && physical.generation !== generation) {
+          throw contractError('gatt.stale-handle', 'gatt', 'direct-gatt.gatt.subscribe.previous-generation')
+        }
+        if (
+          physical !== undefined &&
+          ((request.options.deliveryMode === 'require-notification' && physical.mode !== 'notification') ||
+            (request.options.deliveryMode === 'require-indication' && physical.mode !== 'indication'))
+        ) {
+          throw contractError('gatt.property-not-supported', 'gatt', 'direct-gatt.gatt.subscribe.delivery-mode')
+        }
         const identifiers = this.backend.identifiers()
         const subscriptionId = identifiers.subscriptionId(`corebluetooth-subscription-${this.backend.nextSubscription}`)
         this.backend.nextSubscription += 1
         if (physical === undefined) {
           physical = {
             key,
+            generation,
+            claim: Object.freeze({ id: String(subscriptionId) }),
             address,
             mode,
             consumers: new Set(),
+            sourceLoss: new Map(),
             state: 'enabling',
             nativeStart: null,
             removalBeforeNativeStart: false,
@@ -240,8 +254,49 @@ export class CoreBluetoothGattOperations {
             const onValue = (bytes: Uint8Array): void => this.emitNotification(enabling, bytes)
             nativeStart =
               this.backend.boundary.startNotifyWithMode === undefined
-                ? this.backend.boundary.startNotify(address, onValue)
-                : this.backend.boundary.startNotifyWithMode(address, enabling.mode, onValue)
+                ? this.backend.boundary.startNotify(address, onValue, enabling.claim)
+                : this.backend.boundary.startNotifyWithMode(
+                    address,
+                    enabling.mode,
+                    onValue,
+                    event => {
+                      if (this.backend.subscriptions.get(key) !== enabling) return
+                      for (const consumer of [...enabling.consumers]) {
+                        if (consumer.removed || consumer.stream.isTerminal()) continue
+                        if (event.kind === 'loss') {
+                          const previous = enabling.sourceLoss.get(consumer) ?? { items: 0, bytes: 0 }
+                          const current = {
+                            items: previous.items + event.lostItems,
+                            bytes: previous.bytes + event.lostBytes
+                          }
+                          enabling.sourceLoss.set(consumer, current)
+                          const notice = {
+                            kind: 'overflow' as const,
+                            policy: 'drop-newest' as const,
+                            droppedItems: resourceCount(current.items),
+                            droppedBytes: resourceCount(current.bytes),
+                            replacedItems: resourceCount(0)
+                          }
+                          if (consumer.stream.overflowPolicy === 'error')
+                            consumer.stream.closeWithSourceOverflow(notice)
+                          else consumer.stream.observeSourceOverflow(notice)
+                        } else consumer.stream.closeWithReason('source-failed', event.error)
+                        if (consumer.stream.isTerminal()) {
+                          Promise.resolve()
+                            .then(() => this.removeSubscription(consumer))
+                            .then(result => {
+                              if (result.state === 'release-failed')
+                                console.error('[CoreBluetoothGattOperations] Source cleanup failed:', result.failures)
+                            })
+                            .catch(error =>
+                              console.error('[CoreBluetoothGattOperations] Source cleanup rejected:', error)
+                            )
+                        }
+                      }
+                    },
+                    enabling.claim,
+                    request.options.deliveryMode
+                  )
             enabling.nativeStart = nativeStart
             await nativeStart
             if (enabling.nativeStart === nativeStart) {
@@ -336,6 +391,7 @@ export class CoreBluetoothGattOperations {
     }
     subscription.stream.closeWithReason('owner-released')
     physical.consumers.delete(subscription)
+    physical.sourceLoss.delete(subscription)
     subscription.removed = true
     if (physical.consumers.size > 0) {
       return releasedCleanup
@@ -363,7 +419,7 @@ export class CoreBluetoothGattOperations {
     physical.removalBeforeNativeStart = physical.nativeStart !== null
     let nativeRemoval: Promise<void>
     try {
-      nativeRemoval = this.backend.boundary.stopNotify(physical.address)
+      nativeRemoval = this.backend.boundary.stopNotify(physical.address, physical.claim)
     } catch (error) {
       nativeRemoval = Promise.reject(error)
     }
@@ -515,7 +571,12 @@ export class CoreBluetoothGattOperations {
   }
 
   emitNotification(physical: PhysicalSubscription, source: Uint8Array): void {
-    if (physical.state === 'removing' || physical.state === 'cleanup-failed' || physical.state === 'released') {
+    if (
+      this.backend.subscriptions.get(physical.key) !== physical ||
+      physical.state === 'removing' ||
+      physical.state === 'cleanup-failed' ||
+      physical.state === 'released'
+    ) {
       return
     }
     for (const consumer of [...physical.consumers]) {

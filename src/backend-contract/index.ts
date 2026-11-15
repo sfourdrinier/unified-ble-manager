@@ -327,6 +327,7 @@ export type {
   StreamItem,
   StreamLimits,
   StreamOverflowNotice,
+  StreamSourceLossNotice,
   StreamTerminalNotice,
   StreamValue
 } from './streams'

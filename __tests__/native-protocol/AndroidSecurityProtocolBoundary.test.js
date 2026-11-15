@@ -849,7 +849,7 @@ class SecurityControl {
   handshake() {
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 7,
+      abi: 8,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
@@ -857,6 +857,7 @@ class SecurityControl {
       traceFormat: 1,
       maximumControlRecordBytes: 65536,
       maximumBinaryPayloadBytes: 524288,
+      scanEventIdentityAvailable: true,
       securityAvailable: this.securityAvailable,
       securityCancelPairingAvailable: this.securityCancelPairingAvailable
     })
@@ -901,6 +902,15 @@ class SecurityRuntime {
   }
 
   setFatalSink() {}
+
+  submitWithAdmission(bytes) {
+    try {
+      this.submit(bytes)
+      return { state: 'submitted' }
+    } catch (error) {
+      return { state: 'notAdmitted', message: error instanceof Error ? error.message : String(error) }
+    }
+  }
 
   submit(bytes) {
     const command = decodeNativeProtocolRecord(bytes)

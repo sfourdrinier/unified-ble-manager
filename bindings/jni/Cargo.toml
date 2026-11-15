@@ -11,8 +11,13 @@ repository = "https://github.com/sfourdrinier/unified-ble-manager"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+synthetic-marker-harness = ["ubm-mobile/synthetic-marker-harness"]
+jni-roundtrip = ["ubm-desktop/reclaim-test-support", "ubm-mobile/test-support"]
+
 [dependencies]
 jni = "=0.22.4"
+serde_json = "1"
 ubm-core = { path = "../../crates/ubm-core" }
 ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }
 # Production mobile owner (`com.ubm.core.MobileCoreBridge`): no fake radio,

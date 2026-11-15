@@ -936,7 +936,9 @@ async fn fake_control_overload_is_counted_not_silent() {
     // Boundary minor: control drops past 64 are counted, never silent.
     let radio = FakeRadio::new();
     for index in 0..70 {
-        radio.push_event(RadioEvent::Connected(format!("peer-{index}")));
+        radio
+            .push_event(RadioEvent::Connected(format!("peer-{index}")))
+            .expect("synthetic event admission failed");
     }
     assert_eq!(
         radio.dropped_control_count(),
@@ -980,17 +982,17 @@ async fn a_refused_disable_keeps_the_platform_answer() {
         .await
         .expect_err("refused");
     assert_eq!(error.code_str(), "gatt.subscribe-failed");
-    assert_eq!(
-        error.platform(),
-        Some(
-            &ubm_desktop::PlatformDetail::new("winrt", "gatt-status")
-                .with_message("CCCD write refused")
-                .with_metadata(
-                    "gattStatus",
-                    ubm_desktop::PlatformValue::Text("access-denied".into())
-                )
-        )
-    );
+    let mut expected = ubm_desktop::PlatformDetail::new("winrt", "gatt-status")
+        .with_message("CCCD write refused")
+        .with_metadata(
+            "gattStatus",
+            ubm_desktop::PlatformValue::Text("access-denied".into()),
+        );
+    expected.metadata_entries = Some(vec![ubm_desktop::errors::PlatformMetadataEntry {
+        key: "gattStatus".into(),
+        value: ubm_desktop::PlatformValue::Text("access-denied".into()),
+    }]);
+    assert_eq!(error.platform(), Some(&expected));
 }
 
 /// Finding 129: at a disconnect the forwarder is drained, not aborted:

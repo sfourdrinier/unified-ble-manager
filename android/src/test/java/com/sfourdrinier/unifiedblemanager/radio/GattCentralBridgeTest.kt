@@ -25,6 +25,29 @@ class GattCentralBridgeTest {
   private val direct = Executor { command -> command.run() }
 
   @Test
+  fun unresolvedTaggedObservationBoundsAdmissionUntilItsReplyArrives() {
+    val queued = mutableListOf<String>()
+    var reply = ""
+    val tags = mutableListOf<String>()
+    val bridge = UbmGattCentralBridge(
+      enqueue = { wire -> queued.add(wire); queued.size },
+      drain = { reply.also { reply = "" } },
+      hasBlePermissions = { true },
+      worker = direct
+    )
+    bridge.onTaggedObservation = { tag, _ -> tags.add(tag) }
+    assertTrue(bridge.postTaggedEvent("scan.platform-started|op-1", "first") is UbmGattCentralBridge.PostResult.Queued)
+    repeat(3) {
+      assertTrue(bridge.postTaggedEvent("scan.platform-started|op-2", "second") is UbmGattCentralBridge.PostResult.EnqueueFailed)
+    }
+    assertEquals(1, queued.size)
+    reply = """{"ok":true,"event":"scan.platform-started","effects":[],"observations":[]}"""
+    bridge.drainNow()
+    assertEquals(listOf("first"), tags)
+    assertTrue(bridge.postTaggedEvent("scan.platform-started|op-2", "second") is UbmGattCentralBridge.PostResult.Queued)
+  }
+
+  @Test
   fun scanStartWireShape() {
     assertEquals(
       "scan.start|owner-a|5000|1000|180d,180f|all|none",

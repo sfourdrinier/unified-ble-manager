@@ -125,7 +125,10 @@ async fn the_central_ends_an_error_policy_stream_with_the_counted_loss() {
     let central = DesktopCentral::open(FakeRadio::new(), "loss-host")
         .await
         .expect("open");
-    central.boundary().push_event(advertisement("peer-1"));
+    central
+        .boundary()
+        .push_event(advertisement("peer-1"))
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.peer_key_for("peer-1").await.is_some() {
             break;
@@ -186,7 +189,10 @@ async fn the_central_ends_an_error_policy_stream_with_the_counted_loss() {
         epoch: epoch + 1,
         lost: 9,
     };
-    central.boundary().push_event(stale);
+    central
+        .boundary()
+        .push_event(stale)
+        .expect("synthetic event admission failed");
     central
         .boundary()
         .push_event(RadioEvent::NotificationsLost {
@@ -197,7 +203,8 @@ async fn the_central_ends_an_error_policy_stream_with_the_counted_loss() {
             characteristic_occurrence: scope.4,
             epoch,
             lost: 3,
-        });
+        })
+        .expect("synthetic event admission failed");
     let mut polled = NotificationPoll::Empty;
     for _ in 0..2000 {
         polled = central
@@ -236,7 +243,8 @@ async fn lost_adapter_events_are_counted() {
         .expect("open");
     central
         .boundary()
-        .push_event(RadioEvent::EventsLost { skipped: 4 });
+        .push_event(RadioEvent::EventsLost { skipped: 4 })
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.resource_counters().await.radio_events_lost == 4 {
             return;
@@ -257,7 +265,10 @@ async fn a_burst_before_the_host_polls_is_retained_up_to_the_public_maximum() {
     let central = DesktopCentral::open(FakeRadio::new(), "burst-host")
         .await
         .expect("open");
-    central.boundary().push_event(advertisement("peer-1"));
+    central
+        .boundary()
+        .push_event(advertisement("peer-1"))
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.peer_key_for("peer-1").await.is_some() {
             break;
@@ -311,15 +322,18 @@ async fn a_burst_before_the_host_polls_is_retained_up_to_the_public_maximum() {
         .expect("enabled once");
     // 300 values of 244 bytes (73 KB): past the old 64-item / 8 KiB buffer.
     for index in 0..300u32 {
-        central.boundary().push_event(RadioEvent::Notification {
-            peer_id: scope.0.clone(),
-            service_uuid: scope.1.clone(),
-            service_occurrence: scope.2,
-            characteristic_uuid: scope.3.clone(),
-            characteristic_occurrence: scope.4,
-            epoch,
-            value: [index.to_le_bytes().to_vec(), vec![0; 240]].concat(),
-        });
+        central
+            .boundary()
+            .push_event(RadioEvent::Notification {
+                peer_id: scope.0.clone(),
+                service_uuid: scope.1.clone(),
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3.clone(),
+                characteristic_occurrence: scope.4,
+                epoch,
+                value: [index.to_le_bytes().to_vec(), vec![0; 240]].concat(),
+            })
+            .expect("synthetic event admission failed");
         // Paced below the scripted boundary's own 256-deep data queue.
         if index % 128 == 127 {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -363,7 +377,10 @@ async fn values_held_at_invalidation_drain_before_it() {
         let central = DesktopCentral::open(FakeRadio::new(), "drain-host")
             .await
             .expect("open");
-        central.boundary().push_event(advertisement("peer-1"));
+        central
+            .boundary()
+            .push_event(advertisement("peer-1"))
+            .expect("synthetic event admission failed");
         for _ in 0..2000 {
             if central.peer_key_for("peer-1").await.is_some() {
                 break;
@@ -412,17 +429,23 @@ async fn values_held_at_invalidation_drain_before_it() {
             .expect("subscribe");
         let (scope, epoch) = central.boundary().enable_epochs().pop().expect("enabled");
         for byte in 1..=3u8 {
-            central.boundary().push_event(RadioEvent::Notification {
-                peer_id: scope.0.clone(),
-                service_uuid: scope.1.clone(),
-                service_occurrence: scope.2,
-                characteristic_uuid: scope.3.clone(),
-                characteristic_occurrence: scope.4,
-                epoch,
-                value: vec![byte],
-            });
+            central
+                .boundary()
+                .push_event(RadioEvent::Notification {
+                    peer_id: scope.0.clone(),
+                    service_uuid: scope.1.clone(),
+                    service_occurrence: scope.2,
+                    characteristic_uuid: scope.3.clone(),
+                    characteristic_occurrence: scope.4,
+                    epoch,
+                    value: vec![byte],
+                })
+                .expect("synthetic event admission failed");
         }
-        central.boundary().push_event(event);
+        central
+            .boundary()
+            .push_event(event)
+            .expect("synthetic event admission failed");
         let mut seen = Vec::new();
         for _ in 0..2000 {
             match central
@@ -452,7 +475,10 @@ async fn a_lossy_subscriber_counts_a_loss_and_stays_live() {
     let central = DesktopCentral::open(FakeRadio::new(), "lossy-host")
         .await
         .expect("open");
-    central.boundary().push_event(advertisement("peer-1"));
+    central
+        .boundary()
+        .push_event(advertisement("peer-1"))
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.peer_key_for("peer-1").await.is_some() {
             break;
@@ -511,16 +537,20 @@ async fn a_lossy_subscriber_counts_a_loss_and_stays_live() {
             characteristic_occurrence: scope.4,
             epoch,
             lost: 3,
-        });
-    central.boundary().push_event(RadioEvent::Notification {
-        peer_id: scope.0,
-        service_uuid: scope.1,
-        service_occurrence: scope.2,
-        characteristic_uuid: scope.3,
-        characteristic_occurrence: scope.4,
-        epoch,
-        value: vec![9],
-    });
+        })
+        .expect("synthetic event admission failed");
+    central
+        .boundary()
+        .push_event(RadioEvent::Notification {
+            peer_id: scope.0,
+            service_uuid: scope.1,
+            service_occurrence: scope.2,
+            characteristic_uuid: scope.3,
+            characteristic_occurrence: scope.4,
+            epoch,
+            value: vec![9],
+        })
+        .expect("synthetic event admission failed");
     let mut value = None;
     for _ in 0..2000 {
         match central

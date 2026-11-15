@@ -853,12 +853,11 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     const group = this.scanGroup
     if (group === null || !group.consumers.has(String(consumer.leaseId))) {
       this.releaseScanAdmission(consumer)
-      consumer.stream.closeWithReason('owner-released')
+      if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
       return releasedCleanup
     }
     if (!consumer.released) {
       consumer.released = true
-      consumer.stream.closeWithReason('owner-released')
     }
     this.releaseScanAdmission(consumer)
     const remaining = [...group.consumers.values()].some(candidate => !candidate.released)
@@ -903,6 +902,9 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     }
     const settlement = nativeStop.completion.then(
       () => {
+        for (const consumer of group.consumers.values()) {
+          if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
+        }
         group.consumers.clear()
         group.stopSettlement = null
         group.stopResult = null

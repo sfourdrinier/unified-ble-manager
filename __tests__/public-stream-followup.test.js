@@ -6,6 +6,7 @@ const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { validateTraceDocument } = require('../src/diagnostics/trace-format')
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
 const { mapIpcConnectionEvents } = require('../src/ipc/public-manager')
+const { emptyIpcDiagnostics } = require('./helpers/ipc-diagnostics')
 const { createPublicGattDatabase } = require('../src/public/gatt')
 const { BleCleanupError, collectCleanupPhases } = require('../src/public/error-bridge')
 const { BleError } = require('../src/public/errors')
@@ -719,6 +720,7 @@ describe('public stream follow-up boundaries', () => {
     const source = {
       limits: limits(2, 64, 1),
       overflowPolicy: 'drop-oldest',
+      close: async () => ({ state: 'released', failures: [] }),
       [Symbol.asyncIterator]: () => ({
         next: () => new Promise(() => undefined),
         return: sourceReturn
@@ -744,7 +746,89 @@ describe('public stream follow-up boundaries', () => {
     expect(sourceReturn).toHaveBeenCalledTimes(1)
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(sourceReturn).toHaveBeenCalledTimes(2)
-    expect(nativeStop).not.toHaveBeenCalled()
+    expect(nativeStop).toHaveBeenCalledTimes(1)
+  })
+
+  test('scan view retries a failed iterator return without repeating confirmed source close', async () => {
+    const localError = new Error('retry scan iterator')
+    const sourceReturn = jest.fn().mockRejectedValueOnce(localError).mockResolvedValue({ done: true, value: undefined })
+    const sourceClose = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const source = {
+      limits: limits(2, 64, 1),
+      overflowPolicy: 'drop-oldest',
+      close: sourceClose,
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => undefined), return: sourceReturn })
+    }
+    const internal = {
+      identity: null, attachedBackend: undefined, supports: () => true, capability: () => null,
+      capabilities: () => [], scan: async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) }),
+      connect: jest.fn(), destroy: async () => ({ state: 'released', failures: [] })
+    }
+    const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    void scan.observations[Symbol.asyncIterator]().next()
+    await expect(scan.observations.close()).rejects.toMatchObject({ errors: expect.arrayContaining([localError]) })
+    await expect(scan.observations.close()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(sourceClose).toHaveBeenCalledTimes(1)
+    expect(sourceReturn).toHaveBeenCalledTimes(2)
+    await manager.destroy()
+  })
+
+  test('concurrent scan view closes share source and iterator cleanup', async () => {
+    let release
+    const gate = new Promise(resolve => { release = resolve })
+    const sourceClose = jest.fn(async () => { await gate; return { state: 'released', failures: [] } })
+    const sourceReturn = jest.fn(async () => ({ done: true, value: undefined }))
+    const source = {
+      limits: limits(2, 64, 1), overflowPolicy: 'drop-oldest', close: sourceClose,
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => undefined), return: sourceReturn })
+    }
+    const internal = {
+      identity: null, attachedBackend: undefined, supports: () => true, capability: () => null,
+      capabilities: () => [], scan: async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) }),
+      connect: jest.fn(), destroy: async () => ({ state: 'released', failures: [] })
+    }
+    const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    void scan.observations[Symbol.asyncIterator]().next()
+    const closes = [scan.observations.close(), scan.observations.close()]
+    for (let turn = 0; turn < 10 && sourceClose.mock.calls.length === 0; turn += 1) await Promise.resolve()
+    expect(sourceClose).toHaveBeenCalledTimes(1)
+    release()
+    await expect(Promise.all(closes)).resolves.toEqual([{ state: 'released', failures: [] }, { state: 'released', failures: [] }])
+    expect(sourceReturn).toHaveBeenCalledTimes(1)
+    await manager.destroy()
+  })
+
+  test('destroy retains a core scan view until its failed iterator return succeeds', async () => {
+    const { CoreBoundedStream } = require('../src/core/bounded-stream')
+    const localError = new Error('core iterator return failed')
+    let calls = 0
+    class Source extends CoreBoundedStream {
+      [Symbol.asyncIterator]() {
+        const iterator = super[Symbol.asyncIterator]()
+        return {
+          next: () => iterator.next(),
+          return: async () => {
+            calls += 1
+            if (calls === 1) throw localError
+            return iterator.return()
+          }
+        }
+      }
+    }
+    const source = new Source(limits(2, 64, 1), 'drop-oldest')
+    const internal = {
+      identity: null, attachedBackend: undefined, supports: () => true, capability: () => null,
+      capabilities: () => [], scan: async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) }),
+      connect: jest.fn(), destroy: async () => ({ state: 'released', failures: [] })
+    }
+    const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    void scan.observations[Symbol.asyncIterator]().next()
+    await expect(manager.destroy()).rejects.toMatchObject({ errors: expect.arrayContaining([localError]) })
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(calls).toBe(2)
   })
 
   test('public manager reports a late scan-stop rejection after a failed parent release', async () => {
@@ -876,6 +960,7 @@ describe('public stream follow-up boundaries', () => {
       }
       const ipc = {
         capabilities,
+        diagnostics: emptyIpcDiagnostics,
         bootstrap: {
           discovery: { kind: 'continuous-scan' },
           attachment: { adapter: { adapterId: 'adapter-1' }, backendGeneration: 'backend-1' }
@@ -963,6 +1048,7 @@ describe('public stream follow-up boundaries', () => {
         }
         const ipc = {
           capabilities,
+          diagnostics: emptyIpcDiagnostics,
           bootstrap: {
             discovery: { kind: 'continuous-scan' },
             attachment: { adapter: { adapterId: 'adapter-1' }, backendGeneration: 'backend-1' }
@@ -1011,6 +1097,7 @@ describe('public stream follow-up boundaries', () => {
     }
     const ipc = {
       capabilities,
+      diagnostics: emptyIpcDiagnostics,
       bootstrap: { discovery: { kind: 'continuous-scan' }, attachment: { adapter: { adapterId: 'adapter-1' } } },
       destroy: jest
         .fn()
@@ -1350,6 +1437,7 @@ describe('public stream follow-up boundaries', () => {
     }
     const ipc = {
       capabilities,
+      diagnostics: emptyIpcDiagnostics,
       bootstrap: {
         discovery: { kind: 'continuous-scan' },
         attachment: {
@@ -1454,6 +1542,7 @@ describe('public stream follow-up boundaries', () => {
       let reads = 0
       const ipc = {
         capabilities,
+        diagnostics: emptyIpcDiagnostics,
         bootstrap: {
           discovery: { kind: 'continuous-scan' },
           attachment: {

@@ -59,6 +59,9 @@ impl ContinuationHost for Host {
     }
 }
 impl ContinuationSession for Session {
+    fn legacy_claim_compatible(&self) -> bool {
+        true
+    }
     fn attach_journal(
         &self,
         journal: Arc<ubm_desktop::continuation_journal::ContinuationJournal>,
@@ -189,12 +192,26 @@ impl ContinuationSession for Session {
             envelope(Ok(value))
         })
     }
-    fn drain(&self, items: u32, bytes: u32) -> ContinuationFuture<'_> {
-        Box::pin(async move {
-            self.outbox
-                .drain(items as usize, bytes as usize)
-                .to_string()
-        })
+    fn claim_drain(
+        &self,
+        items: u32,
+        bytes: u32,
+    ) -> Result<Option<ubm_desktop::continuation_outbox::DrainClaim>> {
+        self.outbox
+            .claim_drain(items as usize, bytes as usize)
+            .map_err(ubm_desktop::continuation::continuation_drain_error)
+    }
+    fn acknowledge_drain(&self, id: u64) -> Result<()> {
+        if self.outbox.acknowledge_drain(id) {
+            Ok(())
+        } else {
+            Err(json!({"code":"claim.mismatch"}))
+        }
+    }
+    fn has_retained_tail(&self) -> Result<bool> {
+        self.outbox
+            .has_retained_tail()
+            .map_err(ubm_desktop::continuation::continuation_drain_error)
     }
 }
 fn fixture() -> (NativeContinuation, Arc<Session>, String) {
@@ -272,6 +289,11 @@ async fn setup_deadline_includes_blocked_durable_observer_registration() {
             .as_nanos()
     ));
     std::fs::create_dir(&directory).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     engine.configure_recording_directory(&directory).unwrap();
     let mut order: Value = serde_json::from_str(&declaration).unwrap();
     order["recording"] = json!({"id":"observe-deadline","maxBytes":1048576,"maxRecords":1000});
@@ -325,6 +347,11 @@ async fn durable_setup_write_receives_only_the_budget_remaining_after_observer_a
             .as_nanos()
     ));
     std::fs::create_dir(&directory).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     engine.configure_recording_directory(&directory).unwrap();
     let mut order: Value = serde_json::from_str(&declaration).unwrap();
     order["recording"] = json!({"id":"setup-budget","maxBytes":1048576,"maxRecords":1000});
@@ -377,6 +404,11 @@ fn queued_durable_setup_write_cannot_start_after_its_deadline() {
                 .as_nanos()
         ));
         std::fs::create_dir(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         engine.configure_recording_directory(&directory).unwrap();
         let mut order: Value = serde_json::from_str(&declaration).unwrap();
         order["recording"] = json!({"id":"queued-write","maxBytes":1048576,"maxRecords":1000});
@@ -438,6 +470,11 @@ async fn native_session_and_ack_observer_never_run_storage_on_runtime_thread() {
                 .as_nanos()
         ));
         std::fs::create_dir(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         engine.configure_recording_directory(&directory).unwrap();
         let mut order: Value = serde_json::from_str(&declaration).unwrap();
         order["recording"] = json!({"id":"thread-test","maxBytes":1048576,"maxRecords":1000});
@@ -480,7 +517,7 @@ async fn native_session_and_ack_observer_never_run_storage_on_runtime_thread() {
         release
             .send(())
             .expect("the runtime remained responsive while native storage boundary was blocked");
-        running.await.unwrap().unwrap();
+        let operation_result = running.await.unwrap().unwrap();
         assert!(
             session
                 .calls
@@ -490,11 +527,15 @@ async fn native_session_and_ack_observer_never_run_storage_on_runtime_thread() {
                 .any(|call| call == operation),
             "{operation} must execute through the real engine dispatcher"
         );
-        let claim = engine.prepare_claim(256, 65536).await.unwrap();
-        let receipt = engine
-            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
-            .await
-            .unwrap();
+        let receipt = if operation == "session.continuation-dispose" {
+            operation_result
+        } else {
+            let claim = engine.prepare_claim(256, 65536).await.unwrap();
+            engine
+                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+                .await
+                .unwrap()
+        };
         assert_eq!(receipt["disposed"], true);
         let threads = session.worker_threads.lock().unwrap().clone();
         assert!(!threads.is_empty());

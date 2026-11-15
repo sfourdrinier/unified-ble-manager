@@ -7,10 +7,9 @@
 // the shipped AAR and standalone JVM smoke compile this authoritative facade;
 // there is no separately maintained probe-side copy.
 //
-// Shape (wire revision `ubm-mobile-wire/2`, docs/MOBILE_RUST_WIRE.md):
-//   * one host per process: `nativeInstallHost` binds the platform radio
-//     (`RadioHost`, implemented over OwnedAndroidGattRadio) and the wake
-//     listener; the host outlives every RN manager (restoration, FGS);
+// Shape (wire revision `ubm-mobile-wire/3`, docs/MOBILE_RUST_WIRE.md):
+//   * each bound host owns its platform radio and wake listener; exact binding
+//     routes keep callbacks and session identities with that host;
 //   * one session per RN manager: `nativeOpenSession` admits and answers
 //     `{sessionId, contractRevision, wireRevision, buildIdentity}`;
 //   * `nativeInvoke` never blocks: the callback receives the envelope JSON
@@ -81,7 +80,83 @@ public final class MobileCoreBridge {
      * a {@code null} String means "absent". {@code legacy} is -1 (platform
      * default), 0 or 1.
      */
+    public static final class OrderedRegistration {
+        public long member, sourceMember, epoch;
+    }
+    /** Input descriptor for the private v2 ordered-open admission protocol. */
+    public static final class OrderedOpenIdentity {
+        public final int version, slot, itemCapacity, byteCapacity;
+        public final String owner, peer, connection, database, snapshot;
+        public final long generation, original, group, attachment, revision;
+        public final long[] members, services, characteristics;
+        public final String[] peers, serviceUuids, characteristicUuids;
+        public OrderedOpenIdentity(int version, String owner, int slot, long generation, long original, long group,
+                String peer, String connection, String database, String snapshot, long attachment, long revision,
+                long[] members, String[] peers, String[] serviceUuids, long[] services, String[] characteristicUuids,
+                long[] characteristics, int itemCapacity, int byteCapacity) {
+            this.version = version; this.owner = owner; this.slot = slot; this.generation = generation;
+            this.original = original; this.group = group; this.peer = peer; this.connection = connection;
+            this.database = database; this.snapshot = snapshot; this.attachment = attachment; this.revision = revision;
+            this.members = members.clone(); this.peers = peers.clone(); this.serviceUuids = serviceUuids.clone();
+            this.services = services.clone(); this.characteristicUuids = characteristicUuids.clone();
+            this.characteristics = characteristics.clone(); this.itemCapacity = itemCapacity; this.byteCapacity = byteCapacity;
+        }
+    }
+    /** Ordered source records include subsequent-source-failure (failure fields)
+     * and failure-observations-omitted (unknown number; no count). */
+    public static final class OrderedRecord {
+        public String kind, provenance, delivery, scope, unit, reason, nativeDomain, nativeCode, bridgeCode, detail, rejectedKind, failureKind, nativeName;
+        public OrderedRegistration member, failureMember, rejectedMember;
+        public long ordinal, scopeMember, count, byteCount, rejectedByteCount, barrierId, rejectedBarrierId, markerId, rejectedMarkerId;
+        public boolean hasCount, hasByteCount, uncertainTail, dispatched;
+        public int gattStatus;
+        public byte[] value;
+    }
+    public static final class OrderedResult {
+        public String kind, generationKind, generationValue, ownershipKind, failureKind, detail, nativeName, status, delivery, admission, writeState, ownerIncarnation, reasonKind, nativeDomain;
+        public long authorityId;
+        public int gattStatus, slot;
+        public boolean dispatched, hasFailure, hasNativeCode;
+        public long slotGeneration, nativeCode;
+        public long recoveryKey, ordinal;
+        public OrderedRegistration[] members;
+        public OrderedRegistration member;
+        public boolean hasBatch;
+        public long batch;
+        public OrderedRecord[] records;
+    }
+
+    /** Private v4 owner-control receipt; field names and types are decoded by JNI. */
+    public static final class OwnerRetirementResult {
+        public String ownerIncarnation, retirementId, state, reason;
+        public String[] outstandingClasses = new String[0];
+        public OrderedResult[] failures = new OrderedResult[0];
+    }
+
     public interface RadioHost {
+        /** Accept an exact binding before any request is dispatched. Legacy hosts refuse it. */
+        default boolean acceptBindingRoute(int version, long binding) { return false; }
+        /** Versioned identity of the actual ordered-open admission owner; empty means unsupported. */
+        String orderedAdmissionOwner(int version);
+        default void ownerFence(long requestId, String ownerIncarnation, String retirementId) { throw new UnsupportedOperationException("owner control v4"); }
+        default void ownerStatus(long requestId, String ownerIncarnation, String retirementId) { throw new UnsupportedOperationException("owner control v4"); }
+        default void orderedOpenV2(long requestId, OrderedOpenIdentity identity) { throw new UnsupportedOperationException("ordered admission v2"); }
+        default void orderedRecoverOpenV2(long requestId, OrderedOpenIdentity identity) { throw new UnsupportedOperationException("ordered admission v2"); }
+        default void orderedAcknowledgeOpenV2(long requestId, OrderedOpenIdentity identity) { throw new UnsupportedOperationException("ordered admission v2"); }
+        void orderedOpen(long requestId, long group, long[] members, String[] peers, String[] services,
+                         long[] serviceOccurrences, String[] characteristics, long[] characteristicOccurrences,
+                         int itemCapacity, int byteCapacity, String connectionGeneration, String databaseGeneration,
+                         String snapshotOwner, long snapshotAttachment, long snapshotRevision);
+        void orderedRecoverOpen(long requestId, long groupId, long openRequestId, String peerId);
+        void orderedAcknowledgeOpen(long requestId, int version, long groupId, long openRequestId, String peerId);
+        void orderedRequest(long requestId, String operation, String generationKind, String generationValue,
+                            long group, long member, long sourceMember, long epoch, long batch);
+
+        void orderedGraphPermitReservation(long requestId, String operation, long authorityId, long request, String peerId, String connectionGeneration, String snapshotOwner, long snapshotAttachment, long snapshotRevision);
+        void orderedGraphAuthority(long requestId, String operation, long authorityValue);
+        void orderedGraphPermit(long requestId, String operation, String peerId, String connectionGeneration, String snapshotOwner, long snapshotAttachment, long snapshotRevision, long authorityId, long permitId);
+        void orderedMarkerWrite(long requestId, String operation, String generationKind, String generationValue, long group, long markerId, String connectionGeneration, String snapshotOwner, long snapshotAttachment, long snapshotRevision, String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence, byte[] value, boolean withResponse);
+
         /** Answer: {@link #nativeCompleteAdapter}. */
         void adapterState(long requestId);
 
@@ -129,9 +204,10 @@ public final class MobileCoreBridge {
          * with the mode actually written.
          */
         void enableNotifications(long requestId, String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence, long epoch, String requested, String preferred);
+        void orderedEnable(long requestId, String operation, String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence, String connectionGeneration, String generationKind, String generationValue, long group, long member, long sourceMember, long memberEpoch, long activationEpoch, String requested, String preferred);
 
         /** Answer: {@link #nativeCompleteUnit}. */
-        void disableNotifications(long requestId, String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence);
+        void disableNotifications(long requestId, String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence, long epoch);
 
         /** Answer: {@link #nativeCompleteMtu} (0 = not measured). */
         void readMtu(long requestId, String peerId);
@@ -227,7 +303,7 @@ public final class MobileCoreBridge {
     /** The core's contract revision, answered by Rust. */
     public static native String nativeContractRevision();
 
-    /** The mobile wire revision ({@code ubm-mobile-wire/2}). */
+    /** The mobile wire revision ({@code ubm-mobile-wire/3}). */
     public static native String nativeWireRevision();
 
     // -- host (one per process) ------------------------------------------
@@ -256,10 +332,131 @@ public final class MobileCoreBridge {
     public static native void nativeInvoke(long sessionId, String op, String argsJson, InvokeCallback callback);
 
     public static native String nativeDrain(long sessionId, int maxItems, int maxBytes);
+    public static native String nativeNegotiateScanEndVersion(long sessionId, String offeredJson);
+    public static native String nativeNegotiateScanEndVersionForBinding(long binding, long sessionId, String offeredJson);
+    public static native String nativeNegotiateScanEndVersionQualified(long sessionId, String offeredJson);
+    public static native String nativeNegotiateScanEndVersionQualifiedForBinding(long binding, long sessionId, String offeredJson);
     /** Trusted process bootstrap only; never exposed through the TurboModule. */
     public static native String nativeContinuationConfigureRecordingDirectory(String path);
+    public static native String nativeContinuationConfigureRecordingDirectoryForBinding(long binding, String path);
+    /** Trusted native bootstrap only; fixes the process-wide durable terminal quota before host install. */
+    public static native void nativeConfigureTerminalEvidenceMaximumBytes(long maximumBytes);
     public static native String nativeContinuationRecordingControl(String operation, String id, String token, int maxItems, int maxBytes);
+    /** Host-independent journal access; offline stop is refused while any native host is retained. */
+    public static native String nativeContinuationRecordingControlOffline(String operation, String id, String token, int maxItems, int maxBytes);
+    public static native int nativeOrderedRecordingVersionOffline();
+    public static native int nativeOrderedRecordingVersion();
+    public static native void nativeOrderedRecordingReceiptControl(long sessionId, String operation, String id, InvokeCallback callback);
+    public static native void nativeContinuationOrderedOffline(String operation, String id, InvokeCallback callback);
+    public static native void nativeContinuationStartOrdered(long sessionId, String handle, String recordingId, String maxBytes, String maxRecords, String declarationJson, long budgetMs, InvokeCallback callback);
+    public static native void nativeContinuationStopOrdered(long sessionId, String id, InvokeCallback callback);
+    public static native void nativeContinuationOrderedContext(long sessionId, String id, InvokeCallback callback);
+    // Binding routes never select another host if this binding is retired.
+    public static native void nativeContinuationDescribeBacklogForBinding(long binding, InvokeCallback callback);
+    public static native String nativeContinuationDeclarationReplacementFailureForBinding(long binding, String declaration);
+    public static native void nativeContinuationExecuteForBinding(long binding, String peerId, String declaration, InvokeCallback callback);
+    public static native String nativeContinuationReserveDeclarationForBinding(long binding, String declaration);
+    public static native String nativeContinuationCommitDeclarationForBinding(long binding, String token);
+    public static native String nativeContinuationCancelDeclarationForBinding(long binding, String token);
+    public static native String nativeContinuationSeedDeclarationForBinding(long binding, String declaration);
+    public static native void nativeContinuationPrepareClaimForBinding(long binding, int maxItems, int maxBytes, InvokeCallback callback);
+    public static native void nativeContinuationAcknowledgeClaimForBinding(long binding, String token, InvokeCallback callback);
+    public static native void nativeContinuationPrepareClaimVersionedForBinding(long binding, int version, int maxItems, int maxBytes, InvokeCallback callback);
+    public static native void nativeContinuationAcknowledgeClaimV1ForBinding(long binding, String token, InvokeCallback callback);
+    public static native void nativeContinuationAcknowledgeClaimV2ForBinding(long binding, String token, InvokeCallback callback);
+    public static native void nativeContinuationReadPeerFailureRecoveryForBinding(long binding, String recoveryRecord, String offset, InvokeCallback callback);
+    public static native void nativeContinuationAcknowledgePeerFailureRecoveryForBinding(long binding, String recoveryRecord, InvokeCallback callback);
+    public static native void nativeContinuationRetireClaimReceiptForBinding(long binding, String token, InvokeCallback callback);
+    public static native void nativeContinuationLegacyEvidencePageForBinding(long binding, String token, long afterOrdinal, int maxItems, int maxBytes, InvokeCallback callback);
+    public static native void nativeContinuationLegacyEvidenceRetireForBinding(long binding, String token, long ordinal, InvokeCallback callback);
+    public static native void nativeContinuationPrepareClaimVersioned(int version, int maxItems, int maxBytes, InvokeCallback callback);
+    public static native void nativeContinuationAcknowledgeClaimV1(String token, InvokeCallback callback);
+    public static native void nativeContinuationAcknowledgeClaimV2(String token, InvokeCallback callback);
+    public static native void nativeContinuationReadPeerFailureRecovery(String recoveryRecord, String offset, InvokeCallback callback);
+    public static native void nativeContinuationAcknowledgePeerFailureRecovery(String recoveryRecord, InvokeCallback callback);
+    public static native void nativeContinuationRetireClaimReceipt(String token, InvokeCallback callback);
+    public static native void nativeContinuationLegacyEvidencePage(String token, long afterOrdinal, int maxItems, int maxBytes, InvokeCallback callback);
+    public static native void nativeContinuationLegacyEvidenceRetire(String token, long ordinal, InvokeCallback callback);
+    public static native String nativeContinuationRecordingControlForBinding(long binding, String operation, String id, String token, int maxItems, int maxBytes);
+    public static native void nativeOrderedRecordingReceiptControlForBinding(long binding, long sessionId, String operation, String id, InvokeCallback callback);
+    public static native void nativeContinuationStartOrderedForBinding(long binding, long sessionId, String handle, String id, String maxBytes, String maxRecords, String declaration, long budgetMs, InvokeCallback callback);
+    public static native void nativeContinuationStopOrderedForBinding(long binding, long sessionId, String id, InvokeCallback callback);
+    public static native void nativeContinuationOrderedContextForBinding(long binding, long sessionId, String id, InvokeCallback callback);
+    public static native void nativeContinuationOrderedOfflineForBinding(long binding, String operation, String id, InvokeCallback callback);
+    public static native int nativeOrderedRecordingVersionForBinding(long binding);
 
+    // -- trusted scan-failure recovery ---------------------------------
+    // These are intentionally not TurboModule methods.  The Android process
+    // owner calls them only after app-private recording storage is configured
+    // and a native policy has accepted the opaque recording id. Returned ids
+    // are binding-local handles, never recovery credentials or file paths.
+    public static native String nativeScanFailureRecoveryAttachForBinding(long binding, String recordingId);
+    public static native String nativeScanFailureRecoveryOwnersForBinding(long binding, String leaseId);
+    /** Opaque-owner member metadata (`{member:{recipient,delivery}}`); neither
+     * field is a recovery capability and both use lower-case hexadecimal. */
+    public static native String nativeScanFailureRecoveryMemberForBinding(long binding, String ownerId, int memberIndex);
+    public static native String nativeScanFailureRecoveryHeadForBinding(long binding, String ownerId, int memberIndex);
+    /** One atomic bounded recovery page.  Metadata and bytes share one native
+     * read, so ACK/release cannot create a cross-call page mismatch. */
+    public static final class ScanFailureRecoveryPage {
+        public final String offset;
+        public final String nextOffset;
+        public final byte[] bytes;
+        public final boolean done;
+        public ScanFailureRecoveryPage(String offset, String nextOffset, byte[] bytes, boolean done) {
+            this.offset = offset;
+            this.nextOffset = nextOffset;
+            this.bytes = bytes.clone();
+            this.done = done;
+        }
+    }
+    public static native ScanFailureRecoveryPage nativeScanFailureRecoveryReadPageForBinding(long binding, String headId, String offset);
+    /** Metadata for a bounded scan-recovery page. Use the companion byte[] method for payload bytes. */
+    public static native String nativeScanFailureRecoveryReadForBinding(long binding, String headId, String offset);
+    /**
+     * Fresh bounded binary payload for exactly the page named by {@code headId}
+     * and {@code offset}. This is intentionally not JSON: the React Native
+     * boundary converts it to Uint8Array without numeric-array expansion.
+     */
+    public static native byte[] nativeScanFailureRecoveryReadBytesForBinding(long binding, String headId, String offset);
+    /** acknowledge | retire | release | finalize. Finalize returns an opaque cleanup receipt id. */
+    public static native String nativeScanFailureRecoveryHeadControlForBinding(long binding, String headId, String operation);
+    /** Raw source metadata for an opaque owner. This never exposes a recovery capability. */
+    public static native String nativeScanFailureRecoveryRawInfoForBinding(long binding, String ownerId);
+    /** One raw member selected through an opaque owner. */
+    public static native String nativeScanFailureRecoveryRawMemberForBinding(long binding, String ownerId, int memberIndex);
+    /** Native-host selection fence: revokes every opaque recovery alias for this binding. */
+    public static native void nativeScanFailureRecoveryRevokeForBinding(long binding);
+    /**
+     * One bounded raw evidence token. Scalar fields are canonical decimal
+     * text where Java cannot retain an exact u64; binary token windows remain
+     * byte[] and are never JSON numeric arrays.
+     */
+    public static final class ScanFailureRecoveryRawToken {
+        public final String kind;
+        public final String value;
+        public final String total;
+        public final String count;
+        public final byte[] bytes;
+        public ScanFailureRecoveryRawToken(String kind, String value, String total, String count, byte[] bytes) {
+            this.kind = kind;
+            this.value = value;
+            this.total = total;
+            this.count = count;
+            this.bytes = bytes == null ? null : bytes.clone();
+        }
+    }
+    public static native ScanFailureRecoveryRawToken nativeScanFailureRecoveryRawTokenForBinding(
+        long binding, String ownerId, int tokenIndex, String offset, String maxBytes);
+    public static native String nativeScanFailureRecoveryRawControlForBinding(long binding, String ownerId, String operation);
+    public static native String nativeScanFailureRecoveryPendingCleanupForBinding(long binding, String leaseId);
+    public static native void nativeScanFailureRecoveryRetireCleanupForBinding(long binding, String cleanupReceiptId);
+    /** Selected process-native terminal evidence only; all returned ids are binding-local aliases. */
+    public static native String nativeTerminalEvidenceRecoveryOpenSelectedForBinding(long binding);
+    public static native String nativeTerminalEvidenceRecoveryListForBinding(long binding, String leaseId, int maxItems, long maxBytes);
+    public static native String nativeTerminalEvidenceRecoveryListWithStatusForBinding(long binding, String leaseId, int maxItems, long maxBytes);
+    public static native String nativeTerminalEvidenceRecoveryReadForBinding(long binding, String handle, String offset, int maxBytes);
+    public static native String nativeTerminalEvidenceRecoveryAcknowledgeForBinding(long binding, String handle);
     /** Executes a declared standing order in the process-owned Rust executor. */
     public static native void nativeContinuationExecute(String peerId, String declarationJson, InvokeCallback callback);
 
@@ -281,7 +478,33 @@ public final class MobileCoreBridge {
 
     // -- completions (answer each RadioHost request exactly once) ---------
 
+    public static native int nativeCompleteOwnerRetirement(long requestId, OwnerRetirementResult result);
+    public static native int nativeCompleteOrdered(long requestId, OrderedResult result);
+    public static native int nativeCompleteOrderedEnableReleased(long requestId, String kind, int gattStatus, String detail, boolean dispatched, String nativeName);
+    public static native int nativeCompleteDiscoveredScoped(long requestId, int[] levels, String[] uuids, long[] occurrences, int[] properties, String snapshotOwner, long snapshotAttachment, long snapshotRevision);
+
     public static native int nativeCompleteUnit(long requestId);
+    /**
+     * Optional scan identity extension. Missing probe symbol means legacy v1;
+     * version 2 promises all three methods below. Android assigns one opaque
+     * identity before startScan, returns it with the start completion, and
+     * includes it in every callback, including callbacks during startScan.
+     * The Rust receiver must retain early callbacks until the matching start
+     * is established and compare identities again when processing ingress.
+     * These declarations do not imply that the linked Rust binary supports v2.
+     */
+    public static native int nativeScanIdentityWireVersion();
+    public static native int nativeCompleteScanStartedV2(long requestId, String scanIdentity);
+    public static native int nativeIngestScanFailedV2(String detail, String scanIdentity);
+    public static native int nativeIngestScanFailedV3(String detail, String scanIdentity, int errorCode);
+    public static native int nativeIngestAdvertisementV2(String peerId, String address, String localName, int rssi, int txPower, String[] serviceUuids, int[] companyIds, byte[][] manufacturerPayloads, String[] serviceDataUuids, byte[][] serviceDataPayloads, int connectable, String[] solicitedServiceUuids, String[] overflowServiceUuids, int appearance, byte[] rawRecord, String cachedName, long captureTimestampMs, String scanIdentity);
+    public static native int nativeIngestAdvertisementV2ForBinding(long binding, String peerId, String address, String localName, int rssi, int txPower, String[] serviceUuids, int[] companyIds, byte[][] manufacturerPayloads, String[] serviceDataUuids, byte[][] serviceDataPayloads, int connectable, String[] solicitedServiceUuids, String[] overflowServiceUuids, int appearance, byte[] rawRecord, String cachedName, long captureTimestampMs, String scanIdentity);
+    public static native int nativeCompleteScanStartedV2ForBinding(long binding, long requestId, String scanIdentity);
+    public static native int nativeIngestScanFailedV2ForBinding(long binding, String detail, String scanIdentity);
+    public static native int nativeIngestScanFailedV3ForBinding(long binding, String detail, String scanIdentity, int errorCode);
+    /** Binding-scoped form of nativeScanFailureIngestEvidence. */
+    public static native String nativeScanFailureIngestEvidenceForBinding(long binding, String detail, String scanIdentity, int errorCode);
+
 
     /** A descriptor read's value. */
     public static native int nativeCompleteBytes(long requestId, byte[] value);
@@ -380,9 +603,21 @@ public final class MobileCoreBridge {
 
     public static native int nativeIngestNotification(String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence, long epoch, byte[] value);
 
+    /** Android ordered source wake; both identities retain the exact unsigned bit pattern. */
+    public static native int nativeIngestOrderedWake(long sourceGeneration, long groupId);
+
+    public static native int nativeIngestOrderedWakeFailure(long sourceGeneration, long groupId);
+    public static native int nativeIngestNotificationSourceFailed(String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence, long epoch, String kind, int gattStatus, String detail, boolean dispatched, String nativeCode);
+
     public static native int nativeIngestAdapterState(String availability, String authorization, String power, String safeReason);
 
     public static native int nativeIngestScanFailed(String detail);
+
+    /**
+     * Returns accepted or the exact refused error as a typed token stream.
+     * The caller retains the input and may retry it until it is accepted.
+     */
+    public static native String nativeScanFailureIngestEvidence(String detail, String scanIdentity, int errorCode);
 
     public static native int nativeIngestSecurity(String peerId, String bond, String encryption, String authentication, String secureConnections, int pairingPossible);
     public static native int nativeIngestSecurityFailure(String peerId, String kind, int encryptionStatus, String detail);
@@ -392,4 +627,57 @@ public final class MobileCoreBridge {
 
     /** class: advertisement|notification|control. */
     public static native int nativeIngestDropped(String ingressClass, String detail);
+    public static native int nativeIngestDroppedCount(String ingressClass, String detail, long count);
+
+    // Private binding-scoped host protocol; callers must negotiate route version 1.
+    /** Highest binding route version implemented by this library. Older libraries lack this symbol. */
+    public static native int nativeBindingRouteVersion();
+    public static native long nativeInstallHostForBinding(int version, RadioHost radio, WakeListener wake, String platform, String owner, String label);
+    public static native String nativeShutdownHostForBinding(long binding);
+    public static native long nativeFindRetainedBinding(RadioHost radio);
+    public static native String nativeOpenSessionForBinding(long binding, String owner, String expectedWireRevision, String backgroundScope);
+    public static native void nativeInvokeForBinding(long binding, long session, String op, String args, InvokeCallback callback);
+    public static native String nativeDrainForBinding(long binding, long session, int maxItems, int maxBytes);
+    public static native String nativeReleaseBackgroundScopeForBinding(long binding, String scope);
+    public static native int nativeCompleteOwnerRetirementForBinding(long binding, long requestId, OwnerRetirementResult result);
+    public static native int nativeCompleteOrderedForBinding(long binding, long requestId, OrderedResult result);
+    public static native int nativeCompleteOrderedEnableReleasedForBinding(long binding, long requestId, String kind, int gattStatus, String detail, boolean dispatched, String nativeName);
+    public static native int nativeCompleteDiscoveredScopedForBinding(long binding, long requestId, int[] levels, String[] uuids, long[] occurrences, int[] properties, String snapshotOwner, long snapshotAttachment, long snapshotRevision);
+    public static native int nativeCompleteUnitForBinding(long binding, long requestId);
+    public static native int nativeCompleteBytesForBinding(long binding, long requestId, byte[] value);
+    public static native int nativeCompleteReadForBinding(long binding, long requestId, byte[] value, String provenance);
+    public static native int nativeCompleteAdapterForBinding(long binding, long requestId, String availability, String authorization, String power, String safeReason);
+    public static native int nativeCompleteDiscoveredForBinding(long binding, long requestId, int[] levels, String[] uuids, long[] occurrences, int[] properties);
+    public static native int nativeCompleteNotifyEnabledForBinding(long binding, long requestId, String delivery);
+    public static native int nativeCompleteMtuForBinding(long binding, long requestId, int mtu);
+    public static native int nativeCompleteWriteLimitsForBinding(long binding, long requestId, int withResponse, int withoutResponse);
+    public static native int nativeCompleteRssiForBinding(long binding, long requestId, int rssi);
+    public static native int nativeCompleteAcceptedForBinding(long binding, long requestId, boolean accepted);
+    public static native int nativeCompleteSubrateStatusForBinding(long binding, long requestId, int status);
+    public static native int nativeCompletePhyForBinding(long binding, long requestId, String tx, String rx);
+    public static native int nativeCompletePhyRequestForBinding(long binding, long requestId, boolean accepted, String tx, String rx);
+    public static native int nativeCompleteSecurityForBinding(long binding, long requestId, String bond, String encryption, String authentication, String secureConnections, int pairingPossible);
+    public static native int nativeCompleteBondedPeersForBinding(long binding, long requestId, String[] peerIds, String[] names);
+    public static native int nativeCompleteResolvedPeerForBinding(long binding, long requestId, String peerId, String name);
+    public static native int nativeCompleteConnectedPeersForBinding(long binding, long requestId, String[] peerIds, String[] names);
+    public static native int nativeCompleteLeaseForBinding(long binding, long requestId, String leaseId);
+    public static native int nativeCompleteCompanionForBinding(long binding, long requestId, long associationId, String peerId, String displayName, boolean alreadyAssociated);
+    public static native int nativeCompleteCompanionListForBinding(long binding, long requestId, long[] associationIds, String[] peerIds, String[] displayNames);
+    public static native int nativeCompleteClosedForBinding(long binding, long requestId, String[] peerIds, String[] serviceUuids, long[] serviceOccurrences, String[] characteristicUuids, long[] characteristicOccurrences, String[] details);
+    public static native int nativeCompleteFailureForBinding(long binding, long requestId, String kind, int gattStatus, String detail, boolean dispatched, String nativeCode);
+    public static native int nativeIngestAdvertisementForBinding(long binding, String peerId, String address, String localName, int rssi, int txPower, String[] serviceUuids, int[] companyIds, byte[][] manufacturerPayloads, String[] serviceDataUuids, byte[][] serviceDataPayloads, int connectable, String[] solicitedServiceUuids, String[] overflowServiceUuids, int appearance, byte[] rawRecord, String cachedName, long captureTimestampMs);
+    public static native int nativeIngestConnectionForBinding(long binding, String peerId, boolean connected, int status);
+    public static native int nativeIngestConnectionForGenerationForBinding(long binding, String peerId, String expectedGeneration, boolean connected, int status);
+    public static native int nativeIngestServicesChangedForBinding(long binding, String peerId);
+    public static native int nativeIngestNotificationForBinding(long binding, String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence, long epoch, byte[] value);
+    public static native int nativeIngestOrderedWakeForBinding(long binding, long sourceGeneration, long groupId);
+    public static native int nativeIngestOrderedWakeFailureForBinding(long binding, long sourceGeneration, long groupId);
+    public static native int nativeIngestNotificationSourceFailedForBinding(long binding, String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence, long epoch, String kind, int gattStatus, String detail, boolean dispatched, String nativeCode);
+    public static native int nativeIngestAdapterStateForBinding(long binding, String availability, String authorization, String power, String safeReason);
+    public static native int nativeIngestScanFailedForBinding(long binding, String detail);
+    public static native int nativeIngestSecurityForBinding(long binding, String peerId, String bond, String encryption, String authentication, String secureConnections, int pairingPossible);
+    public static native int nativeIngestSecurityFailureForBinding(long binding, String peerId, String kind, int encryptionStatus, String detail);
+    public static native int nativeIngestRestoredForBinding(long binding, String[] peerIds, String[] names, boolean[] connected);
+    public static native int nativeIngestDroppedForBinding(long binding, String ingressClass, String detail);
+    public static native int nativeIngestDroppedCountForBinding(long binding, String ingressClass, String detail, long count);
 }

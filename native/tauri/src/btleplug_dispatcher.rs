@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     future::Future,
+    path::PathBuf,
     pin::Pin,
     sync::{
         atomic::{AtomicI64, AtomicU64, Ordering},
@@ -14,13 +15,13 @@ use btleplug::api::CharPropFlags;
 use serde_json::Number;
 use tauri::async_runtime::JoinHandle as TauriJoinHandle;
 use tokio::sync::{broadcast, watch, Mutex};
-use ubm_core::contracts::{AttachmentTuple, BleErrorCode, CommitState};
+use ubm_core::contracts::{AttachmentTuple, BleErrorCode, BleErrorDomain, CommitState};
 use ubm_desktop::{
     AdapterAuthorization, AdapterAvailability, AdapterPowerState, Budget, CancelAck, CancelRequest,
     CentralProfile, CompletionOutcome, DeliveryMode, DesktopCentral, DesktopError, DiscoveredPath,
     InvalidationCause, LifecycleEvent, LifecycleKind, NotificationPoll, ObservedDelivery,
     OpControl, OpTicket, OperationId, PlatformDetail, PlatformValue, Retryability,
-    ScanTerminalEvent, ServiceAccess, ShutdownReport,
+    ScanTerminalEvent, ServiceAccess, ShutdownReport, SourceUncertaintyEvent,
 };
 use uuid::Uuid;
 
@@ -31,6 +32,9 @@ use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
 const MAX_PENDING_EVENTS: usize = 256;
+/// Ownerless native facts remain inspectable when no renderer is attached.
+/// This host-owned ring is bounded; eviction is disclosed on replay.
+const MAX_RETAINED_ATTACHMENT_DIAGNOSTICS: usize = 128;
 
 /// Successful watch closes are replay metadata, not live resources. Retain
 /// recent handles in insertion order; older unknown handles fail ownership
@@ -76,10 +80,26 @@ mod acquired_gatt;
 mod connection_parameters;
 #[path = "connection_phy.rs"]
 mod connection_phy;
+#[path = "ordered_delivery.rs"]
+mod ordered_delivery;
+#[path = "ordered_groups.rs"]
+mod ordered_groups;
+#[path = "ordered_markers.rs"]
+mod ordered_markers;
+#[path = "ordered_orphans.rs"]
+mod ordered_orphans;
+#[path = "ordered_reclaims.rs"]
+mod ordered_reclaims;
+#[path = "ordered_recordings.rs"]
+mod ordered_recordings;
+#[path = "ordered_recovery.rs"]
+mod ordered_recovery;
 #[path = "peer_directory.rs"]
 mod peer_directory;
 #[path = "security.rs"]
 mod security;
+#[path = "terminal_evidence.rs"]
+mod terminal_evidence;
 #[path = "write_readiness.rs"]
 mod write_readiness;
 const MAX_CORRELATIONS: usize = 256;
@@ -91,11 +111,164 @@ const FORWARD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Largest integer JavaScript represents exactly (`Number.MAX_SAFE_INTEGER`):
 /// the upper bound of a well-formed `budgetMs`.
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const DIAGNOSTIC_PAGE_LIMIT: u32 = 65_536;
+const DIAGNOSTIC_OCCURRENCE_LIMIT: usize = 128;
+// The durable owner normally bounds a producer payload to 64 KiB, but a
+// retained historical receipt can include six encoded fields plus framing.
+// Keep the host transport bound aligned with the desktop control envelope;
+// smaller per-transition limits would strand an otherwise page-readable row.
+const DIAGNOSTIC_EXACT_PAYLOAD_LIMIT: usize = 18 * 1024 * 1024;
+
+/// Authority retained by the trusted Tauri host for one renderer-visible
+/// recovery handle.  The renderer sees only `handle_id`; keeping the
+/// descriptor, original consumer, and recipient lease here prevents a
+/// webview from widening a restored source-time recipient grant.
+#[derive(Clone, Debug)]
+struct RendererPeerFailureRecoveryHandle {
+    /// The exact renderer admission generation that minted this handle.  A
+    /// caller key can be reused after a window reload, so the key alone is
+    /// never authority for a retained recovery capability.
+    owner_generation: u64,
+    descriptor: ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+    peer_id: String,
+    selector: CoreSelector,
+    consumer: String,
+    recipient_lease: String,
+}
+
+type ScanFailureRecoveryHandles =
+    HashMap<String, HashMap<String, (u64, RendererScanFailureRecoveryHandle)>>;
+type OrderedRecordingStarts = HashMap<(String, String), Arc<ordered_recordings::StartSlot>>;
+
+/// Capability-bearing scan recovery values never leave the native dispatcher.
+#[derive(Clone, PartialEq, Eq)]
+enum RendererScanFailureRecoveryHandle {
+    Owner(ubm_desktop::continuation_outbox::PendingScanFailure),
+    Head(ubm_desktop::continuation_outbox::ScanFailureHead),
+    /// A charged alias slot for a cleanup receipt that has not yet been created.
+    /// Finalization mutates the durable outbox, so capacity is admitted first.
+    ReservedCleanup,
+    Cleanup {
+        receipt: ubm_desktop::continuation_outbox::ScanFailureCleanupRetirement,
+        /// The renderer alias to the durable owner remains valid until its
+        /// exact cleanup receipt is retired. Retaining this private linkage
+        /// lets completion reclaim only aliases that can no longer authorize
+        /// a recovery operation, without evicting other live sources.
+        owner: Option<ubm_desktop::continuation_outbox::PendingScanFailure>,
+    },
+}
+
+#[derive(Default)]
+struct ScanFailureRecoveryAdmission {
+    generation: u64,
+    owner_generation: Option<u64>,
+    recording_id: Option<String>,
+    lease: Option<Arc<ubm_desktop::scan_failure_recovery::ScanFailureRecoveryLease>>,
+}
+
+struct TauriScanRecoveryWake;
+impl ubm_desktop::continuation_outbox::WakeSink for TauriScanRecoveryWake {
+    fn wake(&self, _session_id: u64) {}
+}
+
+/// The durable diagnostic identifier is opaque host evidence, not a peer,
+/// caller, or renderer identity. Keeping this decoding at the trusted host
+/// boundary prevents a bridge from accepting a lossy UUID-shaped substitute.
+fn diagnostic_occurrence_id(value: &str) -> Result<[u8; 40], serde_json::Value> {
+    if value.len() != 80
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(
+            serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"invalid diagnostic occurrence identity","platform":null}),
+        );
+    }
+    let mut output = [0_u8; 40];
+    for (index, byte) in output.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).map_err(|_| {
+            serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"invalid diagnostic occurrence identity","platform":null})
+        })?;
+    }
+    Ok(output)
+}
+
+fn diagnostic_occurrence_text(value: [u8; 40]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The retained peer-source descriptor is a stable `/1` protocol value. Keep
+/// the binary identities in their canonical lowercase hexadecimal form at the
+/// host boundary; serializing a byte array here would give each frontend a
+/// different representation and would make a descriptor non-round-trippable.
+fn peer_failure_identity_text(value: [u8; 16]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn peer_failure_descriptor_json(
+    descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+) -> serde_json::Value {
+    serde_json::json!({
+        "protocol": descriptor.protocol,
+        "representation": descriptor.representation,
+        "host": peer_failure_identity_text(descriptor.identity.host),
+        "peer": peer_failure_identity_text(descriptor.identity.peer),
+        "sourceGenerationIdentity": peer_failure_identity_text(descriptor.identity.source_generation),
+        "nativeGroup": peer_failure_identity_text(descriptor.identity.native_group),
+        "transfer": peer_failure_identity_text(descriptor.identity.transfer),
+        "recovery": peer_failure_identity_text(descriptor.identity.recovery),
+        "encodedLength": descriptor.encoded_length.to_string(),
+        "chunkBytes": descriptor.chunk_bytes,
+    })
+}
+
+fn peer_failure_recovery_offset(
+    value: &str,
+    operation: &'static str,
+) -> Result<u64, DispatchError> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|number| number.to_string() == value && *number <= i64::MAX as u64)
+        .ok_or_else(|| DispatchError::new(BleErrorCode::ArgumentInvalid, "restoration", operation))
+}
+
+fn diagnostic_offset(value: &str) -> Result<u64, serde_json::Value> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|number| number.to_string() == value && *number <= i64::MAX as u64)
+        .ok_or_else(|| serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"invalid diagnostic offset","platform":null}))
+}
+
+fn diagnostic_action(
+    value: &str,
+) -> Result<ubm_desktop::continuation_journal::DiagnosticExactAction, serde_json::Value> {
+    use ubm_desktop::continuation_journal::DiagnosticExactAction;
+    match value {
+        "acknowledge" => Ok(DiagnosticExactAction::Acknowledge),
+        "retire" => Ok(DiagnosticExactAction::Retire),
+        "confirm" => Ok(DiagnosticExactAction::Confirm),
+        "release" => Ok(DiagnosticExactAction::Release),
+        _ => Err(
+            serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"unknown diagnostic lifecycle transition","platform":null}),
+        ),
+    }
+}
 
 fn btleplug_runtime() -> tokio::runtime::Handle {
     // One shared desktop executor per process, owned by `ubm-desktop`: the
     // central and its radio open and run there, never on Tauri's runtime.
     ubm_desktop::executor::desktop_runtime()
+}
+
+/// A directory selected by trusted Tauri host code for exact raw native
+/// callback evidence. It is deliberately absent from the IPC request schema:
+/// a webview must never choose a native filesystem location.
+#[derive(Clone, Debug)]
+pub struct FailureEvidenceStoreOptions {
+    pub directory: PathBuf,
+    pub max_bytes: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -110,6 +283,15 @@ pub struct BtleplugDispatcherOptions {
     /// `adapter.ambiguous`, and a name that matches none fails
     /// `adapter.selection-required` — never a silent first pick.
     pub adapter_id: Option<String>,
+    /// Optional private native evidence store, installed before the production
+    /// manager opens. It is never selected by IPC input.
+    pub failure_evidence_store: Option<FailureEvidenceStoreOptions>,
+    /// Opt-in aggregate bound for the trusted registry-wide terminal-evidence
+    /// ledger. The host first configures its recording directory through the
+    /// Rust-only continuation API; a renderer never supplies a directory or
+    /// chooses a ledger. `None` keeps the durable terminal-evidence capability
+    /// unavailable.
+    pub terminal_evidence_maximum_bytes: Option<u64>,
 }
 
 /// Production Tauri dispatcher: IPC transport over the shared Rust core.
@@ -134,6 +316,40 @@ pub struct BtleplugDispatcher {
     lifecycle_pump: Arc<SyncMutex<Option<TauriJoinHandle<()>>>>,
     continuation: Arc<Mutex<Option<ubm_desktop::continuation_adapter::DesktopContinuation>>>,
     recordings: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
+    terminal_evidence_maximum_bytes: Option<u64>,
+    terminal_evidence_ledger:
+        Arc<SyncMutex<Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>>>,
+    scan_failure_recovery: Arc<ubm_desktop::scan_failure_recovery::ScanFailureRecoveryRegistry>,
+    /// Serializes trusted lease grants against final durable cleanup and cache
+    /// reclamation. A grant cannot race a just-completed recording back into
+    /// the registry after its last recovery receipt has been retired.
+    scan_failure_recovery_lifecycle: Arc<Mutex<()>>,
+    scan_failure_recovery_admission: Arc<SyncMutex<HashMap<String, ScanFailureRecoveryAdmission>>>,
+    scan_failure_recovery_handles: Arc<SyncMutex<ScanFailureRecoveryHandles>>,
+    /// Explicit host grants for renderer recovery access. A durable lease is
+    /// never sufficient by itself: a trusted Tauri host must grant the exact
+    /// authenticated caller after attaching its recording.
+    /// One synchronous state machine fences trusted recovery grants across an
+    /// asynchronous ledger attach and synchronous window teardown.  Keeping
+    /// the generation and grant under the same mutex makes teardown win even
+    /// when the attach future completes at exactly the same time.
+    peer_failure_recovery_admission: Arc<SyncMutex<HashMap<String, PeerFailureRecoveryAdmission>>>,
+    peer_failure_recovery_handles:
+        Arc<SyncMutex<HashMap<String, HashMap<String, RendererPeerFailureRecoveryHandle>>>>,
+    ordered_recording_starts: Arc<Mutex<OrderedRecordingStarts>>,
+    ordered_recording_reservations: Arc<Mutex<ordered_recordings::Reservations>>,
+    reclaim_admission: Arc<Mutex<()>>,
+    reclaim_state: Arc<SyncMutex<ordered_reclaims::ReclaimState>>,
+    #[cfg(test)]
+    ordered_recording_panic_phase: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    terminal_evidence_recovery_pause: Arc<SyncMutex<Option<Arc<TerminalEvidenceRecoveryPause>>>>,
+}
+
+#[cfg(test)]
+struct TerminalEvidenceRecoveryPause {
+    claimed: std::sync::mpsc::SyncSender<()>,
+    resume: SyncMutex<std::sync::mpsc::Receiver<()>>,
 }
 
 type AuthorityOpenFuture =
@@ -160,16 +376,34 @@ struct DispatcherState {
     /// generations move.
     adapter_name: Option<String>,
     callers: HashMap<String, CallerState>,
+    terminal_evidence_owners: HashMap<String, TerminalEvidenceOwner>,
     /// Core resources admitted for a caller that could not take ownership
     /// (released, lease replaced, duplicate) and whose compensating
     /// release failed (PR210-08). Retried and reported by the owning
     /// caller key's next release and by authority shutdown; never dropped
     /// silently.
     orphan_debt: Vec<OrphanDebt>,
+    ordered_orphans: Vec<ordered_groups::OrphanSlot>,
     /// Attachments an adapter reset replaced (IPC protocol 4). Work naming
     /// one is refused `backend.reset`, releases excepted; renderers route
     /// under the attachment the dispatcher rebound them to and announced.
     replaced_attachment_ids: HashSet<String>,
+    retained_attachment_diagnostics: VecDeque<IpcValue>,
+    dropped_attachment_diagnostics: u64,
+}
+
+#[derive(Clone, Debug)]
+struct TerminalEvidenceOwner {
+    producer: String,
+    caller_key: String,
+    lease_id: String,
+    lease_generation: String,
+    /// Private recovery claim derived from this controller's current lease.
+    /// It never crosses the Tauri IPC grammar.
+    recovery_lease_id: String,
+    reservation_id: String,
+    /// Only receipts orphaned by a completed caller release may be recovered.
+    recoverable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,6 +434,7 @@ struct CallerState {
     connections: HashMap<String, CoreConnection>,
     databases: HashMap<String, CoreDatabase>,
     subscriptions: HashMap<String, CoreSubscription>,
+    ordered_groups: HashMap<String, Arc<Mutex<ordered_groups::OrderedGroup>>>,
     acquired_writers: HashMap<String, acquired_gatt::CoreAcquiredWriter>,
     acquired_releases: WatchReleaseHistory,
     connection_events: HashMap<String, ConnectionEventResource>,
@@ -212,6 +447,18 @@ struct CallerState {
     operations: HashMap<String, TrackedOperation>,
     completed_correlations: HashMap<String, Instant>,
     pending_events: HashSet<String>,
+}
+
+#[derive(Default)]
+struct PeerFailureRecoveryAdmission {
+    generation: u64,
+    owner_generation: Option<u64>,
+    /// ACK is destructive at the native ledger.  Once its exact handle has
+    /// been consumed while holding this admission, it remains an admitted
+    /// operation even if teardown advances the caller generation while the
+    /// native future is running.  Teardown never transfers this lease to a
+    /// replacement caller; completion removes it by its original generation.
+    in_flight_acknowledgements: HashSet<(u64, String)>,
 }
 
 /// One live IPC correlation: the caller's budget (admitted on the plugin
@@ -260,6 +507,40 @@ struct ScanResource {
     core_operation_id: OperationId,
     task: Option<TauriJoinHandle<()>>,
     phase: ReleasePhase,
+    terminal_evidence: Option<TerminalEvidenceBinding>,
+    /// A core-ended scan whose authenticated stage-failure terminal could
+    /// not enter the renderer channel. The mapping is cleanup debt: it keeps
+    /// both the precise stage failure to re-send and the precise delivery
+    /// failure a release retry must report.
+    terminal_stage_failure: Option<DispatchError>,
+    terminal_delivery_failure: Option<DispatchError>,
+    /// The exact terminal that reached durable staging but not the renderer.
+    /// A later ACK or owner cleanup retries this same terminal rather than
+    /// replacing a source failure with an owner-release terminal.
+    terminal_delivery_retry_item: Option<ScanTerminalRetry>,
+    terminal_failure_claimed: bool,
+    /// A source-failed stage-error terminal reached the renderer. The core
+    /// already ended this scan, so owner cleanup must not manufacture a
+    /// contradictory `owner-released` terminal afterward.
+    terminal_failure_sent: bool,
+    /// A concurrent release joins this retry before it can abandon evidence
+    /// or emit a contradictory owner-release terminal.
+    terminal_delivery_retry: Option<watch::Receiver<ReleaseAnswer>>,
+}
+
+#[derive(Clone)]
+enum ScanTerminalRetry {
+    StageFailure(DispatchError),
+    Terminal {
+        reason: String,
+        error: Option<DispatchError>,
+    },
+}
+
+#[derive(Clone)]
+struct TerminalEvidenceBinding {
+    reservation_id: String,
+    scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope,
 }
 
 /// Transport mapping for one core-owned connection: the IPC handle plus the
@@ -320,6 +601,7 @@ struct CoreSubscription {
     /// A terminal accepted by the channel has already ended this stream.
     /// A later explicit disconnect must not send a second terminal.
     terminal_sent: bool,
+    terminal_evidence: Option<TerminalEvidenceBinding>,
 }
 
 /// How one link ended, as a connection-lifecycle transition plus the
@@ -355,6 +637,13 @@ const LINK_ENDED_UNREQUESTED: LinkTransition = LinkTransition {
 
 /// The adapter took the link (finding 57; legacy CoreBluetooth/WinRT
 /// `connection-state-changed` reason `adapter`, `connected → lost`).
+const LINK_HOST_RESET: LinkTransition = LinkTransition {
+    previous: "connected",
+    current: "lost",
+    cause: "backend-restart",
+    terminal: "source-failed",
+};
+
 const LINK_ADAPTER_LOST: LinkTransition = LinkTransition {
     previous: "connected",
     current: "lost",
@@ -378,9 +667,19 @@ enum StreamEnd {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TerminalAdmission {
     Any,
+    ClaimedScan,
     ActiveSubscription,
     Connection,
     OwnerConnection,
+}
+
+struct TerminalRequest<'a> {
+    expected_lease: (&'a str, &'a str),
+    stream_id: &'a str,
+    reason: &'a str,
+    error: Option<&'a DispatchError>,
+    counters: terminal_evidence::TerminalCounters,
+    admission: TerminalAdmission,
 }
 
 struct ConnectionEventResource {
@@ -619,24 +918,49 @@ impl DispatchError {
 /// One typed platform fact on the wire. An integer JavaScript cannot hold
 /// exactly crosses as its decimal text (as on the Node desktop path).
 fn native_platform_wire(native: &PlatformDetail, fallback: Option<&str>) -> IpcValue {
-    object([
-        ("domain", string(native.domain.clone())),
-        ("code", string(native.code.clone())),
+    let mut fields = BTreeMap::from([
+        ("domain".to_owned(), string(native.domain.clone())),
+        ("code".to_owned(), string(native.code.clone())),
         (
-            "safeMessage",
+            "safeMessage".to_owned(),
             string(native.message.as_deref().or(fallback).unwrap_or_default()),
         ),
         (
-            "metadata",
+            "metadata".to_owned(),
             IpcValue::Object(
                 native
                     .metadata
                     .iter()
+                    .filter(|(key, _)| {
+                        !matches!(key.as_str(), "__proto__" | "constructor" | "prototype")
+                    })
                     .map(|(key, value)| (key.clone(), platform_value(value)))
                     .collect(),
             ),
         ),
-    ])
+    ]);
+    if let Some(entries) = &native.metadata_entries {
+        fields.insert(
+            "metadataEntries".to_owned(),
+            IpcValue::Array(
+                entries
+                    .iter()
+                    .map(|entry| {
+                        let (kind, value) = match &entry.value {
+                            PlatformValue::Int(integer) => ("int", string(integer.to_string())),
+                            PlatformValue::Text(text) => ("text", string(text.clone())),
+                            PlatformValue::Bool(flag) => ("bool", IpcValue::Bool(*flag)),
+                        };
+                        object([
+                            ("key", string(entry.key.clone())),
+                            ("value", object([("kind", string(kind)), ("value", value)])),
+                        ])
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    IpcValue::Object(fields)
 }
 
 fn platform_value(value: &PlatformValue) -> IpcValue {
@@ -849,14 +1173,45 @@ type ProfiledOpener = Arc<
 /// The production opener: the btleplug radio and its central open on the
 /// shared desktop executor (never on Tauri's runtime), on the adapter the
 /// profile names, with the core's selection rule (ambiguity refused).
-fn btleplug_opener() -> ProfiledOpener {
+fn btleplug_opener(failure_evidence_store: Option<FailureEvidenceStoreOptions>) -> ProfiledOpener {
     Arc::new(move |profile, connection_policy| {
+        let failure_evidence_store = failure_evidence_store.clone();
         Box::pin(async move {
             let central = btleplug_runtime()
                 .spawn(async move {
-                    let central =
-                        DesktopCentral::open_btleplug_with_policy(profile, connection_policy)
-                            .await?;
+                    let failure_evidence_store = match failure_evidence_store {
+                        None => None,
+                        Some(options) => {
+                            if options.directory.as_os_str().is_empty() || options.max_bytes == 0 {
+                                return Err(DesktopError::new(
+                                    BleErrorCode::ArgumentInvalid,
+                                    BleErrorDomain::Restoration,
+                                    "tauri.failure-evidence-store",
+                                )
+                                .with_detail("failure evidence directory and positive byte limit are required"));
+                            }
+                            Some(Arc::new(
+                                btleplug::ubm_peer_notification_ingress::FileFailureEvidenceStore::open(
+                                    options.directory,
+                                    options.max_bytes,
+                                )
+                                .map_err(|error| {
+                                    DesktopError::new(
+                                        BleErrorCode::PlatformFailure,
+                                        BleErrorDomain::Restoration,
+                                        "tauri.failure-evidence-store",
+                                    )
+                                    .with_detail(error.to_string())
+                                })?,
+                            ) as Arc<dyn btleplug::ubm_peer_notification_ingress::FailureEvidenceStore>)
+                        }
+                    };
+                    let central = DesktopCentral::open_btleplug_with_policy_and_failure_evidence_store(
+                        profile,
+                        connection_policy,
+                        failure_evidence_store,
+                    )
+                    .await?;
                     // Finding 120: Tauri 4.x re-read every known peripheral
                     // every 2 s during a scan; its observation cadence stays.
                     central.set_known_peer_refresh(Some(TAURI_KNOWN_PEER_REFRESH));
@@ -893,13 +1248,15 @@ impl Default for BtleplugDispatcher {
 
 impl BtleplugDispatcher {
     pub fn new(options: BtleplugDispatcherOptions) -> Self {
-        Self::with_profiled_opener(options, btleplug_opener())
+        let opener = btleplug_opener(options.failure_evidence_store.clone());
+        Self::with_profiled_opener(options, opener)
     }
 
     /// Dispatcher whose authority opens through `open` on first use, with
     /// the Tauri profile numbered by this dispatcher's own id counter.
     fn with_profiled_opener(options: BtleplugDispatcherOptions, open: ProfiledOpener) -> Self {
         let next_id = Arc::new(AtomicU64::new(1));
+        let terminal_evidence_maximum_bytes = options.terminal_evidence_maximum_bytes;
         let opener: AuthorityOpener = {
             let next_id = Arc::clone(&next_id);
             Arc::new(move || {
@@ -908,20 +1265,39 @@ impl BtleplugDispatcher {
                 open(profile, options.connection_policy.clone())
             })
         };
-        Self::with_slot_and_ids(AuthoritySlot::Unopened(opener), next_id)
+        Self::with_slot_and_ids(
+            AuthoritySlot::Unopened(opener),
+            next_id,
+            terminal_evidence_maximum_bytes,
+        )
     }
 
     fn with_slot(slot: AuthoritySlot) -> Self {
-        Self::with_slot_and_ids(slot, Arc::new(AtomicU64::new(1)))
+        Self::with_slot_and_ids(slot, Arc::new(AtomicU64::new(1)), None)
     }
 
-    fn with_slot_and_ids(slot: AuthoritySlot, next_id: Arc<AtomicU64>) -> Self {
+    fn with_slot_and_ids(
+        slot: AuthoritySlot,
+        next_id: Arc<AtomicU64>,
+        terminal_evidence_maximum_bytes: Option<u64>,
+    ) -> Self {
+        let recordings = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
+        let scan_failure_recovery = Arc::new(
+            ubm_desktop::scan_failure_recovery::ScanFailureRecoveryRegistry::new(
+                Arc::clone(&recordings),
+                Arc::new(TauriScanRecoveryWake),
+            ),
+        );
         Self {
             inner: Arc::new(Mutex::new(DispatcherState {
                 adapter_name: None,
                 callers: HashMap::new(),
+                terminal_evidence_owners: HashMap::new(),
                 orphan_debt: Vec::new(),
+                ordered_orphans: Vec::new(),
                 replaced_attachment_ids: HashSet::new(),
+                retained_attachment_diagnostics: VecDeque::new(),
+                dropped_attachment_diagnostics: 0,
             })),
             bootstrap_admission: Arc::new(Mutex::new(())),
             next_id,
@@ -933,7 +1309,23 @@ impl BtleplugDispatcher {
             authority_shutdown_admission: Arc::new(Mutex::new(())),
             lifecycle_pump: Arc::new(SyncMutex::new(None)),
             continuation: Arc::new(Mutex::new(None)),
-            recordings: Arc::default(),
+            recordings,
+            terminal_evidence_maximum_bytes,
+            terminal_evidence_ledger: Arc::default(),
+            scan_failure_recovery,
+            scan_failure_recovery_lifecycle: Arc::default(),
+            scan_failure_recovery_admission: Arc::default(),
+            scan_failure_recovery_handles: Arc::default(),
+            peer_failure_recovery_admission: Arc::default(),
+            peer_failure_recovery_handles: Arc::default(),
+            ordered_recording_starts: Arc::default(),
+            ordered_recording_reservations: Arc::default(),
+            reclaim_admission: Arc::default(),
+            reclaim_state: Arc::default(),
+            #[cfg(test)]
+            ordered_recording_panic_phase: Arc::default(),
+            #[cfg(test)]
+            terminal_evidence_recovery_pause: Arc::default(),
         }
     }
 
@@ -1089,6 +1481,1917 @@ impl BtleplugDispatcher {
         }
     }
 
+    /// Bind a pre-existing recording from the trusted registry to durable
+    /// retained-notification recovery.  This intentionally mirrors the
+    /// desktop main-process path: the caller supplies an already-authorized
+    /// recording identity, never a filesystem path, and this method creates
+    /// no recording implicitly.
+    pub async fn continuation_attach_peer_failure_recovery_recording(
+        &self,
+        id: &str,
+    ) -> Result<(), serde_json::Value> {
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        let ledger = ubm_desktop::continuation_journal::run_blocking_result(move || {
+            recordings
+                .get(&id)
+                .and_then(|journal| journal.peer_failure_recovery_ledger())
+                .map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await?;
+        self.ensure_authority()
+            .await
+            .map_err(|error| error.normalized_error().into_wire())?
+            .attach_peer_failure_recovery_ledger(ledger)
+            .await
+            .map_err(|error| {
+                DispatchError::from_core(&error)
+                    .normalized_error()
+                    .into_wire()
+            })
+    }
+
+    /// Trusted host grant for scan-failure recovery. The recording identifier
+    /// is never accepted from renderer IPC and no path or durable capability
+    /// is projected into the webview.
+    pub async fn enable_scan_failure_recovery_for(
+        &self,
+        caller: AuthenticatedCaller,
+        recording_id: &str,
+    ) -> Result<(), serde_json::Value> {
+        let key = caller_key(&caller);
+        let supported = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(&key)
+            .is_some_and(|state| {
+                attachment_diagnostics_supported(&state.versions) && !state.retired
+            });
+        if !supported {
+            return Err(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported,
+                "restoration",
+                "tauri.scan-failure-recovery.grant",
+            )
+            .normalized_error()
+            .into_wire());
+        }
+        let _lifecycle = self.scan_failure_recovery_lifecycle.lock().await;
+        let registry = Arc::clone(&self.scan_failure_recovery);
+        let id = recording_id.to_owned();
+        let lease = ubm_desktop::continuation_journal::run_blocking_result(move || {
+            registry.attach_trusted(&id).map_err(|error| {
+                DispatchError::from_core(&error)
+                    .normalized_error()
+                    .into_wire()
+            })
+        })
+        .await?;
+        let mut admission = self
+            .scan_failure_recovery_admission
+            .lock()
+            .expect("scan recovery admission mutex poisoned");
+        let entry = admission.entry(key).or_default();
+        entry.owner_generation = Some(entry.generation);
+        entry.recording_id = Some(recording_id.to_owned());
+        entry.lease = Some(lease);
+        Ok(())
+    }
+
+    fn revoke_scan_failure_recovery_admission(&self, key: &str) {
+        let mut admission = self
+            .scan_failure_recovery_admission
+            .lock()
+            .expect("scan recovery admission mutex poisoned");
+        let entry = admission.entry(key.to_owned()).or_default();
+        entry.generation = entry.generation.wrapping_add(1);
+        entry.owner_generation = None;
+        entry.recording_id = None;
+        entry.lease = None;
+        self.scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery handle mutex poisoned")
+            .remove(key);
+    }
+
+    async fn scan_failure_recovery_lease(
+        &self,
+        caller: &AuthenticatedCaller,
+        operation: &'static str,
+    ) -> Result<
+        (
+            String,
+            u64,
+            Arc<ubm_desktop::scan_failure_recovery::ScanFailureRecoveryLease>,
+        ),
+        DispatchError,
+    > {
+        self.require_peer_failure_recovery_protocol(caller).await?;
+        let key = caller_key(caller);
+        self.scan_failure_recovery_admission
+            .lock()
+            .expect("scan recovery admission mutex poisoned")
+            .get(&key)
+            .and_then(|entry| {
+                (entry.owner_generation == Some(entry.generation))
+                    .then(|| {
+                        entry
+                            .lease
+                            .as_ref()
+                            .map(|lease| (key.clone(), entry.generation, Arc::clone(lease)))
+                    })
+                    .flatten()
+            })
+            .ok_or_else(|| {
+                DispatchError::new(BleErrorCode::OwnershipDenied, "restoration", operation)
+            })
+    }
+
+    fn scan_failure_recovery_handle(
+        &self,
+        key: &str,
+        generation: u64,
+        id: &str,
+        operation: &'static str,
+    ) -> Result<RendererScanFailureRecoveryHandle, DispatchError> {
+        self.scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery handle mutex poisoned")
+            .get(key)
+            .and_then(|handles| handles.get(id))
+            .filter(|(owner, _)| *owner == generation)
+            .map(|(_, value)| value.clone())
+            .ok_or_else(|| {
+                DispatchError::new(BleErrorCode::OwnershipDenied, "restoration", operation)
+            })
+    }
+
+    /// Keep renderer aliases canonical for the lifetime of one admission.
+    /// Repeated inventory is observational: it must neither invalidate a
+    /// still-live alias nor allocate indefinitely. A distinct recovery value
+    /// is retained only until caller revocation, and the same bounded quota as
+    /// event ownership makes pressure explicit instead of evicting authority.
+    fn retain_scan_failure_recovery_handle(
+        &self,
+        key: &str,
+        generation: u64,
+        handle: RendererScanFailureRecoveryHandle,
+        prefix: &str,
+        operation: &'static str,
+    ) -> Result<String, DispatchError> {
+        let admission = self
+            .scan_failure_recovery_admission
+            .lock()
+            .expect("scan recovery admission mutex poisoned");
+        if admission.get(key).is_none_or(|entry| {
+            entry.owner_generation != Some(generation) || entry.generation != generation
+        }) {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "restoration",
+                operation,
+            ));
+        }
+        let mut aliases = self
+            .scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery handle mutex poisoned");
+        let handles = aliases.entry(key.to_owned()).or_default();
+        if let Some(id) = handles.iter().find_map(|(id, (owner, existing))| {
+            let same_recovery_value = match (existing, &handle) {
+                (
+                    RendererScanFailureRecoveryHandle::Cleanup { receipt: left, .. },
+                    RendererScanFailureRecoveryHandle::Cleanup { receipt: right, .. },
+                ) => left == right,
+                _ => existing == &handle,
+            };
+            (*owner == generation && same_recovery_value).then(|| id.clone())
+        }) {
+            return Ok(id);
+        }
+        if handles.len() >= MAX_PENDING_EVENTS {
+            return Err(DispatchError::new(
+                BleErrorCode::StreamQuota,
+                "restoration",
+                operation,
+            ));
+        }
+        let id = self.id(prefix);
+        handles.insert(id.clone(), (generation, handle));
+        Ok(id)
+    }
+
+    /// Reserve a bounded cleanup alias before a finalizer mutates durable
+    /// state. The reservation itself counts toward capacity, so concurrent
+    /// finalizers cannot both pass a count check then strand a receipt.
+    fn reserve_scan_failure_recovery_cleanup_handle(
+        &self,
+        key: &str,
+        generation: u64,
+        prefix: &str,
+        operation: &'static str,
+    ) -> Result<String, DispatchError> {
+        let admission = self
+            .scan_failure_recovery_admission
+            .lock()
+            .expect("scan recovery admission mutex poisoned");
+        if admission.get(key).is_none_or(|entry| {
+            entry.owner_generation != Some(generation) || entry.generation != generation
+        }) {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "restoration",
+                operation,
+            ));
+        }
+        let mut aliases = self
+            .scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery handle mutex poisoned");
+        let handles = aliases.entry(key.to_owned()).or_default();
+        if handles.len() >= MAX_PENDING_EVENTS {
+            return Err(DispatchError::new(
+                BleErrorCode::StreamQuota,
+                "restoration",
+                operation,
+            ));
+        }
+        let id = self.id(prefix);
+        handles.insert(
+            id.clone(),
+            (
+                generation,
+                RendererScanFailureRecoveryHandle::ReservedCleanup,
+            ),
+        );
+        Ok(id)
+    }
+
+    fn cancel_scan_failure_recovery_cleanup_reservation(
+        &self,
+        key: &str,
+        generation: u64,
+        id: &str,
+    ) {
+        let mut aliases = self
+            .scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery handle mutex poisoned");
+        let Some(handles) = aliases.get_mut(key) else {
+            return;
+        };
+        if matches!(handles.get(id), Some((owner, RendererScanFailureRecoveryHandle::ReservedCleanup)) if *owner == generation)
+        {
+            handles.remove(id);
+        }
+        if handles.is_empty() {
+            aliases.remove(key);
+        }
+    }
+
+    fn commit_scan_failure_recovery_cleanup_reservation(
+        &self,
+        key: &str,
+        generation: u64,
+        id: &str,
+        cleanup: RendererScanFailureRecoveryHandle,
+        operation: &'static str,
+    ) -> Result<(), DispatchError> {
+        let admission = self
+            .scan_failure_recovery_admission
+            .lock()
+            .expect("scan recovery admission mutex poisoned");
+        if admission.get(key).is_none_or(|entry| {
+            entry.owner_generation != Some(generation) || entry.generation != generation
+        }) {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "restoration",
+                operation,
+            ));
+        }
+        let mut aliases = self
+            .scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery handle mutex poisoned");
+        let Some(handles) = aliases.get_mut(key) else {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "restoration",
+                operation,
+            ));
+        };
+        if !matches!(handles.get(id), Some((owner, RendererScanFailureRecoveryHandle::ReservedCleanup)) if *owner == generation)
+        {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "restoration",
+                operation,
+            ));
+        }
+        handles.insert(id.to_owned(), (generation, cleanup));
+        Ok(())
+    }
+
+    fn retire_completed_scan_failure_aliases(&self, key: &str, generation: u64, cleanup_id: &str) {
+        let mut aliases = self
+            .scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery handle mutex poisoned");
+        let Some(handles) = aliases.get_mut(key) else {
+            return;
+        };
+        let owner = handles
+            .get(cleanup_id)
+            .and_then(|(entry_generation, handle)| {
+                (*entry_generation == generation).then_some(match handle {
+                    RendererScanFailureRecoveryHandle::Cleanup { owner, .. } => *owner,
+                    _ => None,
+                })
+            })
+            .flatten();
+        handles.retain(|id, (entry_generation, handle)| {
+            if *entry_generation != generation || id == cleanup_id {
+                return id != cleanup_id;
+            }
+            let Some(owner) = owner else {
+                return true;
+            };
+            match handle {
+                RendererScanFailureRecoveryHandle::Owner(candidate) => *candidate != owner,
+                RendererScanFailureRecoveryHandle::Head(candidate) => {
+                    candidate.ordinal != owner.ordinal || candidate.capability != owner.capability
+                }
+                RendererScanFailureRecoveryHandle::ReservedCleanup => true,
+                RendererScanFailureRecoveryHandle::Cleanup { .. } => true,
+            }
+        });
+    }
+
+    /// Reclaim the registry cache only after the durable recording has no
+    /// owner and no cleanup replay receipt. All aliases for that recording are
+    /// then stale by definition, so revoke them atomically with the trusted
+    /// admission rather than evicting any still-actionable capability.
+    async fn reclaim_fully_retired_scan_failure_recovery(
+        &self,
+        key: &str,
+        lease: &Arc<ubm_desktop::scan_failure_recovery::ScanFailureRecoveryLease>,
+    ) -> Result<(), DispatchError> {
+        let _lifecycle = self.scan_failure_recovery_lifecycle.lock().await;
+        if !lease
+            .is_fully_retired()
+            .map_err(|error| DispatchError::from_core(&error))?
+        {
+            return Ok(());
+        }
+        let recording_id = self
+            .scan_failure_recovery_admission
+            .lock()
+            .expect("scan recovery admission mutex poisoned")
+            .get(key)
+            .filter(|entry| {
+                entry
+                    .lease
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, lease))
+            })
+            .and_then(|entry| entry.recording_id.clone());
+        let Some(recording_id) = recording_id else {
+            return Ok(());
+        };
+        self.scan_failure_recovery
+            .detach_trusted(&recording_id)
+            .map_err(|error| DispatchError::from_core(&error))?;
+        let revoked = {
+            let mut admission = self
+                .scan_failure_recovery_admission
+                .lock()
+                .expect("scan recovery admission mutex poisoned");
+            let keys = admission
+                .iter()
+                .filter(|&(_candidate, entry)| {
+                    entry.recording_id.as_deref() == Some(recording_id.as_str())
+                        && entry.owner_generation == Some(entry.generation)
+                })
+                .map(|(candidate, _entry)| candidate.clone())
+                .collect::<Vec<_>>();
+            for candidate in &keys {
+                let entry = admission
+                    .get_mut(candidate)
+                    .expect("admission key was collected from this map");
+                entry.generation = entry.generation.wrapping_add(1);
+                entry.owner_generation = None;
+                entry.recording_id = None;
+                entry.lease = None;
+            }
+            keys
+        };
+        let mut handles = self
+            .scan_failure_recovery_handles
+            .lock()
+            .expect("scan recovery handle mutex poisoned");
+        for candidate in revoked {
+            handles.remove(&candidate);
+        }
+        Ok(())
+    }
+
+    /// Trusted-main opt-in for one exact Tauri caller. The caller identity is
+    /// supplied by the host, never read from IPC payload; page reload and
+    /// window teardown revoke this grant with the caller's other resources.
+    pub async fn enable_peer_failure_recovery_for(
+        &self,
+        caller: AuthenticatedCaller,
+        recording_id: &str,
+    ) -> Result<(), serde_json::Value> {
+        self.enable_peer_failure_recovery_for_after(
+            caller,
+            self.continuation_attach_peer_failure_recovery_recording(recording_id),
+        )
+        .await
+    }
+
+    async fn enable_peer_failure_recovery_for_after<F>(
+        &self,
+        caller: AuthenticatedCaller,
+        attach: F,
+    ) -> Result<(), serde_json::Value>
+    where
+        F: Future<Output = Result<(), serde_json::Value>>,
+    {
+        let key = caller_key(&caller);
+        let (lease_generation, protocol_supported) = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(&key)
+            .filter(|caller| !caller.retired)
+            .map(|caller| {
+                (
+                    caller.lease_generation.clone(),
+                    attachment_diagnostics_supported(&caller.versions),
+                )
+            })
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "restoration",
+                    "tauri.peer-failure-recovery.grant",
+                )
+                .normalized_error()
+                .into_wire()
+            })?;
+        if !protocol_supported {
+            return Err(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported,
+                "restoration",
+                "tauri.peer-failure-recovery.grant",
+            )
+            .normalized_error()
+            .into_wire());
+        }
+        let generation = self
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("peer failure recovery admission mutex poisoned")
+            .entry(key.clone())
+            .or_default()
+            .generation;
+
+        attach.await?;
+
+        // A release cannot await this admission mutex.  Its synchronous
+        // generation advance therefore wins over this post-attach grant,
+        // including when a new renderer replaces the same caller identity.
+        let current = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(&key)
+            .filter(|caller| !caller.retired)
+            .map(|caller| {
+                (
+                    caller.lease_generation.clone(),
+                    attachment_diagnostics_supported(&caller.versions),
+                )
+            });
+        let mut admission = self
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("peer failure recovery admission mutex poisoned");
+        let entry = admission.entry(key).or_default();
+        if current.as_ref().is_none_or(|(current_lease, supported)| {
+            current_lease != &lease_generation || !supported
+        }) || entry.generation != generation
+        {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "restoration",
+                "tauri.peer-failure-recovery.grant",
+            )
+            .normalized_error()
+            .into_wire());
+        }
+        entry.owner_generation = Some(generation);
+        Ok(())
+    }
+
+    fn peer_failure_recovery_owner(
+        &self,
+        caller: &AuthenticatedCaller,
+        operation: &'static str,
+    ) -> Result<(String, u64), DispatchError> {
+        let key = caller_key(caller);
+        let generation = self
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("peer failure recovery admission mutex poisoned")
+            .get(&key)
+            .and_then(|entry| {
+                (entry.owner_generation == Some(entry.generation)).then_some(entry.generation)
+            });
+        generation
+            .map(|generation| (key, generation))
+            .ok_or_else(|| {
+                DispatchError::new(BleErrorCode::OwnershipDenied, "restoration", operation)
+            })
+    }
+
+    fn revoke_peer_failure_recovery_admission(&self, key: &str) {
+        let mut admission = self
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("peer failure recovery admission mutex poisoned");
+        let entry = admission.entry(key.to_owned()).or_default();
+        entry.generation = entry.generation.wrapping_add(1);
+        entry.owner_generation = None;
+    }
+
+    async fn require_peer_failure_recovery_protocol(
+        &self,
+        caller: &AuthenticatedCaller,
+    ) -> Result<(), DispatchError> {
+        let key = caller_key(caller);
+        if self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(&key)
+            .is_some_and(|state| attachment_diagnostics_supported(&state.versions))
+        {
+            Ok(())
+        } else {
+            Err(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported,
+                "restoration",
+                "tauri.peer-failure-recovery.protocol",
+            ))
+        }
+    }
+
+    async fn require_ordered_route_protocol(
+        &self,
+        caller: &AuthenticatedCaller,
+        command: &str,
+    ) -> Result<(), DispatchError> {
+        if !is_ordered_route_command(command) {
+            return Ok(());
+        }
+        let key = caller_key(caller);
+        if self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(&key)
+            .and_then(|state| selected_ipc_protocol(&state.versions))
+            .is_some_and(|version| version >= ORDERED_ROUTE_MINIMUM_IPC_PROTOCOL)
+        {
+            Ok(())
+        } else {
+            Err(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported,
+                "gatt",
+                "tauri.ordered.ipc-v9-required",
+            ))
+        }
+    }
+
+    /// The terminal-evidence grammar is deliberately a later opt-in than the
+    /// ordinary IPC baseline. Until the trusted host has a recording-owned
+    /// durable ledger, this route remains unavailable: it must never be
+    /// emulated with a renderer-selected directory or an in-memory cache.
+    async fn terminal_evidence_route(
+        &self,
+        caller: &AuthenticatedCaller,
+        command: &str,
+        payload: &BTreeMap<String, IpcValue>,
+        binary_payload: Option<Vec<u8>>,
+    ) -> Result<IpcValue, DispatchError> {
+        let owner = {
+            let state = self.inner.lock().await;
+            let key = caller_key(caller);
+            let caller_state = state.callers.get(&key).ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "restoration",
+                    "tauri.terminal-evidence-owner",
+                )
+            })?;
+            if !selected_ipc_protocol(&caller_state.versions)
+                .is_some_and(|value| value >= TERMINAL_EVIDENCE_ROUTE_MINIMUM_IPC_PROTOCOL)
+            {
+                return Err(DispatchError::new(
+                    BleErrorCode::CapabilityUnsupported,
+                    "restoration",
+                    "tauri.terminal-evidence.ipc-v11-required",
+                ));
+            }
+            TerminalEvidenceOwner {
+                producer: String::new(),
+                caller_key: key,
+                lease_id: caller_state.lease_id.clone(),
+                lease_generation: caller_state.lease_generation.clone(),
+                recovery_lease_id: terminal_evidence_recovery_lease_id(
+                    &caller_state.lease_id,
+                    &caller_state.lease_generation,
+                ),
+                reservation_id: String::new(),
+                recoverable: false,
+            }
+        };
+        if owner.lease_id.is_empty() {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "restoration",
+                "tauri.terminal-evidence-owner",
+            ));
+        }
+        let ledger = self
+            .terminal_evidence_ledger
+            .lock()
+            .expect("terminal evidence ledger mutex poisoned")
+            .clone()
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::CapabilityUnsupported,
+                    "restoration",
+                    "tauri.terminal-evidence.ledger-unconfigured",
+                )
+            })?;
+        match command {
+            "terminalEvidence.reserve" => {
+                if binary_payload.is_some() {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        command,
+                    ));
+                }
+                let request = terminal_evidence::parse_reserve(payload)?;
+                let producer = request.producer.clone();
+                let reservation = match ledger.reserve(
+                    &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: request.producer,
+                        manager_id: request.scope.manager_id,
+                        operation_id: request.scope.operation_id,
+                        incarnation: request.scope.incarnation,
+                        scope_utf16le: request.scope.scope_utf16le,
+                    },
+                    request.maximum_bytes,
+                ) {
+                    Ok(reservation) => reservation,
+                    Err(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Quota) => {
+                        return Ok(object([
+                            ("kind", string("refused")),
+                            ("reason", string("quota-exhausted")),
+                        ]));
+                    }
+                    Err(error) => {
+                        return Err(DispatchError::new(
+                            BleErrorCode::PlatformFailure,
+                            "restoration",
+                            "tauri.terminal-evidence.reserve",
+                        )
+                        .platform(error.to_string()))
+                    }
+                };
+                let mut state = self.inner.lock().await;
+                let owner = TerminalEvidenceOwner {
+                    producer,
+                    reservation_id: reservation.reservation_id.clone(),
+                    recoverable: false,
+                    ..owner.clone()
+                };
+                if let Some(existing) = state
+                    .terminal_evidence_owners
+                    .get(&reservation.reservation_id)
+                {
+                    if existing.caller_key != owner.caller_key
+                        || existing.lease_id != owner.lease_id
+                        || existing.lease_generation != owner.lease_generation
+                    {
+                        return Err(DispatchError::new(
+                            BleErrorCode::OwnershipDenied,
+                            "restoration",
+                            "tauri.terminal-evidence.reserve-owner",
+                        ));
+                    }
+                }
+                state
+                    .terminal_evidence_owners
+                    .insert(reservation.reservation_id.clone(), owner);
+                Ok(object([
+                    ("kind", string("reserved")),
+                    ("reservationId", string(reservation.reservation_id)),
+                    (
+                        "maximumBytes",
+                        number(i64::try_from(reservation.maximum_bytes).map_err(|_| {
+                            DispatchError::new(
+                                BleErrorCode::PlatformFailure,
+                                "restoration",
+                                "tauri.terminal-evidence.reserve",
+                            )
+                        })?),
+                    ),
+                ]))
+            }
+            "terminalEvidence.commit" => {
+                let request = terminal_evidence::parse_commit(payload, binary_payload)?;
+                let reservation_owner = self
+                    .terminal_evidence_owner(
+                        &owner,
+                        &request.reservation_id,
+                        "tauri.terminal-evidence.commit",
+                    )
+                    .await?;
+                let digest = terminal_evidence::digest_bytes(&request.digest)?;
+                let committed = match ledger.commit(
+                    &request.reservation_id,
+                    &request.canonical_bytes,
+                    digest,
+                ) {
+                    Ok(committed) => committed,
+                    Err(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Quota) => {
+                        return Ok(object([
+                            ("kind", string("refused")),
+                            ("reason", string("quota-exhausted")),
+                        ]));
+                    }
+                    Err(error) => {
+                        return Err(DispatchError::new(
+                            BleErrorCode::PlatformFailure,
+                            "restoration",
+                            "tauri.terminal-evidence.commit",
+                        )
+                        .platform(error.to_string()))
+                    }
+                };
+                self.inner
+                    .lock()
+                    .await
+                    .terminal_evidence_owners
+                    .insert(committed.reference.clone(), reservation_owner);
+                Ok(object([
+                    ("kind", string("committed")),
+                    ("ref", string(committed.reference)),
+                    ("byteLength", string(committed.byte_length.to_string())),
+                    ("digest", string(request.digest)),
+                    ("formatVersion", number(i64::from(committed.format_version))),
+                    ("durability", string("committed")),
+                ]))
+            }
+            "terminalEvidence.read" => {
+                if binary_payload.is_some() {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        command,
+                    ));
+                }
+                let reference =
+                    terminal_evidence::parse_reference(payload, "tauri.terminal-evidence.read")?;
+                self.terminal_evidence_owner(&owner, &reference, "tauri.terminal-evidence.read")
+                    .await?;
+                let (canonical_bytes, digest) =
+                    ledger.read(&reference, u64::MAX).map_err(|error| {
+                        DispatchError::new(
+                            BleErrorCode::PlatformFailure,
+                            "restoration",
+                            "tauri.terminal-evidence.read",
+                        )
+                        .platform(error.to_string())
+                    })?;
+                Ok(object([
+                    ("kind", string("committed")),
+                    ("canonicalBytes", IpcValue::Bytes(canonical_bytes)),
+                    (
+                        "digest",
+                        string(
+                            digest
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>(),
+                        ),
+                    ),
+                ]))
+            }
+            "terminalEvidence.release" => {
+                if binary_payload.is_some() {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        command,
+                    ));
+                }
+                let reservation_id = terminal_evidence::parse_release(payload)?;
+                let reservation_owner = self
+                    .terminal_evidence_owner(
+                        &owner,
+                        &reservation_id,
+                        "tauri.terminal-evidence.release",
+                    )
+                    .await?;
+                ledger.abandon(&reservation_id).map_err(|error| {
+                    DispatchError::new(
+                        BleErrorCode::PlatformFailure,
+                        "restoration",
+                        "tauri.terminal-evidence.release",
+                    )
+                    .platform(error.to_string())
+                })?;
+                // Abandonment ends only the caller's source-time reservation.
+                // A staged or committed receipt remains durable until its
+                // authenticated recovery acknowledgement, so retain any
+                // opaque reference mapping owned by this reservation.
+                self.inner
+                    .lock()
+                    .await
+                    .terminal_evidence_owners
+                    .remove(&reservation_owner.reservation_id);
+                Ok(object([("kind", string("released"))]))
+            }
+            command @ ("terminalEvidence.recovery.list"
+            | "terminalEvidence.recovery.listWithStatus") => {
+                let busy_producers = if command == "terminalEvidence.recovery.listWithStatus" {
+                    terminal_evidence::parse_recovery_list_with_status(payload)?;
+                    self.refresh_terminal_evidence_recovery(caller).await?
+                } else {
+                    terminal_evidence::parse_recovery_list(payload)?;
+                    let busy_producers = self.refresh_terminal_evidence_recovery(caller).await?;
+                    if !busy_producers.is_empty() {
+                        let mut error = DispatchError::new(
+                            BleErrorCode::PlatformFailure,
+                            "restoration",
+                            "tauri.terminal-evidence.recovery.list",
+                        );
+                        error.retryability = Retryability::CallerDecides;
+                        return Err(error.platform("terminal evidence recovery is busy"));
+                    }
+                    busy_producers
+                };
+                let handles = self
+                    .inner
+                    .lock()
+                    .await
+                    .terminal_evidence_owners
+                    .iter()
+                    .filter(|(handle, mapped)| {
+                        *handle != &mapped.reservation_id
+                            && mapped.recoverable
+                            && mapped.caller_key == owner.caller_key
+                            && mapped.lease_id == owner.lease_id
+                            && mapped.lease_generation == owner.lease_generation
+                    })
+                    .map(|(handle, mapped)| (handle.clone(), mapped.clone()))
+                    .collect::<Vec<_>>();
+                let mut records = Vec::with_capacity(handles.len());
+                for (handle, mapped) in handles {
+                    let (bytes, digest) = ledger.read(&handle, u64::MAX).map_err(|error| {
+                        DispatchError::new(
+                            BleErrorCode::PlatformFailure,
+                            "restoration",
+                            "tauri.terminal-evidence.recovery.list",
+                        )
+                        .platform(error.to_string())
+                    })?;
+                    records.push(object([
+                        ("handle", string(handle)),
+                        ("producer", string(mapped.producer)),
+                        (
+                            "byteLength",
+                            number(i64::try_from(bytes.len()).map_err(|_| {
+                                DispatchError::new(
+                                    BleErrorCode::PlatformFailure,
+                                    "restoration",
+                                    "tauri.terminal-evidence.recovery.list",
+                                )
+                            })?),
+                        ),
+                        (
+                            "digest",
+                            string(
+                                digest
+                                    .iter()
+                                    .map(|byte| format!("{byte:02x}"))
+                                    .collect::<String>(),
+                            ),
+                        ),
+                        ("formatVersion", number(1)),
+                    ]));
+                }
+                if command == "terminalEvidence.recovery.listWithStatus" {
+                    return Ok(object([
+                        ("records", IpcValue::Array(records)),
+                        (
+                            "busyProducers",
+                            IpcValue::Array(busy_producers.into_iter().map(string).collect()),
+                        ),
+                    ]));
+                }
+                Ok(object([("records", IpcValue::Array(records))]))
+            }
+            "terminalEvidence.recovery.read" => {
+                let (handle, maximum_bytes) = terminal_evidence::parse_recovery_read(payload)?;
+                let mapped = self
+                    .terminal_evidence_owner(
+                        &owner,
+                        &handle,
+                        "tauri.terminal-evidence.recovery.read",
+                    )
+                    .await?;
+                if !mapped.recoverable {
+                    return Err(DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "restoration",
+                        "tauri.terminal-evidence.recovery.read",
+                    ));
+                }
+                let (canonical_bytes, digest) =
+                    ledger.read(&handle, maximum_bytes).map_err(|error| {
+                        DispatchError::new(
+                            BleErrorCode::PlatformFailure,
+                            "restoration",
+                            "tauri.terminal-evidence.recovery.read",
+                        )
+                        .platform(error.to_string())
+                    })?;
+                Ok(object([
+                    ("kind", string("committed")),
+                    ("canonicalBytes", IpcValue::Bytes(canonical_bytes)),
+                    (
+                        "digest",
+                        string(
+                            digest
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>(),
+                        ),
+                    ),
+                ]))
+            }
+            "terminalEvidence.recovery.ack" => {
+                let handle = terminal_evidence::parse_recovery_ack(payload)?;
+                let mapped = self
+                    .terminal_evidence_owner(
+                        &owner,
+                        &handle,
+                        "tauri.terminal-evidence.recovery.ack",
+                    )
+                    .await?;
+                if !mapped.recoverable {
+                    return Err(DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "restoration",
+                        "tauri.terminal-evidence.recovery.ack",
+                    ));
+                }
+                // The webview supplies only its opaque recovery alias. Bind
+                // the destructive acknowledgement to the producer and
+                // recipient persisted by the trusted host at staging time;
+                // current caller/lease strings are authorization checks, not
+                // storage claims.
+                ledger
+                    .acknowledge_recovered(
+                        &mapped.recovery_lease_id,
+                        &mapped.reservation_id,
+                        &handle,
+                        &mapped.producer,
+                        &mapped.caller_key,
+                    )
+                    .map_err(|error| {
+                        DispatchError::new(
+                            BleErrorCode::PlatformFailure,
+                            "restoration",
+                            "tauri.terminal-evidence.recovery.ack",
+                        )
+                        .platform(error.to_string())
+                    })?;
+                self.inner
+                    .lock()
+                    .await
+                    .terminal_evidence_owners
+                    .retain(|_, entry| entry.reservation_id != mapped.reservation_id);
+                Ok(object([("state", string("released"))]))
+            }
+            _ => unreachable!("terminal evidence route guard admitted an unknown command"),
+        }
+    }
+
+    async fn terminal_evidence_owner(
+        &self,
+        caller: &TerminalEvidenceOwner,
+        handle: &str,
+        operation: &'static str,
+    ) -> Result<TerminalEvidenceOwner, DispatchError> {
+        self.inner
+            .lock()
+            .await
+            .terminal_evidence_owners
+            .get(handle)
+            .filter(|owner| {
+                owner.caller_key == caller.caller_key
+                    && owner.lease_id == caller.lease_id
+                    && owner.lease_generation == caller.lease_generation
+            })
+            .cloned()
+            .ok_or_else(|| {
+                DispatchError::new(BleErrorCode::OwnershipDenied, "restoration", operation)
+            })
+    }
+
+    async fn terminal_evidence_binding(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: &BTreeMap<String, IpcValue>,
+        producer: &str,
+        operation: &'static str,
+    ) -> Result<Option<TerminalEvidenceBinding>, DispatchError> {
+        let Some(scope) = terminal_evidence::parse_source_scope(payload, producer, operation)?
+        else {
+            return Ok(None);
+        };
+        let ledger = self
+            .terminal_evidence_ledger
+            .lock()
+            .expect("terminal evidence ledger mutex poisoned")
+            .clone()
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::CapabilityUnsupported,
+                    "stream",
+                    "tauri.terminal-evidence.ledger-unconfigured",
+                )
+            })?;
+        let reservation = ledger.attach(&scope).map_err(|error| {
+            DispatchError::new(BleErrorCode::PlatformFailure, "stream", operation)
+                .platform(error.to_string())
+        })?;
+        let (lease_id, lease_generation) = expected_lease(payload, operation)?;
+        self.terminal_evidence_owner(
+            &TerminalEvidenceOwner {
+                producer: producer.to_owned(),
+                caller_key: caller_key(caller),
+                recovery_lease_id: terminal_evidence_recovery_lease_id(
+                    &lease_id,
+                    &lease_generation,
+                ),
+                lease_id,
+                lease_generation,
+                reservation_id: String::new(),
+                recoverable: false,
+            },
+            &reservation.reservation_id,
+            operation,
+        )
+        .await?;
+        Ok(Some(TerminalEvidenceBinding {
+            reservation_id: reservation.reservation_id,
+            scope,
+        }))
+    }
+
+    fn renderer_peer_failure_recovery_handle(
+        &self,
+        caller: &AuthenticatedCaller,
+        handle_id: &str,
+        operation: &'static str,
+    ) -> Result<RendererPeerFailureRecoveryHandle, DispatchError> {
+        let (key, generation) = self.peer_failure_recovery_owner(caller, operation)?;
+        self.peer_failure_recovery_handles
+            .lock()
+            .expect("peer failure recovery handle mutex poisoned")
+            .get(&key)
+            .and_then(|handles| handles.get(handle_id))
+            .filter(|handle| handle.owner_generation == generation)
+            .cloned()
+            .ok_or_else(|| {
+                DispatchError::new(BleErrorCode::OwnershipDenied, "restoration", operation)
+            })
+    }
+
+    /// Atomically publish handles only for the exact grant generation that
+    /// enumerated them.  Kept separate so the list/release interleaving is
+    /// directly regression-tested without depending on scheduler timing.
+    fn install_peer_failure_recovery_handles(
+        &self,
+        key: String,
+        generation: u64,
+        handles: HashMap<String, RendererPeerFailureRecoveryHandle>,
+    ) -> Result<(), DispatchError> {
+        let admission = self
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("peer failure recovery admission mutex poisoned");
+        if admission.get(&key).is_none_or(|entry| {
+            entry.owner_generation != Some(generation) || entry.generation != generation
+        }) {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "restoration",
+                "tauri.peer-failure-recovery.list",
+            ));
+        }
+        self.peer_failure_recovery_handles
+            .lock()
+            .expect("peer failure recovery handle mutex poisoned")
+            .insert(key, handles);
+        Ok(())
+    }
+
+    fn reserve_peer_failure_recovery_acknowledgement(
+        &self,
+        key: &str,
+        handle_id: &str,
+    ) -> Result<(u64, RendererPeerFailureRecoveryHandle), DispatchError> {
+        let mut admission = self
+            .peer_failure_recovery_admission
+            .lock()
+            .expect("peer failure recovery admission mutex poisoned");
+        let generation = admission
+            .get(key)
+            .and_then(|entry| {
+                (entry.owner_generation == Some(entry.generation)).then_some(entry.generation)
+            })
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "restoration",
+                    "tauri.peer-failure-recovery.ack",
+                )
+            })?;
+        let handle = self
+            .peer_failure_recovery_handles
+            .lock()
+            .expect("peer failure recovery handle mutex poisoned")
+            .get_mut(key)
+            .and_then(|handles| {
+                (handles
+                    .get(handle_id)
+                    .is_some_and(|handle| handle.owner_generation == generation))
+                .then(|| handles.remove(handle_id))
+                .flatten()
+            })
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "restoration",
+                    "tauri.peer-failure-recovery.ack",
+                )
+            })?;
+        admission
+            .get_mut(key)
+            .expect("granted peer failure recovery admission disappeared")
+            .in_flight_acknowledgements
+            .insert((generation, handle_id.to_owned()));
+        Ok((generation, handle))
+    }
+
+    fn finish_peer_failure_recovery_acknowledgement(
+        &self,
+        key: &str,
+        generation: u64,
+        handle_id: &str,
+    ) {
+        self.peer_failure_recovery_admission
+            .lock()
+            .expect("peer failure recovery admission mutex poisoned")
+            .get_mut(key)
+            .expect("peer failure recovery admission must outlive an admitted acknowledgement")
+            .in_flight_acknowledgements
+            .remove(&(generation, handle_id.to_owned()));
+    }
+
+    /// Renderer route: mint opaque, caller-bound handles for all entries in
+    /// the trusted host's already-attached durable ledger.  The webview is
+    /// deliberately not allowed to choose a recording, descriptor, consumer,
+    /// or recipient lease.
+    async fn renderer_peer_failure_recovery_list(
+        &self,
+        caller: &AuthenticatedCaller,
+    ) -> Result<IpcValue, DispatchError> {
+        let (key, generation) =
+            self.peer_failure_recovery_owner(caller, "tauri.peer-failure-recovery.list")?;
+        let authority = self.ensure_authority().await?;
+        let mut handles = HashMap::new();
+        let mut projected = Vec::new();
+        for occurrence in authority.durable_peer_failure_recoveries() {
+            let producer_ack = match occurrence.producer_ack {
+                ubm_desktop::central::DurablePeerFailureProducerAck::NotStarted => "not-started",
+                ubm_desktop::central::DurablePeerFailureProducerAck::InFlight => "in-flight",
+                ubm_desktop::central::DurablePeerFailureProducerAck::Committed => "committed",
+            };
+            for recipient in occurrence.recipients {
+                let handle_id = self.id("tauri-peer-failure-recovery");
+                let selector = CoreSelector {
+                    service_uuid: recipient.scope.1.clone(),
+                    service_occurrence: Some(recipient.scope.2),
+                    characteristic_uuid: Some(recipient.scope.3.clone()),
+                    characteristic_occurrence: Some(recipient.scope.4),
+                    descriptor_uuid: None,
+                    descriptor_occurrence: None,
+                };
+                handles.insert(
+                    handle_id.clone(),
+                    RendererPeerFailureRecoveryHandle {
+                        owner_generation: generation,
+                        descriptor: occurrence.descriptor,
+                        peer_id: recipient.scope.0.clone(),
+                        selector: selector.clone(),
+                        consumer: recipient.consumer,
+                        recipient_lease: recipient.recipient_lease,
+                    },
+                );
+                projected.push(object([
+                    ("handleId", string(handle_id)),
+                    ("peerId", string(recipient.scope.0)),
+                    (
+                        "selector",
+                        object([
+                            ("serviceUuid", string(selector.service_uuid)),
+                            ("serviceOccurrence", string(recipient.scope.2.to_string())),
+                            ("characteristicUuid", string(recipient.scope.3)),
+                            (
+                                "characteristicOccurrence",
+                                string(recipient.scope.4.to_string()),
+                            ),
+                        ]),
+                    ),
+                    (
+                        "contiguousRead",
+                        string(recipient.contiguous_read.to_string()),
+                    ),
+                    ("acknowledged", IpcValue::Bool(recipient.acknowledged)),
+                    ("producerAck", string(producer_ack)),
+                ]));
+            }
+        }
+        // Check the grant and install its handles under the same admission
+        // lock.  A release or a re-bootstrap using the same caller key
+        // therefore either happens before this block (and denies it), or
+        // happens after it and removes these exact-generation handles.
+        self.install_peer_failure_recovery_handles(key, generation, handles)?;
+        Ok(object([("recoveries", IpcValue::Array(projected))]))
+    }
+
+    async fn renderer_peer_failure_recovery_read(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: &BTreeMap<String, IpcValue>,
+    ) -> Result<IpcValue, DispatchError> {
+        let handle_id = required_string(payload, "handleId", "tauri.peer-failure-recovery.read")?;
+        let offset = peer_failure_recovery_offset(
+            &required_string(payload, "offset", "tauri.peer-failure-recovery.read")?,
+            "tauri.peer-failure-recovery.read",
+        )?;
+        let handle = self.renderer_peer_failure_recovery_handle(
+            caller,
+            &handle_id,
+            "tauri.peer-failure-recovery.read",
+        )?;
+        let authority = self.ensure_authority().await?;
+        let chunk = authority
+            .read_peer_notification_failure_recovery(
+                &handle.descriptor,
+                &handle.peer_id,
+                &handle.selector,
+                &handle.consumer,
+                &handle.recipient_lease,
+                offset,
+            )
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
+        self.renderer_peer_failure_recovery_handle(
+            caller,
+            &handle_id,
+            "tauri.peer-failure-recovery.read",
+        )?;
+        Ok(object([
+            ("offset", string(chunk.offset.to_string())),
+            ("nextOffset", string(chunk.next_offset.to_string())),
+            ("bytes", IpcValue::Bytes(chunk.bytes)),
+            ("done", IpcValue::Bool(chunk.done)),
+        ]))
+    }
+
+    async fn renderer_peer_failure_recovery_acknowledge(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: &BTreeMap<String, IpcValue>,
+    ) -> Result<IpcValue, DispatchError> {
+        let handle_id = required_string(payload, "handleId", "tauri.peer-failure-recovery.ack")?;
+        let key = caller_key(caller);
+        // Opening the shared authority may await.  Do it before reserving an
+        // ACK admission so a release during authority startup wins without a
+        // retained destructive-operation lease.
+        let authority = self.ensure_authority().await?;
+        // The removal is the ACK linearization point.  It is done while the
+        // caller generation is still granted, before awaiting native work, so
+        // release-first never consumes a retained record.  Release-after
+        // this point revokes all future access but cannot transfer this exact
+        // admitted operation to a replacement renderer with the same key.
+        let (generation, handle) =
+            self.reserve_peer_failure_recovery_acknowledgement(&key, &handle_id)?;
+        let result = authority
+            .acknowledge_peer_notification_failure_recovery(
+                &handle.descriptor,
+                &handle.peer_id,
+                &handle.selector,
+                &handle.consumer,
+                &handle.recipient_lease,
+            )
+            .await
+            .map_err(|error| DispatchError::from_core(&error));
+        self.finish_peer_failure_recovery_acknowledgement(&key, generation, &handle_id);
+        result?;
+        Ok(object([("acknowledged", IpcValue::Bool(true))]))
+    }
+
+    async fn renderer_scan_failure_recovery(
+        &self,
+        caller: &AuthenticatedCaller,
+        command: &str,
+        payload: &BTreeMap<String, IpcValue>,
+    ) -> Result<IpcValue, DispatchError> {
+        let operation: &'static str = match command {
+            "scanFailureRecovery.list" => "tauri.scan-failure-recovery.list",
+            "scanFailureRecovery.owners" => "tauri.scan-failure-recovery.owners",
+            "scanFailureRecovery.member" => "tauri.scan-failure-recovery.member",
+            "scanFailureRecovery.head" => "tauri.scan-failure-recovery.head",
+            "scanFailureRecovery.read" => "tauri.scan-failure-recovery.read",
+            "scanFailureRecovery.ack" => "tauri.scan-failure-recovery.ack",
+            "scanFailureRecovery.retire" => "tauri.scan-failure-recovery.retire",
+            "scanFailureRecovery.release" => "tauri.scan-failure-recovery.release",
+            "scanFailureRecovery.finalize" => "tauri.scan-failure-recovery.finalize",
+            "scanFailureRecovery.cleanup.list" => "tauri.scan-failure-recovery.cleanup.list",
+            "scanFailureRecovery.cleanup.retire" => "tauri.scan-failure-recovery.cleanup.retire",
+            "scanFailureRecovery.raw.info" => "tauri.scan-failure-recovery.raw.info",
+            "scanFailureRecovery.raw.member" => "tauri.scan-failure-recovery.raw.member",
+            "scanFailureRecovery.raw.token" => "tauri.scan-failure-recovery.raw.token",
+            "scanFailureRecovery.raw.retire" => "tauri.scan-failure-recovery.raw.retire",
+            "scanFailureRecovery.raw.release" => "tauri.scan-failure-recovery.raw.release",
+            "scanFailureRecovery.raw.finalize" => "tauri.scan-failure-recovery.raw.finalize",
+            _ => {
+                return Err(DispatchError::new(
+                    BleErrorCode::ProtocolMalformed,
+                    "ipc",
+                    "tauri.scan-failure-recovery.route",
+                ))
+            }
+        };
+        let (key, generation, lease) = self.scan_failure_recovery_lease(caller, operation).await?;
+        if command == "scanFailureRecovery.list" {
+            // A recovery id is an alias only; owners are enumerated later. Its
+            // sentinel is never passed to the lease.
+            let recovery_id = self.retain_scan_failure_recovery_handle(
+                &key,
+                generation,
+                RendererScanFailureRecoveryHandle::Owner(
+                    ubm_desktop::continuation_outbox::PendingScanFailure {
+                        ordinal: u64::MAX,
+                        capability: [0; 16],
+                    },
+                ),
+                "tauri-scan-failure-recovery",
+                operation,
+            )?;
+            return Ok(object([(
+                "recoveries",
+                IpcValue::Array(vec![object([("handleId", string(recovery_id))])]),
+            )]));
+        }
+        let recovery_id = required_string(payload, "recoveryId", operation)?;
+        let recovery_alias =
+            self.scan_failure_recovery_handle(&key, generation, &recovery_id, operation)?;
+        if !matches!(
+            recovery_alias,
+            RendererScanFailureRecoveryHandle::Owner(
+                ubm_desktop::continuation_outbox::PendingScanFailure {
+                    ordinal: u64::MAX,
+                    ..
+                }
+            )
+        ) {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "restoration",
+                operation,
+            ));
+        }
+        if command == "scanFailureRecovery.owners" {
+            let owners = lease
+                .owners()
+                .into_iter()
+                .map(|owner| {
+                    let id = self.retain_scan_failure_recovery_handle(
+                        &key,
+                        generation,
+                        RendererScanFailureRecoveryHandle::Owner(owner.key),
+                        "tauri-scan-failure-owner",
+                        operation,
+                    )?;
+                    Ok(object([
+                        ("handleId", string(id)),
+                        ("prepared", IpcValue::Bool(owner.prepared)),
+                        ("producerFinished", IpcValue::Bool(owner.producer_finished)),
+                        ("rawRetired", IpcValue::Bool(owner.raw_retired)),
+                        ("rawReleased", IpcValue::Bool(owner.raw_released)),
+                        ("memberCount", number(owner.member_count as i64)),
+                        ("released", IpcValue::Bool(owner.released.is_some())),
+                    ]))
+                })
+                .collect::<Result<Vec<_>, DispatchError>>()?;
+            return Ok(object([("owners", IpcValue::Array(owners))]));
+        }
+        if command == "scanFailureRecovery.cleanup.list" {
+            let receipts = lease
+                .pending_cleanup_receipts()
+                .map_err(|error| DispatchError::from_core(&error))?
+                .into_iter()
+                .map(|receipt| {
+                    self.retain_scan_failure_recovery_handle(
+                        &key,
+                        generation,
+                        RendererScanFailureRecoveryHandle::Cleanup {
+                            receipt,
+                            owner: None,
+                        },
+                        "tauri-scan-failure-cleanup",
+                        operation,
+                    )
+                    .map(string)
+                })
+                .collect::<Result<Vec<_>, DispatchError>>()?;
+            return Ok(object([("cleanupReceiptIds", IpcValue::Array(receipts))]));
+        }
+        let handle_id = required_string(payload, "handleId", operation)?;
+        if command == "scanFailureRecovery.cleanup.retire" {
+            let RendererScanFailureRecoveryHandle::Cleanup { receipt, .. } =
+                self.scan_failure_recovery_handle(&key, generation, &handle_id, operation)?
+            else {
+                return Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "restoration",
+                    operation,
+                ));
+            };
+            lease
+                .retire_cleanup(&receipt)
+                .map_err(|error| DispatchError::from_core(&error))?;
+            self.retire_completed_scan_failure_aliases(&key, generation, &handle_id);
+            self.reclaim_fully_retired_scan_failure_recovery(&key, &lease)
+                .await?;
+            return Ok(object([("completed", IpcValue::Bool(true))]));
+        }
+        if command.starts_with("scanFailureRecovery.raw.") {
+            let RendererScanFailureRecoveryHandle::Owner(owner) =
+                self.scan_failure_recovery_handle(&key, generation, &handle_id, operation)?
+            else {
+                return Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "restoration",
+                    operation,
+                ));
+            };
+            return match command {
+                "scanFailureRecovery.raw.info" => {
+                    let info = lease
+                        .raw_info(&owner)
+                        .map_err(|error| DispatchError::from_core(&error))?;
+                    Ok(object([(
+                        "info",
+                        object([
+                            (
+                                "identity",
+                                object([
+                                    (
+                                        "host",
+                                        string(peer_failure_identity_text(info.identity.host)),
+                                    ),
+                                    (
+                                        "scan",
+                                        string(peer_failure_identity_text(info.identity.scan)),
+                                    ),
+                                    (
+                                        "start",
+                                        string(peer_failure_identity_text(info.identity.start)),
+                                    ),
+                                    (
+                                        "sourceGeneration",
+                                        string(peer_failure_identity_text(
+                                            info.identity.source_generation,
+                                        )),
+                                    ),
+                                    (
+                                        "occurrence",
+                                        string(peer_failure_identity_text(
+                                            info.identity.occurrence,
+                                        )),
+                                    ),
+                                ]),
+                            ),
+                            ("memberCount", number(info.member_count as i64)),
+                            ("tokenCount", number(info.token_count as i64)),
+                        ]),
+                    )]))
+                }
+                "scanFailureRecovery.raw.member" => {
+                    let index = optional_recovery_index(payload, operation)?.ok_or_else(|| {
+                        DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", operation)
+                    })?;
+                    let member = lease
+                        .raw_member(&owner, index)
+                        .map_err(|error| DispatchError::from_core(&error))?;
+                    Ok(object([(
+                        "member",
+                        object([
+                            (
+                                "recipient",
+                                string(peer_failure_identity_text(member.recipient)),
+                            ),
+                            (
+                                "delivery",
+                                string(peer_failure_identity_text(member.delivery)),
+                            ),
+                        ]),
+                    )]))
+                }
+                "scanFailureRecovery.raw.token" => {
+                    let index = optional_recovery_index(payload, operation)?.ok_or_else(|| {
+                        DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", operation)
+                    })?;
+                    let offset = recovery_usize(payload, "offset", operation)?;
+                    let max_bytes = recovery_usize(payload, "maxBytes", operation)?;
+                    if !(1..=65_536).contains(&max_bytes) {
+                        return Err(DispatchError::new(
+                            BleErrorCode::ArgumentInvalid,
+                            "restoration",
+                            operation,
+                        ));
+                    }
+                    let token = lease
+                        .raw_token(&owner, index, offset, max_bytes)
+                        .map_err(|error| DispatchError::from_core(&error))?;
+                    Ok(object([("token", scan_failure_raw_token_value(token))]))
+                }
+                "scanFailureRecovery.raw.retire" => {
+                    lease
+                        .raw_retire(&owner)
+                        .map_err(|error| DispatchError::from_core(&error))?;
+                    Ok(object([("completed", IpcValue::Bool(true))]))
+                }
+                "scanFailureRecovery.raw.release" => {
+                    lease
+                        .raw_release(&owner)
+                        .map_err(|error| DispatchError::from_core(&error))?;
+                    Ok(object([("completed", IpcValue::Bool(true))]))
+                }
+                "scanFailureRecovery.raw.finalize" => {
+                    let id = self.reserve_scan_failure_recovery_cleanup_handle(
+                        &key,
+                        generation,
+                        "tauri-scan-failure-cleanup",
+                        operation,
+                    )?;
+                    let receipt = match lease
+                        .raw_finalize(&owner)
+                        .map_err(|error| DispatchError::from_core(&error))
+                    {
+                        Ok(receipt) => receipt,
+                        Err(error) => {
+                            self.cancel_scan_failure_recovery_cleanup_reservation(
+                                &key, generation, &id,
+                            );
+                            return Err(error);
+                        }
+                    };
+                    self.commit_scan_failure_recovery_cleanup_reservation(
+                        &key,
+                        generation,
+                        &id,
+                        RendererScanFailureRecoveryHandle::Cleanup {
+                            receipt,
+                            owner: Some(owner),
+                        },
+                        operation,
+                    )?;
+                    Ok(object([("cleanupReceiptId", string(id))]))
+                }
+                _ => Err(DispatchError::new(
+                    BleErrorCode::ProtocolMalformed,
+                    "ipc",
+                    operation,
+                )),
+            };
+        }
+        let index = optional_recovery_index(payload, operation)?;
+        match command {
+            "scanFailureRecovery.member" => {
+                let RendererScanFailureRecoveryHandle::Owner(owner) =
+                    self.scan_failure_recovery_handle(&key, generation, &handle_id, operation)?
+                else {
+                    return Err(DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "restoration",
+                        operation,
+                    ));
+                };
+                let member = lease
+                    .member(
+                        &owner,
+                        index.ok_or_else(|| {
+                            DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", operation)
+                        })?,
+                    )
+                    .map_err(|error| DispatchError::from_core(&error))?;
+                Ok(object([(
+                    "member",
+                    object([
+                        (
+                            "recipient",
+                            string(peer_failure_identity_text(member.recipient)),
+                        ),
+                        (
+                            "delivery",
+                            string(peer_failure_identity_text(member.delivery)),
+                        ),
+                    ]),
+                )]))
+            }
+            "scanFailureRecovery.head" => {
+                let RendererScanFailureRecoveryHandle::Owner(owner) =
+                    self.scan_failure_recovery_handle(&key, generation, &handle_id, operation)?
+                else {
+                    return Err(DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "restoration",
+                        operation,
+                    ));
+                };
+                let member = lease
+                    .member(
+                        &owner,
+                        index.ok_or_else(|| {
+                            DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", operation)
+                        })?,
+                    )
+                    .map_err(|error| DispatchError::from_core(&error))?;
+                match lease
+                    .head(member)
+                    .map_err(|error| DispatchError::from_core(&error))?
+                {
+                    None => Ok(object([("head", IpcValue::Null)])),
+                    Some(head) => {
+                        let contiguous_read = head.contiguous_read;
+                        let acknowledged = head.acknowledged;
+                        let id = self.retain_scan_failure_recovery_handle(
+                            &key,
+                            generation,
+                            RendererScanFailureRecoveryHandle::Head(head),
+                            "tauri-scan-failure-head",
+                            operation,
+                        )?;
+                        Ok(object([(
+                            "head",
+                            object([
+                                ("handleId", string(id)),
+                                ("contiguousRead", string(contiguous_read.to_string())),
+                                ("acknowledged", IpcValue::Bool(acknowledged)),
+                            ]),
+                        )]))
+                    }
+                }
+            }
+            "scanFailureRecovery.read" => {
+                let RendererScanFailureRecoveryHandle::Head(head) =
+                    self.scan_failure_recovery_handle(&key, generation, &handle_id, operation)?
+                else {
+                    return Err(DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "restoration",
+                        operation,
+                    ));
+                };
+                let offset = peer_failure_recovery_offset(
+                    &required_string(payload, "offset", operation)?,
+                    operation,
+                )?;
+                let chunk = lease
+                    .read(&head, offset)
+                    .map_err(|error| DispatchError::from_core(&error))?;
+                Ok(object([
+                    ("offset", string(chunk.offset.to_string())),
+                    ("nextOffset", string(chunk.next_offset.to_string())),
+                    ("bytes", IpcValue::Bytes(chunk.bytes)),
+                    ("done", IpcValue::Bool(chunk.done)),
+                ]))
+            }
+            "scanFailureRecovery.ack"
+            | "scanFailureRecovery.retire"
+            | "scanFailureRecovery.release"
+            | "scanFailureRecovery.finalize" => {
+                let RendererScanFailureRecoveryHandle::Head(head) =
+                    self.scan_failure_recovery_handle(&key, generation, &handle_id, operation)?
+                else {
+                    return Err(DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "restoration",
+                        operation,
+                    ));
+                };
+                match command {
+                    "scanFailureRecovery.ack" => {
+                        lease
+                            .acknowledge(&head)
+                            .map_err(|error| DispatchError::from_core(&error))?;
+                        Ok(object([("acknowledged", IpcValue::Bool(true))]))
+                    }
+                    "scanFailureRecovery.retire" => {
+                        lease
+                            .retire(&head)
+                            .map_err(|error| DispatchError::from_core(&error))?;
+                        Ok(object([("completed", IpcValue::Bool(true))]))
+                    }
+                    "scanFailureRecovery.release" => {
+                        lease
+                            .release(&head)
+                            .map_err(|error| DispatchError::from_core(&error))?;
+                        Ok(object([("completed", IpcValue::Bool(true))]))
+                    }
+                    _ => {
+                        let id = self.reserve_scan_failure_recovery_cleanup_handle(
+                            &key,
+                            generation,
+                            "tauri-scan-failure-cleanup",
+                            operation,
+                        )?;
+                        let receipt = match lease
+                            .finalize_release(&head)
+                            .map_err(|error| DispatchError::from_core(&error))
+                        {
+                            Ok(receipt) => receipt,
+                            Err(error) => {
+                                self.cancel_scan_failure_recovery_cleanup_reservation(
+                                    &key, generation, &id,
+                                );
+                                return Err(error);
+                            }
+                        };
+                        let owner = ubm_desktop::continuation_outbox::PendingScanFailure {
+                            ordinal: head.ordinal,
+                            capability: head.capability,
+                        };
+                        self.commit_scan_failure_recovery_cleanup_reservation(
+                            &key,
+                            generation,
+                            &id,
+                            RendererScanFailureRecoveryHandle::Cleanup {
+                                receipt,
+                                owner: Some(owner),
+                            },
+                            operation,
+                        )?;
+                        Ok(object([("cleanupReceiptId", string(id))]))
+                    }
+                }
+            }
+            _ => Err(DispatchError::new(
+                BleErrorCode::ProtocolMalformed,
+                "ipc",
+                operation,
+            )),
+        }
+    }
+
+    /// Enumerate durable recipient-scoped recovery handles. This is a trusted
+    /// host API, not a webview command: it preserves the original opaque
+    /// recipient lease and never turns a restored record into a new live
+    /// subscription.
+    pub async fn continuation_peer_failure_recoveries(
+        &self,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let authority = self
+            .ensure_authority()
+            .await
+            .map_err(|error| error.normalized_error().into_wire())?;
+        let handles = authority
+            .durable_peer_failure_recoveries()
+            .into_iter()
+            .flat_map(|occurrence| {
+                let producer_ack = match occurrence.producer_ack {
+                    ubm_desktop::central::DurablePeerFailureProducerAck::NotStarted => {
+                        "not-started"
+                    }
+                    ubm_desktop::central::DurablePeerFailureProducerAck::InFlight => "in-flight",
+                    ubm_desktop::central::DurablePeerFailureProducerAck::Committed => "committed",
+                };
+                occurrence.recipients.into_iter().map(move |recipient| {
+                    serde_json::json!({
+                        "descriptor": peer_failure_descriptor_json(&occurrence.descriptor),
+                        "peerId": recipient.scope.0,
+                        "selector": {
+                            "serviceUuid": recipient.scope.1,
+                            "serviceOccurrence": recipient.scope.2.to_string(),
+                            "characteristicUuid": recipient.scope.3,
+                            "characteristicOccurrence": recipient.scope.4.to_string(),
+                        },
+                        "consumer": recipient.consumer,
+                        "recipientLease": recipient.recipient_lease,
+                        "contiguousRead": recipient.contiguous_read.to_string(),
+                        "acknowledged": recipient.acknowledged,
+                        "producerAck": producer_ack,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::Value::Array(handles))
+    }
+
+    /// Read an exact retained page using a durable handle returned by
+    /// [`Self::continuation_peer_failure_recoveries`].  The host adapter
+    /// keeps selector conversion and opaque lease validation in the central.
+    pub async fn continuation_read_peer_failure_recovery(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        peer_id: &str,
+        selector: &CoreSelector,
+        consumer: &str,
+        recipient_lease: &str,
+        offset: u64,
+    ) -> Result<ubm_core::oversized_evidence::PeerSourceFailureChunk, serde_json::Value> {
+        self.ensure_authority()
+            .await
+            .map_err(|error| error.normalized_error().into_wire())?
+            .read_peer_notification_failure_recovery(
+                descriptor,
+                peer_id,
+                selector,
+                consumer,
+                recipient_lease,
+                offset,
+            )
+            .await
+            .map_err(|error| {
+                DispatchError::from_core(&error)
+                    .normalized_error()
+                    .into_wire()
+            })
+    }
+
+    /// Commit a fully read durable recovery handle. A recovered in-flight
+    /// native source acknowledgement is surfaced by the central as its typed
+    /// reconciliation failure rather than silently being treated as released.
+    pub async fn continuation_acknowledge_peer_failure_recovery(
+        &self,
+        descriptor: &ubm_core::oversized_evidence::PeerSourceFailureDescriptor,
+        peer_id: &str,
+        selector: &CoreSelector,
+        consumer: &str,
+        recipient_lease: &str,
+    ) -> Result<(), serde_json::Value> {
+        self.ensure_authority()
+            .await
+            .map_err(|error| error.normalized_error().into_wire())?
+            .acknowledge_peer_notification_failure_recovery(
+                descriptor,
+                peer_id,
+                selector,
+                consumer,
+                recipient_lease,
+            )
+            .await
+            .map_err(|error| {
+                DispatchError::from_core(&error)
+                    .normalized_error()
+                    .into_wire()
+            })
+    }
+
     /// Trusted Rust-host configuration only. Paths never enter renderer commands.
     pub async fn continuation_configure_recording_directory(
         &self,
@@ -1096,12 +3399,39 @@ impl BtleplugDispatcher {
     ) -> Result<serde_json::Value, serde_json::Value> {
         let recordings = self.recordings.clone();
         let directory = directory.to_owned();
-        ubm_desktop::continuation_journal::run_blocking(move || {
-            recordings
-                .configure_directory(&directory)
-                .map_err(ubm_desktop::continuation::recording_failure)
+        let terminal_evidence_maximum_bytes = self.terminal_evidence_maximum_bytes;
+        let configured = ubm_desktop::continuation_journal::run_blocking_result(move || {
+            #[cfg(windows)]
+            let configured =
+                recordings.configure_directory_with_current_user_scan_recovery_storage(&directory);
+            #[cfg(not(windows))]
+            let configured = recordings.configure_directory(&directory);
+            let configured = configured.map_err(ubm_desktop::continuation::recording_failure)?;
+            let ledger = terminal_evidence_maximum_bytes
+                .map(|maximum_bytes| {
+                    recordings
+                        .terminal_evidence_ledger(maximum_bytes)
+                        .map(Arc::new)
+                        .map_err(|error| {
+                            serde_json::json!({
+                                "code": "storage.unavailable",
+                                "domain": "restoration",
+                                "operation": "tauri.terminal-evidence.configure",
+                                "detail": error.to_string(),
+                            })
+                        })
+                })
+                .transpose()?;
+            Ok((configured, ledger))
         })
-        .await
+        .await?;
+        if let Some(ledger) = configured.1 {
+            *self
+                .terminal_evidence_ledger
+                .lock()
+                .expect("terminal evidence ledger mutex poisoned") = Some(ledger);
+        }
+        Ok(configured.0)
     }
     pub async fn continuation_recording_status(
         &self,
@@ -1149,6 +3479,154 @@ impl BtleplugDispatcher {
         })
         .await
     }
+
+    /// Trusted-host diagnostic export. This deliberately is not a plugin IPC
+    /// route: the application must opt in with its own authenticated command
+    /// and retain every returned raw byte before changing diagnostic state.
+    pub async fn continuation_recording_diagnostic_summary_page(
+        &self,
+        id: &str,
+        offset: &str,
+        max_bytes: u32,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        if !(1..=DIAGNOSTIC_PAGE_LIMIT).contains(&max_bytes) {
+            return Err(
+                serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"invalid diagnostic page bounds","platform":null}),
+            );
+        }
+        let offset = diagnostic_offset(offset)?;
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            let page = recordings
+                .get(&id)
+                .and_then(|journal| journal.diagnostic_summary_page(offset, max_bytes))
+                .map_err(ubm_desktop::continuation::recording_failure)?;
+            Ok(serde_json::json!({"bytes":page.bytes,"totalBytes":page.total_bytes.to_string()}))
+        })
+        .await
+    }
+
+    pub async fn continuation_recording_diagnostic_occurrences_page(
+        &self,
+        id: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        if limit == 0 || limit as usize > DIAGNOSTIC_OCCURRENCE_LIMIT {
+            return Err(
+                serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"invalid diagnostic occurrence page bounds","platform":null}),
+            );
+        }
+        let after = after.map(diagnostic_occurrence_id).transpose()?;
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            let occurrences = recordings
+                .get(&id)
+                .and_then(|journal| journal.diagnostic_occurrences_page(after, limit as usize))
+                .map_err(ubm_desktop::continuation::recording_failure)?;
+            Ok(serde_json::json!({"occurrences":occurrences.into_iter().map(diagnostic_occurrence_text).collect::<Vec<_>>() }))
+        })
+        .await
+    }
+
+    pub async fn continuation_recording_diagnostic_occurrence_page(
+        &self,
+        id: &str,
+        occurrence: &str,
+        offset: &str,
+        max_bytes: u32,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        if !(1..=DIAGNOSTIC_PAGE_LIMIT).contains(&max_bytes) {
+            return Err(
+                serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"invalid diagnostic page bounds","platform":null}),
+            );
+        }
+        let occurrence = diagnostic_occurrence_id(occurrence)?;
+        let offset = diagnostic_offset(offset)?;
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            let page = recordings
+                .get(&id)
+                .and_then(|journal| journal.diagnostic_occurrence_page(occurrence, offset, max_bytes))
+                .map_err(ubm_desktop::continuation::recording_failure)?;
+            Ok(serde_json::json!({"bytes":page.bytes,"totalBytes":page.total_bytes.to_string(),"durable":page.durable,"reclaimed":page.reclaimed}))
+        })
+        .await
+    }
+
+    pub async fn continuation_recording_retry_diagnostic_occurrence(
+        &self,
+        id: &str,
+        occurrence: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let occurrence = diagnostic_occurrence_id(occurrence)?;
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            recordings.get(&id).and_then(|journal| journal.retry_production_loss(occurrence)).map_err(ubm_desktop::continuation::recording_failure)?;
+            Ok(serde_json::json!({"occurrence":diagnostic_occurrence_text(occurrence),"retried":true}))
+        }).await
+    }
+
+    pub async fn continuation_recording_transition_diagnostic_occurrence(
+        &self,
+        id: &str,
+        occurrence: &str,
+        payload: &str,
+        transition: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        if payload.len() > DIAGNOSTIC_EXACT_PAYLOAD_LIMIT {
+            return Err(
+                serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"diagnostic payload exceeds exact lifecycle bound","platform":null}),
+            );
+        }
+        let occurrence = diagnostic_occurrence_id(occurrence)?;
+        let id = id.to_owned();
+        let payload = payload.to_owned();
+        let transition = transition.to_owned();
+        let recordings = self.recordings.clone();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            let journal = recordings.get(&id).map_err(ubm_desktop::continuation::recording_failure)?;
+            match transition.as_str() {
+                "acknowledge" => journal.acknowledge_diagnostic(occurrence, &payload).map(|_| ()),
+                "retire" => journal.retire_diagnostic(occurrence, &payload).map(|_| ()),
+                "confirm" => journal.confirm_diagnostic_retirement(occurrence, &payload),
+                "release" => journal.release_diagnostic_confirmation(occurrence, &payload),
+                _ => return Err(serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"unknown diagnostic lifecycle transition","platform":null})),
+            }.map_err(ubm_desktop::continuation::recording_failure)?;
+            Ok(serde_json::json!({"occurrence":diagnostic_occurrence_text(occurrence),"transition":transition}))
+        }).await
+    }
+
+    /// Trusted host-only bounded exact lifecycle. The persisted offset lets a
+    /// host resume after a crash without ever sending a whole diagnostic body.
+    pub async fn continuation_recording_transition_diagnostic_occurrence_chunk(
+        &self,
+        id: &str,
+        occurrence: &str,
+        transition: &str,
+        offset: &str,
+        bytes: Vec<u8>,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        if bytes.is_empty() || bytes.len() > DIAGNOSTIC_PAGE_LIMIT as usize {
+            return Err(
+                serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"invalid diagnostic comparison chunk","platform":null}),
+            );
+        }
+        let occurrence = diagnostic_occurrence_id(occurrence)?;
+        let action = diagnostic_action(transition)?;
+        let offset = diagnostic_offset(offset)?;
+        let id = id.to_owned();
+        let transition = transition.to_owned();
+        let recordings = self.recordings.clone();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            let progress = recordings.get(&id).and_then(|journal| journal.diagnostic_transition_chunk(occurrence, action, offset, &bytes)).map_err(ubm_desktop::continuation::recording_failure)?;
+            Ok(serde_json::json!({"occurrence":diagnostic_occurrence_text(occurrence),"transition":transition,"offset":progress.offset.to_string(),"totalBytes":progress.total.to_string(),"complete":progress.complete}))
+        }).await
+    }
     pub async fn continuation_recording_stop(
         &self,
         id: &str,
@@ -1175,6 +3653,40 @@ impl BtleplugDispatcher {
         })
         .await
     }
+    /// Stop the supervised ordered producer and report its actual cleanup state.
+    /// This trusted host control is separate from the legacy journal-only stop.
+    pub async fn continuation_recording_stop_ordered(
+        &self,
+        id: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let owner = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            if let Some(result) = owner.stop_owned_ordered_recording(&id).await {
+                result
+            } else {
+                owner.recordings.stop_ordered_host_receipt(&id).await
+            }
+        })
+        .await
+        .map_err(|_| serde_json::json!({"kind":"worker-failed"}))?
+    }
+
+    /// Read the validated declaration persisted with an ordered recording.
+    pub async fn continuation_recording_context_ordered(
+        &self,
+        id: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            recordings
+                .ordered_context(&id)
+                .map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await
+    }
+
     pub async fn continuation_recording_clear(
         &self,
         id: &str,
@@ -1339,6 +3851,137 @@ impl BtleplugDispatcher {
         Ok(attachment_of(&authority.attachment(), adapter_name))
     }
 
+    #[cfg(test)]
+    fn pause_terminal_evidence_recovery_after_claim(&self) {
+        let pause = self
+            .terminal_evidence_recovery_pause
+            .lock()
+            .expect("terminal evidence recovery pause mutex poisoned")
+            .clone();
+        if let Some(pause) = pause {
+            pause
+                .claimed
+                .send(())
+                .expect("terminal evidence recovery test must await claim");
+            pause
+                .resume
+                .lock()
+                .expect("terminal evidence recovery pause receiver poisoned")
+                .recv()
+                .expect("terminal evidence recovery test must resume claim");
+        }
+    }
+
+    /// Refreshes this controller's opaque recovery aliases. A busy row stays
+    /// durable and is reported to the status route, while independent rows
+    /// are claimed and made available immediately.
+    async fn refresh_terminal_evidence_recovery(
+        &self,
+        caller: &AuthenticatedCaller,
+    ) -> Result<Vec<String>, DispatchError> {
+        let Some(ledger) = self
+            .terminal_evidence_ledger
+            .lock()
+            .expect("terminal evidence ledger mutex poisoned")
+            .clone()
+        else {
+            return Ok(Vec::new());
+        };
+        // The caller entry is the recovery lease lifecycle fence. Hold it
+        // through the synchronous ledger claim and alias insertion: teardown
+        // either retires this lease before any row is claimed, or observes all
+        // aliases and releases their runtime authority before removing it.
+        let mut state = self.inner.lock().await;
+        let (recipient, lease_id, lease_generation) = {
+            let caller_state = state
+                .callers
+                .get(&caller_key(caller))
+                .filter(|caller_state| !caller_state.retired)
+                .ok_or_else(|| {
+                    DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "restoration",
+                        "tauri.terminal-evidence.recovery-owner",
+                    )
+                })?;
+            (
+                caller_key(caller),
+                caller_state.lease_id.clone(),
+                caller_state.lease_generation.clone(),
+            )
+        };
+        let recovery_lease_id = terminal_evidence_recovery_lease_id(&lease_id, &lease_generation);
+        let mut recovered = Vec::new();
+        let mut busy_producers = Vec::new();
+        for producer in ["scan", "subscription"] {
+            let page = ledger
+                .recoverable_page_for_lease_with_contention(
+                    producer,
+                    &recipient,
+                    &recovery_lease_id,
+                    u32::MAX,
+                    u64::MAX,
+                )
+                .map_err(|error| {
+                    DispatchError::new(
+                        BleErrorCode::PlatformFailure,
+                        "restoration",
+                        "tauri.terminal-evidence.recovery-load",
+                    )
+                    .platform(error.to_string())
+                })?;
+            if page.busy {
+                busy_producers.push(producer.to_owned());
+            }
+            for receipt in page.entries {
+                let reference = match (receipt.state, receipt.reference) {
+                    (
+                        ubm_desktop::terminal_evidence_ledger::TerminalEvidenceRecoveryState::Committed,
+                        Some(reference),
+                    ) => reference,
+                    (ubm_desktop::terminal_evidence_ledger::TerminalEvidenceRecoveryState::Staged, _) => {
+                        use sha2::Digest;
+                        ledger
+                            .commit_recovered(
+                                &recovery_lease_id,
+                                &receipt.reservation_id,
+                                &receipt.canonical_bytes,
+                                sha2::Sha256::digest(&receipt.canonical_bytes).into(),
+                            )
+                            .map_err(|error| {
+                                DispatchError::new(
+                                    BleErrorCode::PlatformFailure,
+                                    "restoration",
+                                    "tauri.terminal-evidence.recovery-commit",
+                                )
+                                .platform(error.to_string())
+                            })?
+                            .reference
+                    }
+                    _ => continue,
+                };
+                recovered.push((reference, receipt.reservation_id, receipt.scope.producer));
+            }
+        }
+        #[cfg(test)]
+        self.pause_terminal_evidence_recovery_after_claim();
+        for (reference, reservation_id, producer) in recovered {
+            state.terminal_evidence_owners.insert(
+                reference,
+                TerminalEvidenceOwner {
+                    producer,
+                    caller_key: recipient.clone(),
+                    lease_id: lease_id.clone(),
+                    lease_generation: lease_generation.clone(),
+                    recovery_lease_id: recovery_lease_id.clone(),
+                    reservation_id,
+                    recoverable: true,
+                },
+            );
+        }
+        Ok(busy_producers)
+    }
+
     async fn bootstrap(
         &self,
         caller: AuthenticatedCaller,
@@ -1349,7 +3992,11 @@ impl BtleplugDispatcher {
         let versions = negotiate_ipc_versions(&offer)?;
         let attachment = self.ensure_adapter().await?;
         let key = caller_key(&caller);
-        let cleanup = self.release(&key).await;
+        if self.is_revoked(&key) {
+            self.settle_revoked_ordered(&key).await;
+            self.settle_revoked_reclaims(&key).await;
+        }
+        let cleanup = self.release_with_terminal_evidence(&key, true).await;
         if !is_released(&cleanup) {
             return Err(DispatchError::new(
                 BleErrorCode::PlatformFailure,
@@ -1359,12 +4006,14 @@ impl BtleplugDispatcher {
         }
         let lease_id = self.id("tauri-lease");
         let lease_generation = self.id("tauri-lease-generation");
+        self.revoke_peer_failure_recovery_admission(&key);
+        self.revoke_scan_failure_recovery_admission(&key);
         self.revoked_callers
             .lock()
             .expect("revocation mutex poisoned")
             .remove(&key);
         self.inner.lock().await.callers.insert(
-            key,
+            key.clone(),
             CallerState {
                 lease_id: lease_id.clone(),
                 lease_generation: lease_generation.clone(),
@@ -1376,6 +4025,7 @@ impl BtleplugDispatcher {
                 connections: HashMap::new(),
                 databases: HashMap::new(),
                 subscriptions: HashMap::new(),
+                ordered_groups: HashMap::new(),
                 acquired_writers: HashMap::new(),
                 acquired_releases: WatchReleaseHistory::default(),
                 connection_events: HashMap::new(),
@@ -1390,6 +4040,18 @@ impl BtleplugDispatcher {
                 pending_events: HashSet::new(),
             },
         );
+        {
+            let mut state = self.inner.lock().await;
+            for owner in state.terminal_evidence_owners.values_mut() {
+                if owner.caller_key == key && owner.recoverable {
+                    owner.lease_id.clone_from(&lease_id);
+                    owner.lease_generation.clone_from(&lease_generation);
+                }
+            }
+        }
+        self.refresh_terminal_evidence_recovery(&caller).await?;
+        self.replay_attachment_diagnostics(&caller_key(&caller))
+            .await;
 
         let renderer = object([
             (
@@ -1480,6 +4142,12 @@ impl BtleplugDispatcher {
         // the operation task starts; consulting the caller again there would
         // let an envelope from the ended attachment ride the new binding.
         let route_attachment = self.validate_envelope(&caller, &command, &envelope).await?;
+        // Ordered deliveries gained their per-observation failure grammar in
+        // protocol 9. Refuse an authenticated pre-v9 request before it can
+        // allocate a control, reserve GATT admission, open the authority, or
+        // claim a caller correlation.
+        self.require_ordered_route_protocol(&caller, &command)
+            .await?;
         if command == "operation.cancel" {
             return self.cancel_operation(&caller, &payload).await;
         }
@@ -1712,7 +4380,17 @@ impl BtleplugDispatcher {
             let caller_state = state
                 .callers
                 .get(&caller_key(caller))
-                .filter(|caller_state| !caller_state.retired)
+                .filter(|caller_state| {
+                    !caller_state.retired
+                        || matches!(
+                            command,
+                            "gatt.ordered.status"
+                                | "gatt.ordered.next"
+                                | "gatt.ordered.close"
+                                | "gatt.ordered.forget"
+                                | "gatt.ordered.retire"
+                        )
+                })
                 .ok_or_else(|| {
                     DispatchError::new(BleErrorCode::OwnershipDenied, "ipc", "tauri.route-caller")
                 })?;
@@ -1819,6 +4497,16 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         payload: &BTreeMap<String, IpcValue>,
     ) -> Result<(), DispatchError> {
+        self.validate_expected_lease_for_command(caller, payload, "")
+            .await
+    }
+
+    async fn validate_expected_lease_for_command(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: &BTreeMap<String, IpcValue>,
+        command: &str,
+    ) -> Result<(), DispatchError> {
         let expected_id = required_string(payload, "__expectedLeaseId", "tauri.execute-lease")?;
         let expected_generation =
             required_string(payload, "__expectedLeaseGeneration", "tauri.execute-lease")?;
@@ -1826,7 +4514,17 @@ impl BtleplugDispatcher {
         let caller_state = state
             .callers
             .get(&caller_key(caller))
-            .filter(|caller_state| !caller_state.retired)
+            .filter(|caller_state| {
+                !caller_state.retired
+                    || matches!(
+                        command,
+                        "gatt.ordered.status"
+                            | "gatt.ordered.next"
+                            | "gatt.ordered.close"
+                            | "gatt.ordered.forget"
+                            | "gatt.ordered.retire"
+                    )
+            })
             .ok_or_else(|| {
                 DispatchError::new(
                     BleErrorCode::OwnershipDenied,
@@ -1878,9 +4576,11 @@ impl BtleplugDispatcher {
         binary_payload: Option<Vec<u8>>,
         ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        self.validate_expected_lease(caller, &payload).await?;
+        self.validate_expected_lease_for_command(caller, &payload, command)
+            .await?;
         self.refuse_stale_attachment(route_attachment, command)
             .await?;
+        self.require_ordered_route_protocol(caller, command).await?;
         match command {
             "security.state"
             | "security.pair"
@@ -1910,6 +4610,25 @@ impl BtleplugDispatcher {
                     .await
             }
             "adapter.state" => self.adapter_state(caller, ctl).await,
+            command @ ("terminalEvidence.reserve"
+            | "terminalEvidence.commit"
+            | "terminalEvidence.read"
+            | "terminalEvidence.release"
+            | "terminalEvidence.recovery.list"
+            | "terminalEvidence.recovery.listWithStatus"
+            | "terminalEvidence.recovery.read"
+            | "terminalEvidence.recovery.ack") => {
+                // Route admission adds these private lease facts so ordinary
+                // handlers can reject stale work.  The terminal-evidence
+                // grammar is a signed, exact public payload; it must not see
+                // dispatcher-private keys after the lease was already
+                // validated above.
+                let mut terminal_payload = payload;
+                terminal_payload.remove("__expectedLeaseId");
+                terminal_payload.remove("__expectedLeaseGeneration");
+                self.terminal_evidence_route(caller, command, &terminal_payload, binary_payload)
+                    .await
+            }
             "scan.start" => self.start_scan(caller, payload, ctl).await,
             "scan.stop" => self.stop_scan(caller, payload, ctl).await,
             "connection.connect" => self.connect(caller, payload, ctl).await,
@@ -1960,6 +4679,105 @@ impl BtleplugDispatcher {
             "gatt.acquire-notifications" => self.subscribe(caller, payload, ctl, true).await,
             "gatt.subscribe" => self.subscribe(caller, payload, ctl, false).await,
             "gatt.unsubscribe" => self.unsubscribe(caller, payload, ctl).await,
+            "peerFailureRecovery.list" => {
+                self.require_peer_failure_recovery_protocol(caller).await?;
+                if binary_payload.is_some() {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        command,
+                    ));
+                }
+                self.renderer_peer_failure_recovery_list(caller).await
+            }
+            "peerFailureRecovery.read" => {
+                self.require_peer_failure_recovery_protocol(caller).await?;
+                if binary_payload.is_some() {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        command,
+                    ));
+                }
+                self.renderer_peer_failure_recovery_read(caller, &payload)
+                    .await
+            }
+            "peerFailureRecovery.ack" => {
+                self.require_peer_failure_recovery_protocol(caller).await?;
+                if binary_payload.is_some() {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        command,
+                    ));
+                }
+                self.renderer_peer_failure_recovery_acknowledge(caller, &payload)
+                    .await
+            }
+            command if command.starts_with("scanFailureRecovery.") => {
+                if binary_payload.is_some() {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        command,
+                    ));
+                }
+                self.renderer_scan_failure_recovery(caller, command, &payload)
+                    .await
+            }
+            "gatt.ordered.orphans" => self.ordered_orphan_receipts(caller).await,
+            "gatt.ordered.orphan-page" => self.ordered_orphan_page(caller, payload).await,
+            "gatt.ordered.orphan-ack" => self.ack_ordered_orphan(caller, payload).await,
+            "gatt.ordered.open" => self.open_ordered_group(caller, payload, ctl).await,
+            "gatt.ordered.status" => self.ordered_open_status(caller, payload).await,
+            "gatt.ordered.next" => self.next_ordered_group(caller, payload).await,
+            "gatt.ordered.close" => self.close_ordered_group(caller, payload, ctl).await,
+            "gatt.ordered.forget" => self.forget_ordered_group(caller, payload).await,
+            "gatt.ordered.retire" => self.retire_ordered_group(caller, payload).await,
+            "gatt.ordered.marker.reserve"
+            | "gatt.ordered.marker.start"
+            | "gatt.ordered.marker.status"
+            | "gatt.ordered.marker.cancel"
+            | "gatt.ordered.marker.forget"
+            | "gatt.ordered-recording.markers"
+            | "gatt.ordered-recording.marker.reserve"
+            | "gatt.ordered-recording.marker.start"
+            | "gatt.ordered-recording.marker.status"
+            | "gatt.ordered-recording.marker.cancel"
+            | "gatt.ordered-recording.marker.forget" => {
+                self.ordered_marker_route(caller, command, payload, binary_payload, ctl)
+                    .await
+            }
+            "gatt.ordered-recording.reserve" => {
+                self.reserve_ordered_recording_start(caller, payload).await
+            }
+            "gatt.ordered-recording.starts" => {
+                self.recover_ordered_recording_starts(caller, payload).await
+            }
+            "gatt.ordered-recording.recovery"
+            | "gatt.ordered-recording.reclaim.pending"
+            | "gatt.ordered-recording.reclaim.reserve"
+            | "gatt.ordered-recording.reclaim.start"
+            | "gatt.ordered-recording.reclaim.status"
+            | "gatt.ordered-recording.reclaim.commit"
+            | "gatt.ordered-recording.reclaim.cancel"
+            | "gatt.ordered-recording.reclaim.release"
+            | "gatt.ordered-recording.reclaim.retire"
+            | "gatt.ordered-recording.reclaim.ack-retirement"
+            | "gatt.ordered-recording.reclaim.forget-retirement"
+            | "gatt.ordered-recording.reclaim.confirm-forgotten"
+            | "gatt.ordered-recording.marker-owner" => {
+                self.ordered_reclaim_route(caller, command, payload).await
+            }
+            "gatt.ordered-recording.start" => {
+                self.start_ordered_recording(caller, payload, ctl).await
+            }
+            "gatt.ordered-recording.status" => {
+                self.ordered_recording_start_status(caller, payload).await
+            }
+            "gatt.ordered-recording.retire" => {
+                self.retire_ordered_recording_start(caller, payload).await
+            }
             "gatt.descriptor.read" => self.read_descriptor(caller, payload, ctl).await,
             "gatt.descriptor.write" => {
                 self.write_descriptor(caller, payload, binary_payload, ctl)
@@ -2207,6 +5025,9 @@ impl BtleplugDispatcher {
         let attachment = self.ensure_adapter().await?;
         let key = caller_key(caller);
         let lease = expected_lease(&payload, "tauri.scan-lease")?;
+        let terminal_evidence = self
+            .terminal_evidence_binding(caller, &payload, "scan", "tauri.scan.terminal-evidence")
+            .await?;
         {
             // execute() already admitted the caller lease globally; the only
             // remaining admission is one scan per caller. Global overlap is
@@ -2282,6 +5103,13 @@ impl BtleplugDispatcher {
                         core_operation_id: scan_id.clone(),
                         task: None,
                         phase: ReleasePhase::Active,
+                        terminal_evidence,
+                        terminal_stage_failure: None,
+                        terminal_delivery_failure: None,
+                        terminal_delivery_retry_item: None,
+                        terminal_failure_claimed: false,
+                        terminal_failure_sent: false,
+                        terminal_delivery_retry: None,
                     });
                     let task = self.spawn_scan_forwarder(
                         Arc::clone(&authority),
@@ -2421,7 +5249,14 @@ impl BtleplugDispatcher {
             return Delivery::Gone;
         };
         match caller_state.scan.as_ref() {
-            Some(scan) if scan.handle == handle && scan.phase.is_active() => Delivery::Active,
+            Some(scan)
+                if scan.handle == handle
+                    && scan.phase.is_active()
+                    && !scan.terminal_failure_sent
+                    && !scan.terminal_failure_claimed =>
+            {
+                Delivery::Active
+            }
             Some(scan) if scan.handle == handle => Delivery::Paused,
             _ => Delivery::Gone,
         }
@@ -2461,6 +5296,23 @@ impl BtleplugDispatcher {
         handle: &str,
         ctl: OpControl,
     ) -> Result<(), DispatchError> {
+        // A source-ended scan can still owe its authenticated stage-failure
+        // terminal. Do not let the core's already-stopped verdict erase that
+        // delivery debt: join/retry it before removing the mapping.
+        let owns_handle = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(key)
+            .and_then(|caller| caller.scan.as_ref())
+            .is_some_and(|scan| scan.handle == handle);
+        if !owns_handle {
+            // An unknown/stale handle is already released and must not make
+            // progress on an unrelated scan's retained terminal debt.
+            return Ok(());
+        }
+        self.retry_scan_terminal_delivery_failure(key).await?;
         let step = {
             let mut state = self.inner.lock().await;
             let Some(scan) = state
@@ -2763,6 +5615,14 @@ impl BtleplugDispatcher {
                     "tauri.disconnect",
                 )?;
             }
+            self.invalidate_reclaims(key, None, Some(handle));
+            if self.has_reclaim_debt(key, None, Some(handle)) {
+                return Err(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    "cleanup",
+                    "tauri.reclaim.pending",
+                ));
+            }
             (
                 begin_release(&mut connection.phase),
                 connection.peer_id.clone(),
@@ -2893,11 +5753,14 @@ impl BtleplugDispatcher {
                     if let Err(error) = self
                         .terminal_with_admission(
                             key,
-                            (&owner, &generation),
-                            &stream,
-                            "owner-released",
-                            None,
-                            TerminalAdmission::OwnerConnection,
+                            TerminalRequest {
+                                expected_lease: (&owner, &generation),
+                                stream_id: &stream,
+                                reason: "owner-released",
+                                error: None,
+                                counters: terminal_evidence::TerminalCounters::ZERO,
+                                admission: TerminalAdmission::OwnerConnection,
+                            },
                         )
                         .await
                     {
@@ -2912,6 +5775,7 @@ impl BtleplugDispatcher {
             match state.callers.get_mut(key) {
                 Some(caller_state) if caller_state.connections.contains_key(handle) => {
                     if result.is_ok() {
+                        self.invalidate_reclaims(key, None, Some(handle));
                         caller_state.connections.remove(handle);
                         Self::detach_connection_mappings(caller_state, handle)
                     } else {
@@ -3191,12 +6055,18 @@ impl BtleplugDispatcher {
     /// of leaving a silent gap.
     fn start_lifecycle_pump(&self, authority: &Arc<dyn CoreAuthority>) {
         let mut events = authority.lifecycle_events();
+        let mut source_uncertainty = authority.source_uncertainty_events();
         let mut scan_ends = authority.scan_terminal_events();
         let mut resets = authority.adapter_reset_events();
         let dispatcher = self.clone();
         let pump = tauri::async_runtime::spawn(async move {
-            let (mut lifecycle_open, mut scan_ends_open, mut resets_open) = (true, true, true);
-            while lifecycle_open || scan_ends_open || resets_open {
+            let (
+                mut lifecycle_open,
+                mut source_uncertainty_open,
+                mut scan_ends_open,
+                mut resets_open,
+            ) = (true, true, true, true);
+            while lifecycle_open || source_uncertainty_open || scan_ends_open || resets_open {
                 tokio::select! {
                     reset = resets.recv(), if resets_open => match reset {
                         Ok(reset) => {
@@ -3217,6 +6087,13 @@ impl BtleplugDispatcher {
                             dispatcher.overflow_connection_event_streams().await;
                         }
                         Err(broadcast::error::RecvError::Closed) => lifecycle_open = false,
+                    },
+                    event = source_uncertainty.recv(), if source_uncertainty_open => match event {
+                        Ok(event) => dispatcher.emit_source_uncertainty(event).await,
+                        Err(broadcast::error::RecvError::Lagged(missed)) => {
+                            dispatcher.emit_source_uncertainty_lagged(missed).await;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => source_uncertainty_open = false,
                     },
                     ended = scan_ends.recv(), if scan_ends_open => match ended {
                         Ok(ended) => dispatcher.apply_scan_terminal(&ended).await,
@@ -3304,6 +6181,109 @@ impl BtleplugDispatcher {
         }
     }
 
+    /// Forward a graph-less native callback on the attachment control stream.
+    /// It is intentionally not routed through a connection stream: the UUID
+    /// may belong to an older, already-retired native graph.
+    async fn emit_source_uncertainty(&self, event: SourceUncertaintyEvent) {
+        let error = DispatchError::from_core(&event.error);
+        let value = object([
+            ("kind", string("diagnostic-warning")),
+            ("schemaVersion", number(1)),
+            ("code", string("gatt.source-uncertain")),
+            ("sequence", IpcValue::Number(Number::from(event.sequence))),
+            ("peerId", string(event.peer_id)),
+            ("error", error.normalized_error()),
+        ]);
+        self.emit_attachment_diagnostic(value).await;
+    }
+
+    /// A broadcast gap is itself a diagnostic fact.  The renderer cannot
+    /// safely reconstruct the omitted ownerless callbacks, so it receives a
+    /// typed gap rather than an invented connection transition.
+    async fn emit_source_uncertainty_lagged(&self, missed: u64) {
+        self.emit_attachment_diagnostic(object([
+            ("kind", string("diagnostic-warning")),
+            ("schemaVersion", number(1)),
+            ("code", string("gatt.source-uncertain-lagged")),
+            ("missed", IpcValue::Number(Number::from(missed))),
+        ]))
+        .await;
+    }
+
+    async fn emit_attachment_diagnostic(&self, value: IpcValue) {
+        let callers = {
+            let mut state = self.inner.lock().await;
+            if state.retained_attachment_diagnostics.len() == MAX_RETAINED_ATTACHMENT_DIAGNOSTICS {
+                state.retained_attachment_diagnostics.pop_front();
+                state.dropped_attachment_diagnostics =
+                    state.dropped_attachment_diagnostics.saturating_add(1);
+            }
+            state
+                .retained_attachment_diagnostics
+                .push_back(value.clone());
+            state
+                .callers
+                .iter()
+                .filter(|&(_key, caller)| attachment_diagnostics_supported(&caller.versions))
+                .map(|(key, _caller)| key.clone())
+                .collect::<Vec<_>>()
+        };
+        for caller in callers {
+            // The host ring above is the retryable evidence path. A channel
+            // failure is not an excuse to discard the source fact.
+            let _ = self
+                .emit(&caller, None, IPC_ATTACHMENT_STREAM_ID, value.clone())
+                .await;
+        }
+    }
+
+    async fn replay_attachment_diagnostics(&self, caller: &str) {
+        let (dropped, values) = {
+            let state = self.inner.lock().await;
+            if !state
+                .callers
+                .get(caller)
+                .is_some_and(|state| attachment_diagnostics_supported(&state.versions))
+            {
+                return;
+            }
+            (
+                state.dropped_attachment_diagnostics,
+                state
+                    .retained_attachment_diagnostics
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
+        if dropped != 0 {
+            let _ = self
+                .emit(
+                    caller,
+                    None,
+                    IPC_ATTACHMENT_STREAM_ID,
+                    object([
+                        ("kind", string("diagnostic-warning")),
+                        ("schemaVersion", number(1)),
+                        ("code", string("gatt.source-uncertain-retention-lagged")),
+                        ("missed", IpcValue::Number(Number::from(dropped))),
+                    ]),
+                )
+                .await;
+        }
+        for value in values {
+            if self
+                .emit(caller, None, IPC_ATTACHMENT_STREAM_ID, value)
+                .await
+                .is_err()
+            {
+                // The record remains in the host ring for the caller's next
+                // authenticated attachment. Do not send it to another caller.
+                return;
+            }
+        }
+    }
+
     /// A reset event was missed: rebind every caller still bound to an
     /// attachment the central no longer holds.
     async fn rebind_to_current(&self) {
@@ -3330,7 +6310,10 @@ impl BtleplugDispatcher {
 
     /// The core ended a scan without a stop request: the OS stopped it, or
     /// an adapter loss took it (finding 57). The core already settled it
-    /// and released its owner, so the mapping goes and the stream ends —
+    /// and released its owner. The mapping remains until its terminal
+    /// evidence has either been durably committed and delivered, or a caller
+    /// receives the exact staging failure; otherwise a stage failure would
+    /// silently discard the reservation needed for recovery.
     /// `source-failed` with the core's own words when the scan was aborted,
     /// `closed` otherwise (the desktop NAPI provider's vocabulary). A scan
     /// whose release is in flight is left to that release.
@@ -3339,22 +6322,26 @@ impl BtleplugDispatcher {
             let mut state = self.inner.lock().await;
             state.callers.iter_mut().find_map(|(key, caller_state)| {
                 let owned = caller_state.scan.as_ref().is_some_and(|scan| {
-                    scan.core_operation_id == ended.operation_id && scan.phase.is_active()
+                    scan.core_operation_id == ended.operation_id
+                        && scan.phase.is_active()
+                        && !scan.terminal_failure_sent
+                        && !scan.terminal_failure_claimed
                 });
                 if !owned {
                     return None;
                 }
-                let scan = caller_state.scan.take()?;
-                if let Some(task) = scan.task {
-                    task.abort();
-                }
+                caller_state
+                    .scan
+                    .as_mut()
+                    .expect("owned scan exists")
+                    .terminal_failure_claimed = true;
                 Some((
                     key.clone(),
                     (
                         caller_state.lease_id.clone(),
                         caller_state.lease_generation.clone(),
                     ),
-                    scan.handle,
+                    caller_state.scan.as_ref()?.handle.clone(),
                 ))
             })
         };
@@ -3376,10 +6363,363 @@ impl BtleplugDispatcher {
         } else {
             ("closed", None)
         };
-        // A retired or re-leased caller has nobody left to tell.
-        let _ = self
-            .terminal(&key, (&lease.0, &lease.1), &handle, reason, error.as_ref())
-            .await;
+        match self
+            .terminal_with_admission(
+                &key,
+                TerminalRequest {
+                    expected_lease: (&lease.0, &lease.1),
+                    stream_id: &handle,
+                    reason,
+                    error: error.as_ref(),
+                    counters: terminal_evidence::TerminalCounters::ZERO,
+                    admission: TerminalAdmission::ClaimedScan,
+                },
+            )
+            .await
+        {
+            Ok(_) => {
+                let mut state = self.inner.lock().await;
+                if let Some(scan) = state
+                    .callers
+                    .get_mut(&key)
+                    .filter(|caller| {
+                        caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                    })
+                    .and_then(|caller| caller.scan.as_ref())
+                    .filter(|scan| {
+                        scan.handle == handle && scan.core_operation_id == ended.operation_id
+                    })
+                {
+                    if let Some(task) = scan.task.as_ref() {
+                        task.abort();
+                    }
+                }
+                if let Some(caller) = state.callers.get_mut(&key) {
+                    if caller.scan.as_ref().is_some_and(|scan| {
+                        scan.handle == handle && scan.core_operation_id == ended.operation_id
+                    }) {
+                        caller.scan.take();
+                    }
+                }
+            }
+            Err(stage_failure) => {
+                // The core has already ended the physical scan. A durable
+                // stage/commit failure has a narrowly authenticated public
+                // representation; retain the resource/binding so a later
+                // owner cleanup can retry the exact reservation instead of
+                // forging a receipt or losing recovery authority. Transport
+                // delivery failures are not evidence-stage failures and must
+                // not be branded as one.
+                if matches!(
+                    stage_failure.operation.as_str(),
+                    "tauri.terminal-evidence.stage-before-emit"
+                        | "tauri.terminal-evidence.commit-before-emit"
+                ) {
+                    match self
+                        .emit_scan_terminal_stage_failure(
+                            &key,
+                            (&lease.0, &lease.1),
+                            &handle,
+                            &stage_failure,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            let mut state = self.inner.lock().await;
+                            if let Some(scan) = state
+                                .callers
+                                .get_mut(&key)
+                                .filter(|caller| {
+                                    caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                                })
+                                .and_then(|caller| caller.scan.as_mut())
+                                .filter(|scan| {
+                                    scan.handle == handle
+                                        && scan.core_operation_id == ended.operation_id
+                                })
+                            {
+                                scan.terminal_failure_sent = true;
+                                if let Some(task) = scan.task.as_ref() {
+                                    task.abort();
+                                }
+                            }
+                        }
+                        Err(delivery_failure) => {
+                            let mut state = self.inner.lock().await;
+                            if let Some(scan) = state
+                                .callers
+                                .get_mut(&key)
+                                .filter(|caller| {
+                                    caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                                })
+                                .and_then(|caller| caller.scan.as_mut())
+                                .filter(|scan| {
+                                    scan.handle == handle
+                                        && scan.core_operation_id == ended.operation_id
+                                })
+                            {
+                                scan.terminal_stage_failure = Some(stage_failure);
+                                scan.terminal_delivery_failure = Some(delivery_failure);
+                                scan.terminal_delivery_retry_item =
+                                    Some(ScanTerminalRetry::StageFailure(
+                                        scan.terminal_stage_failure
+                                            .as_ref()
+                                            .expect("stored stage failure")
+                                            .clone(),
+                                    ));
+                            }
+                        }
+                    }
+                } else {
+                    // A terminal-send failure happens after the terminal has
+                    // been assembled (and may have committed evidence). The
+                    // core will not publish another scan-end event, so retain
+                    // that exact terminal for the same retry path rather
+                    // than leaving the lifecycle claim to suppress all later
+                    // cleanup or substituting an owner-release terminal.
+                    let mut state = self.inner.lock().await;
+                    if let Some(scan) = state
+                        .callers
+                        .get_mut(&key)
+                        .filter(|caller| {
+                            caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                        })
+                        .and_then(|caller| caller.scan.as_mut())
+                        .filter(|scan| {
+                            scan.handle == handle && scan.core_operation_id == ended.operation_id
+                        })
+                    {
+                        scan.terminal_delivery_failure = Some(stage_failure);
+                        scan.terminal_delivery_retry_item = Some(ScanTerminalRetry::Terminal {
+                            reason: reason.to_owned(),
+                            error: error.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Retry the exact native stage-failure terminal before ordinary caller
+    /// cleanup. A full queue or closed channel is observable cleanup debt,
+    /// never a reason to discard a committed-or-recoverable binding.
+    async fn retry_scan_terminal_delivery_failure(&self, key: &str) -> Result<(), DispatchError> {
+        enum RetryStep {
+            Join(watch::Receiver<ReleaseAnswer>),
+            Lead {
+                sender: watch::Sender<ReleaseAnswer>,
+                lease: (String, String),
+                handle: String,
+                operation_id: OperationId,
+                item: ScanTerminalRetry,
+            },
+        }
+        let step = {
+            let mut state = self.inner.lock().await;
+            state.callers.get_mut(key).and_then(|caller| {
+                caller.scan.as_mut().and_then(|scan| {
+                    if let Some(retry) = scan.terminal_delivery_retry.as_ref() {
+                        return Some(RetryStep::Join(retry.clone()));
+                    }
+                    scan.terminal_delivery_retry_item.clone().map(|item| {
+                        let (sender, receiver) = watch::channel(None);
+                        scan.terminal_delivery_retry = Some(receiver);
+                        RetryStep::Lead {
+                            sender,
+                            lease: (caller.lease_id.clone(), caller.lease_generation.clone()),
+                            handle: scan.handle.clone(),
+                            operation_id: scan.core_operation_id.clone(),
+                            item,
+                        }
+                    })
+                })
+            })
+        };
+        let Some(step) = step else {
+            return Ok(());
+        };
+        let RetryStep::Lead {
+            sender,
+            lease,
+            handle,
+            operation_id,
+            item,
+        } = step
+        else {
+            let RetryStep::Join(receiver) = step else {
+                unreachable!("retry step is lead or join")
+            };
+            let result = join_release(receiver).await;
+            if result.is_ok() {
+                // The leading retry owns the actual send, but a joined
+                // release must treat its successful answer as terminal too:
+                // it may run only after the sender has cleared its in-flight
+                // marker, so this closes the last owner-release race.
+                if let Some(scan) = self
+                    .inner
+                    .lock()
+                    .await
+                    .callers
+                    .get_mut(key)
+                    .and_then(|caller| caller.scan.as_mut())
+                {
+                    scan.terminal_stage_failure = None;
+                    scan.terminal_delivery_failure = None;
+                    scan.terminal_delivery_retry_item = None;
+                    scan.terminal_delivery_retry = None;
+                    scan.terminal_failure_sent = true;
+                    if let Some(task) = scan.task.as_ref() {
+                        task.abort();
+                    }
+                }
+            }
+            return result;
+        };
+        let result = match &item {
+            ScanTerminalRetry::StageFailure(stage_failure) => {
+                self.emit_scan_terminal_stage_failure(
+                    key,
+                    (&lease.0, &lease.1),
+                    &handle,
+                    stage_failure,
+                )
+                .await
+            }
+            ScanTerminalRetry::Terminal { reason, error } => self
+                .terminal_with_admission(
+                    key,
+                    TerminalRequest {
+                        expected_lease: (&lease.0, &lease.1),
+                        stream_id: &handle,
+                        reason,
+                        error: error.as_ref(),
+                        counters: terminal_evidence::TerminalCounters::ZERO,
+                        admission: TerminalAdmission::ClaimedScan,
+                    },
+                )
+                .await
+                .map(|_| ()),
+        };
+        match result {
+            Ok(()) => {
+                let mut state = self.inner.lock().await;
+                if let Some(scan) = state
+                    .callers
+                    .get_mut(key)
+                    .filter(|caller| {
+                        caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                    })
+                    .and_then(|caller| caller.scan.as_mut())
+                    .filter(|scan| scan.handle == handle && scan.core_operation_id == operation_id)
+                {
+                    scan.terminal_stage_failure = None;
+                    scan.terminal_delivery_failure = None;
+                    scan.terminal_delivery_retry_item = None;
+                    scan.terminal_delivery_retry = None;
+                    scan.terminal_failure_sent = true;
+                    if let Some(task) = scan.task.as_ref() {
+                        task.abort();
+                    }
+                }
+                let _ = sender.send(Some(Ok(())));
+                Ok(())
+            }
+            Err(delivery_failure) => {
+                let mut state = self.inner.lock().await;
+                if let Some(scan) = state
+                    .callers
+                    .get_mut(key)
+                    .filter(|caller| {
+                        caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                    })
+                    .and_then(|caller| caller.scan.as_mut())
+                    .filter(|scan| scan.handle == handle && scan.core_operation_id == operation_id)
+                {
+                    scan.terminal_delivery_failure = Some(delivery_failure.clone());
+                    scan.terminal_delivery_retry = None;
+                }
+                let _ = sender.send(Some(Err(delivery_failure.clone())));
+                Err(delivery_failure)
+            }
+        }
+    }
+
+    async fn emit_scan_terminal_stage_failure(
+        &self,
+        caller_key: &str,
+        expected_lease: (&str, &str),
+        stream_id: &str,
+        failure: &DispatchError,
+    ) -> Result<(), DispatchError> {
+        let mut state = self.inner.lock().await;
+        let caller = state
+            .callers
+            .get_mut(caller_key)
+            .filter(|caller| {
+                !caller.retired
+                    && caller.lease_id == expected_lease.0
+                    && caller.lease_generation == expected_lease.1
+            })
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "stream",
+                    "tauri.scan-terminal-owner",
+                )
+            })?;
+        if !caller
+            .scan
+            .as_ref()
+            .is_some_and(|scan| scan.handle == stream_id && scan.phase.is_active())
+        {
+            return Ok(());
+        }
+        if caller.pending_events.len() >= MAX_PENDING_EVENTS {
+            return Err(DispatchError::new(
+                BleErrorCode::StreamQuota,
+                "stream",
+                "tauri.scan-terminal-stage-event",
+            ));
+        }
+        let event_id = self.id("event-terminal-stage-failure");
+        caller.pending_events.insert(event_id.clone());
+        let result = caller.event_sink.send(object([
+            (
+                "rendererLease",
+                object([
+                    ("leaseId", string(caller.lease_id.clone())),
+                    ("generation", string(caller.lease_generation.clone())),
+                ]),
+            ),
+            ("eventId", string(event_id.clone())),
+            ("streamId", string(stream_id)),
+            (
+                "item",
+                object([
+                    ("kind", string("terminal")),
+                    ("reason", string("source-failed")),
+                    ("droppedItems", number(0)),
+                    ("droppedBytes", number(0)),
+                    ("replacedItems", number(0)),
+                    ("error", failure.normalized_error()),
+                    // The authenticated Tauri transport brands this exact
+                    // native-only marker before the public IPC manager accepts
+                    // a scoped no-receipt terminal as a stage failure.
+                    ("terminalEvidenceStageFailed", IpcValue::Bool(true)),
+                ]),
+            ),
+        ]));
+        if result.is_err() {
+            caller.pending_events.remove(&event_id);
+        }
+        result.map_err(|error| {
+            DispatchError::new(
+                BleErrorCode::PlatformTransport,
+                "stream",
+                "tauri.scan-terminal-stage-send",
+            )
+            .platform(error.to_string())
+        })
     }
 
     /// Scan-end reports were missed (the receiver lagged): which scan ended
@@ -3446,6 +6786,7 @@ impl BtleplugDispatcher {
             LifecycleKind::Released { requested: true } => Some(LINK_RELEASED),
             LifecycleKind::Released { requested: false } => Some(LINK_ENDED_UNREQUESTED),
             LifecycleKind::AdapterLost => Some(LINK_ADAPTER_LOST),
+            LifecycleKind::HostReset => Some(LINK_HOST_RESET),
             LifecycleKind::ServicesChanged => None,
         };
         let mut deliveries = Vec::new();
@@ -3464,6 +6805,9 @@ impl BtleplugDispatcher {
                     })
                     .map(|(handle, _)| handle.clone())
                     .collect();
+                for handle in &connection_handles {
+                    self.invalidate_reclaims(caller_key, None, Some(handle));
+                }
                 // The database of an ended or changed link is stale either way.
                 for database in caller_state.databases.values_mut() {
                     if connection_handles.contains(&database.connection_handle) {
@@ -3776,6 +7120,7 @@ impl BtleplugDispatcher {
             }
             for database in caller_state.databases.values_mut() {
                 if database.connection_handle == connection_handle {
+                    self.invalidate_reclaims(&key, None, Some(&connection_handle));
                     database.valid = false;
                 }
             }
@@ -3819,6 +7164,14 @@ impl BtleplugDispatcher {
                     "tauri.database-release-owner",
                 ));
             }
+            self.invalidate_reclaims(&key, Some(&handle), None);
+        }
+        if self.has_reclaim_debt(&key, Some(&handle), None) {
+            return Err(DispatchError::new(
+                BleErrorCode::LifecycleInvalidState,
+                "cleanup",
+                "tauri.reclaim.pending",
+            ));
         }
         self.release_acquired_database(&key, &handle, "owner-released")
             .await?;
@@ -3830,6 +7183,7 @@ impl BtleplugDispatcher {
                 "tauri.database-release-owner",
             )
         })?;
+        self.invalidate_reclaims(&key, Some(&handle), None);
         caller_state.databases.remove(&handle);
         Ok(released())
     }
@@ -3995,6 +7349,14 @@ impl BtleplugDispatcher {
         }
         let key = caller_key(caller);
         let lease = expected_lease(&payload, "tauri.subscribe-lease")?;
+        let terminal_evidence = self
+            .terminal_evidence_binding(
+                caller,
+                &payload,
+                "subscription",
+                "tauri.subscribe.terminal-evidence",
+            )
+            .await?;
         // Core first: enablement is core-arbitrated (concurrent subscribers
         // share one physical enable); the consumer below addresses it.
         let authority = self.ensure_authority().await?;
@@ -4091,6 +7453,7 @@ impl BtleplugDispatcher {
                             task: None,
                             phase: ReleasePhase::Active,
                             terminal_sent: false,
+                            terminal_evidence,
                         },
                     );
                     let task = self.spawn_notification_forwarder(
@@ -4153,6 +7516,7 @@ impl BtleplugDispatcher {
         let dispatcher = self.clone();
         tauri::async_runtime::spawn(async move {
             let mut sequence = 0_u64;
+            let mut recovery_announced = false;
             loop {
                 let target = match dispatcher
                     .subscription_delivery(&key, &handle, &lease)
@@ -4184,13 +7548,26 @@ impl BtleplugDispatcher {
                 let ending = match polled {
                     Ok(
                         poll @ (NotificationPoll::Value(_)
-                        | NotificationPoll::ValueWithReceipt { .. }),
+                        | NotificationPoll::ValueWithReceipt { .. }
+                        | NotificationPoll::ValueWithProvenance { .. }),
                     ) => {
-                        let (value, receipt) = match poll {
-                            NotificationPoll::Value(value) => (value, None),
+                        let (value, receipt, provenance, source_order) = match poll {
+                            NotificationPoll::Value(value) => (value, None, None, None),
                             NotificationPoll::ValueWithReceipt { value, receipt } => {
-                                (value, Some(receipt))
+                                (value, Some(receipt), None, None)
                             }
+                            NotificationPoll::ValueWithProvenance {
+                                value,
+                                receipt,
+                                provenance,
+                                source_generation,
+                                source_ordinal,
+                            } => (
+                                value,
+                                receipt,
+                                Some(provenance.as_str()),
+                                Some((source_generation, source_ordinal)),
+                            ),
                             _ => unreachable!("notification value pattern already matched"),
                         };
                         sequence = sequence.saturating_add(1);
@@ -4203,28 +7580,136 @@ impl BtleplugDispatcher {
                             observed_at_monotonic_ms,
                             sequence,
                             receipt.as_ref(),
+                            provenance,
+                            source_order,
                         ) {
-                            Err(error) => ("source-failed", Some(error)),
+                            Err(error) => (
+                                "source-failed",
+                                Some(error),
+                                terminal_evidence::TerminalCounters::ZERO,
+                            ),
                             Ok(payload) => match dispatcher
                                 .emit(&key, Some((&lease.0, &lease.1)), &handle, payload)
                                 .await
                             {
                                 Ok(()) => continue,
-                                Err(error) => ("source-failed", Some(error)),
+                                Err(error) => (
+                                    "source-failed",
+                                    Some(error),
+                                    terminal_evidence::TerminalCounters::ZERO,
+                                ),
                             },
+                        }
+                    }
+                    Ok(NotificationPoll::PeerSourceLoss {
+                        peer_id,
+                        generation,
+                        skipped_records,
+                    }) => {
+                        let payload = object([
+                            ("kind", string("peer-source-loss")),
+                            ("peerId", string(peer_id)),
+                            ("generation", string(generation.to_string())),
+                            (
+                                "skippedRecords",
+                                skipped_records
+                                    .map_or(IpcValue::Null, |count| string(count.to_string())),
+                            ),
+                        ]);
+                        match dispatcher
+                            .emit(&key, Some((&lease.0, &lease.1)), &handle, payload)
+                            .await
+                        {
+                            Ok(()) => continue,
+                            Err(error) => (
+                                "source-failed",
+                                Some(error),
+                                terminal_evidence::TerminalCounters::ZERO,
+                            ),
                         }
                     }
                     Ok(NotificationPoll::Empty) => {
                         tokio::time::sleep(FORWARD_POLL_INTERVAL).await;
                         continue;
                     }
-                    Ok(NotificationPoll::Terminal(_)) => ("overflow", None),
-                    Ok(NotificationPoll::Invalidated(InvalidationCause::ServicesChanged)) => {
-                        ("service-changed", None)
+                    Ok(NotificationPoll::Terminal(terminal)) => (
+                        "overflow",
+                        None,
+                        terminal_evidence::TerminalCounters::from(terminal),
+                    ),
+                    Ok(NotificationPoll::SourceFailed(error)) => (
+                        "source-failed",
+                        Some(DispatchError::from_core(&error)),
+                        terminal_evidence::TerminalCounters::ZERO,
+                    ),
+                    // Do not convert a retained source-failure offer into a
+                    // terminal `capability.unsupported`. The core deliberately
+                    // holds its producer head until the host has attached an
+                    // existing durable recording and a recipient reads and
+                    // acknowledges the exact bytes.  Treating the offer as
+                    // Empty would hide it; terminating would strand a normal
+                    // Tauri attachment with a fabricated permanent failure.
+                    //
+                    // An opted-in owner receives a one-shot attachment
+                    // diagnostic and can pull its opaque durable handles.
+                    // Until the trusted host has granted this caller, retain
+                    // the source and pace polling; no producer
+                    // acknowledgement occurs here.
+                    Ok(NotificationPoll::SourceFailureRecovery(_)) => {
+                        // Recovery handles and this availability diagnostic
+                        // were introduced in IPC 10.  The forwarder outlives
+                        // a renderer bootstrap, so route-level gating alone
+                        // is insufficient: inspect the active negotiated
+                        // caller before making the v10-only fact observable.
+                        let recovery_protocol_supported = dispatcher
+                            .inner
+                            .lock()
+                            .await
+                            .callers
+                            .get(&key)
+                            .is_some_and(|caller| {
+                                attachment_diagnostics_supported(&caller.versions)
+                            });
+                        let granted = recovery_protocol_supported
+                            && dispatcher
+                                .peer_failure_recovery_admission
+                                .lock()
+                                .expect("peer failure recovery admission mutex poisoned")
+                                .get(&key)
+                                .is_some_and(|entry| {
+                                    entry.owner_generation == Some(entry.generation)
+                                });
+                        if granted && !recovery_announced {
+                            recovery_announced = true;
+                            if let Err(error) = dispatcher
+                                .emit(
+                                    &key,
+                                    Some((&lease.0, &lease.1)),
+                                    IPC_ATTACHMENT_STREAM_ID,
+                                    object([
+                                        ("kind", string("diagnostic-warning")),
+                                        ("schemaVersion", number(1)),
+                                        ("code", string("gatt.peer-failure-recovery-available")),
+                                    ]),
+                                )
+                                .await
+                            {
+                                return eprintln!("tauri-plugin-unified-ble-manager: durable recovery availability was not delivered: {}", error.describe());
+                            }
+                        }
+                        tokio::time::sleep(FORWARD_POLL_INTERVAL).await;
+                        continue;
                     }
-                    Ok(NotificationPoll::Invalidated(InvalidationCause::LinkEnded)) => {
-                        ("connection-lost", None)
-                    }
+                    Ok(NotificationPoll::Invalidated(InvalidationCause::ServicesChanged)) => (
+                        "service-changed",
+                        None,
+                        terminal_evidence::TerminalCounters::ZERO,
+                    ),
+                    Ok(NotificationPoll::Invalidated(InvalidationCause::LinkEnded)) => (
+                        "connection-lost",
+                        None,
+                        terminal_evidence::TerminalCounters::ZERO,
+                    ),
                     // The adapter was lost under the stream (finding 57):
                     // the source failed, with the core's answer for live
                     // work a reset ended.
@@ -4238,6 +7723,7 @@ impl BtleplugDispatcher {
                             )
                             .platform("the adapter was lost under the subscription"),
                         ),
+                        terminal_evidence::TerminalCounters::ZERO,
                     ),
                     Ok(NotificationPoll::Closed) => (
                         "source-failed",
@@ -4246,21 +7732,27 @@ impl BtleplugDispatcher {
                             "stream",
                             "tauri.notifications",
                         )),
+                        terminal_evidence::TerminalCounters::ZERO,
                     ),
                     // Core-side failure ends delivery with the verbatim core
                     // verdict (never a guessed stream error, never silent).
-                    Err(error) => ("source-failed", Some(DispatchError::from_core(&error))),
+                    Err(error) => (
+                        "source-failed",
+                        Some(DispatchError::from_core(&error)),
+                        terminal_evidence::TerminalCounters::ZERO,
+                    ),
                 };
-                let (reason, error) = ending;
+                let (reason, error, counters) = ending;
                 let mut reported_send_failure = false;
                 loop {
                     match dispatcher
-                        .notification_terminal(
+                        .notification_terminal_with_counters(
                             &key,
                             (&lease.0, &lease.1),
                             &handle,
                             reason,
                             error.as_ref(),
+                            counters,
                         )
                         .await
                     {
@@ -4525,7 +8017,7 @@ impl BtleplugDispatcher {
                     BleErrorCode::ArgumentInvalid,
                     "connection",
                     operation,
-                ))
+                ));
             }
         };
         let connection = self.connection(caller, &payload, operation).await?;
@@ -4822,6 +8314,22 @@ impl BtleplugDispatcher {
                 "tauri.event-ack-id",
             ));
         }
+        let retry_terminal = caller_state.scan.as_ref().is_some_and(|scan| {
+            scan.terminal_delivery_retry_item.is_some() && scan.terminal_delivery_retry.is_none()
+        });
+        drop(state);
+        if retry_terminal {
+            let dispatcher = self.clone();
+            let caller_key = caller_key(&caller);
+            tokio::spawn(async move {
+                // The mapping retains the precise failure and every retry
+                // rechecks caller ownership. A closed/again-full channel
+                // remains explicit cleanup debt for the next release.
+                let _ = dispatcher
+                    .retry_scan_terminal_delivery_failure(&caller_key)
+                    .await;
+            });
+        }
         Ok(object([("kind", string("event.ack"))]))
     }
 
@@ -4840,7 +8348,14 @@ impl BtleplugDispatcher {
             })?;
             validate_lease(caller_state, &lease, "tauri.release-lease")?;
         }
-        let cleanup = self.release(&key).await;
+        // A renderer that has requested ordinary release no longer owns
+        // recovery evidence, even if unrelated radio cleanup needs retries.
+        // Do this before awaiting cleanup: a failed unsubscribe or disconnect
+        // must not leave prior opaque recovery aliases usable by the retired
+        // caller.
+        self.revoke_peer_failure_recovery_admission(&key);
+        self.revoke_scan_failure_recovery_admission(&key);
+        let cleanup = self.release_with_terminal_evidence(&key, false).await;
         Ok(object([("kind", string("release")), ("cleanup", cleanup)]))
     }
 
@@ -5032,11 +8547,14 @@ impl BtleplugDispatcher {
             match self
                 .terminal_with_admission(
                     caller_key,
-                    expected_lease,
-                    stream_id,
-                    reason,
-                    None,
-                    TerminalAdmission::Connection,
+                    TerminalRequest {
+                        expected_lease,
+                        stream_id,
+                        reason,
+                        error: None,
+                        counters: terminal_evidence::TerminalCounters::ZERO,
+                        admission: TerminalAdmission::Connection,
+                    },
                 )
                 .await
             {
@@ -5062,11 +8580,14 @@ impl BtleplugDispatcher {
     ) -> Result<(), DispatchError> {
         self.terminal_with_admission(
             caller_key,
-            expected_lease,
-            stream_id,
-            reason,
-            error,
-            TerminalAdmission::Any,
+            TerminalRequest {
+                expected_lease,
+                stream_id,
+                reason,
+                error,
+                counters: terminal_evidence::TerminalCounters::ZERO,
+                admission: TerminalAdmission::Any,
+            },
         )
         .await
         .map(|_| ())
@@ -5084,13 +8605,36 @@ impl BtleplugDispatcher {
         reason: &str,
         error: Option<&DispatchError>,
     ) -> Result<bool, DispatchError> {
-        self.terminal_with_admission(
+        self.notification_terminal_with_counters(
             caller_key,
             expected_lease,
             stream_id,
             reason,
             error,
-            TerminalAdmission::ActiveSubscription,
+            terminal_evidence::TerminalCounters::ZERO,
+        )
+        .await
+    }
+
+    async fn notification_terminal_with_counters(
+        &self,
+        caller_key: &str,
+        expected_lease: (&str, &str),
+        stream_id: &str,
+        reason: &str,
+        error: Option<&DispatchError>,
+        counters: terminal_evidence::TerminalCounters,
+    ) -> Result<bool, DispatchError> {
+        self.terminal_with_admission(
+            caller_key,
+            TerminalRequest {
+                expected_lease,
+                stream_id,
+                reason,
+                error,
+                counters,
+                admission: TerminalAdmission::ActiveSubscription,
+            },
         )
         .await
     }
@@ -5098,12 +8642,16 @@ impl BtleplugDispatcher {
     async fn terminal_with_admission(
         &self,
         caller_key: &str,
-        expected_lease: (&str, &str),
-        stream_id: &str,
-        reason: &str,
-        error: Option<&DispatchError>,
-        admission: TerminalAdmission,
+        request: TerminalRequest<'_>,
     ) -> Result<bool, DispatchError> {
+        let TerminalRequest {
+            expected_lease,
+            stream_id,
+            reason,
+            error,
+            counters,
+            admission,
+        } = request;
         let mut state = self.inner.lock().await;
         let caller_state = state
             .callers
@@ -5150,13 +8698,170 @@ impl BtleplugDispatcher {
                 return Ok(false);
             }
         }
+        if caller_state.scan.as_ref().is_some_and(|scan| {
+            scan.handle == stream_id
+                && (scan.terminal_failure_sent
+                    || (scan.terminal_failure_claimed
+                        && admission != TerminalAdmission::ClaimedScan))
+        }) {
+            return Ok(false);
+        }
+        let evidence_binding = caller_state
+            .scan
+            .as_ref()
+            .filter(|scan| scan.handle == stream_id)
+            .and_then(|scan| scan.terminal_evidence.clone())
+            .or_else(|| {
+                caller_state
+                    .subscriptions
+                    .get(stream_id)
+                    .and_then(|subscription| subscription.terminal_evidence.clone())
+            });
+        let mut committed_owner = None;
+        let evidence = if let Some(binding) = evidence_binding {
+            let ledger = self
+                .terminal_evidence_ledger
+                .lock()
+                .expect("terminal evidence ledger mutex poisoned")
+                .clone()
+                .ok_or_else(|| {
+                    DispatchError::new(
+                        BleErrorCode::CapabilityUnsupported,
+                        "stream",
+                        "tauri.terminal-evidence.ledger-unconfigured",
+                    )
+                })?;
+            let normalized = error.map(|value| value.normalized_error());
+            let bytes = terminal_evidence::encode_terminal(
+                &binding.scope,
+                reason,
+                normalized.as_ref(),
+                counters,
+            );
+            ledger
+                .stage(&binding.reservation_id, caller_key, &bytes)
+                .map_err(|error| {
+                    DispatchError::new(
+                        BleErrorCode::PlatformFailure,
+                        "stream",
+                        "tauri.terminal-evidence.stage-before-emit",
+                    )
+                    .platform(error.to_string())
+                })?;
+            use sha2::Digest;
+            let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+            let committed = ledger
+                .commit(&binding.reservation_id, &bytes, digest)
+                .map_err(|error| {
+                    DispatchError::new(
+                        BleErrorCode::PlatformFailure,
+                        "stream",
+                        "tauri.terminal-evidence.commit-before-emit",
+                    )
+                    .platform(error.to_string())
+                })?;
+            committed_owner = Some((
+                committed.reference.clone(),
+                TerminalEvidenceOwner {
+                    producer: binding.scope.producer.clone(),
+                    caller_key: caller_key.to_owned(),
+                    lease_id: caller_state.lease_id.clone(),
+                    lease_generation: caller_state.lease_generation.clone(),
+                    recovery_lease_id: terminal_evidence_recovery_lease_id(
+                        &caller_state.lease_id,
+                        &caller_state.lease_generation,
+                    ),
+                    reservation_id: binding.reservation_id.clone(),
+                    recoverable: false,
+                },
+            ));
+            let mut receipt_scope = vec![
+                ("managerId", string(binding.scope.manager_id)),
+                ("operationId", string(binding.scope.operation_id)),
+                ("incarnation", string(binding.scope.incarnation)),
+            ];
+            if let Some(scope_utf16le) = binding.scope.scope_utf16le {
+                receipt_scope.push(("scopeUtf16le", IpcValue::Bytes(scope_utf16le)));
+            }
+            Some(object([
+                ("ref", string(committed.reference)),
+                (
+                    "byteLength",
+                    number(i64::try_from(committed.byte_length).map_err(|_| {
+                        DispatchError::new(
+                            BleErrorCode::PlatformFailure,
+                            "stream",
+                            "tauri.terminal-evidence.commit-before-emit",
+                        )
+                    })?),
+                ),
+                (
+                    "digest",
+                    string(
+                        committed
+                            .digest
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>(),
+                    ),
+                ),
+                ("formatVersion", number(committed.format_version as i64)),
+                ("durability", string("committed")),
+                ("producer", string(binding.scope.producer)),
+                ("scope", object(receipt_scope)),
+            ]))
+        } else {
+            None
+        };
         let event_id = self.id("event-terminal");
         caller_state.pending_events.insert(event_id.clone());
-        let mut terminal_item = object([("kind", string("terminal")), ("reason", string(reason))]);
-        if let (Some(error), IpcValue::Object(item)) = (error, &mut terminal_item) {
+        let mut terminal_item = object([
+            ("kind", string("terminal")),
+            ("reason", string(reason)),
+            (
+                "droppedItems",
+                number(i64::try_from(counters.dropped_items()).map_err(|_| {
+                    DispatchError::new(
+                        BleErrorCode::PlatformFailure,
+                        "stream",
+                        "tauri.terminal-counters",
+                    )
+                })?),
+            ),
+            (
+                "droppedBytes",
+                number(i64::try_from(counters.dropped_bytes()).map_err(|_| {
+                    DispatchError::new(
+                        BleErrorCode::PlatformFailure,
+                        "stream",
+                        "tauri.terminal-counters",
+                    )
+                })?),
+            ),
+            (
+                "replacedItems",
+                number(i64::try_from(counters.replaced_items()).map_err(|_| {
+                    DispatchError::new(
+                        BleErrorCode::PlatformFailure,
+                        "stream",
+                        "tauri.terminal-counters",
+                    )
+                })?),
+            ),
+        ]);
+        // A committed receipt is the terminal error authority.  Sending a
+        // second inline error lets a renderer bypass receipt validation and
+        // makes a failed durable read indistinguishable from a complete
+        // observation.
+        if let (Some(error), None, IpcValue::Object(item)) = (error, &evidence, &mut terminal_item)
+        {
             item.insert("error".to_owned(), error.normalized_error());
         }
-        let send_result = caller_state.event_sink.send(object([
+        if let (Some(evidence), IpcValue::Object(item)) = (evidence, &mut terminal_item) {
+            item.insert("evidence".to_owned(), evidence);
+        }
+        let event_sink = caller_state.event_sink.clone();
+        let terminal_event = object([
             (
                 "rendererLease",
                 object([
@@ -5167,9 +8872,19 @@ impl BtleplugDispatcher {
             ("eventId", string(event_id.clone())),
             ("streamId", string(stream_id)),
             ("item", terminal_item),
-        ]));
+        ]);
+        // A channel refusal occurs after the receipt is durably committed.
+        // Record its authority before attempting delivery so an exact retry
+        // (whose ledger stage/commit is idempotent for these canonical bytes)
+        // cannot lose the committed owner between attempts.
+        if let Some((reference, owner)) = committed_owner.take() {
+            state.terminal_evidence_owners.insert(reference, owner);
+        }
+        let send_result = event_sink.send(terminal_event);
         if send_result.is_err() {
-            caller_state.pending_events.remove(&event_id);
+            if let Some(caller_state) = state.callers.get_mut(caller_key) {
+                caller_state.pending_events.remove(&event_id);
+            }
         }
         send_result.map_err(|error| {
             DispatchError::new(
@@ -5183,11 +8898,15 @@ impl BtleplugDispatcher {
             admission,
             TerminalAdmission::Connection | TerminalAdmission::OwnerConnection
         ) {
-            caller_state.connection_events.remove(stream_id);
+            if let Some(caller_state) = state.callers.get_mut(caller_key) {
+                caller_state.connection_events.remove(stream_id);
+            }
         }
         if admission == TerminalAdmission::ActiveSubscription {
-            if let Some(subscription) = caller_state.subscriptions.get_mut(stream_id) {
-                subscription.terminal_sent = true;
+            if let Some(caller_state) = state.callers.get_mut(caller_key) {
+                if let Some(subscription) = caller_state.subscriptions.get_mut(stream_id) {
+                    subscription.terminal_sent = true;
+                }
             }
         }
         Ok(true)
@@ -5203,10 +8922,67 @@ impl BtleplugDispatcher {
     /// here too (PR210-08). The caller leaves the map only when nothing
     /// failed.
     async fn release(&self, key: &str) -> IpcValue {
+        self.release_with_terminal_evidence(key, false).await
+    }
+
+    async fn emit_owner_release_terminals(&self, key: &str) -> Result<(), DispatchError> {
+        let (lease, scan, subscriptions) = {
+            let state = self.inner.lock().await;
+            let Some(caller) = state.callers.get(key).filter(|caller| !caller.retired) else {
+                return Ok(());
+            };
+            (
+                (caller.lease_id.clone(), caller.lease_generation.clone()),
+                caller
+                    .scan
+                    .as_ref()
+                    .filter(|scan| scan.phase.is_active() && !scan.terminal_failure_sent)
+                    .map(|scan| scan.handle.clone()),
+                caller
+                    .subscriptions
+                    .iter()
+                    .filter_map(|(handle, subscription)| {
+                        (subscription.phase.is_active() && !subscription.terminal_sent)
+                            .then_some(handle.clone())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        if let Some(handle) = scan {
+            self.terminal(key, (&lease.0, &lease.1), &handle, "owner-released", None)
+                .await?;
+        }
+        for handle in subscriptions {
+            self.notification_terminal(key, (&lease.0, &lease.1), &handle, "owner-released", None)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn release_with_terminal_evidence(
+        &self,
+        key: &str,
+        _preserve_terminal_evidence: bool,
+    ) -> IpcValue {
+        if let Err(error) = self.retry_scan_terminal_delivery_failure(key).await {
+            return cleanup_record(vec![cleanup_failure(
+                "terminal",
+                "tauri.release.scan-terminal-delivery",
+                error.describe(),
+            )]);
+        }
+        if let Err(error) = self.emit_owner_release_terminals(key).await {
+            return cleanup_record(vec![cleanup_failure(
+                "terminal",
+                "tauri.release.terminal",
+                error.describe(),
+            )]);
+        }
         let present = {
             let mut state = self.inner.lock().await;
             match state.callers.get_mut(key) {
                 Some(caller_state) => {
+                    self.invalidate_reclaims(key, None, None);
                     caller_state.retired = true;
                     caller_state.security_watch_releases.extend(
                         caller_state
@@ -5231,9 +9007,18 @@ impl BtleplugDispatcher {
                 None => false,
             }
         };
+        self.retire_unused_ordered_recording_reservations(key).await;
         let mut failures = Vec::new();
         if present {
-            failures.extend(self.settle_caller(key).await);
+            if self.has_reclaim_debt(key, None, None) {
+                failures.push(cleanup_failure(
+                    "ordered-reclaim",
+                    "tauri.reclaim.pending",
+                    "reclaim cleanup remains pending".to_owned(),
+                ));
+            } else {
+                failures.extend(self.settle_caller(key).await);
+            }
         }
         let owes_debt = self
             .inner
@@ -5261,6 +9046,99 @@ impl BtleplugDispatcher {
             }
         }
         if present && failures.is_empty() {
+            {
+                let mut state = self.inner.lock().await;
+                for (handle, owner) in &mut state.terminal_evidence_owners {
+                    if owner.caller_key == key && handle != &owner.reservation_id {
+                        owner.recoverable = true;
+                    }
+                }
+            }
+            let reservations = {
+                let state = self.inner.lock().await;
+                state
+                    .terminal_evidence_owners
+                    .iter()
+                    .filter(|(_, owner)| owner.caller_key == key)
+                    .fold(
+                        std::collections::HashMap::new(),
+                        |mut entries, (handle, owner)| {
+                            entries
+                                .entry(owner.reservation_id.clone())
+                                .and_modify(|committed| {
+                                    *committed |= handle != &owner.reservation_id
+                                })
+                                .or_insert(handle != &owner.reservation_id);
+                            entries
+                        },
+                    )
+            };
+            let terminal_evidence_ledger = self
+                .terminal_evidence_ledger
+                .lock()
+                .expect("terminal evidence ledger mutex poisoned")
+                .clone();
+            if let Some(ledger) = terminal_evidence_ledger {
+                // A recovered row is protected by a controller-specific
+                // ledger authority, not merely this dispatcher's in-memory
+                // alias. Release that claim before abandoning the prior
+                // caller's source reservations: `abandon` must be able to
+                // acquire source authority, and a fresh controller may then
+                // claim the durable recovery row.
+                let recovery_lease_id = {
+                    let state = self.inner.lock().await;
+                    state.callers.get(key).map(|caller_state| {
+                        terminal_evidence_recovery_lease_id(
+                            &caller_state.lease_id,
+                            &caller_state.lease_generation,
+                        )
+                    })
+                };
+                let recovery_lease_released = match recovery_lease_id {
+                    Some(recovery_lease_id) => {
+                        match ledger.release_recovery_lease(&recovery_lease_id) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                failures.push(cleanup_failure(
+                                    "terminal-evidence",
+                                    "tauri.terminal-evidence.release-recovery-lease",
+                                    error.to_string(),
+                                ));
+                                false
+                            }
+                        }
+                    }
+                    None => true,
+                };
+                if recovery_lease_released {
+                    for (reservation_id, _committed) in reservations {
+                        // `abandon` relinquishes the runtime authority for both
+                        // unused and committed reservations. Its committed path
+                        // deliberately retains the bytes for the authenticated
+                        // recovery ACK; skipping it leaves the durable ledger
+                        // believing the retired manager is still live and makes
+                        // a same-process rebootstrap refuse the recovery lease.
+                        if let Err(error) = ledger.abandon(&reservation_id) {
+                            failures.push(cleanup_failure(
+                                "terminal-evidence",
+                                "tauri.terminal-evidence.release-owner",
+                                error.to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+            if failures.is_empty() {
+                self.inner
+                    .lock()
+                    .await
+                    .terminal_evidence_owners
+                    .retain(|handle, owner| {
+                        owner.caller_key != key || handle != &owner.reservation_id
+                    });
+            }
+        }
+        if present && failures.is_empty() {
             self.inner.lock().await.callers.remove(key);
         }
         cleanup_record(failures)
@@ -5274,26 +9152,49 @@ impl BtleplugDispatcher {
     }
 
     async fn release_revoked(&self, key: String, revocation: u64) {
-        let _admission = self.bootstrap_admission.lock().await;
-        if self
-            .revoked_callers
-            .lock()
-            .expect("revocation mutex poisoned")
-            .get(&key)
-            .copied()
-            != Some(revocation)
-        {
-            return;
-        }
-        let cleanup = self.release(&key).await;
-        if is_released(&cleanup) {
-            let mut revoked = self
-                .revoked_callers
-                .lock()
-                .expect("revocation mutex poisoned");
-            if revoked.get(&key).copied() == Some(revocation) {
-                revoked.remove(&key);
+        loop {
+            {
+                // Do not hold admission while waiting for a native operation:
+                // a replacement attachment may itself redrive cleanup.
+                let _admission = self.bootstrap_admission.lock().await;
+                if self
+                    .revoked_callers
+                    .lock()
+                    .expect("revocation mutex poisoned")
+                    .get(&key)
+                    .copied()
+                    != Some(revocation)
+                {
+                    return;
+                }
+                if matches!(
+                    *self.authority.lock().await,
+                    AuthoritySlot::Closing(_) | AuthoritySlot::ShutDown
+                ) {
+                    return;
+                }
+                let _ = self.release_with_terminal_evidence(&key, false).await;
+                self.settle_revoked_ordered(&key).await;
+                self.settle_revoked_reclaims(&key).await;
+                let cleanup = self.release_with_terminal_evidence(&key, false).await;
+                if is_released(&cleanup) {
+                    let mut revoked = self
+                        .revoked_callers
+                        .lock()
+                        .expect("revocation mutex poisoned");
+                    if revoked.get(&key).copied() == Some(revocation) {
+                        revoked.remove(&key);
+                    }
+                    return;
+                }
+                // Other cleanup failures retain their existing retry contract.
+                // Reclaim operations can settle after this caller disappears,
+                // so keep exactly one task for this revocation until they do.
+                if !self.has_reclaim_debt(&key, None, None) {
+                    return;
+                }
             }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -5380,7 +9281,80 @@ impl BtleplugDispatcher {
                 ));
             }
         }
+        let groups = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(key)
+            .map(|owner| {
+                owner
+                    .ordered_groups
+                    .iter()
+                    .map(|(handle, group)| (handle.clone(), group.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for (handle, group) in groups {
+            match self
+                .close_ordered_resource(group.clone(), OpControl::unbounded())
+                .await
+            {
+                Ok(IpcValue::Object(result))
+                    if result.get("cleanupState") == Some(&string("released")) =>
+                {
+                    if self.is_revoked(key) {
+                        failures.push(cleanup_failure(
+                            "ordered-group",
+                            "tauri.release.ordered-receipt",
+                            "revoked group receipt remains owned".to_owned(),
+                        ));
+                    } else if let Err(error) = self
+                        .retire_ordered_resource(key, &handle, group.clone())
+                        .await
+                    {
+                        failures.push(cleanup_failure(
+                            "ordered-group",
+                            "tauri.release.ordered-ack",
+                            error.describe(),
+                        ));
+                    } else {
+                        self.remove_ordered_mapping(key, &handle, &group).await;
+                    }
+                }
+                Ok(_) => failures.push(cleanup_failure(
+                    "ordered-group",
+                    "tauri.release.ordered",
+                    "ordered group has undrained or pending source records".to_owned(),
+                )),
+                Err(error) => failures.push(cleanup_failure(
+                    "ordered-group",
+                    "tauri.release.ordered",
+                    error.describe(),
+                )),
+            }
+        }
+        let remaining_groups = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(key)
+            .map(|owner| owner.ordered_groups.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut blocked_connections = HashSet::new();
+        for group in remaining_groups {
+            blocked_connections.insert(group.lock().await.connection_handle.clone());
+        }
         for handle in connections {
+            if blocked_connections.contains(&handle) {
+                failures.push(cleanup_failure(
+                    "connection",
+                    "tauri.release.ordered-pending",
+                    "ordered group cleanup remains owned".to_owned(),
+                ));
+                continue;
+            }
             if let Err(error) = self
                 .release_connection(key, &handle, None, OpControl::unbounded())
                 .await
@@ -5516,6 +9490,12 @@ impl IpcDispatcher for BtleplugDispatcher {
 
     fn release_caller(&self, caller: AuthenticatedCaller) {
         let key = caller_key(&caller);
+        self.revoke_peer_failure_recovery_admission(&key);
+        self.revoke_scan_failure_recovery_admission(&key);
+        self.peer_failure_recovery_handles
+            .lock()
+            .expect("peer failure recovery handle mutex poisoned")
+            .remove(&key);
         let revocation = self.next_revocation.fetch_add(1, Ordering::Relaxed);
         self.revoked_callers
             .lock()
@@ -5543,6 +9523,14 @@ fn is_release_command(command: &str) -> bool {
         "operation.cancel"
             | "scan.stop"
             | "gatt.unsubscribe"
+            | "gatt.ordered.orphans"
+            | "gatt.ordered.orphan-ack"
+            | "gatt.ordered.orphan-page"
+            | "gatt.ordered.status"
+            | "gatt.ordered.next"
+            | "gatt.ordered.close"
+            | "gatt.ordered.forget"
+            | "gatt.ordered.retire"
             | "gatt.database.release"
             | "gatt.acquired-write.close"
             | "connection.disconnect"
@@ -5577,7 +9565,13 @@ fn stale_attachment(bound: &Attachment, current: &AttachmentTuple) -> DispatchEr
 fn is_cleanup_command(command: &str) -> bool {
     matches!(
         command,
-        "scan.stop" | "gatt.unsubscribe" | "connection.disconnect"
+        "scan.stop"
+            | "gatt.unsubscribe"
+            | "gatt.ordered.close"
+            | "gatt.ordered.forget"
+            | "gatt.ordered.retire"
+            | "gatt.ordered.orphan-ack"
+            | "connection.disconnect"
     )
 }
 
@@ -5682,6 +9676,14 @@ fn expected_lease_matches(caller: &CallerState, payload: &BTreeMap<String, IpcVa
 
 fn caller_key(caller: &AuthenticatedCaller) -> String {
     format!("{}\0{}", caller.app_identifier, caller.window_label)
+}
+
+/// Produces an injective, host-private identity for a recovery controller.
+/// `lease_id` and its generation are independently validated on every Tauri
+/// route; their framed combination lets the durable ledger fence a controller
+/// without granting the stable caller identity destructive recovery power.
+fn terminal_evidence_recovery_lease_id(lease_id: &str, lease_generation: &str) -> String {
+    format!("{}:{lease_id}{lease_generation}", lease_id.len())
 }
 
 /// Dispatcher-side scan matching, kept as unit-pinned semantics for the
@@ -6167,8 +10169,10 @@ fn adapter_state_payload_live(attachment: &Attachment, reading: &AdapterReading)
 /// The webview IPC protocol this plugin speaks. Version 3 carries the caller
 /// deadline as a relative `budgetMs`, `commit` on every normalized error,
 /// `delivery` on subscriptions and connection-lifecycle events; a webview
-/// offering only 2 is refused at bootstrap as `protocol.incompatible`.
-pub(crate) const IPC_PROTOCOL_VERSION: i64 = 6;
+/// offering only 2 is refused at bootstrap as `protocol.incompatible`. Version 9
+/// carries individual ordered failure observations and ordered platform metadata;
+/// version 10 carries ownerless native-source diagnostics on the attachment stream.
+pub(crate) const IPC_PROTOCOL_VERSION: i64 = 11;
 
 /// The reserved stream of attachment rebinds (IPC protocol 4; TypeScript
 /// `IPC_ATTACHMENT_STREAM_ID`).
@@ -6211,14 +10215,79 @@ fn negotiate_ipc_versions(
             "traceFormat",
             negotiate_axis(remote_offer, "trace-format", "traceFormat", 1)?,
         ),
+        ("ipcProtocol", negotiate_ipc_protocol(remote_offer)?),
+    ]))
+}
+
+const IPC_PROTOCOL_MINIMUM_VERSION: i64 = 6;
+/// Ordered deliveries carry individual failure observations from protocol 9.
+/// A pre-v9 renderer cannot safely distinguish those records from the older
+/// terminal aggregate, so ordered routes are unavailable to it rather than
+/// silently lossy.
+const ORDERED_ROUTE_MINIMUM_IPC_PROTOCOL: i64 = 9;
+/// Protocol 11 reserves the host-private durable terminal-evidence routes.
+/// This plugin does not advertise 11 until a configured recording-owned
+/// journal is wired to the public backend, so pre-11 callers receive an
+/// explicit unsupported result rather than a volatile approximation.
+const TERMINAL_EVIDENCE_ROUTE_MINIMUM_IPC_PROTOCOL: i64 = 11;
+
+fn negotiate_ipc_protocol(
+    remote_offer: &BTreeMap<String, IpcValue>,
+) -> Result<IpcValue, DispatchError> {
+    let range = into_object(
+        required_value(remote_offer, "ipcProtocol", "tauri.bootstrap-offer-range")?.clone(),
+        "tauri.bootstrap-offer-range",
+    )?;
+    if range.len() != 3
+        || required_string(&range, "axis", "tauri.bootstrap-offer-axis")? != "ipc-protocol"
+    {
+        return Err(DispatchError::new(
+            BleErrorCode::ProtocolMalformed,
+            "ipc",
+            "tauri.bootstrap-offer-range",
+        ));
+    }
+    let minimum = offered_version(&range, "minimum", "ipc-protocol")?;
+    let maximum = offered_version(&range, "maximum", "ipc-protocol")?;
+    if minimum > maximum {
+        return Err(DispatchError::new(
+            BleErrorCode::ProtocolMalformed,
+            "ipc",
+            "tauri.bootstrap-offer-range-order",
+        ));
+    }
+    let selected = maximum.min(IPC_PROTOCOL_VERSION);
+    if selected < IPC_PROTOCOL_MINIMUM_VERSION || selected < minimum {
+        return Err(DispatchError::new(
+            BleErrorCode::ProtocolIncompatible,
+            "ipc",
+            "tauri.bootstrap-version-ipc-protocol",
+        ));
+    }
+    Ok(object([
+        ("axis", string("ipc-protocol")),
+        ("selected", version_number("ipc-protocol", selected)),
         (
-            "ipcProtocol",
-            negotiate_axis(
-                remote_offer,
-                "ipc-protocol",
-                "ipcProtocol",
-                IPC_PROTOCOL_VERSION,
-            )?,
+            "localRange",
+            object([
+                ("axis", string("ipc-protocol")),
+                (
+                    "minimum",
+                    version_number("ipc-protocol", IPC_PROTOCOL_MINIMUM_VERSION),
+                ),
+                (
+                    "maximum",
+                    version_number("ipc-protocol", IPC_PROTOCOL_VERSION),
+                ),
+            ]),
+        ),
+        (
+            "remoteRange",
+            object([
+                ("axis", string("ipc-protocol")),
+                ("minimum", version_number("ipc-protocol", minimum)),
+                ("maximum", version_number("ipc-protocol", maximum)),
+            ]),
         ),
     ]))
 }
@@ -6317,6 +10386,45 @@ fn offered_version(
 
 fn version_number(axis: &str, value: i64) -> IpcValue {
     object([("axis", string(axis)), ("value", number(value))])
+}
+
+fn attachment_diagnostics_supported(versions: &IpcValue) -> bool {
+    let IpcValue::Object(versions) = versions else {
+        return false;
+    };
+    let Some(IpcValue::Object(protocol)) = versions.get("ipcProtocol") else {
+        return false;
+    };
+    let Some(IpcValue::Object(selected)) = protocol.get("selected") else {
+        return false;
+    };
+    matches!(selected.get("value"), Some(IpcValue::Number(value)) if value.as_i64().is_some_and(|value| value >= 10))
+}
+
+/// The bootstrap response is retained verbatim with the caller lease.  Read
+/// the selected IPC revision from that authoritative result instead of
+/// trusting a version supplied again by a webview route.
+fn selected_ipc_protocol(versions: &IpcValue) -> Option<i64> {
+    let IpcValue::Object(versions) = versions else {
+        return None;
+    };
+    let Some(IpcValue::Object(protocol)) = versions.get("ipcProtocol") else {
+        return None;
+    };
+    let Some(IpcValue::Object(selected)) = protocol.get("selected") else {
+        return None;
+    };
+    match selected.get("value") {
+        Some(IpcValue::Number(value)) => value.as_i64(),
+        _ => None,
+    }
+}
+
+/// Ordered records gained individual failure observations in IPC protocol 9.
+/// Keep the classification centralized so every ordered group, marker,
+/// recording, reclaim, and orphan route has the same fail-closed boundary.
+fn is_ordered_route_command(command: &str) -> bool {
+    command.starts_with("gatt.ordered.") || command.starts_with("gatt.ordered-recording.")
 }
 
 fn route_response(payload: IpcValue) -> IpcValue {
@@ -6565,6 +10673,8 @@ fn notification_value_payload(
     observed_at_monotonic_ms: i64,
     sequence: u64,
     receipt: Option<&ubm_core::central::NotificationReceipt>,
+    provenance: Option<&str>,
+    source_order: Option<(u64, u64)>,
 ) -> Result<IpcValue, DispatchError> {
     let mut fields = vec![
         ("value", IpcValue::Bytes(value)),
@@ -6572,6 +10682,13 @@ fn notification_value_payload(
         ("observedAtMonotonicMs", number(observed_at_monotonic_ms)),
         ("sequence", number(sequence as i64)),
     ];
+    if let Some((generation, ordinal)) = source_order {
+        fields.push(("sourceGeneration", string(generation.to_string())));
+        fields.push(("sourceOrdinal", string(ordinal.to_string())));
+    }
+    if let Some(provenance) = provenance {
+        fields.push(("provenance", string(provenance)));
+    }
     if let Some(receipt) = receipt {
         let received_at_utc_ms = Number::from_f64(receipt.received_at_utc_ms).ok_or_else(|| {
             DispatchError::new(
@@ -6672,7 +10789,7 @@ fn decode_windows_scan_options(
                 BleErrorCode::ArgumentInvalid,
                 "scan",
                 operation,
-            ))
+            ));
         }
     };
     let allow_extended_advertisements = match fields.get("allowExtendedAdvertisements") {
@@ -6683,7 +10800,7 @@ fn decode_windows_scan_options(
                 BleErrorCode::ArgumentInvalid,
                 "scan",
                 operation,
-            ))
+            ));
         }
     };
     Ok(Some(WindowsScanOptions {
@@ -6707,15 +10824,111 @@ fn required_string(
     }
 }
 
+fn optional_recovery_index(
+    object: &BTreeMap<String, IpcValue>,
+    operation: &'static str,
+) -> Result<Option<usize>, DispatchError> {
+    match object.get("index") {
+        None => Ok(None),
+        Some(IpcValue::Number(value)) => value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                DispatchError::new(BleErrorCode::ArgumentInvalid, "restoration", operation)
+            }),
+        _ => Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid,
+            "restoration",
+            operation,
+        )),
+    }
+}
+
+fn recovery_usize(
+    object: &BTreeMap<String, IpcValue>,
+    key: &str,
+    operation: &'static str,
+) -> Result<usize, DispatchError> {
+    match object.get(key) {
+        Some(IpcValue::Number(value)) => value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| {
+                DispatchError::new(BleErrorCode::ArgumentInvalid, "restoration", operation)
+            }),
+        _ => Err(DispatchError::new(
+            BleErrorCode::ProtocolMalformed,
+            "ipc",
+            operation,
+        )),
+    }
+}
+
+fn scan_failure_raw_token_value(
+    token: ubm_desktop::continuation_outbox::ScanFailureRawToken,
+) -> IpcValue {
+    use ubm_desktop::continuation_outbox::ScanFailureRawToken;
+    match token {
+        ScanFailureRawToken::Null => object([("kind", string("null"))]),
+        ScanFailureRawToken::Bool(value) => {
+            object([("kind", string("bool")), ("value", IpcValue::Bool(value))])
+        }
+        ScanFailureRawToken::I64(value) => object([
+            ("kind", string("i64")),
+            ("value", string(value.to_string())),
+        ]),
+        ScanFailureRawToken::U64(value) => object([
+            ("kind", string("u64")),
+            ("value", string(value.to_string())),
+        ]),
+        ScanFailureRawToken::F64Bits(value) => object([
+            ("kind", string("f64Bits")),
+            ("value", string(value.to_string())),
+        ]),
+        ScanFailureRawToken::Text { total, bytes } => object([
+            ("kind", string("text")),
+            ("total", string(total.to_string())),
+            ("bytes", IpcValue::Bytes(bytes)),
+        ]),
+        ScanFailureRawToken::Bytes { total, bytes } => object([
+            ("kind", string("bytes")),
+            ("total", string(total.to_string())),
+            ("bytes", IpcValue::Bytes(bytes)),
+        ]),
+        ScanFailureRawToken::Map(value) => object([
+            ("kind", string("map")),
+            ("count", string(value.to_string())),
+        ]),
+        ScanFailureRawToken::Array(value) => object([
+            ("kind", string("array")),
+            ("count", string(value.to_string())),
+        ]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        characteristic_properties, core_identity, negotiate_ipc_versions,
+        characteristic_properties, core_identity, diagnostic_occurrence_id,
+        diagnostic_occurrence_text, diagnostic_offset, negotiate_ipc_versions,
         notification_value_payload, object, released, scan_properties_match_optional, string,
         DispatchError, IpcValue,
     };
     use btleplug::api::CharPropFlags;
     use ubm_core::contracts::BleErrorCode;
+
+    #[test]
+    fn diagnostic_occurrence_host_boundary_requires_canonical_stable_identity() {
+        let id = diagnostic_occurrence_id(&"ab".repeat(40)).unwrap();
+        assert_eq!(diagnostic_occurrence_text(id), "ab".repeat(40));
+        assert!(diagnostic_occurrence_id(&"AB".repeat(40)).is_err());
+        assert!(diagnostic_occurrence_id(&"ab".repeat(39)).is_err());
+        assert!(diagnostic_occurrence_id(&"gg".repeat(40)).is_err());
+        assert_eq!(diagnostic_offset("0").unwrap(), 0);
+        assert!(diagnostic_offset("01").is_err());
+        assert!(diagnostic_offset("9223372036854775808").is_err());
+    }
 
     #[test]
     fn notification_value_payload_preserves_native_receipt_and_absence() {
@@ -6725,12 +10938,26 @@ mod tests {
             17,
             3,
             None,
+            Some("read-or-notification"),
+            Some((9, 42)),
         )
         .expect("value payload");
         let IpcValue::Object(fields) = without_receipt else {
             panic!("object")
         };
         assert_eq!(fields.get("receipt"), None);
+        assert_eq!(
+            fields.get("sourceGeneration"),
+            Some(&IpcValue::String("9".into()))
+        );
+        assert_eq!(
+            fields.get("sourceOrdinal"),
+            Some(&IpcValue::String("42".into()))
+        );
+        assert_eq!(
+            fields.get("provenance"),
+            Some(&IpcValue::String("read-or-notification".into()))
+        );
 
         let receipt = ubm_core::central::NotificationReceipt {
             received_at_utc_ms: -0.5,
@@ -6743,6 +10970,8 @@ mod tests {
             17,
             3,
             Some(&receipt),
+            None,
+            None,
         )
         .expect("receipt payload");
         let IpcValue::Object(fields) = with_receipt else {
@@ -6786,6 +11015,8 @@ mod tests {
             17,
             3,
             Some(&receipt),
+            None,
+            None,
         )
         .expect_err("non-finite receipt must fail");
         assert_eq!(error.code, BleErrorCode::ProtocolViolation);
@@ -6816,6 +11047,8 @@ mod tests {
             super::BtleplugDispatcherOptions {
                 adapter_id: Some("hci1".into()),
                 connection_policy: Some(expected.clone()),
+                failure_evidence_store: None,
+                terminal_evidence_maximum_bytes: None,
             },
             std::sync::Arc::new(move |profile, policy| {
                 captured
@@ -7082,25 +11315,41 @@ mod tests {
         offer
     }
 
-    // Protocol 5 adds typed address targets and connection/scan options. A
-    // protocol-4 host could ignore those fields and silently substitute its
-    // defaults; exact negotiation prevents that before any radio operation.
+    // Protocol 6 is the 5.2.1 common contract. Older hosts could silently
+    // substitute defaults for routes they do not understand, so bootstrap
+    // rejects them before any radio operation. Protocol 11 additionally
+    // carries durable terminal evidence; it is a compatible extension, not a new minimum.
     #[test]
-    fn version_offer_requires_ipc_protocol_6_and_refuses_an_old_webview() {
-        assert_eq!(super::IPC_PROTOCOL_VERSION, 6);
+    fn version_offer_requires_ipc_protocol_11_and_refuses_an_old_webview() {
+        assert_eq!(super::IPC_PROTOCOL_VERSION, 11);
         let mut old = current_offer();
         old.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 5));
         let error = negotiate_ipc_versions(&old).expect_err("an old webview must be refused");
         assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
+        let mut compatible_old = current_offer();
+        compatible_old.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 6));
+        let IpcValue::Object(versions) = negotiate_ipc_versions(&compatible_old)
+            .expect("protocol 6 common contract must negotiate")
+        else {
+            panic!("versions")
+        };
+        let Some(super::IpcValue::Object(protocol)) = versions.get("ipcProtocol") else {
+            panic!("ipc protocol version")
+        };
+        let Some(super::IpcValue::Object(selected)) = protocol.get("selected") else {
+            panic!("selected protocol version")
+        };
+        assert_eq!(selected.get("value"), Some(&super::number(6)));
+
         let mut newer = current_offer();
-        newer.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 7));
+        newer.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 12));
         let error =
             negotiate_ipc_versions(&newer).expect_err("a newer-only webview must be refused");
         assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
         let super::IpcValue::Object(versions) =
-            negotiate_ipc_versions(&current_offer()).expect("protocol 6 must negotiate")
+            negotiate_ipc_versions(&current_offer()).expect("protocol 10 must negotiate")
         else {
             panic!("the negotiated versions must be an object");
         };
@@ -7175,7 +11424,7 @@ mod tests {
                             "minimum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(super::IPC_PROTOCOL_VERSION))
+                                ("value", super::number(super::IPC_PROTOCOL_MINIMUM_VERSION))
                             ])
                         ),
                         (
@@ -7458,6 +11707,7 @@ mod tests {
                 connections: std::collections::HashMap::new(),
                 databases: std::collections::HashMap::new(),
                 subscriptions: std::collections::HashMap::new(),
+                ordered_groups: std::collections::HashMap::new(),
                 acquired_writers: std::collections::HashMap::new(),
                 acquired_releases: Default::default(),
                 connection_events: std::collections::HashMap::new(),
@@ -7869,6 +12119,64 @@ mod service_restriction_tests {
 #[cfg(test)]
 #[path = "dispatcher_packet_b_tests.rs"]
 mod dispatcher_packet_b_tests;
+
+#[cfg(test)]
+mod terminal_evidence_owner_tests {
+    use super::*;
+
+    fn owner(caller_key: &str, lease_id: &str, lease_generation: &str) -> TerminalEvidenceOwner {
+        TerminalEvidenceOwner {
+            producer: "subscription".to_owned(),
+            caller_key: caller_key.to_owned(),
+            lease_id: lease_id.to_owned(),
+            lease_generation: lease_generation.to_owned(),
+            recovery_lease_id: terminal_evidence_recovery_lease_id(lease_id, lease_generation),
+            reservation_id: "reservation".to_owned(),
+            recoverable: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_evidence_handles_reject_cross_caller_and_cross_lease_access() {
+        let dispatcher = BtleplugDispatcher::default();
+        let authorized = owner("app\0owner", "lease-1", "generation-1");
+        dispatcher
+            .inner
+            .lock()
+            .await
+            .terminal_evidence_owners
+            .insert("opaque-handle".to_owned(), authorized.clone());
+
+        for unauthorized in [
+            owner("app\0other", "lease-1", "generation-1"),
+            owner("app\0owner", "lease-2", "generation-2"),
+        ] {
+            let error = dispatcher
+                .terminal_evidence_owner(
+                    &unauthorized,
+                    "opaque-handle",
+                    "tauri.terminal-evidence.read",
+                )
+                .await
+                .expect_err("a leaked handle must stay bound to its caller lease");
+            assert_eq!(error.code, BleErrorCode::OwnershipDenied);
+        }
+
+        dispatcher
+            .terminal_evidence_owner(&authorized, "opaque-handle", "tauri.terminal-evidence.read")
+            .await
+            .expect("the owning caller and lease retain access");
+    }
+}
+
 #[cfg(test)]
 #[path = "tauri_identity_tests.rs"]
 mod tauri_identity_tests;
+
+#[cfg(test)]
+#[path = "platform_metadata_transport_522_tests.rs"]
+mod platform_metadata_transport_522_tests;
+
+#[cfg(test)]
+#[path = "ipc_v9_failure_observation_tests.rs"]
+mod ipc_v9_failure_observation_tests;

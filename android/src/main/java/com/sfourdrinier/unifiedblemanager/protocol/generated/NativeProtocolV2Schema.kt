@@ -3,7 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.protocol.generated
 
 const val NATIVE_PROTOCOL_VERSION: Int = 2
-const val NATIVE_PROTOCOL_ABI_VERSION: Int = 7
+const val NATIVE_PROTOCOL_ABI_VERSION: Int = 8
 const val NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION: Int = 2
 const val MAXIMUM_CONTROL_RECORD_BYTES: Int = 262144
 const val MAXIMUM_BINARY_PAYLOAD_BYTES: Int = 524288
@@ -94,7 +94,9 @@ enum class EventKinds(val wireValue: Int) {
   BACKEND_RESTARTED(6),
   RESTORATION_AVAILABLE(7),
   DIAGNOSTIC(8),
-  SECURITY_STATE_CHANGED(9)
+  SECURITY_STATE_CHANGED(9),
+  NOTIFICATION_LOSS(10),
+  NOTIFICATION_TERMINATED(11)
 }
 
 enum class TerminalOutcomes(val wireValue: Int) {
@@ -122,6 +124,13 @@ enum class WriteModes(val wireValue: Int) {
 enum class NotificationDeliveryModes(val wireValue: Int) {
   NOTIFICATION(1),
   INDICATION(2)
+}
+
+enum class NotificationDeliveryConstraints(val wireValue: Int) {
+  PREFER_NOTIFICATION(1),
+  PREFER_INDICATION(2),
+  REQUIRE_NOTIFICATION(3),
+  REQUIRE_INDICATION(4)
 }
 
 enum class ConnectionPriorities(val wireValue: Int) {
@@ -277,6 +286,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.COMMAND, 19, "pairTransport", "enum:pairTransports", false),
     FieldDescriptor(RecordKind.COMMAND, 20, "connectionIntent", "enum:connectionIntents", false),
     FieldDescriptor(RecordKind.COMMAND, 21, "notificationDeliveryMode", "enum:notificationDeliveryModes", false),
+    FieldDescriptor(RecordKind.COMMAND, 22, "notificationDeliveryConstraint", "enum:notificationDeliveryConstraints", false),
     FieldDescriptor(RecordKind.TERMINAL, 1, "correlation", "record:operationCorrelation", true),
     FieldDescriptor(RecordKind.TERMINAL, 2, "outcome", "enum:terminalOutcomes", true),
     FieldDescriptor(RecordKind.TERMINAL, 3, "cause", "string", false),
@@ -337,6 +347,8 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.EVENT, 15, "adapterState", "record:adapterStateSnapshot", false),
     FieldDescriptor(RecordKind.EVENT, 16, "peerId", "string", false),
     FieldDescriptor(RecordKind.EVENT, 17, "bondState", "enum:securityBondStates", false),
+    FieldDescriptor(RecordKind.EVENT, 18, "lostItems", "uint64", false),
+    FieldDescriptor(RecordKind.EVENT, 19, "lostBytes", "uint64", false),
     FieldDescriptor(RecordKind.ERROR, 1, "code", "string", true),
     FieldDescriptor(RecordKind.ERROR, 2, "domain", "string", true),
     FieldDescriptor(RecordKind.ERROR, 3, "operation", "string", true),

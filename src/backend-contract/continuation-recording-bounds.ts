@@ -27,4 +27,11 @@ export const MAX_RECORDING_TOKEN_BYTES = 96
  * fields. Reserve one separator per record plus bounded token/header overhead. */
 export const MAX_RECORDING_PREPARE_TEXT_BYTES = MAX_RECORDING_BATCH_BYTES + MAX_RECORDING_BATCH_ITEMS + 1024
 
-export type RecordingControlOperation = 'status' | 'prepare' | 'acknowledge' | 'stop' | 'clear'
+export type RecordingControlOperation =
+  | 'status'
+  | 'prepare'
+  | 'acknowledge'
+  | 'stop'
+  | 'stop-ordered'
+  | 'context-ordered'
+  | 'clear'

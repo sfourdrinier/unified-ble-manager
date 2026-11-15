@@ -284,6 +284,69 @@ describe('public connection supervisor', () => {
     await supervisor.stop()
   })
 
+  test('backs off when a false-ready adapter still rejects successor connect as resetting', async () => {
+    const loss = deferred()
+    const first = connection()
+    let lifecycleRead = 0
+    first.lifecycleEvents = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          lifecycleRead += 1
+          if (lifecycleRead === 1) {
+            return {
+              done: false,
+              value: {
+                kind: 'connection-lifecycle',
+                previous: 'connecting',
+                current: 'connected',
+                cause: 'connected',
+                connectionGeneration: 'generation-1',
+                sequence: 1
+              }
+            }
+          }
+          return loss.promise
+        },
+        return: async () => ({ done: true, value: undefined })
+      })
+    }
+    const second = connection()
+    const ble = manager(first)
+    ble.connect
+      .mockResolvedValueOnce(first)
+      .mockRejectedValueOnce(new BleError('adapter.resetting', 'adapter', 'direct-gatt.connect'))
+      .mockResolvedValueOnce(second)
+    const delays = []
+    const supervisor = createConnectionSupervisor(ble, 'false-ready-resetting', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      setTimeout: (callback, delayMs) => {
+        delays.push(delayMs)
+        return globalThis.setTimeout(callback, 0)
+      }
+    })
+
+    supervisor.start()
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'connected'; turn += 1) await wait(1)
+    loss.resolve({
+      done: false,
+      value: {
+        kind: 'connection-lifecycle',
+        previous: 'connected',
+        current: 'lost',
+        cause: 'adapter-loss',
+        connectionGeneration: 'generation-1',
+        sequence: 2
+      }
+    })
+    for (let turn = 0; turn < 200 && ble.connect.mock.calls.length !== 3; turn += 1) await wait(1)
+
+    expect(supervisor.snapshot.state).toBe('connected')
+    expect(ble.connect).toHaveBeenCalledTimes(3)
+    expect(supervisor.snapshot.attempt).toBe(3)
+    expect(delays).toEqual([1, 1])
+    await supervisor.stop()
+  })
+
   test('a readiness refusal that waiting cannot fix still waits for a wake', async () => {
     const current = connection()
     const ble = manager(current)
@@ -524,6 +587,236 @@ describe('public connection supervisor', () => {
     await wait()
     expect(ble.connect).toHaveBeenCalledTimes(1)
     expect(supervisor.snapshot.state).toBe('cleanup-failed')
+  })
+
+  test('retries adapter-reset cleanup debt before reconnecting after adapter loss', async () => {
+    const loss = deferred()
+    const first = connection()
+    let lifecycleRead = 0
+    first.lifecycleEvents = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          lifecycleRead += 1
+          if (lifecycleRead === 1) {
+            return {
+              done: false,
+              value: {
+                kind: 'connection-lifecycle',
+                previous: 'connecting',
+                current: 'connected',
+                cause: 'connected',
+                connectionGeneration: 'generation-1',
+                sequence: 1
+              }
+            }
+          }
+          return loss.promise
+        },
+        return: async () => ({ done: true, value: undefined })
+      })
+    }
+    const resetCleanup = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'connection',
+          error: {
+            code: 'operation.reset',
+            domain: 'connection',
+            operation: 'direct-gatt.connection.disconnect',
+            platform: null,
+            retryability: 'never'
+          }
+        }
+      ]
+    }
+    first.release
+      .mockResolvedValueOnce(resetCleanup)
+      .mockResolvedValueOnce(resetCleanup)
+      .mockResolvedValueOnce({ state: 'released', failures: [] })
+    const second = connection()
+    const ble = manager(first)
+    ble.connect.mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    const supervisor = createConnectionSupervisor(ble, 'adapter-reset-cleanup-debt', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0 }
+    })
+
+    supervisor.start()
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'connected'; turn += 1) await wait(1)
+    loss.resolve({
+      done: false,
+      value: {
+        kind: 'connection-lifecycle',
+        previous: 'connected',
+        current: 'lost',
+        cause: 'adapter-loss',
+        connectionGeneration: 'generation-1',
+        sequence: 2
+      }
+    })
+
+    for (let turn = 0; turn < 200 && ble.connect.mock.calls.length !== 2; turn += 1) await wait(1)
+
+    expect(supervisor.snapshot.state).toBe('connected')
+    expect(first.release).toHaveBeenCalledTimes(3)
+    expect(ble.adapter.waitUntilReady).toHaveBeenCalledTimes(2)
+    expect(ble.connect).toHaveBeenCalledTimes(2)
+    expect(first.release.mock.invocationCallOrder[2]).toBeLessThan(ble.connect.mock.invocationCallOrder[1])
+    expect(supervisor.snapshot.lastError).toBeNull()
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    expect(first.release).toHaveBeenCalledTimes(3)
+  })
+
+  test('does not reconnect after an adapter-loss cleanup failure that is not an operation reset', async () => {
+    const loss = deferred()
+    const first = connection()
+    let lifecycleRead = 0
+    first.lifecycleEvents = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          lifecycleRead += 1
+          if (lifecycleRead === 1) {
+            return {
+              done: false,
+              value: {
+                kind: 'connection-lifecycle',
+                previous: 'connecting',
+                current: 'connected',
+                cause: 'connected',
+                connectionGeneration: 'generation-1',
+                sequence: 1
+              }
+            }
+          }
+          return loss.promise
+        },
+        return: async () => ({ done: true, value: undefined })
+      })
+    }
+    const cleanupFailure = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'connection',
+          error: {
+            code: 'platform.failure',
+            domain: 'connection',
+            operation: 'direct-gatt.connection.disconnect',
+            platform: null,
+            retryability: 'never'
+          }
+        }
+      ]
+    }
+    first.release.mockResolvedValue(cleanupFailure)
+    const ble = manager(first)
+    const supervisor = createConnectionSupervisor(ble, 'adapter-loss-non-reset-cleanup', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0 }
+    })
+
+    supervisor.start()
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'connected'; turn += 1) await wait(1)
+    loss.resolve({
+      done: false,
+      value: {
+        kind: 'connection-lifecycle',
+        previous: 'connected',
+        current: 'lost',
+        cause: 'adapter-loss',
+        connectionGeneration: 'generation-1',
+        sequence: 2
+      }
+    })
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'cleanup-failed'; turn += 1) await wait(1)
+
+    expect(supervisor.snapshot.state).toBe('cleanup-failed')
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+    await expect(supervisor.stop()).resolves.toMatchObject({
+      state: 'release-failed',
+      failures: [{ error: { code: 'platform.failure' } }]
+    })
+  })
+
+  test('retains the first non-retryable adapter-loss cleanup error after final cleanup succeeds', async () => {
+    const loss = deferred()
+    const first = connection()
+    let lifecycleRead = 0
+    first.lifecycleEvents = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          lifecycleRead += 1
+          if (lifecycleRead === 1) {
+            return {
+              done: false,
+              value: {
+                kind: 'connection-lifecycle',
+                previous: 'connecting',
+                current: 'connected',
+                cause: 'connected',
+                connectionGeneration: 'generation-1',
+                sequence: 1
+              }
+            }
+          }
+          return loss.promise
+        },
+        return: async () => ({ done: true, value: undefined })
+      })
+    }
+    const cleanupError = new BleError('platform.failure', 'connection', 'direct-gatt.connection.disconnect', {
+      platform: {
+        domain: 'bluez',
+        code: 'org.bluez.Error.Failed',
+        safeMessage: 'native release failed',
+        metadata: { interface: 'org.bluez.Device1' }
+      },
+      retryability: 'never'
+    })
+    const cleanupFailure = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'connection',
+          error: cleanupError
+        }
+      ]
+    }
+    first.release.mockResolvedValueOnce(cleanupFailure).mockResolvedValueOnce({ state: 'released', failures: [] })
+    const ble = manager(first)
+    const supervisor = createConnectionSupervisor(ble, 'adapter-loss-preserves-cleanup-error', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0 }
+    })
+
+    supervisor.start()
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'connected'; turn += 1) await wait(1)
+    loss.resolve({
+      done: false,
+      value: {
+        kind: 'connection-lifecycle',
+        previous: 'connected',
+        current: 'lost',
+        cause: 'adapter-loss',
+        connectionGeneration: 'generation-1',
+        sequence: 2
+      }
+    })
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'stopped'; turn += 1) await wait(1)
+
+    expect(supervisor.snapshot).toMatchObject({
+      state: 'stopped',
+      lastError: {
+        code: 'platform.failure',
+        domain: 'connection',
+        operation: 'direct-gatt.connection.disconnect',
+        platform: {
+          domain: 'bluez',
+          code: 'org.bluez.Error.Failed',
+          metadata: { interface: 'org.bluez.Device1' }
+        }
+      }
+    })
+    expect(first.release).toHaveBeenCalledTimes(2)
+    expect(ble.connect).toHaveBeenCalledTimes(1)
   })
 
   test('releases a connected generation before reconnecting after immediate pause and resume', async () => {

@@ -148,7 +148,8 @@ async fn known(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
             service_data: Vec::new(),
             tx_power_level: None,
             extras: ubm_desktop::AdvertisementExtras::default(),
-        }));
+        }))
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.peer_key_for(peer_id).await.is_some() {
             return;
@@ -240,7 +241,8 @@ async fn every_desktop_os_names_each_event_as_the_table_does() {
         let error = pending_read_ended_by(&central, "peer-b", 60_000, async |central| {
             central
                 .boundary()
-                .push_event(RadioEvent::Lost("peer-b".to_owned()));
+                .push_event(RadioEvent::Lost("peer-b".to_owned()))
+                .expect("synthetic event admission failed");
         })
         .await;
         assert_eq!(
@@ -269,7 +271,8 @@ async fn every_desktop_os_names_each_event_as_the_table_does() {
         let error = pending_read_ended_by(&central, "peer-d", 60_000, async |central| {
             central
                 .boundary()
-                .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+                .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff))
+                .expect("synthetic event admission failed");
         })
         .await;
         assert_eq!(

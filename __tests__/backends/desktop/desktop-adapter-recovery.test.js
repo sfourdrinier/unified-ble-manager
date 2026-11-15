@@ -59,7 +59,7 @@ async function open(platform) {
   const observation = await h.nextValue(iterator, 5000)
   await iterator.return?.()
   await scan.stop()
-  return { clock, internal, manager, stage, peerId: String(observation.device.id) }
+  return { clock, internal, manager, stage, harness, peerId: String(observation.device.id) }
 }
 
 describe.each(['corebluetooth', 'winrt', 'bluez'])('%s: adapter off and on under a supervised connection', platform => {
@@ -99,5 +99,46 @@ describe.each(['corebluetooth', 'winrt', 'bluez'])('%s: adapter off and on under
     )
     expect((await supervisor.stop()).state).toBe('released')
     expect(await manager.destroy()).toEqual({ state: 'released', failures: [] })
+  })
+})
+
+describe.each(['corebluetooth', 'winrt', 'bluez'])('%s: adapter-loss release joins the native reset', platform => {
+  test('a supervisor release that reaches a reset-held native disconnect does not become cleanup failure', async () => {
+    const { manager, stage, harness, peerId } = await open(platform)
+    const supervisor = createConnectionSupervisor(manager, peerId, { retry: RETRY })
+    let disconnectBlocked = false
+    let cleaned = false
+    try {
+      supervisor.start()
+      describeState = () => supervisor.snapshot
+      await eventually('the first connection', () => supervisor.snapshot.state === 'connected')
+
+      const callsStart = harness.calls.length
+      await stage.blockRadioOp('disconnect')
+      disconnectBlocked = true
+      await stage.stageAdapterState('powered-off', true)
+      await eventually('the adapter-loss terminal', () => supervisor.snapshot.lastDisconnect?.cause === 'adapter-loss')
+      await eventually(
+        'the supervisor release reaching native ownership',
+        () => harness.calls.slice(callsStart).some(([name]) => name === 'disconnect')
+      )
+
+      await stage.unblockRadioOp('disconnect')
+      disconnectBlocked = false
+      if (platform !== 'bluez')
+        await eventually('the adapter wait', () => supervisor.snapshot.state === 'waiting-for-gate')
+      await stage.stageAdapterState('powered-on', true)
+      await eventually('the reconnection', () => supervisor.snapshot.state === 'connected')
+      expect(supervisor.snapshot.lastError).toBeNull()
+      expect((await supervisor.stop()).state).toBe('released')
+      expect(await manager.destroy()).toEqual({ state: 'released', failures: [] })
+      cleaned = true
+    } finally {
+      if (disconnectBlocked) await stage.unblockRadioOp('disconnect').catch(() => undefined)
+      if (!cleaned) {
+        await supervisor.stop().catch(() => undefined)
+        await manager.destroy().catch(() => undefined)
+      }
+    }
   })
 })

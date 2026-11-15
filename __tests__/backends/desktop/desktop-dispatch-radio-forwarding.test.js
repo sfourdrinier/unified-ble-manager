@@ -83,7 +83,7 @@ describe('DispatchRadio forwards every RadioBoundary method', () => {
     expect(forwarded).toBeDefined()
     for (const variant of ['Radio', 'Synthetic']) {
       expect(forwarded.body).toMatch(
-        new RegExp(`Self::${variant}\\(radio\\) =>\\s*\\{?\\s*radio\\s*\\.${name}\\(`, 'u')
+        new RegExp(`Self::${variant}\\((?<radio>\\w+)\\) =>\\s*\\{?\\s*\\k<radio>\\s*\\.${name}\\(`, 'u')
       )
     }
   })

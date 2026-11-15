@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * Rejections carry the structured JSON of [RustCoreRejection].
  */
 class RustCoreSessions(
-  private val core: MobileCorePort,
+  @Suppress("UNUSED_PARAMETER") core: MobileCorePort,
   private val host: RustCoreProcessHost,
   private val executor: Executor,
   private val emitWake: (String) -> Unit,
@@ -34,6 +34,9 @@ class RustCoreSessions(
   private val random: SecureRandom,
   private val log: (String) -> Unit
 ) {
+  // Retain the constructor parameter for existing callers, but always route
+  // through the host: a failed unpublished install can replace its port.
+  private val core: MobileCorePort get() = host.core
   /** A promise seam: exactly one of [resolve] / [reject] per call. */
   interface Reply {
     fun resolve(value: String?)
@@ -43,8 +46,10 @@ class RustCoreSessions(
   private val owned = ConcurrentHashMap.newKeySet<Long>()
   private val backgroundScope = "rn-module:" + ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
   private val released = ConcurrentHashMap.newKeySet<Long>()
+  private val disposing = ConcurrentHashMap.newKeySet<Long>()
   private val invalidated = AtomicBoolean(false)
   private val admissionLock = Any()
+  @Volatile private var backgroundScopeUsed = false
 
   fun openSession(owner: String, expectedWireRevision: String, reply: Reply) = perform(reply, "session.open") {
     synchronized(admissionLock) {
@@ -53,6 +58,7 @@ class RustCoreSessions(
       // A presence wake with no live session persisted its peers; surface them
       // through the same restored records and events as a live ingest.
       host.drainPresenceAppearances()
+      backgroundScopeUsed = true
       val record = core.openSession(owner, expectedWireRevision, backgroundScope)
       val admission = RustCoreJson.parse(record) as? Map<*, *>
       val sessionId = (admission?.get("sessionId") as? Long)
@@ -64,20 +70,33 @@ class RustCoreSessions(
   }
 
   fun invoke(sessionIdText: String, op: String, argsJson: String, reply: Reply) = perform(reply, op) {
-    val sessionId = sessionId(sessionIdText, op)
-    if (op == "gatt.subscribe-recorded") host.configureRecordingStorage()
-    core.invoke(sessionId, op, argsJson, MobileCoreBridge.InvokeCallback { envelope ->
-      if ((op == DISPOSE || op == "gatt.unsubscribe") && disposeReleased(envelope)) {
-        if (op == DISPOSE) released.add(sessionId)
-        host.notifyRecoveryHint()
+    synchronized(admissionLock) {
+      val sessionId = ownedRecordingSession(sessionIdText, op)
+      if (op == "gatt.subscribe-recorded") host.configureRecordingStorage()
+      if (op == DISPOSE) disposing.add(sessionId)
+      try {
+        core.invoke(sessionId, op, argsJson, MobileCoreBridge.InvokeCallback { envelope ->
+          synchronized(admissionLock) {
+            if (op == DISPOSE) disposing.remove(sessionId)
+            if ((op == DISPOSE || op == "gatt.unsubscribe") && disposeReleased(envelope)) {
+              if (op == DISPOSE && owned.contains(sessionId)) released.add(sessionId)
+              host.notifyRecoveryHint()
+            }
+          }
+          reply.resolve(envelope)
+        })
+      } catch (error: Throwable) {
+        if (op == DISPOSE) disposing.remove(sessionId)
+        throw error
       }
-      reply.resolve(envelope)
-    })
+    }
   }
 
   fun drain(sessionIdText: String, maxItems: Double, maxBytes: Double, reply: Reply) = perform(reply, "session.drain") {
-    val sessionId = sessionId(sessionIdText, "session.drain")
-    reply.resolve(core.drain(sessionId, positiveInt(maxItems, "maxItems", "session.drain"), positiveInt(maxBytes, "maxBytes", "session.drain")))
+    synchronized(admissionLock) {
+      val sessionId = ownedRecordingSession(sessionIdText, "session.drain")
+      reply.resolve(core.drain(sessionId, positiveInt(maxItems, "maxItems", "session.drain"), positiveInt(maxBytes, "maxBytes", "session.drain")))
+    }
   }
 
   /**
@@ -88,22 +107,25 @@ class RustCoreSessions(
    * for a retry. Closing an unknown or already-closed session resolves.
    */
   fun closeSession(sessionIdText: String, reply: Reply) = perform(reply, "session.close") {
-    val sessionId = sessionId(sessionIdText, "session.close")
-    if (!owned.contains(sessionId)) {
-      reply.resolve(null)
-      return@perform
-    }
-    if (released.contains(sessionId)) {
-      forget(sessionId)
-      reply.resolve(null)
-      return@perform
-    }
-    dispose(sessionId) { outcome ->
-      if (outcome == null) {
+    synchronized(admissionLock) {
+      rejectIfInvalidated("session.close")
+      val sessionId = sessionId(sessionIdText, "session.close")
+      if (!owned.contains(sessionId)) {
+        reply.resolve(null)
+        return@synchronized
+      }
+      if (released.contains(sessionId)) {
         forget(sessionId)
         reply.resolve(null)
-      } else {
-        reply.reject(outcome)
+        return@synchronized
+      }
+      if (!disposing.add(sessionId)) throw RustCoreRejection("ownership.denied", "core", "session.close", "session is disposing")
+      dispose(sessionId) { outcome ->
+        synchronized(admissionLock) {
+          disposing.remove(sessionId)
+          if (outcome == null) forget(sessionId)
+        }
+        if (outcome == null) reply.resolve(null) else reply.reject(outcome)
       }
     }
   }
@@ -150,6 +172,58 @@ class RustCoreSessions(
     reply.resolve("{\"state\":\"declared\"}")
   }
 
+  /** Probe the loaded Rust binary without installing a host or opening a journal. */
+  fun orderedRecordingVersion(reply: Reply) = perform(reply, "ordered-recording.version") {
+    reply.resolve(core.orderedRecordingVersion().toString())
+  }
+
+  private fun ownedRecordingSession(sessionIdText: String, operation: String): Long {
+    val id = sessionId(sessionIdText, operation)
+    if (id.toString() != sessionIdText) throw RustCoreRejection.invalid(operation, "sessionId must use canonical decimal")
+    if (invalidated.get() || !owned.contains(id) || released.contains(id) || disposing.contains(id)) {
+      throw RustCoreRejection("ownership.denied", "core", operation, "session is not owned by this module")
+    }
+    return id
+  }
+
+  fun negotiateScanEndVersion(sessionIdText: String, offeredJson: String, reply: Reply) = perform(reply, "scan-end-version") {
+    val session = ownedRecordingSession(sessionIdText, "scan-end-version")
+    reply.resolve(core.negotiateScanEndVersion(session, offeredJson))
+  }
+
+  fun orderedRecordingReceiptControl(sessionIdText: String, id: String, operation: String, reply: Reply) = perform(reply, "ordered-recording.$operation") {
+    require(operation == "reserve" || operation == "status" || operation == "retire")
+    val session = ownedRecordingSession(sessionIdText, "ordered-recording.$operation")
+    core.orderedRecordingReceiptControl(session, operation, id, MobileCoreBridge.InvokeCallback { envelope -> reply.resolve(envelope) })
+  }
+
+  fun orderedRecordingStart(sessionIdText: String, handle: String, id: String, maxBytes: String, maxRecords: String,
+                            declaration: String, budgetMs: Double, reply: Reply) = perform(reply, "ordered-recording.start") {
+    val session = ownedRecordingSession(sessionIdText, "ordered-recording.start")
+    if (!budgetMs.isFinite() || budgetMs < 0 || budgetMs > Int.MAX_VALUE || budgetMs != Math.rint(budgetMs)) {
+      throw RustCoreRejection.invalid("ordered-recording.start", "budgetMs must be an integer within the native timeout range")
+    }
+    host.configureRecordingStorage()
+    ownedRecordingSession(sessionIdText, "ordered-recording.start")
+    core.orderedRecordingStart(session, handle, id, maxBytes, maxRecords, declaration, budgetMs.toLong(),
+      MobileCoreBridge.InvokeCallback { envelope -> reply.resolve(envelope) })
+  }
+
+  fun orderedRecordingControl(sessionIdText: String, id: String, stop: Boolean, reply: Reply) = perform(reply, "ordered-recording.control") {
+    val session = ownedRecordingSession(sessionIdText, "ordered-recording.control")
+    host.configureRecordingStorage()
+    ownedRecordingSession(sessionIdText, "ordered-recording.control")
+    val callback = MobileCoreBridge.InvokeCallback { envelope -> reply.resolve(envelope) }
+    if (stop) core.orderedRecordingStop(session, id, callback) else core.orderedRecordingContext(session, id, callback)
+  }
+
+  /** Rust atomically refuses offline access while any live owner exists. */
+  fun orderedRecordingOffline(operation: String, id: String, reply: Reply) = perform(reply, "ordered-recording.offline-$operation") {
+    require(operation == "context" || operation == "status" || operation == "stop")
+    host.configureRecordingStorage()
+    core.orderedRecordingOffline(operation, id, MobileCoreBridge.InvokeCallback { envelope -> reply.resolve(envelope) })
+  }
+
   /** Offline journal access; this does not initialize or release the radio. */
   fun recordingControl(operation: String, id: String, token: String, maxItems: Double, maxBytes: Double, reply: Reply) =
     perform(reply, "continuation.recording.$operation") {
@@ -157,6 +231,88 @@ class RustCoreSessions(
       val bytes = if (operation == "prepare") positiveInt(maxBytes, "maxBytes", "continuation.recording.$operation") else 0
       reply.resolve(host.recordingControl(operation, id, token, items, bytes))
     }
+
+  fun prepareRetainedContinuationClaimV1(maxItems: Double, maxBytes: Double, reply: Reply) = perform(reply, "continuation.claim.v1") {
+    val items = positiveInt(maxItems, "maxItems", "continuation.claim.v1")
+    val bytes = positiveInt(maxBytes, "maxBytes", "continuation.claim.v1")
+    host.ensureInstalled()
+    core.continuationPrepareClaimVersioned(1, items, bytes, continuationV1Reply(reply))
+  }
+
+  /**
+   * Additive retained-prefix protocol. This has its own entrypoint so a
+   * 5.2.1/V1 JavaScript decoder is never offered a V2 descriptor.
+   */
+  fun prepareRetainedContinuationClaimV2(maxItems: Double, maxBytes: Double, reply: Reply) = perform(reply, "continuation.claim.v2") {
+    val items = positiveInt(maxItems, "maxItems", "continuation.claim.v2")
+    val bytes = positiveInt(maxBytes, "maxBytes", "continuation.claim.v2")
+    host.ensureInstalled()
+    core.continuationPrepareClaimVersioned(2, items, bytes, continuationClaimReply("continuation.claim.v2", reply))
+  }
+
+  fun acknowledgeRetainedContinuationClaimV1(token: String, reply: Reply) = retainedClaimControlV1(token, reply, false)
+  fun acknowledgeRetainedContinuationClaimV2(token: String, reply: Reply) = retainedClaimControlV2(token, reply)
+
+  fun readPeerFailureRecovery(record: String, offset: String, reply: Reply) = perform(reply, "continuation.peer-source-failure.read") {
+    if (record.isEmpty() || record.toByteArray(Charsets.UTF_8).size > 1_048_576) throw RustCoreRejection.invalid("continuation.peer-source-failure.read", "recovery record must be 1..1048576 UTF-8 bytes")
+    if (offset.isEmpty() || offset.toULongOrNull()?.toString() != offset) throw RustCoreRejection.invalid("continuation.peer-source-failure.read", "offset must be canonical UInt64 decimal")
+    host.ensureInstalled()
+    core.continuationReadPeerFailureRecovery(record, offset, continuationClaimReply("continuation.peer-source-failure.read", reply))
+  }
+
+  fun acknowledgePeerFailureRecovery(record: String, reply: Reply) = perform(reply, "continuation.peer-source-failure.acknowledge") {
+    if (record.isEmpty() || record.toByteArray(Charsets.UTF_8).size > 1_048_576) throw RustCoreRejection.invalid("continuation.peer-source-failure.acknowledge", "recovery record must be 1..1048576 UTF-8 bytes")
+    host.ensureInstalled()
+    core.continuationAcknowledgePeerFailureRecovery(record, continuationClaimReply("continuation.peer-source-failure.acknowledge", reply))
+  }
+  fun retireRetainedContinuationClaimReceiptV1(token: String, reply: Reply) = retainedClaimControlV1(token, reply, true)
+
+  private fun retainedClaimControlV1(token: String, reply: Reply, retire: Boolean) = perform(reply, "continuation.claim.v1") {
+    if (token.isEmpty() || token.length > 256) throw RustCoreRejection.invalid("continuation.claim.v1", "claimToken must be 1..256 bytes")
+    host.ensureInstalled()
+    val callback = continuationV1Reply(reply)
+    if (retire) core.continuationRetireClaimReceipt(token, callback)
+    else core.continuationAcknowledgeClaimV1(token, callback)
+  }
+
+  private fun retainedClaimControlV2(token: String, reply: Reply) = perform(reply, "continuation.claim.v2") {
+    if (token.isEmpty() || token.length > 256) throw RustCoreRejection.invalid("continuation.claim.v2", "claimToken must be 1..256 bytes")
+    host.ensureInstalled()
+    core.continuationAcknowledgeClaimV2(token, continuationClaimReply("continuation.claim.v2", reply))
+  }
+
+  private fun continuationV1Reply(reply: Reply) = MobileCoreBridge.InvokeCallback { envelope ->
+    continuationClaimReply("continuation.claim.v1", reply).onResult(envelope)
+  }
+
+  private fun continuationClaimReply(claimOperation: String, reply: Reply) = MobileCoreBridge.InvokeCallback { envelope ->
+    val outcome = try {
+      val root = RustCoreJson.parse(envelope) as? Map<*, *>
+        ?: throw RustCoreRejection("protocol.malformed", "protocol", claimOperation, "Expected native envelope")
+      when (root["ok"]) {
+        true -> {
+          if (!root.containsKey("value")) throw RustCoreRejection("protocol.malformed", "protocol", claimOperation, "Missing native value")
+          Result.success(RustCoreJson.write(root["value"]))
+        }
+        false -> {
+          val error = root["error"] as? Map<*, *>
+            ?: throw RustCoreRejection("protocol.malformed", "protocol", claimOperation, "Missing native error")
+          val code = error["code"] as? String
+          val domain = error["domain"] as? String
+          val nativeOperation = error["operation"] as? String
+          if (code.isNullOrEmpty() || domain.isNullOrEmpty() || nativeOperation.isNullOrEmpty())
+            throw RustCoreRejection("protocol.malformed", "protocol", claimOperation, "Malformed native error")
+          Result.failure(RustCoreRejection(code, domain, nativeOperation, error["detail"] as? String, error["platform"] as? Map<*, *>))
+        }
+        else -> throw RustCoreRejection("protocol.malformed", "protocol", claimOperation, "Missing native outcome")
+      }
+    } catch (error: RuntimeException) {
+      Result.failure(if (error is RustCoreRejection) error else RustCoreRejection("protocol.malformed", "protocol", claimOperation, "Invalid native response"))
+    }
+    outcome.fold(reply::resolve) { error ->
+      reply.reject(if (error is RustCoreRejection) error else RustCoreRejection.platform(claimOperation, error))
+    }
+  }
 
   /**
    * Seals and prepares the continuation backlog with its loss accounting.
@@ -256,7 +412,7 @@ class RustCoreSessions(
     executor.execute {
       val pending = AtomicInteger(1)
       fun finishOne() {
-        if (pending.decrementAndGet() == 0) host.retainBackgroundScopeCleanup(backgroundScope)
+        if (pending.decrementAndGet() == 0 && backgroundScopeUsed) host.retainBackgroundScopeCleanup(backgroundScope)
       }
       try {
         owned.toList().forEach { sessionId ->
@@ -292,9 +448,12 @@ class RustCoreSessions(
   fun ownedSessions(): Set<Long> = owned.toSet()
 
   private fun forget(sessionId: Long) {
-    owned.remove(sessionId)
-    released.remove(sessionId)
-    host.unroute(sessionId)
+    synchronized(admissionLock) {
+      owned.remove(sessionId)
+      released.remove(sessionId)
+      disposing.remove(sessionId)
+      host.unroute(sessionId)
+    }
   }
 
   /** Runs `session.dispose`; [onOutcome] receives null when the lease is gone. */

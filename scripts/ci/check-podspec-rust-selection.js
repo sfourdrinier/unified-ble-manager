@@ -109,24 +109,8 @@ function checkPodspecSelection() {
     ['source', sourceLane, true]
   ]) {
     const consumer = evaluated.user_target_xcconfig
-    const consumerMap =
-      '-Xcc "-fmodule-map-file=$(PODS_XCFRAMEWORKS_BUILD_DIR)/unified-ble-manager/Headers/ubm_echoFFI.modulemap"'
-    if (
-      consumer === null ||
-      typeof consumer !== 'object' ||
-      typeof consumer.OTHER_SWIFT_FLAGS !== 'string' ||
-      !consumer.OTHER_SWIFT_FLAGS.includes('$(inherited)') ||
-      !consumer.OTHER_SWIFT_FLAGS.includes(consumerMap)
-    ) {
-      fail(
-        `5.x podspec ${mode} mode must expose the selected XCFramework FFI modulemap to Swift consumers with inherited flags`
-      )
-    }
-    if (
-      Object.keys(consumer).some(key => key !== 'OTHER_SWIFT_FLAGS') ||
-      consumer.OTHER_SWIFT_FLAGS.includes('PODS_TARGET_SRCROOT')
-    ) {
-      fail(`5.x podspec ${mode} mode must not add broad consumer search paths or a pod-local source-root dependency`)
+    if (consumer !== undefined) {
+      fail(`5.x podspec ${mode} mode must not inject an FFI xcconfig into the consumer target`)
     }
     if (evaluated.prepare_command !== undefined && evaluated.prepare_command !== null) {
       fail(`5.x podspec must not use prepare_command (${mode} mode): it never runs for :path pods`)
@@ -168,7 +152,12 @@ function checkPodspecSelection() {
   for (const selected of [
     'bindings/uniffi/generated/swift/ubm_echo.swift',
     'ios/UnifiedBleProtocolControl.mm',
-    'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'
+    'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift',
+    'ios/Owned/OwnedGraphDeferredQueue.swift',
+    'ios/Owned/OwnedOrderedNotificationIngress.swift',
+    'ios/Owned/AppleOrderedGroupCaptureOwner.swift',
+    'ios/Owned/UnifiedBleRustOrderedGroupBridge.swift',
+    'ios/UnifiedBleRustOrderedRadioAdapter.swift'
   ]) {
     if (!sources.includes(selected)) {
       fail(`5.x podspec source_files is missing ${selected}`)

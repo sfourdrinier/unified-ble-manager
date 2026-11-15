@@ -16,13 +16,13 @@ use super::{
     descriptor::{AttributeKey, BLEDescriptor},
 };
 use crate::{
-    Error, Result,
     api::{Characteristic, WriteType},
     winrtble::utils,
+    Error, Result,
 };
 
 use log::{trace, warn};
-use std::{collections::HashMap, future::IntoFuture, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 use windows::core::Ref;
 use windows::{
@@ -38,9 +38,9 @@ use windows::{
     Storage::Streams::{DataReader, DataWriter},
 };
 
-/// UBM patch (`winrt-attribute-instances`): shared so a live subscription
-/// can move to the characteristic object of a later discovery.
-pub type NotifyEventHandler = Arc<dyn Fn(std::result::Result<Vec<u8>, crate::PlatformError>) + Send + Sync>;
+/// WinRT characteristic value callback.
+pub type NotifyEventHandler =
+    Arc<dyn Fn(std::result::Result<Vec<u8>, crate::PlatformError>) + Send + Sync>;
 
 impl From<WriteType> for GattWriteOption {
     fn from(val: WriteType) -> Self {
@@ -53,8 +53,12 @@ impl From<WriteType> for GattWriteOption {
 
 /// One `ValueChanged` registration and the handler it forwards to.
 struct Subscription {
-    handler: NotifyEventHandler,
     token: i64,
+    gate: Arc<super::super::callback_gate::CallbackGate>,
+}
+
+fn gated_handler(handler: NotifyEventHandler, gate: Arc<super::super::callback_gate::CallbackGate>, faults: Arc<crate::common::util::NotificationFaults>) -> NotifyEventHandler {
+    Arc::new(move |value| gate.admit_with_delivery(|| faults.hold_notification_delivery(), || handler(value)))
 }
 
 impl std::fmt::Debug for Subscription {
@@ -75,7 +79,7 @@ pub struct BLECharacteristic {
     subscription: Option<Subscription>,
 }
 
-fn value_changed(
+pub(crate) fn value_changed(
     handler: NotifyEventHandler,
 ) -> TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs> {
     TypedEventHandler::new(
@@ -90,11 +94,24 @@ fn value_changed(
                 trace!("changed {:?}", input);
                 Ok(input)
             })();
-            handler(result.map_err(|error| crate::PlatformError::new("winrt", "hresult", error.message().to_string())
-                .with("hresult", crate::winrtble::gatt_model::hresult_code(error.code().0))));
+            handler(result.map_err(|error| {
+                crate::PlatformError::new("winrt", "hresult", error.message().to_string()).with(
+                    "hresult",
+                    crate::winrtble::gatt_model::hresult_code(error.code().0),
+                )
+            }));
             Ok(())
         },
     )
+}
+
+fn cccd_proven_no_effect(status: GattCommunicationStatus, att: Option<u8>) -> bool {
+    status == GattCommunicationStatus::ProtocolError && att.is_some()
+}
+
+pub(crate) struct CccdWriteFailure {
+    pub error: Error,
+    pub proven_no_effect: bool,
 }
 
 impl BLECharacteristic {
@@ -132,6 +149,32 @@ impl BLECharacteristic {
         data: &[u8],
         write_type: WriteType,
     ) -> Result<()> {
+        Self::start_write_value(characteristic, data, write_type)?.await
+    }
+
+    /// Creates the WinRT operation synchronously; the returned future owns
+    /// completion and must be retained independently of the requesting task.
+    pub(crate) fn start_write_value(
+        characteristic: &GattCharacteristic,
+        data: &[u8],
+        write_type: WriteType,
+    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>> {
+        Self::start_write_value_inner(characteristic, data, write_type)
+    }
+
+    pub(crate) fn start_marker_write_value(
+        characteristic: &GattCharacteristic,
+        data: &[u8],
+        write_type: WriteType,
+    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>> {
+        Self::start_write_value_inner(characteristic, data, write_type)
+    }
+
+    fn start_write_value_inner(
+        characteristic: &GattCharacteristic,
+        data: &[u8],
+        write_type: WriteType,
+    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>> {
         let writer = DataWriter::new()?;
         writer.WriteBytes(data)?;
         if write_type == WriteType::WithoutResponse {
@@ -143,15 +186,17 @@ impl BLECharacteristic {
                 let buffer = writer.DetachBuffer()?;
                 characteristic.WriteValueWithOptionAsync(&buffer, write_type.into())?
             };
-            let status = operation.into_future().await?;
-            if status == GattCommunicationStatus::Success {
-                return Ok(());
-            }
-            return Err(utils::gatt_status_error(
-                "Gatt characteristic write",
-                status,
-                None,
-            ));
+            return Ok(Box::pin(async move {
+                let status = super::terminal_result(operation).await?;
+                if status == GattCommunicationStatus::Success {
+                    return Ok(());
+                }
+                Err(utils::gatt_status_error(
+                    "Gatt characteristic write",
+                    status,
+                    None,
+                ))
+            }));
         }
         // UBM patch (UBM_PATCHES.md #20): a with-response write goes
         // through the result-returning call (the same ATT Write Request on
@@ -162,50 +207,54 @@ impl BLECharacteristic {
             let buffer = writer.DetachBuffer()?;
             characteristic.WriteValueWithResultAndOptionAsync(&buffer, write_type.into())?
         };
-        let result = operation.into_future().await?;
-        let status = result.Status()?;
-        if status == GattCommunicationStatus::Success {
-            Ok(())
-        } else {
-            let mut att = None;
-            if status == GattCommunicationStatus::ProtocolError {
-                att = utils::protocol_att_error(result.ProtocolError());
+        Ok(Box::pin(async move {
+            let result = super::terminal_result(operation).await?;
+            let status = result.Status()?;
+            if status == GattCommunicationStatus::Success {
+                Ok(())
+            } else {
+                let mut att = None;
+                if status == GattCommunicationStatus::ProtocolError {
+                    att = utils::protocol_att_error(result.ProtocolError());
+                }
+                Err(utils::gatt_status_error(
+                    "Gatt characteristic write",
+                    status,
+                    att,
+                ))
             }
-            Err(utils::gatt_status_error(
-                "Gatt characteristic write",
-                status,
-                att,
-            ))
-        }
+        }))
     }
 
-    pub async fn read_value(characteristic: &GattCharacteristic) -> Result<Vec<u8>> {
-        let result = characteristic
-            .ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)?
-            .into_future()
-            .await?;
-        let status = result.Status()?;
-        if status == GattCommunicationStatus::Success {
-            let value = result.Value()?;
-            let reader = DataReader::FromBuffer(&value)?;
-            let len = reader.UnconsumedBufferLength()? as usize;
-            let mut input = vec![0u8; len];
-            reader.ReadBytes(&mut input[0..len])?;
-            Ok(input)
-        } else {
-            // UBM patch (UBM_PATCHES.md #20): a `ProtocolError` status
-            // carries the ATT error byte, so the host can tell a security
-            // refusal from any other protocol error.
-            let mut att = None;
-            if status == GattCommunicationStatus::ProtocolError {
-                att = utils::protocol_att_error(result.ProtocolError());
+    pub(crate) fn start_read_value(
+        characteristic: &GattCharacteristic,
+    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>> {
+        let operation = characteristic.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)?;
+        Ok(Box::pin(async move {
+            let result = super::terminal_result(operation).await?;
+            let status = result.Status()?;
+            if status == GattCommunicationStatus::Success {
+                let value = result.Value()?;
+                let reader = DataReader::FromBuffer(&value)?;
+                let len = reader.UnconsumedBufferLength()? as usize;
+                let mut input = vec![0u8; len];
+                reader.ReadBytes(&mut input[0..len])?;
+                Ok(input)
+            } else {
+                // UBM patch (UBM_PATCHES.md #20): a `ProtocolError` status
+                // carries the ATT error byte, so the host can tell a security
+                // refusal from any other protocol error.
+                let mut att = None;
+                if status == GattCommunicationStatus::ProtocolError {
+                    att = utils::protocol_att_error(result.ProtocolError());
+                }
+                Err(utils::gatt_status_error(
+                    "Gatt characteristic read",
+                    status,
+                    att,
+                ))
             }
-            Err(utils::gatt_status_error(
-                "Gatt characteristic read",
-                status,
-                att,
-            ))
-        }
+        }))
     }
 
     /// Write this characteristic's CCCD. `operation` names the request in
@@ -215,20 +264,59 @@ impl BLECharacteristic {
         value: GattClientCharacteristicConfigurationDescriptorValue,
         operation: &str,
     ) -> Result<()> {
-        let result = characteristic
-            .WriteClientCharacteristicConfigurationDescriptorWithResultAsync(value)?
-            .into_future()
-            .await?;
-        let status = result.Status()?;
+        Self::write_client_configuration_classified(characteristic, value, operation)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    pub(crate) async fn write_client_configuration_classified(
+        characteristic: &GattCharacteristic,
+        value: GattClientCharacteristicConfigurationDescriptorValue,
+        operation: &str,
+    ) -> std::result::Result<(), CccdWriteFailure> {
+        let operation_handle = Self::start_client_configuration(characteristic, value)?;
+        Self::finish_client_configuration(operation_handle, operation).await
+    }
+
+    pub(crate) fn start_client_configuration(
+        characteristic: &GattCharacteristic,
+        value: GattClientCharacteristicConfigurationDescriptorValue,
+    ) -> std::result::Result<
+        windows_future::IAsyncOperation<
+            windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteResult,
+        >,
+        CccdWriteFailure,
+    > {
+        characteristic
+            .WriteClientCharacteristicConfigurationDescriptorWithResultAsync(value)
+            .map_err(|error| CccdWriteFailure {
+                error: error.into(),
+                proven_no_effect: false,
+            })
+    }
+
+    pub(crate) async fn finish_client_configuration(
+        operation_handle: windows_future::IAsyncOperation<
+            windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteResult,
+        >,
+        operation: &str,
+    ) -> std::result::Result<(), CccdWriteFailure> {
+        let unknown = |error: windows::core::Error| CccdWriteFailure {
+            error: error.into(),
+            proven_no_effect: false,
+        };
+        let result = super::terminal_result(operation_handle).await.map_err(unknown)?;
+        let status = result.Status().map_err(unknown)?;
         trace!("{operation} {:?}", status);
         if status == GattCommunicationStatus::Success {
             Ok(())
         } else {
-            Err(utils::gatt_status_error(
-                operation,
-                status,
-                utils::protocol_att_error(result.ProtocolError()),
-            ))
+            let att = utils::protocol_att_error(result.ProtocolError());
+            Err(CccdWriteFailure {
+                error: utils::gatt_status_error(operation, status, att),
+                // A received ATT error response proves the request was refused.
+                proven_no_effect: cccd_proven_no_effect(status, att),
+            })
         }
     }
 
@@ -239,8 +327,9 @@ impl BLECharacteristic {
     pub fn register(
         &mut self,
         handler: NotifyEventHandler,
+        faults: Arc<crate::common::util::NotificationFaults>,
     ) -> Result<(GattClientCharacteristicConfigurationDescriptorValue, i64)> {
-        self.register_with(handler, to_descriptor_value(self.properties))
+        self.register_with(handler, to_descriptor_value(self.properties), faults)
     }
 
     /// Register `handler` and write `config` once. `None` is refused before
@@ -250,15 +339,17 @@ impl BLECharacteristic {
         &mut self,
         handler: NotifyEventHandler,
         config: GattClientCharacteristicConfigurationDescriptorValue,
+        faults: Arc<crate::common::util::NotificationFaults>,
     ) -> Result<(GattClientCharacteristicConfigurationDescriptorValue, i64)> {
         if config == GattClientCharacteristicConfigurationDescriptorValue::None {
             return Err(Error::NotSupported("Can not subscribe to attribute".into()));
         }
         self.take_registration()?;
+        let gate = Arc::new(super::super::callback_gate::CallbackGate::new(true));
         let token = self
             .characteristic
-            .ValueChanged(&value_changed(Arc::clone(&handler)))?;
-        self.subscription = Some(Subscription { handler, token });
+            .ValueChanged(&value_changed(gated_handler(Arc::clone(&handler), gate.clone(), faults.clone())))?;
+        self.subscription = Some(Subscription { token, gate });
         Ok((config, token))
     }
 
@@ -286,24 +377,8 @@ impl BLECharacteristic {
         Ok(())
     }
 
-    /// Move `previous`'s live subscription onto this object, the same
-    /// attribute (UUID and handle) returned by a later discovery. The new
-    /// registration is made before the old one is removed, so no value is
-    /// lost in between.
-    pub fn adopt_subscription(&mut self, previous: &mut BLECharacteristic) -> Result<()> {
-        let Some(handler) = previous
-            .subscription
-            .as_ref()
-            .map(|subscription| Arc::clone(&subscription.handler))
-        else {
-            return Ok(());
-        };
-        self.take_registration()?;
-        let token = self
-            .characteristic
-            .ValueChanged(&value_changed(Arc::clone(&handler)))?;
-        self.subscription = Some(Subscription { handler, token });
-        previous.take_registration()
+    pub(in crate::winrtble) fn callback_gate(&self) -> Option<Arc<super::super::callback_gate::CallbackGate>> {
+        self.subscription.as_ref().map(|subscription| subscription.gate.clone())
     }
 
     pub fn to_characteristic(&self, service_uuid: Uuid, service_instance: u64) -> Characteristic {
@@ -334,5 +409,30 @@ impl Drop for BLECharacteristic {
                 self.uuid, self.handle, err
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod cccd_outcome_tests {
+    use super::{cccd_proven_no_effect, GattCommunicationStatus};
+
+    #[test]
+    fn only_att_refusals_prove_cccd_write_had_no_effect() {
+        assert!(cccd_proven_no_effect(
+            GattCommunicationStatus::ProtocolError,
+            Some(5)
+        ));
+        assert!(!cccd_proven_no_effect(
+            GattCommunicationStatus::ProtocolError,
+            None
+        ));
+        assert!(!cccd_proven_no_effect(
+            GattCommunicationStatus::Unreachable,
+            None
+        ));
+        assert!(!cccd_proven_no_effect(
+            GattCommunicationStatus::AccessDenied,
+            None
+        ));
     }
 }

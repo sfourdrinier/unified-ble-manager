@@ -160,3 +160,11 @@ describe('continuation backlog drains with accounted loss', () => {
     expect(continuationConsumerSelector('s1-sub-3', pinnedSelectors)).toBeNull()
   })
 })
+
+test('claim preserves peer loss between values in ordered records', () => {
+  const consumer = 'ubm-continuation-0'
+  const loss = { t: 'peer-source-loss', ordinal: 2, consumer, peerId: 'peer', generation: '7', skippedRecords: '9007199254740993' }
+  const claim = aggregateContinuationClaim(claimPayload(1, [batch([valueRecord(1, consumer), loss, valueRecord(3, consumer)])], true), DECLARATION)
+  expect(claim.records.map(record => record.t)).toEqual(['value', 'peer-source-loss', 'value'])
+  expect(claim.records[1]).toEqual(loss)
+})

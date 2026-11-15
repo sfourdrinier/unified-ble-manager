@@ -2,7 +2,7 @@
 //
 // The production binding over the `UnifiedBleRustCore` TurboModule
 // (src/NativeUnifiedBleRustCore.ts). Session operations cross the strict
-// `ubm-mobile-wire/2` codec in ./rust-core-wire. OS accessory setup and the
+// `ubm-mobile-wire/3` codec in ./rust-core-wire. OS accessory setup and the
 // `ubm-accessory-authorized/1` saved directory are separate versioned native
 // controls, not Rust session envelopes. Neither path guesses a peer identity.
 //
@@ -39,6 +39,7 @@ import type {
 import {
   checkRandomByteLength,
   checkWriteReceipt,
+  parseScanEndVersion,
   failureEnvelopeError,
   parseAdmissionText,
   parseDrainText,
@@ -75,6 +76,63 @@ export interface ReactNativeRustCoreBindingOptions {
 }
 
 const OPERATION = 'react-native-rust-core'
+
+function hasRetainedContinuationV1(native: Spec): native is Spec & {
+  prepareRetainedContinuationClaimV1(maxItems: number, maxBytes: number): Promise<string>
+  acknowledgeRetainedContinuationClaimV1(token: string): Promise<string>
+  retireRetainedContinuationClaimReceiptV1(token: string): Promise<string>
+} {
+  return (
+    'prepareRetainedContinuationClaimV1' in native &&
+    typeof native.prepareRetainedContinuationClaimV1 === 'function' &&
+    'acknowledgeRetainedContinuationClaimV1' in native &&
+    typeof native.acknowledgeRetainedContinuationClaimV1 === 'function' &&
+    'retireRetainedContinuationClaimReceiptV1' in native &&
+    typeof native.retireRetainedContinuationClaimReceiptV1 === 'function'
+  )
+}
+
+/**
+ * A V2 claim can contain a source-failure recovery record. Advertising only
+ * its prepare/claim half would strand that record, so these four methods are
+ * one atomic capability rather than two independently optional features.
+ */
+function hasRetainedContinuationV2(native: Spec): native is Spec & {
+  prepareRetainedContinuationClaimV2(maxItems: number, maxBytes: number): Promise<string>
+  acknowledgeRetainedContinuationClaimV2(token: string): Promise<string>
+  readPeerFailureRecovery(recoveryRecord: string, offset: string): Promise<string>
+  acknowledgePeerFailureRecovery(recoveryRecord: string): Promise<string>
+} {
+  return (
+    'prepareRetainedContinuationClaimV2' in native &&
+    typeof native.prepareRetainedContinuationClaimV2 === 'function' &&
+    'acknowledgeRetainedContinuationClaimV2' in native &&
+    typeof native.acknowledgeRetainedContinuationClaimV2 === 'function' &&
+    'readPeerFailureRecovery' in native &&
+    typeof native.readPeerFailureRecovery === 'function' &&
+    'acknowledgePeerFailureRecovery' in native &&
+    typeof native.acknowledgePeerFailureRecovery === 'function'
+  )
+}
+
+/** Recovery is atomic: a module that cannot list, bounded-read and ACK must not advertise any partial route. */
+function hasTerminalEvidenceRecovery(native: Spec): native is Spec & {
+  terminalEvidenceRecoveryOpenSelected(): Promise<string>
+  terminalEvidenceRecoveryList(leaseId: string, maxItems: number, maxBytes: number): Promise<string>
+  terminalEvidenceRecoveryRead(handle: string, offset: string, maxBytes: number): Promise<string>
+  terminalEvidenceRecoveryAcknowledge(handle: string): Promise<string>
+} {
+  return (
+    'terminalEvidenceRecoveryOpenSelected' in native &&
+    typeof native.terminalEvidenceRecoveryOpenSelected === 'function' &&
+    'terminalEvidenceRecoveryList' in native &&
+    typeof native.terminalEvidenceRecoveryList === 'function' &&
+    'terminalEvidenceRecoveryRead' in native &&
+    typeof native.terminalEvidenceRecoveryRead === 'function' &&
+    'terminalEvidenceRecoveryAcknowledge' in native &&
+    typeof native.terminalEvidenceRecoveryAcknowledge === 'function'
+  )
+}
 
 function bindingFor(platform: ReactNativeRustCoreBindingPlatform): NativeBuildBinding {
   return platform === 'android' ? 'jni' : 'uniffi'
@@ -254,7 +312,11 @@ export function createReactNativeRustCoreBinding(
     }
   }
 
-  const createSession = (sessionId: string, identity: NativeBuildIdentityRecord): ReactNativeRustCoreSession => {
+  const createSession = (
+    sessionId: string,
+    identity: NativeBuildIdentityRecord,
+    scanEndVersion: number
+  ): ReactNativeRustCoreSession => {
     let lastOrdinal: number | null = null
     let closing: Promise<void> | null = null
     let closed = false
@@ -272,11 +334,61 @@ export function createReactNativeRustCoreBinding(
       drain: async (maxItems: number, maxBytes: number): Promise<WireDrainBatch> => {
         if (closed) throw contractError('lifecycle.destroyed', 'core', `${OPERATION}.drain`)
         const text = await call('drain', () => native.drain(sessionId, maxItems, maxBytes))
-        const batch = unwrap(parseDrainText(text, lastOrdinal))
+        const batch = unwrap(parseDrainText(text, lastOrdinal, scanEndVersion))
         const last = batch.records[batch.records.length - 1]
         if (last !== undefined) lastOrdinal = last.ordinal
         return batch
       },
+      ...(typeof native.orderedRecordingVersion === 'function' &&
+      typeof native.orderedRecordingReserve === 'function' &&
+      typeof native.orderedRecordingStartStatus === 'function' &&
+      typeof native.orderedRecordingRetire === 'function' &&
+      typeof native.orderedRecordingStart === 'function' &&
+      typeof native.orderedRecordingContext === 'function' &&
+      typeof native.orderedRecordingStop === 'function'
+        ? {
+            orderedRecordingVersion: async (): Promise<number> => {
+              if (closed) throw contractError('lifecycle.destroyed', 'core', `${OPERATION}.ordered-recording-version`)
+              const version = await call('ordered-recording-version', () => native.orderedRecordingVersion())
+              if (!Number.isSafeInteger(version) || version < 0)
+                throw contractError('protocol.malformed', 'core', `${OPERATION}.ordered-recording-version`)
+              return version
+            },
+            orderedRecordingReserve: async (id: string): Promise<string> => {
+              if (closed) throw contractError('lifecycle.destroyed', 'core', `${OPERATION}.ordered-recording-reserve`)
+              return call('ordered-recording-reserve', () => native.orderedRecordingReserve(sessionId, id))
+            },
+            orderedRecordingStartStatus: async (handle: string): Promise<string> => {
+              if (closed) throw contractError('lifecycle.destroyed', 'core', `${OPERATION}.ordered-recording-status`)
+              return call('ordered-recording-status', () => native.orderedRecordingStartStatus(sessionId, handle))
+            },
+            orderedRecordingRetire: async (handle: string): Promise<string> => {
+              if (closed) throw contractError('lifecycle.destroyed', 'core', `${OPERATION}.ordered-recording-retire`)
+              return call('ordered-recording-retire', () => native.orderedRecordingRetire(sessionId, handle))
+            },
+            orderedRecordingStart: async (
+              handle: string,
+              id: string,
+              maxBytes: string,
+              maxRecords: string,
+              declaration: string,
+              budgetMs: number
+            ): Promise<string> => {
+              if (closed) throw contractError('lifecycle.destroyed', 'core', `${OPERATION}.ordered-recording-start`)
+              return call('ordered-recording-start', () =>
+                native.orderedRecordingStart(sessionId, handle, id, maxBytes, maxRecords, declaration, budgetMs)
+              )
+            },
+            orderedRecordingContext: async (id: string): Promise<string> => {
+              if (closed) throw contractError('lifecycle.destroyed', 'core', `${OPERATION}.ordered-recording-context`)
+              return call('ordered-recording-context', () => native.orderedRecordingContext(sessionId, id))
+            },
+            orderedRecordingStop: async (id: string): Promise<string> => {
+              if (closed) throw contractError('lifecycle.destroyed', 'core', `${OPERATION}.ordered-recording-stop`)
+              return call('ordered-recording-stop', () => native.orderedRecordingStop(sessionId, id))
+            }
+          }
+        : {}),
       onWake: (listener: () => void) => wakes.listen(sessionId, listener),
       close: (): Promise<void> => {
         if (closed) return Promise.resolve()
@@ -297,7 +409,18 @@ export function createReactNativeRustCoreBinding(
     })
   }
 
+  const terminalEvidenceRecoveryListWithStatus = native.terminalEvidenceRecoveryListWithStatus
+
   return Object.freeze({
+    configureTerminalEvidenceMaximumBytes: async (maximumBytes: string): Promise<void> => {
+      if (!/^[1-9][0-9]*$/.test(maximumBytes))
+        throw contractError(
+          'argument.invalid',
+          'core',
+          'react-native-rust-core.terminal-evidence.maximum-durable-bytes'
+        )
+      await call('terminal-evidence-configure', () => native.configureTerminalEvidenceMaximumBytes(maximumBytes))
+    },
     ...(typeof native.chooseAccessory === 'function' &&
     typeof native.cancelAccessoryChoice === 'function' &&
     typeof native.accessoryChooserAvailable === 'function'
@@ -346,7 +469,19 @@ export function createReactNativeRustCoreBinding(
         }
         sessionId = admission.value.sessionId
         admit(text, identity, sessionId)
-        return createSession(sessionId, identity)
+        // Older producers have no negotiation method and continue to speak v1.
+        // The optional method must atomically select the version for this session.
+        const negotiate: unknown = Reflect.get(native, 'negotiateScanEndVersion')
+        let scanEndVersion = 1
+        if (negotiate !== undefined) {
+          if (typeof negotiate !== 'function')
+            throw contractError('protocol.malformed', 'boundary', `${OPERATION}.scan-end-version`)
+          const reply: unknown = await call('scan-end-version', () =>
+            Promise.resolve(Reflect.apply(negotiate, native, [sessionId, '[1,2]']))
+          )
+          scanEndVersion = unwrap(parseScanEndVersion(reply))
+        }
+        return createSession(sessionId, identity, scanEndVersion)
       } catch (error) {
         if (sessionId === null) {
           wakes.release(null)
@@ -400,6 +535,30 @@ export function createReactNativeRustCoreBinding(
           }
         }
       : {}),
+    ...(typeof native.orderedRecordingOfflineContext === 'function'
+      ? {
+          orderedRecordingOfflineContext: async (id: string): Promise<string> => {
+            await verifyBinary()
+            return call('ordered-recording-offline-context', () => native.orderedRecordingOfflineContext(id))
+          }
+        }
+      : {}),
+    ...(typeof native.orderedRecordingOfflineStatus === 'function'
+      ? {
+          orderedRecordingOfflineStatus: async (id: string): Promise<string> => {
+            await verifyBinary()
+            return call('ordered-recording-offline-status', () => native.orderedRecordingOfflineStatus(id))
+          }
+        }
+      : {}),
+    ...(typeof native.orderedRecordingOfflineStop === 'function'
+      ? {
+          orderedRecordingOfflineStop: async (id: string): Promise<string> => {
+            await verifyBinary()
+            return call('ordered-recording-offline-stop', () => native.orderedRecordingOfflineStop(id))
+          }
+        }
+      : {}),
     ...(typeof native.continuationRecordingStatus === 'function'
       ? {
           continuationRecordingStatus: async (id: string): Promise<string> => {
@@ -437,6 +596,108 @@ export function createReactNativeRustCoreBinding(
           continuationRecordingClear: async (id: string): Promise<string> => {
             await verifyBinary()
             return call('recording-clear', () => native.continuationRecordingClear(id))
+          }
+        }
+      : {}),
+    ...(typeof native.notificationFailureSpoolConfigure === 'function'
+      ? {
+          notificationFailureSpoolConfigure: async (
+            recordingId: string,
+            maxBytes: string,
+            maxRecords: string
+          ): Promise<string> => {
+            await verifyBinary()
+            return call('notification-failure-spool-configure', () =>
+              native.notificationFailureSpoolConfigure(recordingId, maxBytes, maxRecords)
+            )
+          }
+        }
+      : {}),
+    ...(options.platform === 'android' && hasRetainedContinuationV1(native)
+      ? {
+          prepareRetainedContinuationClaimV1: async (items: number, bytes: number): Promise<string> => {
+            await verifyBinary()
+            return call('prepare-retained-continuation-v1', () =>
+              native.prepareRetainedContinuationClaimV1(items, bytes)
+            )
+          },
+          acknowledgeRetainedContinuationClaimV1: async (token: string): Promise<string> => {
+            await verifyBinary()
+            return call('acknowledge-retained-continuation-v1', () =>
+              native.acknowledgeRetainedContinuationClaimV1(token)
+            )
+          },
+          retireRetainedContinuationClaimReceiptV1: async (token: string): Promise<string> => {
+            await verifyBinary()
+            return call('retire-retained-continuation-v1', () => native.retireRetainedContinuationClaimReceiptV1(token))
+          }
+        }
+      : {}),
+    ...(hasRetainedContinuationV2(native)
+      ? {
+          prepareRetainedContinuationClaimV2: async (items: number, bytes: number): Promise<string> => {
+            await verifyBinary()
+            return call('prepare-retained-continuation-v2', () =>
+              native.prepareRetainedContinuationClaimV2(items, bytes)
+            )
+          },
+          acknowledgeRetainedContinuationClaimV2: async (token: string): Promise<string> => {
+            await verifyBinary()
+            return call('acknowledge-retained-continuation-v2', () =>
+              native.acknowledgeRetainedContinuationClaimV2(token)
+            )
+          },
+          readPeerFailureRecovery: async (record: string, offset: string): Promise<string> => {
+            await verifyBinary()
+            return call('read-peer-failure-recovery', () => native.readPeerFailureRecovery(record, offset))
+          },
+          acknowledgePeerFailureRecovery: async (record: string): Promise<string> => {
+            await verifyBinary()
+            return call('acknowledge-peer-failure-recovery', () => native.acknowledgePeerFailureRecovery(record))
+          }
+        }
+      : {}),
+    ...(hasTerminalEvidenceRecovery(native)
+      ? {
+          terminalEvidenceRecoveryOpenSelected: async (): Promise<string> => {
+            await verifyBinary()
+            return call('terminal-evidence-recovery-open', () => native.terminalEvidenceRecoveryOpenSelected())
+          },
+          terminalEvidenceRecoveryList: async (
+            leaseId: string,
+            maxItems: number,
+            maxBytes: number
+          ): Promise<string> => {
+            await verifyBinary()
+            return call('terminal-evidence-recovery-list', () =>
+              native.terminalEvidenceRecoveryList(leaseId, maxItems, maxBytes)
+            )
+          },
+          ...(typeof terminalEvidenceRecoveryListWithStatus === 'function'
+            ? {
+                terminalEvidenceRecoveryListWithStatus: async (
+                  leaseId: string,
+                  maxItems: number,
+                  maxBytes: number
+                ): Promise<string> => {
+                  await verifyBinary()
+                  return call('terminal-evidence-recovery-list-with-status', () =>
+                    terminalEvidenceRecoveryListWithStatus(leaseId, maxItems, maxBytes)
+                  )
+                }
+              }
+            : {}),
+          terminalEvidenceRecoveryRead: async (handle: string, offset: string, maxBytes: number): Promise<string> => {
+            await verifyBinary()
+            return call('terminal-evidence-recovery-read', () =>
+              native.terminalEvidenceRecoveryRead(handle, offset, maxBytes)
+            )
+          },
+          terminalEvidenceRecoveryAcknowledge: async (handle: string): Promise<string> => {
+            await verifyBinary()
+            return call('terminal-evidence-recovery-acknowledge', () =>
+              native.terminalEvidenceRecoveryAcknowledge(handle)
+            )
           }
         }
       : {}),

@@ -3,8 +3,15 @@
 package com.sfourdrinier.unifiedblemanager.radio
 
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -14,11 +21,16 @@ import org.mockito.ArgumentMatchers.anyBoolean
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mockito.doAnswer
+import org.mockito.Mockito.doNothing
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.doThrow
 import org.mockito.Mockito.never
+import org.mockito.Mockito.mock
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * `connect()` over a prior GATT on the real [OwnedAndroidGattRadio] (mocked adapter/GATT, injected
@@ -489,4 +501,599 @@ class OwnedAndroidGattConnectOwnershipTest {
     assertSame(priorAttempt, outcomes.seen[0].third)
     assertEquals(Triple(false, BluetoothGatt.GATT_FAILURE, replacementAttempt), outcomes.seen[1])
   }
+  @Test
+  fun synchronousNativeCallbackWaitsForItsOwnGattPublication() {
+    val f = GattRadioFixture()
+    val gatt = f.gatt()
+    val outcomes = Outcomes().also { it.attach(f) }
+    val attempt = GattConnectAttempt()
+    doAnswer { invocation ->
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(
+        gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED
+      )
+      gatt
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    f.radio.connect(f.peer, false, 0, attempt)
+
+    assertEquals(listOf(Triple(true, BluetoothGatt.GATT_SUCCESS, attempt)), outcomes.seen)
+    f.nativeDisconnected(gatt)
+    assertSame(attempt, outcomes.seen.last().third)
+    verify(gatt, times(1)).close()
+  }
+
+  @Test
+  fun replacingQueuedConnectSettlesDisplacedAttemptBeforeOpeningReplacement() {
+    val f = GattRadioFixture()
+    val prior = f.connected()
+    val next = f.gatt()
+    connectGattReturns(f, next)
+    val outcomes = Outcomes().also { it.attach(f) }
+    val displaced = GattConnectAttempt()
+    val replacement = GattConnectAttempt()
+    f.radio.connect(f.peer, false, 0, displaced)
+    f.radio.connect(f.peer, false, 0, replacement)
+
+    assertEquals(listOf(Triple(false, BluetoothGatt.GATT_FAILURE, displaced)), outcomes.seen)
+    f.nativeDisconnected(prior)
+    f.radio.nativeGattCallback().onConnectionStateChange(next, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+    assertEquals(1, outcomes.seen.count { it.third === displaced })
+    assertEquals(Triple(true, BluetoothGatt.GATT_SUCCESS, replacement), outcomes.seen.last())
+  }
+
+  @Test
+  fun failedOpenRejectsEarlyCallbackAndCannotReviveOnReconnect() {
+    val f = GattRadioFixture()
+    val failedGatt = f.gatt()
+    val nextGatt = f.gatt()
+    val outcomes = Outcomes().also { it.attach(f) }
+    val failed = GattConnectAttempt()
+    val next = GattConnectAttempt()
+    lateinit var failedCallback: BluetoothGattCallback
+    doAnswer { invocation ->
+      failedCallback = invocation.getArgument(2)
+      failedCallback.onConnectionStateChange(failedGatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+      throw IllegalStateException("open refused")
+    }.doReturn(nextGatt).`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    assertTrue(thrownBy { f.radio.connect(f.peer, false, 0, failed) } is IllegalStateException)
+    assertTrue(outcomes.seen.isEmpty())
+    verify(failedGatt, times(1)).close()
+    f.radio.connect(f.peer, false, 0, next)
+    failedCallback.onConnectionStateChange(failedGatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+    f.radio.nativeGattCallback().onConnectionStateChange(nextGatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+    assertEquals(listOf(Triple(true, BluetoothGatt.GATT_SUCCESS, next)), outcomes.seen)
+  }
+
+  @Test
+  fun failedOpenRetainsUnpublishedGattUntilCloseRetrySucceeds() {
+    val f = GattRadioFixture()
+    val gatt = f.gatt()
+    val closeError = IllegalStateException("close refused")
+    doThrow(closeError).doNothing().`when`(gatt).close()
+    doAnswer { invocation ->
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(gatt, 0, BluetoothProfile.STATE_CONNECTED)
+      throw IllegalStateException("open refused")
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    val failure = checkNotNull(thrownBy { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) })
+    assertTrue(failure.cause?.suppressed?.contains(closeError) == true)
+    verify(gatt, times(1)).close()
+    assertTrue(f.radio.destroy().isSuccessful)
+    verify(gatt, times(2)).close()
+  }
+
+  @Test
+  fun queuedOpenCanSynchronouslyDisconnectAndLaterReconnectWithoutRevivingIt() {
+    val f = GattRadioFixture()
+    val first = f.connected()
+    val closed = f.gatt()
+    val next = f.gatt()
+    val outcomes = Outcomes().also { it.attach(f) }
+    val queued = GattConnectAttempt()
+    val later = GattConnectAttempt()
+    lateinit var oldCallback: BluetoothGattCallback
+    doAnswer { invocation ->
+      oldCallback = invocation.getArgument(2)
+      oldCallback.onConnectionStateChange(closed, 133, BluetoothProfile.STATE_DISCONNECTED)
+      closed
+    }.doReturn(next).`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    f.radio.connect(f.peer, false, 0, queued)
+    f.nativeDisconnected(first)
+    assertEquals(Triple(false, 133, queued), outcomes.seen.last())
+    verify(closed, times(1)).close()
+    f.radio.connect(f.peer, false, 0, later)
+    oldCallback.onConnectionStateChange(closed, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+    f.radio.nativeGattCallback().onConnectionStateChange(next, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+    assertEquals(1, outcomes.seen.count { it.third === queued })
+    assertEquals(Triple(true, BluetoothGatt.GATT_SUCCESS, later), outcomes.seen.last())
+  }
+
+  @Test
+  fun synchronousObserverFailureCannotLeaveAConnectionBehindTheFailedOpen() {
+    val f = GattRadioFixture()
+    val gatt = f.gatt()
+    val boom = Boom("observer")
+    f.radio.onConnectionOutcome = { _, _, _, _ -> throw boom }
+    doAnswer { invocation ->
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+      gatt
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    assertSame(boom, thrownBy { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) })
+    verify(gatt, times(1)).close()
+  }
+
+  @Test
+  fun synchronousObserverFailureTerminatesThePublishedOwnedConnection() {
+    val f = GattRadioFixture()
+    val gatt = f.gatt()
+    val attempt = GattConnectAttempt()
+    val owner = OwnedAndroidGattRadio.ReceiverOwner()
+    val states = mutableListOf<Boolean>()
+    f.radio.onConnectionOutcome = { _, connected, _, _ -> if (connected) throw Boom("observer") }
+    doAnswer { invocation ->
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(gatt, 0, BluetoothProfile.STATE_CONNECTED)
+      gatt
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    assertTrue(thrownBy {
+      f.radio.connectOwned(f.peer, false, 0, attempt, owner, { _, connected, _, _ -> states.add(connected) }, {})
+    } is Boom)
+    assertEquals(listOf(true, false), states)
+    verify(gatt, times(1)).close()
+  }
+
+  @Test
+  fun earlyServiceChangeFollowsEarlyConnectionAfterPublication() {
+    val f = GattRadioFixture()
+    val gatt = f.gatt()
+    val events = mutableListOf<String>()
+    f.radio.onConnectionOutcome = { _, connected, _, _ -> if (connected) events.add("connected") }
+    f.radio.onServicesChanged = { events.add("services") }
+    doAnswer { invocation ->
+      val callback = invocation.getArgument<BluetoothGattCallback>(2)
+      callback.onConnectionStateChange(gatt, 0, BluetoothProfile.STATE_CONNECTED)
+      callback.onServiceChanged(gatt)
+      gatt
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    f.radio.connect(f.peer, false, 0, GattConnectAttempt())
+    assertEquals(listOf("connected", "services"), events)
+  }
+
+  @Test
+  fun overlappingOpensCannotLeaveEitherGattUnowned() {
+    val f = GattRadioFixture()
+    val firstGatt = f.gatt()
+    val secondGatt = f.gatt()
+    val first = GattConnectAttempt()
+    val second = GattConnectAttempt()
+    val outcomes = Outcomes().also { it.attach(f) }
+    var opens = 0
+    doAnswer { invocation ->
+      opens++
+      if (opens == 1) {
+        f.radio.connect(f.peer, false, 0, second)
+        invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(firstGatt, 0, BluetoothProfile.STATE_CONNECTED)
+        firstGatt
+      } else {
+        invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(secondGatt, 0, BluetoothProfile.STATE_CONNECTED)
+        secondGatt
+      }
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    f.radio.connect(f.peer, false, 0, first)
+    f.radio.disconnect(f.peer)
+    f.nativeDisconnected(firstGatt)
+    f.nativeDisconnected(secondGatt)
+    verify(firstGatt, times(1)).close()
+    if (opens == 2) verify(secondGatt, times(1)).close()
+    assertTrue(outcomes.seen.any { it.third === first })
+    assertTrue(outcomes.seen.any { it.third === second })
+  }
+
+  @Test
+  fun replacementWaitsForFailedOpeningThenOwnsItsOwnCallbacks() {
+    val f = GattRadioFixture()
+    val next = f.gatt()
+    val first = GattConnectAttempt()
+    val replacement = GattConnectAttempt()
+    val outcomes = Outcomes().also { it.attach(f) }
+    var calls = 0
+    var callsAfterReentrantConnect = 0
+    doAnswer { invocation ->
+      calls++
+      if (calls == 1) {
+        f.radio.connect(f.peer, false, 0, replacement)
+        callsAfterReentrantConnect = calls
+        throw IllegalStateException("first open refused")
+      }
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(next, 0, BluetoothProfile.STATE_CONNECTED)
+      next
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    assertTrue(thrownBy { f.radio.connect(f.peer, false, 0, first) } is IllegalStateException)
+    assertEquals("the replacement must wait for the first native open", 1, callsAfterReentrantConnect)
+    assertEquals(2, calls)
+    assertEquals(listOf(Triple(true, 0, replacement)), outcomes.seen)
+    f.nativeDisconnected(next)
+    verify(next, times(1)).close()
+    assertSame(replacement, outcomes.seen.last().third)
+  }
+
+  @Test
+  fun disconnectDuringNativeOpenWaitsForPublishedGattToClose() {
+    val f = GattRadioFixture()
+    val opened = f.gatt()
+    val results = GattDisconnectResults()
+    doAnswer { invocation ->
+      f.radio.disconnect(f.peer, results.callback)
+      assertTrue(results.values.isEmpty())
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(opened, 0, BluetoothProfile.STATE_CONNECTED)
+      opened
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    f.radio.connect(f.peer, false, 0, GattConnectAttempt())
+    verify(opened, times(1)).disconnect()
+    assertTrue(results.values.isEmpty())
+    f.nativeDisconnected(opened)
+    verify(opened, times(1)).close()
+    assertEquals(listOf<OwnedRadioTeardownFailure?>(null), results.values)
+  }
+
+  @Test
+  fun disconnectQueuedDuringFailedOpenCompletesAfterFailure() {
+    val f = GattRadioFixture()
+    val results = GattDisconnectResults()
+    doAnswer {
+      f.radio.disconnect(f.peer, results.callback)
+      assertTrue(results.values.isEmpty())
+      throw IllegalStateException("open refused")
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    assertTrue(thrownBy { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) } is IllegalStateException)
+    assertEquals(listOf<OwnedRadioTeardownFailure?>(null), results.values)
+  }
+
+  @Test
+  fun multipleConnectsDuringOpenSettleDisplacedAttemptOnce() {
+    val f = GattRadioFixture()
+    val firstGatt = f.gatt()
+    val lastGatt = f.gatt()
+    val first = GattConnectAttempt()
+    val displaced = GattConnectAttempt()
+    val last = GattConnectAttempt()
+    val outcomes = Outcomes().also { it.attach(f) }
+    var opens = 0
+    doAnswer { invocation ->
+      opens++
+      if (opens == 1) {
+        f.radio.connect(f.peer, false, 0, displaced)
+        f.radio.connect(f.peer, false, 0, last)
+        assertEquals(1, opens)
+        invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(firstGatt, 0, BluetoothProfile.STATE_CONNECTED)
+        firstGatt
+      } else {
+        invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(lastGatt, 0, BluetoothProfile.STATE_CONNECTED)
+        lastGatt
+      }
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    f.radio.connect(f.peer, false, 0, first)
+    assertEquals(listOf(Triple(true, 0, first), Triple(false, BluetoothGatt.GATT_FAILURE, displaced)), outcomes.seen)
+    f.nativeDisconnected(firstGatt)
+    assertEquals(2, opens)
+    assertEquals(1, outcomes.seen.count { it.third === displaced })
+    assertEquals(Triple(true, 0, last), outcomes.seen.last())
+    f.nativeDisconnected(lastGatt)
+    verify(firstGatt, times(1)).close()
+    verify(lastGatt, times(1)).close()
+  }
+
+  @Test
+  fun anotherThreadCannotOpenSamePeerBeforeNativeOpenReturns() {
+    val f = GattRadioFixture()
+    val firstGatt = f.gatt()
+    val secondGatt = f.gatt()
+    val first = GattConnectAttempt()
+    val second = GattConnectAttempt()
+    val outcomes = Outcomes().also { it.attach(f) }
+    val entered = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    val failure = AtomicReference<Throwable?>()
+    var opens = 0
+    doAnswer { invocation ->
+      opens++
+      val gatt = if (opens == 1) {
+        entered.countDown()
+        check(release.await(5, TimeUnit.SECONDS))
+        firstGatt
+      } else secondGatt
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(gatt, 0, BluetoothProfile.STATE_CONNECTED)
+      gatt
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    val worker = Thread {
+      try { f.radio.connect(f.peer, false, 0, first) } catch (error: Throwable) { failure.set(error) }
+    }
+    worker.start()
+    try {
+      assertTrue(entered.await(5, TimeUnit.SECONDS))
+      f.radio.connect(f.peer, false, 0, second)
+      assertEquals(1, opens)
+    } finally {
+      release.countDown()
+      worker.join(5000)
+    }
+    assertTrue(!worker.isAlive)
+    assertNull(failure.get())
+    f.nativeDisconnected(firstGatt)
+    assertEquals(2, opens)
+    assertEquals(Triple(true, 0, second), outcomes.seen.last())
+    f.nativeDisconnected(secondGatt)
+    verify(firstGatt, times(1)).close()
+    verify(secondGatt, times(1)).close()
+  }
+
+  @Test
+  fun stalledOpenBoundsQueuedPeerLifecycleAdmissions() {
+    val f = GattRadioFixture(peerLifecycleCapacity = 3)
+    val gatt = f.gatt()
+    val entered = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    doAnswer {
+      entered.countDown()
+      check(release.await(5, TimeUnit.SECONDS))
+      gatt
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    val worker = Thread { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) }
+    worker.start()
+    try {
+      assertTrue(entered.await(5, TimeUnit.SECONDS))
+      repeat(3) { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) }
+      val failure = thrownBy { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) }
+      assertTrue("overflow must be reported to its caller", failure is IllegalStateException)
+      val rejectedOwner = OwnedAndroidGattRadio.ReceiverOwner()
+      val ownedFailure = thrownBy {
+        f.radio.connectOwned(f.peer, false, 0, GattConnectAttempt(), rejectedOwner, { _, _, _, _ -> }, {})
+      }
+      assertTrue(ownedFailure is IllegalStateException)
+      assertEquals("rejected admission must not retain its route", 0, f.radio.retireReceiverOwner(rejectedOwner).callbacks)
+    } finally {
+      release.countDown()
+      worker.join(5000)
+    }
+    assertFalse(worker.isAlive)
+  }
+
+  @Test
+  fun destroyReportsPeerLifecycleExecutionAfterNativeOpenReturns() {
+    val f = GattRadioFixture()
+    val gatt = f.gatt()
+    val entered = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    doAnswer {
+      entered.countDown()
+      check(release.await(5, TimeUnit.SECONDS))
+      null
+    }.`when`(gatt).disconnect()
+    doAnswer {
+      f.radio.connect(f.peer, false, 0, GattConnectAttempt())
+      gatt
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    val worker = Thread { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) }
+    worker.start()
+    try {
+      assertTrue(entered.await(5, TimeUnit.SECONDS))
+      assertFalse("executing lane work is still owned", f.radio.destroy().isSuccessful)
+    } finally {
+      release.countDown()
+      worker.join(5000)
+    }
+    assertFalse(worker.isAlive)
+  }
+
+  @Test
+  fun deferredReplacementOpenFailureSettlesItsAttemptWithoutFailingOriginalCall() {
+    val f = GattRadioFixture()
+    val firstGatt = f.gatt()
+    val first = GattConnectAttempt()
+    val replacement = GattConnectAttempt()
+    val outcomes = Outcomes().also { it.attach(f) }
+    var opens = 0
+    doAnswer { f.nativeDisconnected(firstGatt); null }.`when`(firstGatt).disconnect()
+    doAnswer { invocation ->
+      opens++
+      if (opens > 1) throw IllegalStateException("replacement refused")
+      f.radio.connect(f.peer, false, 0, replacement)
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(firstGatt, 0, BluetoothProfile.STATE_CONNECTED)
+      firstGatt
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    assertNull(thrownBy { f.radio.connect(f.peer, false, 0, first) })
+    assertEquals(2, opens)
+    assertEquals(1, outcomes.seen.count { it.third === replacement })
+    assertEquals(Triple(false, BluetoothGatt.GATT_FAILURE, replacement), outcomes.seen.last())
+    verify(firstGatt, times(1)).close()
+  }
+
+  @Test
+  fun synchronousLossAndReconnectDrainWithoutNestedNativeOpens() {
+    val f = GattRadioFixture()
+    val attempts = List(40) { GattConnectAttempt() }
+    val gatts = attempts.map { f.gatt() }
+    val outcomes = Outcomes().also { it.attach(f) }
+    var opens = 0
+    var depth = 0
+    var maximumDepth = 0
+    doAnswer { invocation ->
+      val index = opens++
+      depth++
+      maximumDepth = maxOf(maximumDepth, depth)
+      if (index + 1 < attempts.size) f.radio.connect(f.peer, false, 0, attempts[index + 1])
+      val callback = invocation.getArgument<BluetoothGattCallback>(2)
+      callback.onConnectionStateChange(gatts[index], 0, BluetoothProfile.STATE_CONNECTED)
+      callback.onConnectionStateChange(gatts[index], 0, BluetoothProfile.STATE_DISCONNECTED)
+      depth--
+      gatts[index]
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    f.radio.connect(f.peer, false, 0, attempts.first())
+
+    assertEquals(attempts.size, opens)
+    assertEquals(1, maximumDepth)
+    attempts.forEach { attempt -> assertEquals(2, outcomes.seen.count { it.third === attempt }) }
+    gatts.forEach { gatt -> verify(gatt, times(1)).close() }
+  }
+
+  @Test
+  fun destroyDuringNativeOpenReportsPendingAndClosesReturnedGatt() {
+    val f = GattRadioFixture()
+    val gatt = f.gatt()
+    var pending = false
+    doAnswer { invocation ->
+      pending = !f.radio.destroy().isSuccessful
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(gatt, 0, BluetoothProfile.STATE_CONNECTED)
+      gatt
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    assertTrue(thrownBy { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) } is IllegalStateException)
+    assertTrue(pending)
+    verify(gatt, times(1)).close()
+    assertTrue(f.radio.destroy().isSuccessful)
+  }
+
+  @Test
+  fun destroySettlesQueuedAttemptAndClosesEvenIfItsObserverThrows() {
+    val f = GattRadioFixture()
+    val prior = f.connected()
+    val states = mutableListOf<Boolean>()
+    f.radio.connectOwned(f.peer, false, 0, GattConnectAttempt(), OwnedAndroidGattRadio.ReceiverOwner(),
+      { _, connected, _, _ -> states.add(connected); throw Boom("owner observer") }, {})
+
+    assertTrue(thrownBy { f.radio.destroy() } is Boom)
+    assertEquals(listOf(false), states)
+    verify(prior).close()
+  }
+
+  @Test
+  fun destroyReportsCloseFailureAlongsideQueuedObserverFailure() {
+    val f = GattRadioFixture()
+    val prior = f.connected()
+    val closeError = IllegalStateException("close refused")
+    doThrow(closeError).doNothing().`when`(prior).close()
+    val observerError = Boom("owner observer")
+    f.radio.connectOwned(f.peer, false, 0, GattConnectAttempt(), OwnedAndroidGattRadio.ReceiverOwner(),
+      { _, _, _, _ -> throw observerError }, {})
+
+    val failure = thrownBy { f.radio.destroy() }
+    assertSame(observerError, failure)
+    assertTrue("close failure must remain visible", checkNotNull(failure).suppressed.contains(closeError))
+    assertTrue(f.radio.destroy().isSuccessful)
+    verify(prior, times(2)).close()
+  }
+
+  @Test
+  fun destroyContinuesClosingOtherGattWhenCleanupObserverThrows() {
+    val f = GattRadioFixture()
+    val unpublished = f.gatt()
+    val closeError = IllegalStateException("unpublished close refused")
+    doThrow(closeError).`when`(unpublished).close()
+    doAnswer { invocation ->
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(unpublished, 0, BluetoothProfile.STATE_CONNECTED)
+      throw IllegalStateException("open refused")
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    assertTrue(thrownBy { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) } is IllegalStateException)
+    val otherGatt = f.connected()
+    val observerError = Boom("cleanup observer")
+    f.radio.onCleanupFailure = { throw observerError }
+
+    val failure = thrownBy { f.radio.destroy() }
+    assertSame(observerError, failure)
+    assertTrue(checkNotNull(failure).suppressed.contains(closeError))
+    verify(otherGatt).close()
+  }
+
+  @Test
+  fun adapterLossDuringNativeOpenClosesReturnedGattAndFailsQueuedConnect() {
+    val f = GattRadioFixture()
+    var receiver: BroadcastReceiver? = null
+    doAnswer { call -> receiver = call.getArgument(0); null }
+      .`when`(f.context).registerReceiver(any(BroadcastReceiver::class.java), any(IntentFilter::class.java))
+    f.radio.registerAdapterStateReceiver()
+    val opened = f.gatt()
+    val replacement = GattConnectAttempt()
+    val outcomes = Outcomes().also { it.attach(f) }
+    val intent = mock(Intent::class.java)
+    doReturn(BluetoothAdapter.ACTION_STATE_CHANGED).`when`(intent).action
+    doReturn(BluetoothAdapter.STATE_OFF).`when`(intent).getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+    doAnswer { invocation ->
+      f.radio.connect(f.peer, false, 0, replacement)
+      doReturn(BluetoothAdapter.STATE_OFF).`when`(f.adapter).state
+      checkNotNull(receiver).onReceive(f.context, intent)
+      invocation.getArgument<BluetoothGattCallback>(2).onConnectionStateChange(opened, 0, BluetoothProfile.STATE_CONNECTED)
+      opened
+    }.`when`(f.device).connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+    assertTrue(thrownBy { f.radio.connect(f.peer, false, 0, GattConnectAttempt()) } is IllegalStateException)
+    assertEquals(1, connectGattCalls(f))
+    assertEquals(listOf(Triple(false, BluetoothGatt.GATT_FAILURE, replacement)), outcomes.seen)
+    verify(opened, times(1)).close()
+  }
+
+  @Test
+  fun adapterLossSettlesQueuedOwnerAndNotifiesAdapterEvenWhenCleanupObserverThrows() {
+    val f = GattRadioFixture()
+    var receiver: BroadcastReceiver? = null
+    doAnswer { call -> receiver = call.getArgument(0); null }
+      .`when`(f.context).registerReceiver(any(BroadcastReceiver::class.java), any(IntentFilter::class.java))
+    f.radio.registerAdapterStateReceiver()
+    val prior = f.connected()
+    doThrow(IllegalStateException("close refused")).`when`(prior).close()
+    val attempt = GattConnectAttempt()
+    val states = mutableListOf<Boolean>()
+    f.radio.connectOwned(f.peer, false, 0, attempt, OwnedAndroidGattRadio.ReceiverOwner(),
+      { _, connected, _, _ -> states.add(connected) }, {})
+    var adapterNotified = false
+    f.radio.onAdapterState = { adapterNotified = true }
+    f.radio.onCleanupFailure = { throw Boom("cleanup observer") }
+    val intent = mock(Intent::class.java)
+    doReturn(BluetoothAdapter.ACTION_STATE_CHANGED).`when`(intent).action
+    doReturn(BluetoothAdapter.STATE_OFF).`when`(intent).getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+
+    assertTrue(thrownBy { checkNotNull(receiver).onReceive(f.context, intent) } is Boom)
+    assertEquals(listOf(false), states)
+    assertTrue(adapterNotified)
+    verify(prior).close()
+  }
+
+  @Test
+  fun adapterLossSettlesAllQueuedOwnersWhenOneObserverThrows() {
+    val f = GattRadioFixture()
+    var receiver: BroadcastReceiver? = null
+    doAnswer { call -> receiver = call.getArgument(0); null }
+      .`when`(f.context).registerReceiver(any(BroadcastReceiver::class.java), any(IntentFilter::class.java))
+    f.radio.registerAdapterStateReceiver()
+    val firstGatt = f.connected()
+    val secondPeer = "A0:9E:1A:00:00:02"
+    val secondDevice = mock(BluetoothDevice::class.java)
+    val secondGatt = mock(BluetoothGatt::class.java)
+    doReturn(secondPeer).`when`(secondDevice).address
+    doReturn(secondDevice).`when`(secondGatt).device
+    f.radio.attachConnectedGatt(secondPeer, secondGatt, emptyList())
+    val outcomes = mutableListOf<String>()
+    f.radio.connectOwned(f.peer, false, 0, GattConnectAttempt(), OwnedAndroidGattRadio.ReceiverOwner(),
+      { _, _, _, _ -> outcomes.add("first"); throw Boom("first observer") }, {})
+    f.radio.connectOwned(secondPeer, false, 0, GattConnectAttempt(), OwnedAndroidGattRadio.ReceiverOwner(),
+      { _, _, _, _ -> outcomes.add("second") }, {})
+    var notified = false
+    f.radio.onAdapterState = { notified = true }
+    val intent = mock(Intent::class.java)
+    doReturn(BluetoothAdapter.ACTION_STATE_CHANGED).`when`(intent).action
+    doReturn(BluetoothAdapter.STATE_OFF).`when`(intent).getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+
+    assertTrue(thrownBy { checkNotNull(receiver).onReceive(f.context, intent) } is Boom)
+    assertEquals(setOf("first", "second"), outcomes.toSet())
+    assertTrue(notified)
+    verify(firstGatt).close()
+    verify(secondGatt).close()
+  }
+
 }

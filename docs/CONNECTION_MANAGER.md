@@ -157,6 +157,21 @@ Electron and Tauri the host rebinds the renderer or webview to that attachment
 A `createConnectionSupervisor()` waits in `waiting-for-gate` while the adapter
 is not ready and keeps waiting across readiness timeouts, however long the
 adapter stays off, then reconnects through the same manager when it returns.
+If the observed `adapter-loss` also interrupts the supervisor's own connection
+release with `operation.reset`, that release remains owned: after adapter
+readiness, the supervisor retries the same release before creating a successor
+connection. A repeated reset uses the configured retry backoff. It never
+treats the reset as a successful release or admits the successor early. This
+automatic retry is limited to connection-scoped `operation.reset` cleanup
+caused by that observed adapter loss; every other cleanup failure remains a
+retained, surfaced failure.
+
+The OS may report power-on before its native reset retirement has finished. If
+the resulting successor connect answers `adapter.resetting`, the supervisor
+keeps that exact result, rechecks readiness, and retries through its configured
+backoff and attempt budget. `adapter.powered-off` and `adapter.unavailable`
+remain state waits and do not consume an attempt. Thus a stale ready snapshot
+cannot create a tight retry loop or be presented as a successful reconnect.
 Before 5.0 an adapter loss destroyed the manager (its supervisor ended
 `lifecycle.destroyed`) and the application had to create a new one.
 

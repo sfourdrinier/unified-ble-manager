@@ -418,8 +418,8 @@ export class DeterministicSubscription implements Subscription {
     return this.removal
   }
 
-  closeForInvalidation(): void {
-    this.stream.closeWithReason('connection-lost')
+  closeForInvalidation(reason: 'connection-lost' | 'service-changed' = 'connection-lost'): void {
+    this.stream.closeWithReason(reason)
   }
 
   closeForRemoval(): void {

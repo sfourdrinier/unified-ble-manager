@@ -46,15 +46,23 @@ function singletonVersionRange<Axis extends ProtocolAxis>(axis: Axis, value: num
  * attachment rebind after an adapter loss (`IPC_ATTACHMENT_STREAM_ID`). Version
  * 5 carries address targets, connection policy and platform scan options, and
  * adds scoped security routes. Version 6 carries nullable observed GATT graph
- * facts, native readiness helpers and owned acquired GATT routes. Both ends offer
- * exactly version 6: older hosts must not silently ignore these fields or routes.
+ * facts, native readiness helpers and owned acquired GATT routes. Version 9 carries individual ordered failure observations and ordered platform metadata.
+ * Version 10 adds ownerless native-source diagnostics on the attachment
+ * stream. Version 6 remains negotiated for ordinary BLE routes with a 5.2.1
+ * peer; version-10-only attachment diagnostics and recovery availability are
+ * suppressed for that selected version rather than silently discarded.
+ * Version 11 adds source-native durable terminal-evidence admission. The
+ * host commits exact canonical terminal bytes before it publishes the
+ * corresponding terminal item.
  * Bootstrap capability descriptors describe which native mechanisms the
  * instantiated host actually implements; protocol parity does not invent them.
  * Optional acquired GATT routes use opaque renderer-owned handles, a returned
  * MTU and copied packets. Only a host with the native mechanism advertises the
  * acquired capability; descriptors never cross this protocol.
  */
-export const IPC_PROTOCOL_VERSION = 6
+export const IPC_PROTOCOL_VERSION = 11
+/** Last pre-diagnostic webview protocol. Version 6 remains wire-compatible for normal BLE routes. */
+export const IPC_PROTOCOL_MINIMUM_VERSION = 6
 
 /**
  * The reserved stream on which the host announces that it rebound a renderer
@@ -105,6 +113,43 @@ export interface IpcAttachmentReboundV1<Attachment extends string> {
 export interface IpcAttachmentReboundItemV1<Attachment extends string> {
   readonly kind: 'value'
   readonly value: IpcAttachmentReboundV1<Attachment>
+}
+
+/**
+ * A host-only warning that belongs to the attachment lifetime but does not
+ * advance that attachment. The renderer forwards it to the IPC manager's
+ * diagnostic recorder; it must never be mistaken for a rebind.
+ */
+export interface IpcAttachmentDiagnosticWarningV1 {
+  readonly kind: 'diagnostic-warning'
+  readonly schemaVersion: 1
+  readonly code:
+    | 'gatt.source-uncertain'
+    | 'gatt.source-uncertain-lagged'
+    /** The bounded host retention ring evicted older ownerless diagnostics. */
+    | 'gatt.source-uncertain-retention-lagged'
+    /** A trusted host granted opaque durable peer-failure recovery handles. */
+    | 'gatt.peer-failure-recovery-available'
+}
+
+export interface IpcAttachmentDiagnosticWarningItemV1 {
+  readonly kind: 'value'
+  readonly value: IpcAttachmentDiagnosticWarningV1
+}
+
+/** True only for the protocol-10 attachment diagnostics the renderer may forward without adopting. */
+export function isIpcAttachmentDiagnosticWarningItem(value: unknown): value is IpcAttachmentDiagnosticWarningItemV1 {
+  const wrapper = recordOf(value)
+  const diagnostic = recordOf(wrapper?.value)
+  return (
+    wrapper?.kind === 'value' &&
+    diagnostic?.kind === 'diagnostic-warning' &&
+    diagnostic.schemaVersion === 1 &&
+    (diagnostic.code === 'gatt.source-uncertain' ||
+      diagnostic.code === 'gatt.source-uncertain-lagged' ||
+      diagnostic.code === 'gatt.source-uncertain-retention-lagged' ||
+      diagnostic.code === 'gatt.peer-failure-recovery-available')
+  )
 }
 
 /**
@@ -187,7 +232,10 @@ export const IPC_CLIENT_COMPATIBILITY_OFFER: IpcCompatibilityOffer = Object.free
   capabilitySchema: singletonVersionRange('capability-schema', 1),
   eventSchema: singletonVersionRange('event-schema', 1),
   traceFormat: singletonVersionRange('trace-format', 1),
-  ipcProtocol: singletonVersionRange('ipc-protocol', IPC_PROTOCOL_VERSION)
+  ipcProtocol: versionRange(
+    version('ipc-protocol', IPC_PROTOCOL_MINIMUM_VERSION),
+    version('ipc-protocol', IPC_PROTOCOL_VERSION)
+  )
 })
 
 /** Validates the public client-originated lifecycle stream identifier format. */

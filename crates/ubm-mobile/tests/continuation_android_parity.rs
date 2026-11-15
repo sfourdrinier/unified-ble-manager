@@ -203,8 +203,21 @@ async fn failed_disposal_is_retryable_and_never_replays_acknowledged_bytes() {
         );
         radio.set_responder(Box::new(polar_responder));
         let released = executor.acknowledge_claim(token).await.unwrap();
-        assert_eq!(released["disposed"], true);
         assert_eq!(executor.acknowledge_claim(token).await.unwrap(), released);
+        if released["disposed"] == false {
+            assert!(released["disposeFailure"].is_string());
+            let tail = executor.prepare_claim(256, 65536).await.unwrap();
+            assert_ne!(tail["claimToken"], token);
+            assert_eq!(
+                executor
+                    .acknowledge_claim(tail["claimToken"].as_str().unwrap())
+                    .await
+                    .unwrap()["disposed"],
+                true
+            );
+        } else {
+            assert_eq!(released["disposed"], true);
+        }
         assert_eq!(
             executor.prepare_claim(256, 65536).await.unwrap()["batches"],
             json!([])
@@ -270,7 +283,21 @@ async fn held_acknowledgement_refuses_new_execution_without_leaking_another_sess
     );
     assert_eq!(radio.count(RequestKind::Connect), 1);
     radio.answer(disconnect, RadioCompletion::Unit);
-    assert_eq!(task.await.unwrap().unwrap()["disposed"], true);
+    let receipt = task.await.unwrap().unwrap();
+    if receipt["disposed"] == false {
+        assert!(receipt["disposeFailure"].is_string());
+        let tail = executor.prepare_claim(256, 65536).await.unwrap();
+        assert!(!tail["batches"].as_array().unwrap().is_empty());
+        assert_eq!(
+            executor
+                .acknowledge_claim(tail["claimToken"].as_str().unwrap())
+                .await
+                .unwrap()["disposed"],
+            true
+        );
+    } else {
+        assert_eq!(receipt["disposed"], true);
+    }
     host.shutdown().await;
 }
 
@@ -285,8 +312,16 @@ impl ContinuationSession for RecordingSession {
             json!({"ok":true,"value":{}}).to_string()
         })
     }
-    fn drain(&self, _: u32, _: u32) -> ContinuationFuture<'_> {
-        Box::pin(async { panic!("execution must not drain its native backlog") })
+    fn claim_drain(
+        &self,
+        _: u32,
+        _: u32,
+    ) -> ubm_desktop::continuation::Result<Option<ubm_desktop::continuation_outbox::DrainClaim>>
+    {
+        panic!("execution must not drain its native backlog")
+    }
+    fn acknowledge_drain(&self, _: u64) -> ubm_desktop::continuation::Result<()> {
+        panic!("execution must not acknowledge its native backlog")
     }
 }
 struct RecordingHost(Arc<RecordingSession>);

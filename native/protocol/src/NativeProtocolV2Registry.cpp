@@ -97,8 +97,9 @@ void requireNestedAttachment(
 
 NativeOperationRegistry::NativeOperationRegistry(
     NativeAttachmentIdentity attachment,
-    std::size_t maximumOperations)
-    : attachment_(std::move(attachment)), maximumOperations_(maximumOperations) {
+    std::size_t maximumOperations,
+    NativeEpochAllocation allocation)
+    : attachment_(std::move(attachment)), maximumOperations_(maximumOperations), allocation_(allocation) {
   validateAttachment(attachment_);
   if (maximumOperations_ == 0U) {
     throw ProtocolException(ProtocolFailure::payloadTooLarge, "Native operation registry capacity must be positive");
@@ -107,10 +108,15 @@ NativeOperationRegistry::NativeOperationRegistry(
 
 void NativeOperationRegistry::registerOperation(
     const NativeOperationIdentity& operation,
-    bool cancellable) {
+    bool cancellable,
+    bool scanStart) {
   std::scoped_lock lock(mutex_);
   requireCurrent(operation);
-  if (operation.dispatchEpoch != nextDispatchEpoch_ || operation.nonce.empty()) {
+  const bool lanes = allocation_ == NativeEpochAllocation::androidScanLanes;
+  auto& next = lanes && !scanStart ? nextOtherEpoch_ : nextDispatchEpoch_;
+  const auto expectedNonce = std::string(scanStart ? "rn-android-scan-" : "rn-android-operation-") +
+      std::to_string(operation.dispatchEpoch);
+  if (operation.dispatchEpoch != next || operation.nonce.empty() || (lanes && operation.nonce != expectedNonce)) {
     throw ProtocolException(ProtocolFailure::invalidCorrelation, "Native operation correlation is incomplete");
   }
   const auto operationKey = key(operation);
@@ -120,13 +126,14 @@ void NativeOperationRegistry::registerOperation(
   if (pending_.size() >= maximumOperations_) {
     throw ProtocolException(ProtocolFailure::payloadTooLarge, "Native operation registry capacity is exhausted");
   }
-  if (nextDispatchEpoch_ == std::numeric_limits<std::uint64_t>::max()) {
+  const auto stride = lanes ? 2U : 1U;
+  if (next > std::numeric_limits<std::uint64_t>::max() - stride) {
     throw ProtocolException(ProtocolFailure::invalidCorrelation, "Native operation dispatch epoch is exhausted");
   }
   pending_.emplace(
       operationKey,
       PendingOperation{.cancellable = cancellable, .state = NativeOperationState::registered});
-  nextDispatchEpoch_ += 1U;
+  next += stride;
 }
 
 NativeCancellationState NativeOperationRegistry::cancel(const NativeOperationIdentity& operation) {
@@ -135,7 +142,12 @@ NativeCancellationState NativeOperationRegistry::cancel(const NativeOperationIde
   const auto operationKey = key(operation);
   const auto found = pending_.find(operationKey);
   if (found == pending_.end()) {
-    if (operation.dispatchEpoch < nextDispatchEpoch_) {
+    const bool lanes = allocation_ == NativeEpochAllocation::androidScanLanes;
+    const bool scan = (operation.dispatchEpoch % 2U) != 0U;
+    const auto expectedNonce = std::string(scan ? "rn-android-scan-" : "rn-android-operation-") +
+        std::to_string(operation.dispatchEpoch);
+    const auto next = lanes && !scan ? nextOtherEpoch_ : nextDispatchEpoch_;
+    if (operation.dispatchEpoch > 0U && operation.dispatchEpoch < next && (!lanes || operation.nonce == expectedNonce)) {
       return NativeCancellationState::alreadyTerminal;
     }
     throw ProtocolException(ProtocolFailure::invalidCorrelation, "Native cancellation correlation is unknown");

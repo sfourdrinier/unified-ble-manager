@@ -56,7 +56,7 @@ describe('Apple owned radio: a read runs while notifying and reports its provena
     expect(harness).toContain('notificationBeforeReadReplyRace')
     expect(harness).toContain('abandonedReadChecks')
     expect(harness).toContain('laneOrderChecks')
-    expect(harness).toContain('the late read reply is delivered to the subscriber, never dropped')
+    expect(harness).toContain('a subsequent value is delivered to the subscriber, never dropped')
     expect(appleScript).toContain('AppleCoreBluetoothReadNotifyProvenanceHarness.swift')
     expect(appleScript).toContain('provenanceExecutable')
   })

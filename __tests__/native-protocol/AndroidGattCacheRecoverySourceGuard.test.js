@@ -24,8 +24,10 @@ describe('Android GATT cache recovery source guard', () => {
     // The reconnect-after-teardown path keeps the caller's connect parameters
     // and the attempt identity used to correlate the replacement's own outcome.
     // Runtime ordering and cleanup are pinned by OwnedAndroidGattConnectOwnershipTest.
-    expect(source).toContain('val queued = PendingConnect(autoConnect, phyMask, attempt)')
-    expect(source).toContain('pendingReconnect[key] = queued')
-    expect(source).toContain('openGatt(deviceId, key, pending.autoConnect, pending.phyMask, pending.attempt)')
+    expect(source).toContain('val queued = PendingConnect(autoConnect, phyMask, attempt, adapterEpoch)')
+    expect(source).toContain('val displaced = pendingReconnect.put(key, queued)')
+    expect(source).toContain(
+      'openGatt(deviceId, key, pending.autoConnect, pending.phyMask, pending.attempt, pending.adapterEpoch)'
+    )
   })
 })

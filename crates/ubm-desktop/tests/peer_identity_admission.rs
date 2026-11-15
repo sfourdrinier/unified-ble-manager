@@ -98,15 +98,18 @@ async fn aliases_are_refused_before_ownership_and_native_events_retire_the_canon
         .await
         .unwrap();
     let mut wake = central.native_wakes();
-    central.boundary().push_event(RadioEvent::Notification {
-        peer_id: CANONICAL.into(),
-        service_uuid: service.into(),
-        service_occurrence: 0,
-        characteristic_uuid: characteristic.into(),
-        characteristic_occurrence: 0,
-        value: vec![0, 72],
-        epoch: central.routing_epoch(CANONICAL).await,
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::Notification {
+            peer_id: CANONICAL.into(),
+            service_uuid: service.into(),
+            service_occurrence: 0,
+            characteristic_uuid: characteristic.into(),
+            characteristic_occurrence: 0,
+            value: vec![0, 72],
+            epoch: central.routing_epoch(CANONICAL).await,
+        })
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), wake.recv())
         .await
         .unwrap()
@@ -128,7 +131,8 @@ async fn aliases_are_refused_before_ownership_and_native_events_retire_the_canon
     let mut lifecycle = central.lifecycle_events();
     central
         .boundary()
-        .push_event(RadioEvent::Disconnected(CANONICAL.into()));
+        .push_event(RadioEvent::Disconnected(CANONICAL.into()))
+        .expect("synthetic event admission failed");
     tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
         .await
         .unwrap()

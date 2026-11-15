@@ -809,17 +809,19 @@ export abstract class DeterministicBackendBase {
   protected abstract handleReset(): void
 
   private async stopScanConsumerInternal(consumer: ScanConsumer): Promise<CleanupRecord> {
-    consumer.stream.closeWithReason('owner-released')
     this.deactivateScanConsumer(consumer)
     const group = this.scanGroup
     if (group === null) {
+      consumer.stream.finishWithReason('owner-released')
       return { state: 'released', failures: [] }
     }
     if (!group.consumers.has(consumer.id)) {
+      consumer.stream.finishWithReason('owner-released')
       return { state: 'released', failures: [] }
     }
     if (group.consumers.size > 1) {
       group.consumers.delete(consumer.id)
+      consumer.stream.finishWithReason('owner-released')
       return { state: 'released', failures: [] }
     }
     await this.operations.run(
@@ -839,6 +841,7 @@ export abstract class DeterministicBackendBase {
       null,
       true
     )
+    consumer.stream.finishWithReason('owner-released')
     return { state: 'released', failures: [] }
   }
 

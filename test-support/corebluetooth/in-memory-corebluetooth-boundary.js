@@ -18,6 +18,7 @@ class InMemoryCoreBluetoothBoundary {
     this.databaseChangedListeners = new Set()
     this.adapterStateListeners = new Set()
     this.notificationHandlers = new Map()
+    this.notificationClaims = new Map()
     this.stoppedNotificationHandlers = new Map()
     this.readGate = null
     this.descriptorReadGate = null
@@ -189,20 +190,23 @@ class InMemoryCoreBluetoothBoundary {
     this.descriptorWriteValues.push({ address, bytes: new Uint8Array(bytes) })
   }
 
-  async startNotify(address, onValue) {
+  async startNotify(address, onValue, claim) {
     this.startNotifyCalls += 1
     this.startNotifyModes.push(null)
     this.notificationHandlers.set(addressKey(address), onValue)
+    this.notificationClaims.set(addressKey(address), claim)
   }
 
-  async stopNotify(address) {
-    this.stopNotifyCalls += 1
+  async stopNotify(address, claim) {
     const key = addressKey(address)
+    this.stopNotifyCalls += 1
+    if (this.notificationClaims.get(key) !== claim) return
     const handler = this.notificationHandlers.get(key)
     if (handler !== undefined) {
       this.stoppedNotificationHandlers.set(key, handler)
     }
     this.notificationHandlers.delete(key)
+    this.notificationClaims.delete(key)
   }
 
   onDisconnect(listener) {

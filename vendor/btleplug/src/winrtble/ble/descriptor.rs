@@ -13,7 +13,6 @@
 
 use super::super::utils;
 use crate::{Result, api::Descriptor};
-use std::future::IntoFuture;
 use uuid::Uuid;
 use windows::{
     Devices::Bluetooth::{
@@ -71,7 +70,9 @@ impl BLEDescriptor {
         }
     }
 
-    pub async fn write_value(descriptor: &GattDescriptor, data: &[u8]) -> Result<()> {
+    pub(crate) fn start_write_value(
+        descriptor: &GattDescriptor, data: &[u8],
+    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>> {
         let writer = DataWriter::new()?;
         writer.WriteBytes(data)?;
         // UBM patch (UBM_PATCHES.md #20): a descriptor write is always an
@@ -83,49 +84,53 @@ impl BLEDescriptor {
             let buffer = writer.DetachBuffer()?;
             descriptor.WriteValueWithResultAsync(&buffer)?
         };
-        let result = operation.into_future().await?;
-        let status = result.Status()?;
-        if status == GattCommunicationStatus::Success {
-            Ok(())
-        } else {
-            let mut att = None;
-            if status == GattCommunicationStatus::ProtocolError {
-                att = utils::protocol_att_error(result.ProtocolError());
+        Ok(Box::pin(async move {
+            let result = super::terminal_result(operation).await?;
+            let status = result.Status()?;
+            if status == GattCommunicationStatus::Success {
+                Ok(())
+            } else {
+                let mut att = None;
+                if status == GattCommunicationStatus::ProtocolError {
+                    att = utils::protocol_att_error(result.ProtocolError());
+                }
+                Err(utils::gatt_status_error(
+                    "Gatt descriptor write",
+                    status,
+                    att,
+                ))
             }
-            Err(utils::gatt_status_error(
-                "Gatt descriptor write",
-                status,
-                att,
-            ))
-        }
+        }))
     }
 
-    pub async fn read_value(descriptor: &GattDescriptor) -> Result<Vec<u8>> {
-        let result = descriptor
-            .ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)?
-            .into_future()
-            .await?;
-        let status = result.Status()?;
-        if status == GattCommunicationStatus::Success {
-            let value = result.Value()?;
-            let reader = DataReader::FromBuffer(&value)?;
-            let len = reader.UnconsumedBufferLength()? as usize;
-            let mut input = vec![0u8; len];
-            reader.ReadBytes(&mut input[0..len])?;
-            Ok(input)
-        } else {
-            // UBM patch (UBM_PATCHES.md #20): a `ProtocolError` status
-            // carries the ATT error byte, so the host can tell a security
-            // refusal from any other protocol error.
-            let mut att = None;
-            if status == GattCommunicationStatus::ProtocolError {
-                att = utils::protocol_att_error(result.ProtocolError());
+    pub(crate) fn start_read_value(
+        descriptor: &GattDescriptor,
+    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>> {
+        let operation = descriptor.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)?;
+        Ok(Box::pin(async move {
+            let result = super::terminal_result(operation).await?;
+            let status = result.Status()?;
+            if status == GattCommunicationStatus::Success {
+                let value = result.Value()?;
+                let reader = DataReader::FromBuffer(&value)?;
+                let len = reader.UnconsumedBufferLength()? as usize;
+                let mut input = vec![0u8; len];
+                reader.ReadBytes(&mut input[0..len])?;
+                Ok(input)
+            } else {
+                // UBM patch (UBM_PATCHES.md #20): a `ProtocolError` status
+                // carries the ATT error byte, so the host can tell a security
+                // refusal from any other protocol error.
+                let mut att = None;
+                if status == GattCommunicationStatus::ProtocolError {
+                    att = utils::protocol_att_error(result.ProtocolError());
+                }
+                Err(utils::gatt_status_error(
+                    "Gatt descriptor read",
+                    status,
+                    att,
+                ))
             }
-            Err(utils::gatt_status_error(
-                "Gatt descriptor read",
-                status,
-                att,
-            ))
-        }
+        }))
     }
 }

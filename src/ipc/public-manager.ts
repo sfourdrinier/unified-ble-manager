@@ -80,7 +80,6 @@ import {
 } from '../public/gatt'
 import type { GattDatabase } from '../public/gatt'
 import type { BleDiagnostics } from '../public/diagnostics'
-import { diagnosticsUnavailable } from '../public/diagnostics'
 import { normalizeOperationOptions, remainingOperationOptions } from '../public/operation-options'
 import type { OperationOptions } from '../public/operation-options'
 import { normalizeScanQuery, scanQueryTargetsAddresses } from '../public/scan-query'
@@ -107,12 +106,14 @@ import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from '../p
 import { resolveStreamPolicy } from '../public/stream-presets'
 import { CoreBoundedStream } from '../core/bounded-stream'
 import { capacity } from '../backend-contract/primitives'
+import type { TerminalEvidenceReservation } from '../backend-contract/terminal-evidence'
 import {
   IpcBleManager,
   requiredTerminalError,
   type IpcConnection,
   type IpcGattDatabase,
   type IpcNotificationValue,
+  type IpcScanSession,
   type IpcSubscription,
   type IpcWriteReceipt
 } from './manager'
@@ -138,7 +139,14 @@ const IPC_ADAPTER_STATE_STREAM_LIMITS = Object.freeze({
   reservedControlCapacity: capacity(1)
 })
 
+function hasRetainedDrain<Value>(
+  stream: BoundedAsyncStream<Value>
+): stream is BoundedAsyncStream<Value> & { onRetainedValuesDrained(listener: () => void): void } {
+  return 'onRetainedValuesDrained' in stream && typeof stream.onRetainedValuesDrained === 'function'
+}
+
 export interface IpcPublicManagerOptions {
+  readonly terminalEvidence?: { readonly maximumCanonicalBytes: number }
   readonly requireScanPlan?: boolean
   readonly discoveryKind?: BleManager['discovery']['kind']
   readonly capabilities?: BleCapabilities
@@ -157,7 +165,9 @@ export class IpcPublicManagerAdapter implements BleManager {
   readonly discovery: BleManager['discovery']
   private readonly requireScanPlan: boolean
   private readonly gattDeliverySelection: 'unknown' | 'controllable'
+  private readonly terminalEvidence: { readonly maximumCanonicalBytes: number } | undefined
   private readonly provisionalSubscriptions = new ProvisionalGattSubscriptionOwner()
+  private readonly terminalEvidenceReservations = new TerminalEvidenceReservationOwner()
   private readonly activeScanSessions = new Set<IpcPublicScanSession>()
   private provisionalCleanupDiagnostic: unknown | null = null
 
@@ -167,11 +177,12 @@ export class IpcPublicManagerAdapter implements BleManager {
   ) {
     this.requireScanPlan = options.requireScanPlan ?? false
     this.gattDeliverySelection = options.gattDeliverySelection ?? 'unknown'
+    this.terminalEvidence = options.terminalEvidence
     // The instantiated authority supplies native capabilities. IPC preserves
     // targeting and platform options instead of masking supported mechanisms.
     this.capabilities = options.capabilities ?? ipc.capabilities
     this.adapter = options.adapter ?? createIpcAdapter(ipc)
-    this.diagnostics = options.diagnostics ?? diagnosticsUnavailable()
+    this.diagnostics = options.diagnostics ?? ipc.diagnostics()
     this.peers = options.peers ?? createIpcPeerDirectory(ipc)
     this.security = createPublicSecurity(createIpcSecurityBackend(ipc), this.peers, this.capabilities, () =>
       globalThis.performance.now()
@@ -198,16 +209,42 @@ export class IpcPublicManagerAdapter implements BleManager {
       ) {
         throw contractError('capability.unsupported', 'scan', 'ipc-public-manager.scan.addresses')
       }
-      const session = await this.ipc.scan(
-        toIpcScanOptions(options, normalized.signal, normalizedQuery, normalized.deadline)
-      )
-      if (this.requireScanPlan && session.plan === null) {
-        await this.ipc.compensateFailedScanSession(
-          session,
-          contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
-        )
+      const scope = this.terminalEvidence === undefined ? undefined : mintTerminalEvidenceScope(this.ipc, 'scan')
+      const reservation =
+        scope === undefined
+          ? undefined
+          : await this.ipc.reserveTerminalEvidence({
+              producer: 'scan',
+              maximumBytes: this.terminalEvidence!.maximumCanonicalBytes,
+              formatVersion: 1,
+              scope
+            })
+      let session: IpcScanSession
+      try {
+        session = await this.ipc.scan({
+          ...toIpcScanOptions(options, normalized.signal, normalizedQuery, normalized.deadline),
+          ...(scope === undefined ? {} : { terminalEvidenceScope: scope })
+        })
+        if (this.requireScanPlan && session.plan === null) {
+          await this.ipc.compensateFailedScanSession(
+            session,
+            contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
+          )
+        }
+      } catch (error) {
+        if (reservation !== undefined) {
+          await this.terminalEvidenceReservations.compensate(
+            reservation,
+            error,
+            'IPC scan admission and terminal-evidence cleanup both failed'
+          )
+        }
+        throw error
       }
       const state = createScanState()
+      if (reservation !== undefined && hasRetainedDrain(session.observations)) {
+        this.terminalEvidenceReservations.releaseWhenRetainedValuesDrain(reservation, session.observations)
+      }
       const publicSession = new IpcPublicScanSession(
         session,
         mapPublicBoundedAsyncStream(
@@ -218,7 +255,9 @@ export class IpcPublicManagerAdapter implements BleManager {
         ),
         state,
         options,
-        () => this.activeScanSessions.delete(publicSession)
+        () => {
+          this.activeScanSessions.delete(publicSession)
+        }
       )
       this.activeScanSessions.add(publicSession)
       return publicSession
@@ -309,7 +348,10 @@ export class IpcPublicManagerAdapter implements BleManager {
         isPeerAddressTarget(resolvedPeer) ? base.peerId : resolvedPeer,
         this.capabilities,
         this.gattDeliverySelection,
-        this.provisionalSubscriptions
+        this.provisionalSubscriptions,
+        this.ipc,
+        this.terminalEvidence,
+        this.terminalEvidenceReservations
       )
     } catch (error) {
       throw rehydratePublicError(error)
@@ -362,6 +404,12 @@ export class IpcPublicManagerAdapter implements BleManager {
   }
 
   async destroy(): Promise<PublicCleanupRecord> {
+    let terminalEvidenceError: unknown
+    try {
+      await this.terminalEvidenceReservations.retryPending()
+    } catch (error) {
+      terminalEvidenceError = error
+    }
     // A child removal can outlive its IPC reply. Start its retry, but the
     // authoritative renderer-lease release must not wait behind that reply.
     let provisionalPhase: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord } | null = null
@@ -423,6 +471,7 @@ export class IpcPublicManagerAdapter implements BleManager {
       // IPC manager lease authoritatively retires any provisional resource.
       ...owedPhases,
       ...(leaseError === undefined ? [] : [{ error: leaseError }]),
+      ...(terminalEvidenceError === undefined ? [] : [{ error: terminalEvidenceError }]),
       ...(leaseCleanup === undefined ? [] : [{ cleanup: leaseCleanup }])
     ])
   }
@@ -430,6 +479,93 @@ export class IpcPublicManagerAdapter implements BleManager {
   /** Low-level host seam retained for Tauri's existing deterministic tests. */
   adapterState(): Promise<import('../backend-contract/primitives').SerializableRecord> {
     return rehydratePublicPromise(this.ipc.adapterState())
+  }
+}
+
+function mintTerminalEvidenceScope(ipc: IpcBleManager, producer: 'scan' | 'subscription') {
+  const bytes = new Uint8Array(32)
+  if (globalThis.crypto?.getRandomValues === undefined) {
+    throw contractError('capability.unavailable', 'stream', 'ipc-public-manager.terminal-evidence.entropy')
+  }
+  globalThis.crypto.getRandomValues(bytes)
+  const nonce = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')
+  return Object.freeze({
+    managerId: String(ipc.bootstrap.attachment.attachmentId),
+    operationId: `${producer}-${nonce}`,
+    incarnation: nonce
+  })
+}
+
+/**
+ * Owns renderer-side releases until the native ledger confirms them. A
+ * reservation is made before activation, so any later admission failure must
+ * either release it or retain its exact cleanup error for a retry.
+ */
+class TerminalEvidenceReservationOwner {
+  private readonly pending = new Map<
+    TerminalEvidenceReservation,
+    { inFlight: Promise<void> | null; lastError: unknown | null }
+  >()
+
+  async compensate(reservation: TerminalEvidenceReservation, admissionError: unknown, message: string): Promise<never> {
+    try {
+      await this.release(reservation)
+    } catch (cleanupError) {
+      throw new AggregateError([admissionError, cleanupError], message)
+    }
+    throw admissionError
+  }
+
+  releaseWhenRetainedValuesDrain<Value>(
+    reservation: TerminalEvidenceReservation,
+    stream: BoundedAsyncStream<Value> & { onRetainedValuesDrained(listener: () => void): void }
+  ): void {
+    stream.onRetainedValuesDrained(() => {
+      const release = this.release(reservation)
+      // Stream callbacks cannot await. The owner retains any rejection in its
+      // pending record, and destroy() retries it instead of losing the error.
+      release.catch(error => {
+        const record = this.pending.get(reservation)
+        if (record !== undefined) record.lastError = error
+      })
+    })
+  }
+
+  async retryPending(): Promise<void> {
+    const failures: unknown[] = []
+    for (const reservation of [...this.pending.keys()]) {
+      try {
+        await this.release(reservation)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, 'Terminal-evidence reservation cleanup failed')
+  }
+
+  private release(reservation: TerminalEvidenceReservation): Promise<void> {
+    let record = this.pending.get(reservation)
+    if (record === undefined) {
+      record = { inFlight: null, lastError: null }
+      this.pending.set(reservation, record)
+    }
+    if (record.inFlight === null) {
+      const active = reservation.release().then(
+        () => {
+          this.pending.delete(reservation)
+        },
+        error => {
+          record!.lastError = error
+          throw error
+        }
+      )
+      const flight = active.finally(() => {
+        if (record?.inFlight === flight) record.inFlight = null
+      })
+      record.inFlight = flight
+    }
+    return record.inFlight
   }
 }
 
@@ -544,7 +680,10 @@ class IpcPublicConnection implements BleConnection {
     peer: BlePeer | string,
     capabilities: BleCapabilities,
     private readonly gattDeliverySelection: 'unknown' | 'controllable',
-    private readonly provisionalSubscriptions: ProvisionalGattSubscriptionOwner
+    private readonly provisionalSubscriptions: ProvisionalGattSubscriptionOwner,
+    private readonly ipc: IpcBleManager,
+    private readonly terminalEvidence: { readonly maximumCanonicalBytes: number } | undefined,
+    private readonly terminalEvidenceReservations: TerminalEvidenceReservationOwner
   ) {
     this.peer = typeof peer === 'string' ? snapshotBlePeer({ id: peer, name: null, rssi: null }) : snapshotBlePeer(peer)
     this.handle = base.handle
@@ -571,7 +710,13 @@ class IpcPublicConnection implements BleConnection {
         deadline: normalized.deadline
       })
       return createPublicGattDatabase(
-        createIpcGattSource(database, this.gattDeliverySelection),
+        createIpcGattSource(
+          database,
+          this.gattDeliverySelection,
+          this.ipc,
+          this.terminalEvidence,
+          this.terminalEvidenceReservations
+        ),
         this.provisionalSubscriptions
       )
     } catch (error) {
@@ -597,7 +742,13 @@ class IpcPublicConnection implements BleConnection {
         options.reason === 'manual' ? 'manual-rediscovery' : 'service-changed'
       )
       return createPublicGattDatabase(
-        createIpcGattSource(database, this.gattDeliverySelection),
+        createIpcGattSource(
+          database,
+          this.gattDeliverySelection,
+          this.ipc,
+          this.terminalEvidence,
+          this.terminalEvidenceReservations
+        ),
         this.provisionalSubscriptions
       )
     } catch (error) {
@@ -1318,7 +1469,10 @@ function createIpcConnectionControls(
 
 function createIpcGattSource(
   database: IpcGattDatabase,
-  deliverySelection: 'unknown' | 'controllable'
+  deliverySelection: 'unknown' | 'controllable',
+  ipc: IpcBleManager,
+  terminalEvidence: { readonly maximumCanonicalBytes: number } | undefined,
+  terminalEvidenceReservations: TerminalEvidenceReservationOwner
 ): PublicGattDatabaseSource {
   const changed = database.changed !== undefined && 'limits' in database.changed ? database.changed : undefined
   return {
@@ -1390,7 +1544,42 @@ function createIpcGattSource(
       value: Readonly<Uint8Array>,
       options: PortableWritePolicy
     ) => toPortableWriteReceipt(await database.writeDescriptor(path, value, options)),
-    subscribe: async (path, options) => toPortableSubscription(await database.subscribe(path, options), path)
+    subscribeOrdered: (members, options) => database.subscribeOrdered(members, options),
+    reserveOrderedRecordingStart: () => database.reserveOrderedRecordingStart(),
+    reserveOrderedRecordingReclaim: handle => database.reserveOrderedRecordingReclaim(handle),
+    reserveOrderedRecordingMarker: recordingId => database.reserveOrderedRecordingMarker(recordingId),
+    subscribe: async (path, options) => {
+      const scope = terminalEvidence === undefined ? undefined : mintTerminalEvidenceScope(ipc, 'subscription')
+      const reservation =
+        scope === undefined
+          ? undefined
+          : await ipc.reserveTerminalEvidence({
+              producer: 'subscription',
+              maximumBytes: terminalEvidence!.maximumCanonicalBytes,
+              formatVersion: 1,
+              scope
+            })
+      let subscription: IpcSubscription
+      try {
+        subscription = await database.subscribe(path, {
+          ...options,
+          ...(scope === undefined ? {} : { terminalEvidenceScope: scope })
+        })
+      } catch (error) {
+        if (reservation !== undefined) {
+          await terminalEvidenceReservations.compensate(
+            reservation,
+            error,
+            'IPC subscription admission and terminal-evidence cleanup both failed'
+          )
+        }
+        throw error
+      }
+      if (reservation !== undefined && hasRetainedDrain(subscription.values)) {
+        terminalEvidenceReservations.releaseWhenRetainedValuesDrain(reservation, subscription.values)
+      }
+      return toPortableSubscription(subscription, path)
+    }
   }
 }
 
@@ -1430,6 +1619,10 @@ function toPortableNotificationStream(
   return mapPublicBoundedAsyncStream(source, value => ({
     value: new Uint8Array(value.value),
     delivery: value.delivery,
+    provenance: value.provenance ?? 'unknown',
+    ...(value.sourceGeneration === undefined
+      ? {}
+      : { sourceGeneration: value.sourceGeneration, sourceOrdinal: value.sourceOrdinal }),
     observedAtMonotonicMs: value.observedAtMonotonicMs,
     sequence: value.sequence,
     ...(value.receipt === undefined ? {} : { receipt: Object.freeze({ ...value.receipt }) })

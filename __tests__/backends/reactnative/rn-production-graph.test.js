@@ -50,6 +50,24 @@ const FORBIDDEN = [
   'core/unified-ble-core.ts'
 ]
 
+function exportedInterfaceBody(source, name) {
+  const declaration = `export interface ${name}`
+  const declarationOffset = source.indexOf(declaration)
+  if (declarationOffset < 0) throw new Error(`Missing exported interface ${name}`)
+  const bodyStart = source.indexOf('{', declarationOffset)
+  if (bodyStart < 0) throw new Error(`Missing body for exported interface ${name}`)
+
+  let depth = 0
+  for (let offset = bodyStart; offset < source.length; offset += 1) {
+    if (source[offset] === '{') depth += 1
+    if (source[offset] === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(bodyStart + 1, offset)
+    }
+  }
+  throw new Error(`Unclosed body for exported interface ${name}`)
+}
+
 describe.each(['react-native.ts', 'expo.ts', 'react-native-app-manager.ts', 'react-native-manager.ts'])(
   'production graph of src/%s',
   entry => {
@@ -65,10 +83,29 @@ describe.each(['react-native.ts', 'expo.ts', 'react-native-app-manager.ts', 'rea
   }
 )
 
-test('no public React Native option names the removed legacy route', () => {
-  for (const file of ['react-native-manager.ts', 'react-native-app-manager.ts', 'react-native.ts', 'expo.ts']) {
-    const source = fs.readFileSync(path.join(SRC, file), 'utf8')
-    expect(source).not.toMatch(/readonly legacyTypeScriptCore/)
-    expect(source).not.toMatch(/readonly control:/)
+test('public React Native manager options omit the removed legacy route', () => {
+  const managerOptions = exportedInterfaceBody(
+    fs.readFileSync(path.join(SRC, 'react-native-manager.ts'), 'utf8'),
+    'ReactNativeBleManagerOptions'
+  )
+  const applicationOptions = exportedInterfaceBody(
+    fs.readFileSync(path.join(SRC, 'react-native-app-manager.ts'), 'utf8'),
+    'CreateReactNativeBleManagerOptions'
+  )
+  const publicOptions = exportedInterfaceBody(
+    fs.readFileSync(path.join(SRC, 'public/host-identity.ts'), 'utf8'),
+    'BleManagerCreateOptions'
+  )
+
+  for (const options of [managerOptions, applicationOptions, publicOptions]) {
+    expect(options).not.toMatch(/\breadonly\s+legacyTypeScriptCore\s*[?:]/)
+    expect(options).not.toMatch(/\breadonly\s+control\s*[?:]/)
   }
+})
+
+test('allows a retained continuation control record without admitting it as a manager option', () => {
+  const expo = fs.readFileSync(path.join(SRC, 'expo.ts'), 'utf8')
+  const retainedPrefix = exportedInterfaceBody(expo, 'ExpoContinuationRetainedPrefixV1')
+
+  expect(retainedPrefix).toMatch(/\breadonly\s+control\s*:\s*ContinuationRetainedPrefixV1\['control'\]/)
 })

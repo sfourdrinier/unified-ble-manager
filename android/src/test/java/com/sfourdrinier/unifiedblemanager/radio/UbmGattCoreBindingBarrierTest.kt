@@ -6,6 +6,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import java.util.ArrayDeque
 import java.util.concurrent.Executor
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -28,6 +31,137 @@ import org.mockito.Mockito
 class UbmGattCoreBindingBarrierTest {
 
   private val direct = Executor { command -> command.run() }
+
+  @Test
+  fun heldRealCoreAdmissionCannotOverwriteReplacementAfterReset() {
+    org.junit.Assume.assumeTrue(System.getenv("UBM_HOST_CORE_JNI") == "1")
+    val tasks = ArrayDeque<Runnable>()
+    val entered = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    val error = AtomicReference<Throwable>()
+    val bound = UbmGattCoreBinding(permittedContext(), jni = UbmGattCoreBinding.RealCoreJni,
+      worker = Executor { tasks.add(it) }, clockMs = { 1000L }, onCoreRejection = {
+        if (it.event == "invalid") { entered.countDown(); release.await() }
+      })
+    bound.bridge.postEvent("invalid")
+    bound.postScanStart(emptyList(), true, "old-command")
+    val thread = Thread {
+      try { tasks.removeFirst().run() } catch (t: Throwable) { error.set(t) }
+    }
+    try {
+      thread.start()
+      assertTrue("worker must hold the old observation", entered.await(5, TimeUnit.SECONDS))
+      bound.postAdapterReset()
+      bound.bridge.drainNow()
+      bound.postScanStart(emptyList(), true, "replacement-command")
+      bound.bridge.drainNow()
+      val replacement = bound.currentScanOperation()
+      assertTrue("replacement must be admitted", replacement != null)
+      assertEquals(UbmGattCoreBinding.ScanAdmission.Missing, bound.currentScanAdmission("old-command"))
+      assertEquals(UbmGattCoreBinding.ScanAdmission.Admitted(replacement!!), bound.currentScanAdmission("replacement-command"))
+      release.countDown()
+      thread.join(5000)
+      assertTrue("worker did not finish", !thread.isAlive)
+      error.get()?.let { throw AssertionError(it) }
+      assertEquals("old admission must not replace the new generation", replacement, bound.currentScanOperation())
+      assertTrue(bound.postScanStop(replacement) is UbmGattCentralBridge.PostResult.Queued)
+      bound.bridge.drainNow()
+      assertTrue(bound.postScanStopped(replacement) is UbmGattCentralBridge.PostResult.Queued)
+      bound.bridge.drainNow()
+      assertEquals(true, bound.scanSettlementVerdict(replacement))
+    } finally {
+      release.countDown()
+      thread.join(5000)
+      bound.shutdown()
+    }
+  }
+
+  @Test
+  fun heldOldSettlementCannotAttestReplacement() {
+    val jni = FakeJni()
+    val entered = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    val failure = AtomicReference<Throwable>()
+    val bound = UbmGattCoreBinding(permittedContext(), jni = jni,
+      worker = Executor { }, clockMs = { 1000L }, onCoreRejection = {
+        if (it.event == "invalid") { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+      })
+    val thread = Thread {
+      try { bound.bridge.drainNow() } catch (t: Throwable) { failure.set(t) }
+    }
+    try {
+      bound.postScanStart(emptyList(), true, "old")
+      jni.drains.add(scanStartDrain("old-op")); bound.bridge.drainNow()
+      bound.postScanStop("old-op"); bound.postScanStopped("old-op")
+      jni.drains.add("""{"ok":false,"event":"invalid","effects":[],"observations":[]}
+{"ok":true,"event":"scan.platform-event","effects":[],"observations":[]}""")
+      thread.start()
+      assertTrue(entered.await(5, TimeUnit.SECONDS))
+      bound.postAdapterReset()
+      jni.drains.add("""{"ok":true,"event":"adapter.reset","effects":[],"observations":[]}""")
+      bound.bridge.drainNow(); bound.forgetAdapterReset()
+      bound.postScanStart(emptyList(), true, "new")
+      jni.drains.add(scanStartDrain("new-op")); bound.bridge.drainNow()
+      bound.postScanStop("new-op"); bound.postScanStopped("new-op")
+      release.countDown(); thread.join(5000)
+      assertTrue(!thread.isAlive)
+      failure.get()?.let { throw AssertionError(it) }
+      assertNull("old verdict must not settle the replacement", bound.scanSettlementVerdict("new-op"))
+      jni.drains.add("""{"ok":true,"event":"scan.platform-event","effects":[],"observations":[]}""")
+      bound.bridge.drainNow()
+      assertEquals(true, bound.scanSettlementVerdict("new-op"))
+    } finally { release.countDown(); thread.join(5000); bound.shutdown() }
+  }
+
+  @Test
+  fun heldRejectedSettlementDoesNotEnterReplacementRejectionJournal() {
+    val jni = FakeJni()
+    val entered = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    val rejections = java.util.Collections.synchronizedList(mutableListOf<String>())
+    val bound = UbmGattCoreBinding(permittedContext(), jni = jni,
+      worker = Executor { }, clockMs = { 1000L }, onCoreRejection = {
+        if (it.event == "invalid") { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+        rejections.add(it.event)
+      })
+    val thread = Thread { bound.bridge.drainNow() }
+    try {
+      bound.postScanStart(emptyList(), true, "old")
+      jni.drains.add(scanStartDrain("old-op")); bound.bridge.drainNow()
+      bound.postScanStop("old-op"); bound.postScanStopped("old-op")
+      jni.drains.add("""{"ok":false,"event":"invalid","effects":[],"observations":[]}
+{"ok":false,"event":"scan.platform-event","effects":[],"observations":[]}""")
+      thread.start()
+      assertTrue(entered.await(5, TimeUnit.SECONDS))
+      bound.postAdapterReset()
+      jni.drains.add("""{"ok":true,"event":"adapter.reset","effects":[],"observations":[]}""")
+      bound.bridge.drainNow(); bound.forgetAdapterReset()
+      bound.postScanStart(emptyList(), true, "new")
+      jni.drains.add(scanStartDrain("new-op")); bound.bridge.drainNow()
+      bound.postScanStop("new-op"); bound.postScanStopped("new-op")
+      release.countDown(); thread.join(5000)
+      assertTrue(!thread.isAlive)
+      jni.drains.add("""{"ok":true,"event":"scan.platform-event","effects":[],"observations":[]}""")
+      bound.bridge.drainNow()
+      assertEquals(true, bound.scanSettlementVerdict("new-op"))
+      assertEquals(listOf("invalid"), rejections.toList())
+    } finally { release.countDown(); thread.join(5000); bound.shutdown() }
+  }
+
+  @Test
+  fun rejectedSettlementCanBeRetriedForTheSameOperation() {
+    val jni = FakeJni()
+    val bound = binding(jni)
+    jni.drains.add(scanStartDrain("scan-op")); bound.postScanStart(emptyList(), true)
+    bound.postScanStop("scan-op")
+    jni.drains.add("""{"ok":false,"event":"scan.platform-event","effects":[],"observations":[]}""")
+    bound.postScanStopped("scan-op")
+    assertEquals(false, bound.scanSettlementVerdict("scan-op"))
+    jni.drains.add("""{"ok":true,"event":"scan.platform-event","effects":[],"observations":[]}""")
+    assertTrue(bound.postScanStopped("scan-op") is UbmGattCentralBridge.PostResult.Queued)
+    assertEquals(true, bound.scanSettlementVerdict("scan-op"))
+    bound.shutdown()
+  }
 
   private class FakeJni(
     var linkedRevision: String = UbmGattCoreBinding.CONTRACT_REVISION,
@@ -105,11 +239,27 @@ class UbmGattCoreBindingBarrierTest {
   }
 
   @Test
+  fun queuedResetRetainsIdentityUntilItsOwnVerdict() {
+    val jni = FakeJni()
+    val bound = binding(jni)
+    jni.drains.add(scanStartDrain("scan-op-pending-reset"))
+    bound.postScanStart(listOf("180d"), true)
+    bound.postAdapterReset()
+    assertEquals("scan-op-pending-reset", bound.currentScanOperation())
+    assertNull(bound.adapterResetVerdict())
+    jni.drains.add("""{"ok":true,"event":"adapter.reset","effects":[],"observations":[]}""")
+    bound.bridge.drainNow()
+    assertEquals(true, bound.adapterResetVerdict())
+    assertNull(bound.currentScanOperation())
+  }
+
+  @Test
   fun postAdapterResetBarsLateScanStartObservations() {
     val jni = FakeJni()
     val bound = binding(jni)
     jni.drains.add(scanStartDrain("scan-op-2"))
     bound.postScanStart(listOf("180d"), true)
+    jni.drains.add("""{"ok":true,"event":"adapter.reset","effects":[],"observations":[]}""")
     bound.postAdapterReset()
     val linesPosted = jni.enqueued.size
     // The dead scan's in-flight callback lands AFTER the reset.

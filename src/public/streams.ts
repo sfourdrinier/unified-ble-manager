@@ -35,6 +35,23 @@ export interface PublicStreamOverflowNotice {
   readonly replacedItems: number
 }
 
+/** Host-global loss may have affected this stream; counts are per-notice deltas. */
+export interface PublicStreamSourceLossNotice {
+  readonly kind: 'source-loss'
+  readonly scope: 'host-global'
+  readonly source: 'notification-ingress' | 'advertisement-ingress'
+  readonly lostRecords: number
+}
+
+/** Peer source loss is shared across characteristics and is not a per-stream count. */
+export interface PublicStreamPeerSourceLossNotice {
+  readonly kind: 'source-loss'
+  readonly scope: 'peer'
+  readonly peerId: string
+  readonly generation: string
+  readonly skippedRecords: string | null
+}
+
 export interface PublicStreamTerminalNotice {
   readonly kind: 'terminal'
   readonly reason: PublicStreamTerminalReason

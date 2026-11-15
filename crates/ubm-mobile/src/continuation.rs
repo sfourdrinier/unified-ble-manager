@@ -9,10 +9,49 @@ use ubm_desktop::continuation::{
 };
 use ubm_desktop::continuation_journal::JournalRegistry;
 
+static TERMINAL_EVIDENCE_MAXIMUM_BYTES: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
 /// Production binding authority, available before a platform radio is installed.
 pub fn process_recording_registry() -> Arc<JournalRegistry> {
     static REGISTRY: std::sync::OnceLock<Arc<JournalRegistry>> = std::sync::OnceLock::new();
     Arc::clone(REGISTRY.get_or_init(|| Arc::new(JournalRegistry::default())))
+}
+
+/// Aggregate quota selected by trusted native bootstrap before the process
+/// host opens.  It is never sourced from a wire request; absence means the
+/// durable producer remains unavailable.
+pub fn configure_terminal_evidence_maximum_bytes(
+    maximum_bytes: u64,
+) -> std::result::Result<(), &'static str> {
+    if maximum_bytes == 0 {
+        return Err("terminal evidence maximum must be positive");
+    }
+    match TERMINAL_EVIDENCE_MAXIMUM_BYTES.set(maximum_bytes) {
+        Ok(()) => Ok(()),
+        Err(_) if terminal_evidence_maximum_bytes() == Some(maximum_bytes) => Ok(()),
+        Err(_) => Err("terminal evidence maximum already configured"),
+    }
+}
+
+pub fn terminal_evidence_maximum_bytes() -> Option<u64> {
+    TERMINAL_EVIDENCE_MAXIMUM_BYTES.get().copied()
+}
+
+/// Trusted private-store context access for a recording without a live owner.
+pub fn recording_ordered_offline(operation: String, id: String, completion: crate::Completion) {
+    let registry = process_recording_registry();
+    ubm_desktop::executor::desktop_runtime().spawn(async move {
+        let result = ubm_desktop::continuation_journal::run_blocking_result(move || {
+            match operation.as_str() {
+                "context" => registry.ordered_context_offline(&id),
+                "status" => registry.ordered_status_offline(&id),
+                "stop" => registry.stop_ordered_host_offline(&id),
+                _ => return Err(serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.ordered-offline","detail":"unknown operation"})),
+            }.map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await;
+        completion(envelope(result));
+    });
 }
 
 /// Closed, path-free controls shared by JNI/UniFFI and the installed owner.
@@ -35,10 +74,16 @@ pub fn recording_control(
             json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording","detail":"unknown recording control"}),
         ));
     }
-    if operation == "stop"
-        && let Some(engine) = engine
-    {
-        return envelope(engine.recording_stop(id));
+    if operation == "stop" {
+        return envelope(match engine {
+            Some(engine) => engine.recording_stop(id),
+            None => registry
+                .get(id)
+                .map_err(recording_failure)
+                .and_then(|journal| {
+                    ubm_desktop::continuation_journal::stop_legacy_recording(&journal)
+                }),
+        });
     }
     let result = registry
         .get(id)
@@ -46,10 +91,6 @@ pub fn recording_control(
             "status" => journal.status(),
             "prepare" => journal.prepare(max_items, max_bytes),
             "acknowledge" => journal.acknowledge(token),
-            "stop" => journal.stop().map(|mut receipt| {
-                receipt["radioRelease"] = json!("not-requested");
-                receipt
-            }),
             "clear" => journal.clear(),
             _ => unreachable!("validated above"),
         })
@@ -60,7 +101,7 @@ pub fn recording_control(
 struct HostAdapter(Weak<crate::host::HostInner>);
 struct SessionAdapter {
     host: Weak<crate::host::HostInner>,
-    id: u64,
+    state: Arc<crate::session::SessionState>,
 }
 
 fn gone() -> Value {
@@ -103,9 +144,16 @@ impl ContinuationHost for HostAdapter {
         }
         .open_native_session("unified-ble-manager/continuation")
         .map_err(|error| Value::Object(wire::error_object(&error)))?;
+        let state = inner
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session.id())
+            .cloned()
+            .ok_or_else(gone)?;
         Ok(Arc::new(SessionAdapter {
             host: self.0.clone(),
-            id: session.id(),
+            state,
         }))
     }
 }
@@ -113,14 +161,22 @@ impl ContinuationHost for HostAdapter {
 impl SessionAdapter {
     fn resolve(&self) -> Result<MobileSession> {
         let inner = self.host.upgrade().ok_or_else(gone)?;
-        MobileHost { inner }.session(self.id).ok_or_else(gone)
+        Ok(MobileSession::new(inner, Arc::clone(&self.state)))
     }
 }
 
 impl ContinuationSession for SessionAdapter {
+    fn legacy_claim_compatible(&self) -> bool {
+        true
+    }
     fn seal_collection(&self) -> Result<()> {
-        self.resolve()?.seal_continuation_collection();
-        Ok(())
+        if self.resolve()?.seal_continuation_collection() {
+            Ok(())
+        } else {
+            Err(
+                json!({"code":"lifecycle.invalid-state", "domain":"restoration", "operation":"continuation.seal", "detail":"scan ingress is pending"}),
+            )
+        }
     }
     fn collection_sealed(&self) -> bool {
         self.resolve()
@@ -167,17 +223,142 @@ impl ContinuationSession for SessionAdapter {
             }
         })
     }
-    fn drain(&self, items: u32, bytes: u32) -> ContinuationFuture<'_> {
-        Box::pin(async move {
-            match self.resolve() {
-                Ok(session) => session.drain(items, bytes),
-                Err(error) => envelope(Err(error)),
-            }
-        })
+    fn legacy_drain(
+        &self,
+        evidence: &ubm_desktop::continuation_outbox::LegacyEvidenceOwner,
+        items: u32,
+        bytes: u32,
+    ) -> Option<Result<Value>> {
+        Some(
+            self.state
+                .outbox
+                .drain_legacy_preserving(
+                    evidence,
+                    items as usize,
+                    bytes as usize,
+                    ubm_desktop::continuation::project_521_record,
+                )
+                .map_err(ubm_desktop::continuation::legacy_evidence_error),
+        )
+    }
+    fn claim_drain_v1(
+        &self,
+        evidence: &ubm_desktop::continuation_outbox::LegacyEvidenceOwner,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Option<Result<Option<ubm_desktop::continuation_outbox::DrainClaim>>> {
+        Some(
+            self.state
+                .outbox
+                .claim_drain_projected(
+                    evidence,
+                    max_items as usize,
+                    max_bytes as usize,
+                    ubm_desktop::continuation::project_521_record,
+                )
+                .map_err(ubm_desktop::continuation::legacy_evidence_error),
+        )
+    }
+    fn claim_drain(
+        &self,
+        items: u32,
+        bytes: u32,
+    ) -> Result<Option<ubm_desktop::continuation_outbox::DrainClaim>> {
+        self.state
+            .outbox
+            .claim_drain(items as usize, bytes as usize)
+            .map_err(ubm_desktop::continuation::continuation_drain_error)
+    }
+    fn has_retained_tail(&self) -> Result<bool> {
+        self.state
+            .outbox
+            .has_retained_tail()
+            .map_err(ubm_desktop::continuation::continuation_drain_error)
+    }
+    fn acknowledge_drain(&self, id: u64) -> Result<()> {
+        if self.state.outbox.acknowledge_drain(id) {
+            Ok(())
+        } else {
+            Err(
+                json!({"code":"lifecycle.invalid-state","domain":"restoration","operation":"continuation","detail":"continuation outbox claim mismatch"}),
+            )
+        }
     }
 }
 
 impl MobileHost {
+    /// Read one bounded page from a V2 peer-source failure record emitted by
+    /// the continuation outbox. The record carries the exact source-time
+    /// route; the central rejects stale/replaced routes and never advances the
+    /// source on a read.
+    pub fn continuation_read_peer_failure_recovery(
+        &self,
+        recovery_record: &str,
+        offset: u64,
+        completion: crate::Completion,
+    ) {
+        const OP: &str = "continuation.peer-source-failure.read";
+        let parsed = super::host::parse_peer_source_failure_recovery(recovery_record, OP);
+        let central = self.inner.central.clone();
+        self.inner.runtime.spawn(async move {
+            let result = match parsed {
+                Ok((descriptor, peer_id, selector, consumer, recipient_lease)) => central
+                    .read_peer_notification_failure_recovery(
+                        &descriptor,
+                        &peer_id,
+                        &selector,
+                        &consumer,
+                        &recipient_lease,
+                        offset,
+                    )
+                    .await
+                    .map(|chunk| {
+                        json!({
+                            "offset": chunk.offset.to_string(),
+                            "nextOffset": chunk.next_offset.to_string(),
+                            "bytesB64": crate::wire::encode_base64(&chunk.bytes),
+                            "done": chunk.done,
+                        })
+                    }),
+                Err(error) => Err(error),
+            };
+            completion(envelope(
+                result.map_err(|error| Value::Object(wire::error_object(&error))),
+            ));
+        });
+    }
+
+    /// Acknowledge only after the caller has read every contiguous page. The
+    /// central holds the source until every source-time recipient satisfies
+    /// this acknowledgement; one V2 consumer cannot release another.
+    pub fn continuation_acknowledge_peer_failure_recovery(
+        &self,
+        recovery_record: &str,
+        completion: crate::Completion,
+    ) {
+        const OP: &str = "continuation.peer-source-failure.acknowledge";
+        let parsed = super::host::parse_peer_source_failure_recovery(recovery_record, OP);
+        let central = self.inner.central.clone();
+        self.inner.runtime.spawn(async move {
+            let result = match parsed {
+                Ok((descriptor, peer_id, selector, consumer, recipient_lease)) => central
+                    .ack_peer_notification_failure_recovery(
+                        &descriptor,
+                        &peer_id,
+                        &selector,
+                        &consumer,
+                        &recipient_lease,
+                    )
+                    .await
+                    .map(|()| json!({})),
+                Err(error) => Err(error),
+            };
+            completion(envelope(
+                result.map_err(|error| Value::Object(wire::error_object(&error))),
+            ));
+        });
+    }
+
     pub fn continuation_recording_control(
         &self,
         operation: &str,
@@ -198,6 +379,35 @@ impl MobileHost {
     }
     pub fn continuation_configure_recording_directory(&self, path: &std::path::Path) -> String {
         envelope(self.continuation().configure_recording_directory(path))
+    }
+    /// Returns a spool only for a recording the host has already configured.
+    /// The caller never supplies or derives a filesystem path.
+    pub fn notification_failure_spool(
+        &self,
+        recording_id: &str,
+    ) -> std::result::Result<
+        Arc<ubm_desktop::continuation_journal::JournalAppleNotificationFailureSpool>,
+        ubm_desktop::continuation_journal::JournalError,
+    > {
+        self.inner
+            .recording_registry
+            .get(recording_id)?
+            .apple_notification_failure_spool()
+    }
+    /// Opens the Apple failure spool with the explicitly separate budget the
+    /// host negotiated for overflow retention.
+    pub fn notification_failure_spool_with_quota(
+        &self,
+        recording_id: &str,
+        quota: ubm_desktop::continuation_journal::JournalQuota,
+    ) -> std::result::Result<
+        Arc<ubm_desktop::continuation_journal::JournalAppleNotificationFailureSpool>,
+        ubm_desktop::continuation_journal::JournalError,
+    > {
+        self.inner
+            .recording_registry
+            .get(recording_id)?
+            .apple_notification_failure_spool_with_quota(quota)
     }
     pub fn continuation_recording_status(&self, id: &str) -> String {
         envelope(self.continuation().recording_status(id))
@@ -291,6 +501,115 @@ impl MobileHost {
         let token = token.to_owned();
         self.inner.runtime.spawn(async move {
             completion(envelope(executor.acknowledge_claim(&token).await));
+        });
+    }
+    /// Acknowledgement for the separately negotiated retained-prefix protocol.
+    pub fn continuation_acknowledge_retained_claim_v1(
+        &self,
+        token: &str,
+        completion: crate::Completion,
+    ) {
+        let executor = self.continuation();
+        let token = token.to_owned();
+        self.inner.runtime.spawn(async move {
+            completion(envelope(executor.acknowledge_claim_v1(&token).await));
+        });
+    }
+    pub fn continuation_prepare_retained_claim_v1(
+        &self,
+        items: u32,
+        bytes: u32,
+        completion: crate::Completion,
+    ) {
+        self.continuation_prepare_claim_versioned(1, items, bytes, completion);
+    }
+    /// Additive V2 retained-prefix capability.  It is intentionally a new
+    /// entrypoint so a 5.2.1 V1 decoder can never receive a V2 descriptor.
+    pub fn continuation_prepare_retained_claim_v2(
+        &self,
+        items: u32,
+        bytes: u32,
+        completion: crate::Completion,
+    ) {
+        self.continuation_prepare_claim_versioned(2, items, bytes, completion);
+    }
+    pub fn continuation_acknowledge_retained_claim_v2(
+        &self,
+        token: &str,
+        completion: crate::Completion,
+    ) {
+        let executor = self.continuation();
+        let token = token.to_owned();
+        self.inner.runtime.spawn(async move {
+            completion(envelope(executor.acknowledge_claim_v2(&token).await));
+        });
+    }
+    pub fn continuation_retire_claim_receipt(&self, token: &str, completion: crate::Completion) {
+        let executor = self.continuation();
+        let token = token.to_owned();
+        self.inner.runtime.spawn(async move {
+            completion(envelope(
+                executor
+                    .retire_claim_receipt(&token)
+                    .await
+                    .map(|()| json!({})),
+            ));
+        });
+    }
+    /// Page exact records omitted from a strict 5.2.1 legacy projection.
+    /// `claim_token` is the original legacy claim token; success is an
+    /// envelope containing `{records,more}`.
+    pub fn continuation_legacy_evidence_page(
+        &self,
+        claim_token: &str,
+        after_ordinal: u64,
+        max_items: u32,
+        max_bytes: u32,
+        completion: crate::Completion,
+    ) {
+        let executor = self.continuation();
+        let claim_token = claim_token.to_owned();
+        self.inner.runtime.spawn(async move {
+            completion(envelope(
+                executor
+                    .legacy_evidence_page(&claim_token, after_ordinal, max_items, max_bytes)
+                    .await,
+            ));
+        });
+    }
+    /// Retire exactly one page record after the consumer accepts its original
+    /// bytes. Absence remains a visible error rather than a false success.
+    pub fn continuation_legacy_evidence_retire(
+        &self,
+        claim_token: &str,
+        ordinal: u64,
+        completion: crate::Completion,
+    ) {
+        let executor = self.continuation();
+        let claim_token = claim_token.to_owned();
+        self.inner.runtime.spawn(async move {
+            completion(envelope(
+                executor
+                    .legacy_evidence_retire(&claim_token, ordinal)
+                    .await
+                    .map(|()| json!({})),
+            ));
+        });
+    }
+    pub fn continuation_prepare_claim_versioned(
+        &self,
+        version: u32,
+        items: u32,
+        bytes: u32,
+        completion: crate::Completion,
+    ) {
+        let executor = self.continuation();
+        self.inner.runtime.spawn(async move {
+            completion(envelope(
+                executor
+                    .prepare_claim_versioned(version, items, bytes)
+                    .await,
+            ));
         });
     }
 }

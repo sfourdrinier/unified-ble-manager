@@ -118,11 +118,6 @@ internal class AndroidGattDisconnectOwners {
     return owner.waiters.toList()
   }
 
-  /** Drops every owner and waiter without completing them (manager shutdown). */
-  @Synchronized
-  fun discardAll() {
-    owners.clear()
-  }
 }
 
 /** [first] with [second] suppressed, or whichever is non-null: an error is never lost or replaced. */

@@ -597,6 +597,103 @@ export class CoreGattDatabase<Attachment extends string, Identity extends Backen
     return this.core.subscribe(this, path, options)
   }
 
+  reserveOrderedRecordingMarker(recordingId: string) {
+    this.assertCurrent()
+    const reserve = this.backendDatabase.reserveOrderedRecordingMarker
+    if (!reserve) throw contractError('capability.unsupported', 'gatt', 'gatt.ordered-recording-marker')
+    return reserve.call(this.backendDatabase, recordingId)
+  }
+
+  reserveOrderedRecordingReclaim(handle: import('./ordered-recording-reclaim').OrderedRecordingRecoveryHandle) {
+    this.assertCurrent()
+    const reserve = this.backendDatabase.reserveOrderedRecordingReclaim
+    if (!reserve) throw contractError('capability.unsupported', 'gatt', 'gatt.ordered-recording-reclaim')
+    return reserve.call(this.backendDatabase, handle)
+  }
+
+  reserveOrderedRecordingStart() {
+    this.assertCurrent()
+    const reserve = this.backendDatabase.reserveOrderedRecordingStart
+    if (reserve === undefined) throw contractError('capability.unsupported', 'gatt', 'gatt.ordered-recording')
+    const handle = reserve.call(this.backendDatabase)
+    return {
+      start: (
+        members: readonly {
+          readonly memberId: string
+          readonly path: CurrentCharacteristicPath<Attachment>
+          readonly deliveryMode: NonNullable<SubscriptionOptions['deliveryMode']>
+        }[],
+        options: RecordedSubscriptionOptions
+      ) => {
+        this.assertCurrent()
+        for (const member of members) this.assertPath(member.path)
+        return handle.start(members, options)
+      },
+      status: () => handle.status(),
+      retire: () => handle.retire(),
+      ...(handle.recoveryHandle ? { recoveryHandle: handle.recoveryHandle.bind(handle) } : {}),
+      ...(handle.reserveMarkerWrite ? { reserveMarkerWrite: handle.reserveMarkerWrite.bind(handle) } : {})
+    }
+  }
+
+  async subscribeOrdered(
+    members: readonly {
+      readonly memberId: string
+      readonly path: CurrentCharacteristicPath<Attachment>
+      readonly deliveryMode: NonNullable<SubscriptionOptions['deliveryMode']>
+    }[],
+    options: SubscriptionOptions
+  ) {
+    this.assertCurrent()
+    for (const member of members) this.assertPath(member.path)
+    const acquire = this.backendDatabase.subscribeOrdered
+    if (acquire === undefined) throw contractError('capability.unsupported', 'gatt', 'gatt.subscribe-ordered')
+    const setup = await acquire.call(this.backendDatabase, members, options)
+    if (setup.state === 'failed') return setup
+    try {
+      this.assertCurrent()
+      if (options.signal?.aborted) throw contractError('operation.aborted', 'gatt', 'gatt.subscribe-ordered')
+      if (options.deadline !== null && options.deadline <= this.monotonicNow())
+        throw contractError('operation.timed-out', 'gatt', 'gatt.subscribe-ordered')
+      return setup
+    } catch (error) {
+      let cleanup: import('./ordered-notification-contract').OrderedNotificationCleanup
+      try {
+        cleanup = await setup.stream.close()
+      } catch (closeError) {
+        cleanup = {
+          group: {
+            state: 'release-failed',
+            failures: [
+              {
+                resourceKind: 'ordered-notification-stream',
+                error:
+                  closeError instanceof BackendContractError
+                    ? closeError.normalized
+                    : contractError('platform.failure', 'cleanup', 'gatt.subscribe-ordered.close').normalized
+              }
+            ]
+          },
+          members: []
+        }
+      }
+      return {
+        state: 'failed' as const,
+        sourceGeneration: setup.sourceGeneration ?? null,
+        error:
+          error instanceof BackendContractError
+            ? error.normalized
+            : contractError('platform.failure', 'gatt', 'gatt.subscribe-ordered').normalized,
+        members: setup.members.map(member => ({ memberId: member.memberId, acquisition: 'acquired' as const })),
+        observations: [],
+        uncertainTail: true,
+        cleanup,
+        stream: setup.stream,
+        close: () => setup.stream.close()
+      }
+    }
+  }
+
   subscribeRecorded(path: CurrentCharacteristicPath<Attachment>, options: RecordedSubscriptionOptions) {
     return this.core.subscribeRecorded(this, path, options)
   }

@@ -10,10 +10,10 @@ import {
   createDesktopCoreBleManager,
   createDesktopCoreProcessHost,
   createDesktopCoreProvider,
+  type DesktopCoreBleManager,
   type DesktopCoreManagerOptions,
   type DesktopCoreProviderOptions
 } from './node-desktop-manager'
-import type { BleManager } from './public/ble-manager'
 
 export {
   WINRT_BACKEND_ID,
@@ -23,7 +23,16 @@ export {
 } from './backends/desktop/platform-identity'
 export * from './desktop-rust-core-exports'
 export type { NodeBleManagerAppOptions } from './node-host-manager'
-export type { DesktopCoreManagerOptions, DesktopCoreProviderOptions } from './node-desktop-manager'
+export type {
+  DesktopCoreManagerOptions,
+  DesktopCoreProviderOptions,
+  DesktopCoreBleManager,
+  DesktopFailureEvidenceStoreOptions,
+  DesktopTerminalEvidenceStoreOptions,
+  NodeTerminalEvidenceRecovery,
+  NodeTerminalEvidenceRecoveryRecord,
+  NodeTerminalEvidenceRecoveryValue
+} from './node-desktop-manager'
 
 export type WinRtBleManagerAppOptions = DesktopCoreManagerOptions
 export type NativeWinRtProviderOptions = DesktopCoreProviderOptions
@@ -34,7 +43,7 @@ export function createWinRtProcessHost(options: DesktopCoreManagerOptions = {}) 
 }
 
 /** One-call Node WinRT manager over the shared Rust core. Does not fall back to another backend. */
-export async function createWinRtBleManager(options: WinRtBleManagerAppOptions = {}): Promise<BleManager> {
+export async function createWinRtBleManager(options: WinRtBleManagerAppOptions = {}): Promise<DesktopCoreBleManager> {
   return createDesktopCoreBleManager('winrt', options)
 }
 

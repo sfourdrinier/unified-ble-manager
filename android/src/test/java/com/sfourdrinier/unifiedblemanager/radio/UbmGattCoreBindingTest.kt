@@ -200,6 +200,7 @@ class UbmGattCoreBindingTest {
     val jni = FakeJni()
     val bound = binding(jni)
     bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-before-reset")
+    jni.drains.add("""{"ok":true,"event":"adapter.reset","effects":[],"observations":[]}""")
     bound.postAdapterReset()
     jni.drains.add(
       "{\"ok\":true,\"event\":\"connect\",\"op\":\"old-op\",\"peer\":\"public-address:AA:BB:CC:DD:EE:FF\",\"lease\":\"lease-before-reset\",\"generation\":\"old-generation\",\"effects\":[],\"observations\":[]}"

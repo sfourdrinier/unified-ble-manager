@@ -219,9 +219,17 @@ test('status distinguishes persisted collection failure from retryable local dia
   })
   expect((await controller.status('h10')).collectionFailure.persistenceFailure.sqliteExtendedCode).toBe(5)
   expect((await controller.status('h10')).collectionFailure).not.toHaveProperty('knownRecordedLoss')
-  access.status.mockResolvedValue({ ...snapshot, accepting: false, collectionFailure: { ...diagnostic, persisted: true, knownRecordedLoss: { items: 2, bytes: 7 } } })
+  access.status.mockResolvedValue({
+    ...snapshot,
+    accepting: false,
+    collectionFailure: { ...diagnostic, persisted: true, knownRecordedLoss: { items: 2, bytes: 7 } }
+  })
   expect((await controller.status('h10')).collectionFailure.knownRecordedLoss).toEqual({ items: 2, bytes: 7 })
-  access.status.mockResolvedValue({ ...snapshot, accepting: false, collectionFailure: { ...diagnostic, persisted: true, knownRecordedLoss: { items: 2 } } })
+  access.status.mockResolvedValue({
+    ...snapshot,
+    accepting: false,
+    collectionFailure: { ...diagnostic, persisted: true, knownRecordedLoss: { items: 2 } }
+  })
   expect((await controller.status('h10')).collectionFailure.knownRecordedLoss).toEqual({ items: 2 })
   access.status.mockResolvedValue({ ...snapshot, collectionFailure: { ...diagnostic, persisted: true } })
   await expect(controller.status('h10')).rejects.toMatchObject({ code: 'protocol.malformed' })
@@ -365,4 +373,237 @@ test('larger prepare allowance does not permit malformed envelope fields or non-
   await expect(controller.prepare('h10', { maxItems: 20, maxBytes: 2000 })).rejects.toMatchObject({
     code: 'protocol.malformed'
   })
+})
+
+test('recording status preserves ordinary shape and validates versioned ordered lifecycle', async () => {
+  const snapshot = {
+    recordingId: 'h10',
+    phase: 'recording',
+    accepting: true,
+    records: 0,
+    bytes: 0,
+    lostRecords: 0,
+    maxBytes: 1048576,
+    maxRecords: 100,
+    encrypted: false,
+    runtimeFailure: null,
+    collectionFailure: null
+  }
+  const access = { status: jest.fn(async () => snapshot) }
+  const controller = createContinuationRecordingController(access)
+  expect(await controller.status('h10')).not.toHaveProperty('orderedOwner')
+  const owner = {
+    version: 1,
+    producerIncarnation: 'producer',
+    collectionId: '18446744073709551615',
+    sourceGeneration: { kind: 'counter', value: '18446744073709551615' },
+    state: 'live',
+    uncertainTail: null
+  }
+  access.status.mockResolvedValue({ ...snapshot, orderedOwner: owner })
+  expect((await controller.status('h10')).orderedOwner).toEqual(owner)
+  access.status.mockResolvedValue({
+    ...snapshot,
+    phase: 'stopped',
+    accepting: false,
+    orderedOwner: { ...owner, sourceGeneration: null, state: 'interrupted', uncertainTail: true }
+  })
+  expect((await controller.status('h10')).orderedOwner).toMatchObject({ state: 'interrupted', uncertainTail: true })
+  for (const invalid of [
+    { ...owner, version: 2 },
+    { ...owner, collectionId: '18446744073709551616' },
+    { ...owner, sourceGeneration: { kind: 'counter', value: '01' } },
+    { ...owner, state: 'interrupted', uncertainTail: null },
+    { ...owner, extra: true }
+  ]) {
+    access.status.mockResolvedValue({ ...snapshot, orderedOwner: invalid })
+    await expect(controller.status('h10')).rejects.toMatchObject({ code: 'protocol.malformed' })
+  }
+})
+
+test('ordered prepare validates versioned rows and shares the explicit reader cursor', async () => {
+  const metadata = {
+    kind: 'ordered',
+    version: 1,
+    recordingId: 'h10',
+    peerId: 'peer',
+    collectionId: '4',
+    sourceGeneration: { kind: 'opaque', value: 'source' },
+    deliveryId: '1'
+  }
+  const value = {
+    kind: 'value',
+    ordinal: '18446744073709551615',
+    member: '1',
+    membership: { member: '3', epoch: '8' },
+    bytes: [0, 255],
+    delivery: 'notification',
+    provenance: 'read-or-notification'
+  }
+  const terminal = {
+    kind: 'terminal',
+    reason: { kind: 'source-overflow' },
+    tailUncertain: true,
+    rejectedValues: null,
+    rejectedLoss: { scope: { kind: 'unknown' }, unit: 'source-records', count: null, bytes: null },
+    sourceRejection: { kind: 'marker', markerId: '18446744073709551615' },
+    sourceFailureMember: null,
+    secondaryFailure: null,
+    additionalFailureCount: '0'
+  }
+  const rows = [
+    { ordinal: 5, metadata, record: value },
+    {
+      ordinal: 6,
+      metadata: { ...metadata, deliveryId: '2' },
+      record: { kind: 'marker', markerId: '5', ordinal: '18446744073709551615' }
+    },
+    { ordinal: 7, metadata: { ...metadata, deliveryId: '3' }, record: terminal }
+  ]
+  const input = { token: 'h10:1', records: rows, bytes: size(rows), more: false }
+  const access = {
+    prepare: jest.fn(async () => input),
+    acknowledge: jest.fn(async (id, token) => ({ token, acknowledged: true, records: 3 }))
+  }
+  const controller = createContinuationRecordingController(access)
+  const batch = await controller.prepareOrdered('h10', { maxItems: 10, maxBytes: 4096 })
+  expect(batch.records.map(row => row.record.kind)).toEqual(['value', 'marker', 'terminal'])
+  expect(batch.records[0].record.bytes).toEqual(new Uint8Array([0, 255]))
+  expect(batch.records[0].record.membership.epoch).toBe('8')
+  expect(batch.records[2].record.sourceRejection.markerId).toBe('18446744073709551615')
+  expect(access.acknowledge).not.toHaveBeenCalled()
+  rows[0].record.bytes[0] = 7
+  expect(batch.records[0].record.bytes[0]).toBe(0)
+  rows[0].record.bytes[0] = 0
+  await expect(controller.prepare('h10', { maxItems: 10, maxBytes: 4096 })).rejects.toMatchObject({
+    code: 'protocol.malformed'
+  })
+  await controller.acknowledge('h10', batch.token)
+  expect(access.acknowledge).toHaveBeenCalledWith('h10', 'h10:1')
+  for (const badMetadata of [
+    { ...metadata, version: 3 },
+    { ...metadata, recordingId: 'other' },
+    { ...metadata, deliveryId: null }
+  ]) {
+    const record = { ordinal: 5, metadata: badMetadata, record: value }
+    access.prepare.mockResolvedValue({ token: 'h10:2', records: [record], bytes: size([record]), more: false })
+    await expect(controller.prepareOrdered('h10', { maxItems: 10, maxBytes: 4096 })).rejects.toMatchObject({
+      code: 'protocol.malformed'
+    })
+  }
+})
+
+test('ordered prepare preserves no-source setup failure evidence without a fabricated generation', async () => {
+  const failure = {
+    code: 'platform.failure',
+    domain: 'gatt',
+    operation: 'subscribe',
+    detail: '',
+    platformDomain: null,
+    platformCode: null,
+    platformMessage: null,
+    platformMetadata: { attempt: { kind: 'int', value: '-9223372036854775808' }, message: { kind: 'text', value: '' } }
+  }
+  const row = {
+    ordinal: 1,
+    metadata: {
+      kind: 'ordered',
+      version: 1,
+      recordingId: 'h10',
+      peerId: 'peer',
+      collectionId: '1',
+      sourceGeneration: null,
+      deliveryId: null
+    },
+    record: {
+      kind: 'setup-terminal',
+      sourceCreated: false,
+      tailUncertain: false,
+      failure,
+      setupFailure: null,
+      fenceFailure: null,
+      members: [
+        { member: '1', acquisition: 'not-started', delivery: 'unknown', cleanupReleased: true, cleanupError: null }
+      ]
+    }
+  }
+  const controller = createContinuationRecordingController({
+    prepare: async () => ({ token: 'h10:1', records: [row], bytes: size([row]), more: false })
+  })
+  const result = await controller.prepareOrdered('h10', { maxItems: 10, maxBytes: 4096 })
+  expect(result.records[0].metadata.sourceGeneration).toBeNull()
+  expect(result.records[0].record.failure).toEqual(failure)
+  expect(result.records[0].record.members[0].acquisition).toBe('not-started')
+})
+
+test('native ordered prepare decodes raw envelope and retains exact recorded byte count', async () => {
+  const row = {
+    ordinal: 1,
+    metadata: {
+      kind: 'ordered',
+      version: 1,
+      recordingId: 'h10',
+      peerId: 'peer',
+      collectionId: '1',
+      sourceGeneration: { kind: 'counter', value: '4' },
+      deliveryId: '1'
+    },
+    record: { kind: 'loss', scope: { kind: 'group' }, unit: 'values', count: null, bytes: null }
+  }
+  const value = { token: 'h10:1', records: [row], bytes: size([row]), more: false }
+  const controller = createNativeContinuationRecordingController(
+    { prepare: async () => JSON.stringify({ ok: true, value }) },
+    'ubm-mobile'
+  )
+  const prepared = await controller.prepareOrdered('h10', { maxItems: 1, maxBytes: 4096 })
+  expect(prepared.records[0].record).toEqual(row.record)
+  expect(prepared.bytes).toBe(value.bytes)
+})
+
+test('ordered recording context preserves exact public-member mapping and rejects drift', () => {
+  const { parseOrderedRecordingContext } = require('../../../src/core/ordered-recording')
+  const context = {
+    kind: 'ordered-recording',
+    version: 1,
+    peerId: 'peer',
+    connectionGeneration: 'connection',
+    databaseGeneration: 'database',
+    maxItems: 8,
+    maxBytes: 4096,
+    maxControls: 4,
+    members: [
+      {
+        memberId: '18446744073709551615',
+        publicMemberId: 'heart',
+        selector: {
+          serviceUuid: 'service',
+          serviceOccurrence: '2',
+          characteristicUuid: 'characteristic',
+          characteristicOccurrence: '18446744073709551615'
+        },
+        delivery: 'notification',
+        preference: null
+      }
+    ]
+  }
+  const result = parseOrderedRecordingContext(context)
+  expect(result).toEqual(context)
+  context.members[0].publicMemberId = 'modified'
+  expect(result.members[0].publicMemberId).toBe('heart')
+  expect(() => parseOrderedRecordingContext({ ...context, version: 3 })).toThrow()
+  expect(() =>
+    parseOrderedRecordingContext({
+      ...context,
+      members: [{ ...context.members[0], selector: { ...context.members[0].selector, serviceOccurrence: null } }]
+    })
+  ).toThrow()
+  expect(() =>
+    parseOrderedRecordingContext({ ...context, members: [...context.members, context.members[0]] })
+  ).toThrow()
+  expect(() =>
+    parseOrderedRecordingContext({
+      ...context,
+      members: [{ ...context.members[0], selector: { ...context.members[0].selector, extra: true } }]
+    })
+  ).toThrow()
 })

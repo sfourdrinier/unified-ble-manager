@@ -63,7 +63,8 @@ function fixtureRoot() {
   writeFile(root, 'bindings/uniffi/src/ubm_echo.udl', 'namespace ubm_echo {};\n')
   writeFile(root, 'bindings/uniffi/generated/swift/ubm_echo.swift', '// swift\n')
   writeFile(root, 'bindings/uniffi/generated/swift/ubm_echoFFI.h', '// h\n')
-  writeFile(root, 'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap', 'module ubm_echoFFI {}\n')
+  const canonicalModuleMap = 'module ubm_echoFFI {}\n'
+  writeFile(root, 'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap', canonicalModuleMap)
   writeFile(
     root,
     'ios/RustCore/RustCore.xcframework/Info.plist',
@@ -100,6 +101,11 @@ function fixtureRoot() {
   const appleBytes = Buffer.from([0x21, 0x3c, 0x61, 0x72, 0x63, 0x68, 0x3e, 0x0a])
   const libraries = identity.APPLE_DECLARED_LIBRARIES.map(entry => {
     writeFile(root, `ios/RustCore/RustCore.xcframework/${entry.libraryIdentifier}/libubm5_uniffi_echo.a`, appleBytes)
+    writeFile(
+      root,
+      `ios/RustCore/RustCore.xcframework/${entry.libraryIdentifier}/Headers/module.modulemap`,
+      canonicalModuleMap
+    )
     return { ...entry, libraryPath: 'libubm5_uniffi_echo.a', sha256: hash(appleBytes), bytes: appleBytes.length }
   })
   writeFile(

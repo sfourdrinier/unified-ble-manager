@@ -150,7 +150,8 @@ async function main() {
   assert.ok(handle && typeof handle.peerKey === 'string' && handle.peerKey.length > 0, 'connect returns a peer key');
   await central.stageServices('peer-1', hrmServices());
   const report = await central.discover({ peerId: 'peer-1', lease: 'lease-a' });
-  assert.deepEqual(report, { pathsRegistered: 4 }, 'discovery registers whole; nothing is skipped');
+  assert.equal(report.pathsRegistered, 4, 'discovery registers whole; nothing is skipped');
+  assert.ok(report.connectionGeneration && report.databaseGeneration, 'discovery binds the snapshot generations');
   const paths = await central.discoveredPaths('peer-1');
   assert.equal(paths.length, 4);
   assert.deepEqual(

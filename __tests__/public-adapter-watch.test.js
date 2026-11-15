@@ -89,6 +89,15 @@ function ipcCapabilities() {
   }
 }
 
+function ipcDiagnostics() {
+  return {
+    snapshot: () => ({ trace: { records: [] }, resourceCounters: {} }),
+    resourceCounters: () => ({}),
+    startTrace: () => ({ stop: async () => ({ records: [] }) }),
+    warnings: () => []
+  }
+}
+
 describe('public adapter watch contract', () => {
   test('maps values while preserving source overflow and terminal notices', async () => {
     const initial = adapterState()
@@ -291,6 +300,7 @@ describe('IPC public adapter watch contract', () => {
     const ipc = {
       bootstrap: ipcBootstrap(),
       capabilities: ipcCapabilities(),
+      diagnostics: ipcDiagnostics,
       adapterState: adapterStateCall
     }
     const manager = new IpcPublicManagerAdapter(ipc)
@@ -330,6 +340,7 @@ describe('IPC public adapter watch contract', () => {
     const ipc = {
       bootstrap: ipcBootstrap(),
       capabilities: ipcCapabilities(),
+      diagnostics: ipcDiagnostics,
       adapterState: adapterStateCall
     }
     const manager = new IpcPublicManagerAdapter(ipc)
@@ -358,6 +369,7 @@ describe('IPC adapter shared owner races', () => {
     new IpcPublicManagerAdapter({
       bootstrap: ipcBootstrap(),
       capabilities: ipcCapabilities(),
+      diagnostics: ipcDiagnostics,
       adapterState: adapterStateCall
     })
   beforeEach(() => jest.useFakeTimers())
@@ -534,7 +546,12 @@ describe('IPC adapter shared owner races', () => {
 
 describe('IPC adapter readiness cadence', () => {
   const managerFor = read =>
-    new IpcPublicManagerAdapter({ bootstrap: ipcBootstrap(), capabilities: ipcCapabilities(), adapterState: read })
+    new IpcPublicManagerAdapter({
+      bootstrap: ipcBootstrap(),
+      capabilities: ipcCapabilities(),
+      diagnostics: ipcDiagnostics,
+      adapterState: read
+    })
   beforeEach(() => jest.useFakeTimers())
   afterEach(() => jest.useRealTimers())
   test('three readiness callers and a watch share one route budget for sixty seconds', async () => {
@@ -709,6 +726,7 @@ describe('IPC watch cleanup retry', () => {
     const manager = new IpcPublicManagerAdapter({
       bootstrap: ipcBootstrap(),
       capabilities: ipcCapabilities(),
+      diagnostics: ipcDiagnostics,
       adapterState: read
     })
     const old = await manager.adapter.watchState()

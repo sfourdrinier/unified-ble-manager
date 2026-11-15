@@ -213,18 +213,16 @@ enum OwnedCoreBluetoothReadNotifyProvenance {
     hasError: Bool,
     hasValue: Bool
   ) -> Bool {
-    !hasError && hasValue && (hasInstalledSubscription || pendingNotifyEnable) && !pendingCancellationCleanup
+    !hasError && hasValue && (hasInstalledSubscription || (pendingNotifyEnable && !pendingCancellationCleanup))
   }
 }
 
 /// Reads of one characteristic, in request order. CoreBluetooth answers each
-/// `readValue(for:)` with exactly one `didUpdateValueFor` (value or error) but
-/// cannot say which update answers which read, so at most one `readValue` is
-/// outstanding per characteristic and the next is issued only after the
-/// previous one's update arrived. A read cancelled or timed out after its
-/// `readValue` was issued leaves its update owed: that update is consumed
-/// without completing a later read, so a later read never receives an answer
-/// CoreBluetooth issued for an abandoned one.
+/// `readValue(for:)` through the same callback used for notifications. At
+/// most one physical read is outstanding. An unambiguous answer releases it;
+/// an ambiguous value completes its caller but retains the physical debt
+/// until a terminal fence, since any later value could still be its reply.
+/// Cancellation likewise keeps the physical read owed.
 struct OwnedCoreBluetoothReadLane<Waiter> {
   private(set) var inFlight: Waiter?
   private(set) var updateOwed = false
@@ -255,6 +253,15 @@ struct OwnedCoreBluetoothReadLane<Waiter> {
     inFlight = queued.removeFirst()
     updateOwed = true
     return (completed, true)
+  }
+
+  /// A value may have been a notification. Complete the logical read but
+  /// retain the physical obligation until a terminal connection fence.
+  mutating func answerAmbiguously() -> Waiter? {
+    guard updateOwed else { return nil }
+    let completed = inFlight
+    inFlight = nil
+    return completed
   }
 
   /// Abandons every read `matches` selects; the in-flight one keeps its
@@ -353,9 +360,43 @@ struct CharacteristicAddress: Hashable {
   let characteristicOccurrence: Int
 }
 
+/// Physical ownership survives retirement of its logical database generation.
+final class RetiredNotificationOwner<Peripheral: AnyObject, Characteristic: AnyObject> {
+  enum Phase { case awaitingOriginal, awaitingDisable, stalled, invalidated }
+  enum CallbackAction { case disable, released, retry, none }
+  let generation: String
+  let address: CharacteristicAddress
+  let peripheral: Peripheral
+  let characteristic: Characteristic
+  let subscriptions: Set<String>
+  var phase: Phase
+  init(generation: String, address: CharacteristicAddress, peripheral: Peripheral,
+    characteristic: Characteristic, subscriptions: Set<String> = [], phase: Phase) {
+    self.generation = generation
+    self.address = address
+    self.peripheral = peripheral
+    self.characteristic = characteristic
+    self.subscriptions = subscriptions
+    self.phase = phase
+  }
+  func callback(isNotifying: Bool, failed: Bool) -> CallbackAction {
+    switch phase {
+    case .invalidated, .stalled: return .none
+    case .awaitingOriginal:
+      phase = .stalled
+      return .disable
+    case .awaitingDisable:
+      if !failed && !isNotifying { return .released }
+      phase = .stalled
+      return .retry
+    }
+  }
+}
+
 struct PendingVoid {
   let operationIdentifier: String
   let completion: (NSError?) -> Void
+  let identity = UUID()
 }
 
 struct PendingCharacteristicRead {
@@ -363,21 +404,149 @@ struct PendingCharacteristicRead {
   let completion: (NSData?, OwnedCoreBluetoothReadProvenance, NSError?) -> Void
 }
 
-struct PendingRssi {
-  let operationIdentifier: String
-  let completion: (NSNumber?, NSError?) -> Void
+struct OwnedCoreBluetoothReadObjectFence {
+  let peripheral: AnyObject
+  let object: AnyObject
+  var cancelledOperation: String?
+  /// `didUpdateValueFor` also reports notifications. Once both could be owed,
+  /// no count of updates proves that the read response itself was consumed.
+  var unattributable = false
+  var ambiguousCompletion = false
+  var peerIdentifier = ""
+
+  func matches(peripheral candidate: AnyObject, object attribute: AnyObject) -> Bool {
+    peripheral === candidate && object === attribute
+  }
+}
+
+/// CoreBluetooth identifies these callbacks by platform objects, not request IDs.
+/// Cancellation withdraws a caller but leaves the exact callback owed. A failed
+/// connection or graph retires its slot so a replacement object can proceed;
+/// the old object remains retained and its late callback is consumed first.
+final class OwnedCoreBluetoothCallbackLedger<Key: Hashable, Value> {
+  static var maximumOutstanding: Int { 256 }
+  private struct Slot {
+    let key: Key
+    let peer: String
+    let peripheral: AnyObject
+    let object: AnyObject
+    let operation: String
+    var completion: ((Value) -> Void)?
+    let settleOnCancel: Bool
+
+    func matches(peripheral candidate: AnyObject, object attribute: AnyObject) -> Bool {
+      peripheral === candidate && object === attribute
+    }
+  }
+
+  private var active = [Key: Slot]()
+  private var retired = [Slot]()
+  var hasCapacity: Bool { active.count + retired.count < Self.maximumOutstanding }
+
+  func canAdmit(_ key: Key, peripheral: AnyObject, object: AnyObject) -> Bool {
+    hasCapacity && active[key] == nil &&
+      !active.values.contains(where: { $0.matches(peripheral: peripheral, object: object) }) &&
+      !retired.contains(where: { $0.matches(peripheral: peripheral, object: object) })
+  }
+
+  func admit(_ key: Key, peer: String, peripheral: AnyObject, object: AnyObject,
+    operation: String, settleOnCancel: Bool = false, completion: @escaping (Value) -> Void) -> Bool {
+    guard canAdmit(key, peripheral: peripheral, object: object) else { return false }
+    active[key] = Slot(key: key, peer: peer, peripheral: peripheral, object: object,
+      operation: operation, completion: completion, settleOnCancel: settleOnCancel)
+    return true
+  }
+
+  @discardableResult func cancel(_ operation: String) -> Bool {
+    var found = false
+    for key in Array(active.keys) where active[key]?.operation == operation {
+      found = true
+      if active[key]?.settleOnCancel != true { active[key]?.completion = nil }
+    }
+    for index in retired.indices where retired[index].operation == operation {
+      found = true
+      if !retired[index].settleOnCancel { retired[index].completion = nil }
+    }
+    return found
+  }
+
+  func hasOutstanding(_ operation: String) -> Bool {
+    active.values.contains { $0.operation == operation } || retired.contains { $0.operation == operation }
+  }
+
+  /// Returns the operation whose callback was consumed, including abandoned
+  /// slots. A callback for a different object is never assigned to a waiter.
+  @discardableResult func complete(peripheral: AnyObject, object: AnyObject, value: Value) -> String? {
+    if let index = retired.firstIndex(where: { $0.matches(peripheral: peripheral, object: object) }) {
+      let slot = retired.remove(at: index)
+      slot.completion?(value)
+      return slot.operation
+    }
+    guard let key = active.first(where: { $0.value.matches(peripheral: peripheral, object: object) })?.key,
+          let slot = active.removeValue(forKey: key) else { return nil }
+    slot.completion?(value)
+    return slot.operation
+  }
+
+  /// Fail the logical waiter once, but retain the physical callback debt.
+  func retire(peer: String, failure: Value) {
+    for key in Array(active.keys) where active[key]?.peer == peer {
+      guard var slot = active.removeValue(forKey: key) else { continue }
+      let completion = slot.completion
+      slot.completion = nil
+      retired.append(slot)
+      completion?(failure)
+    }
+    for index in retired.indices where retired[index].peer == peer {
+      let completion = retired[index].completion
+      retired[index].completion = nil
+      completion?(failure)
+    }
+  }
+
+  /// Retire one logical owner while keeping the platform callback reserved.
+  func retire(operation: String, failure: Value) {
+    for key in Array(active.keys) where active[key]?.operation == operation {
+      guard var slot = active.removeValue(forKey: key) else { continue }
+      let completion = slot.completion
+      slot.completion = nil
+      retired.append(slot)
+      completion?(failure)
+    }
+  }
+
+  func retireAll(failure: Value) {
+    for peer in Set(active.values.map(\.peer) + retired.map(\.peer)) {
+      retire(peer: peer, failure: failure)
+    }
+  }
+
+  /// Only call after the platform's terminal callback fence for this peer.
+  func clearRetired(peer: String) {
+    retired.removeAll { $0.peer == peer }
+  }
 }
 
 struct PendingNotify {
+  /// Physical cleanup is owned by this transition, not the caller-supplied operation name.
+  let cleanupIdentifier = "notification-\(UUID().uuidString)"
   let operationIdentifier: String
   let subscriptionIdentifier: String
   let enabled: Bool
   let completion: (NSError?) -> Void
+  /// Retained at admission even if cancellation removes the callback route.
+  var borrower: AnyObject? = nil
+  /// The exact logical connection at transition admission, if borrower-scoped.
+  var claimIdentity: UUID? = nil
+  /// The installed route object, so identifier reuse cannot claim an old callback.
+  var routeIdentity: UUID? = nil
 }
 
 struct PendingDiscovery {
   let operationIdentifier: String
   let completion: (NSDictionary?, NSError?) -> Void
+  var owner: AnyObject? = nil
+  var claimIdentity: UUID? = nil
   var awaitingServices = true
   var cancelled = false
   var completionDelivered = false
@@ -418,6 +587,14 @@ struct PendingCancellationCleanup {
   /// completion from the current `isNotifying` value: it can still describe the
   /// state before the cancelled operation's callback arrives.
   var notificationAwaitingCallbacks = Set<CharacteristicAddress>()
+  /// Retired objects remain independent of any new generation at the same path.
+  var retiredNotificationObjects = Set<ObjectIdentifier>()
+  /// A cancelled platform call still owes its exact delegate callback.
+  var callbackOutstanding = false
+  var hasWork: Bool {
+    callbackOutstanding || !peerIdentifiers.isEmpty || !discoveryPeers.isEmpty ||
+      !notificationDesiredStates.isEmpty || !retiredNotificationObjects.isEmpty
+  }
 }
 
 /// Finding 179: what an Apple Bluetooth permission request does with the
@@ -502,11 +679,25 @@ final class ApplePermissionExchange {
 /// Queue-confined explicit-operation readiness. The existing Rust request owns
 /// its deadline and cancellation; no independent timer or central is created.
 final class AppleRadioPreparation {
-  private var pending = [String: (NSDictionary?, NSError?) -> Void]()
+  private struct Key: Hashable {
+    let owner: ObjectIdentifier?
+    let identifier: String
+  }
+  private struct Waiter {
+    let owner: AnyObject?
+    let completion: (NSDictionary?, NSError?) -> Void
+  }
+  private var pending = [Key: Waiter]()
 
-  func start(_ identifier: String, snapshot: NSDictionary, waitForInitialState: Bool,
+  func start(_ identifier: String, owner: AnyObject? = nil, snapshot: NSDictionary, waitForInitialState: Bool,
              completion: @escaping (NSDictionary?, NSError?) -> Void) {
-    if waitForInitialState && Self.waiting(snapshot) { pending[identifier] = completion }
+    let key = Key(owner: owner.map(ObjectIdentifier.init), identifier: identifier)
+    guard pending[key] == nil else {
+      completion(nil, NSError(domain: "com.sfourdrinier.unifiedblemanager.corebluetooth", code: 1018,
+        userInfo: [NSLocalizedDescriptionKey: "Radio preparation operation is already pending"]))
+      return
+    }
+    if waitForInitialState && Self.waiting(snapshot) { pending[key] = Waiter(owner: owner, completion: completion) }
     else { completion(snapshot, nil) }
   }
 
@@ -514,17 +705,17 @@ final class AppleRadioPreparation {
     guard !Self.waiting(snapshot) else { return }
     let callbacks = pending
     pending.removeAll()
-    for callback in callbacks.values { callback(snapshot, nil) }
+    for waiter in callbacks.values { waiter.completion(snapshot, nil) }
   }
 
-  func cancel(_ identifier: String, error: NSError) {
-    pending.removeValue(forKey: identifier)?(nil, error)
+  func cancel(_ identifier: String, owner: AnyObject? = nil, error: NSError) {
+    pending.removeValue(forKey: Key(owner: owner.map(ObjectIdentifier.init), identifier: identifier))?.completion(nil, error)
   }
 
   func failAll(_ error: NSError) {
     let callbacks = pending
     pending.removeAll()
-    for callback in callbacks.values { callback(nil, error) }
+    for waiter in callbacks.values { waiter.completion(nil, error) }
   }
 
   private static func waiting(_ snapshot: NSDictionary) -> Bool {

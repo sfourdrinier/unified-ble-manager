@@ -8,6 +8,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
+import java.util.ArrayDeque
 
 /**
  * HOST-ANDROID bridge runtime (UBM 5.0, trackourhealth/bun-mono#1188).
@@ -84,6 +85,15 @@ class UbmGattCentralBridge(
   /** Set under [lifecycleLock]: no post is admitted once closed. */
   private var closed = false
   private val drainInFlight = AtomicBoolean(false)
+  // The JNI queue is FIFO. Associate each scan-start result with the
+  // generation enqueued with it while enqueue and drain are serialized;
+  // publication itself remains outside this lock and may arrive late.
+  private val queueLock = Any()
+  private val scanGenerations = ArrayDeque<Long>()
+  internal var onScanAdmission: ((Long, GattObservation) -> Unit)? = null
+  private val observationTags = mutableMapOf<String, ArrayDeque<String>>()
+  internal var onTaggedObservation: ((String, GattObservation) -> Unit)? = null
+  internal var onCorrelatedObservations: ((List<Pair<GattObservation, String?>>) -> Unit)? = null
 
   /**
    * Monotonic count of lines enqueued via [postEvent] (incremented AFTER
@@ -120,7 +130,13 @@ class UbmGattCentralBridge(
    * permission gate, enqueues, and schedules a worker drain. Never drives
    * the core, never waits on I/O, and never throws.
    */
-  fun postEvent(wire: String): PostResult {
+  fun postEvent(wire: String): PostResult = postEvent(wire, null)
+
+  internal fun postEvent(wire: String, scanGeneration: Long?): PostResult = postEvent(wire, scanGeneration, null)
+
+  internal fun postTaggedEvent(wire: String, tag: String): PostResult = postEvent(wire, null, tag)
+
+  private fun postEvent(wire: String, scanGeneration: Long?, tag: String?): PostResult {
     lifecycleLock.lock()
     try {
       if (closed) {
@@ -144,7 +160,17 @@ class UbmGattCentralBridge(
         return PostResult.Shutdown
       }
       depth = try {
-        enqueue(wire)
+        synchronized(queueLock) {
+          // A missing drain reply must not let later operations consume its
+          // tag or accumulate an unbounded queue of unresolved identities.
+          if (tag != null && observationTags[wire.substringBefore('|')]?.isNotEmpty() == true) {
+            throw IllegalStateException("prior tagged observation remains unresolved")
+          }
+          enqueue(wire).also {
+            if (scanGeneration != null) scanGenerations.addLast(scanGeneration)
+            if (tag != null) observationTags.getOrPut(wire.substringBefore('|')) { ArrayDeque() }.addLast(tag)
+          }
+        }
       } catch (th: Throwable) {
         return PostResult.EnqueueFailed(th.message ?: th.javaClass.simpleName)
       }
@@ -179,8 +205,18 @@ class UbmGattCentralBridge(
    * [scheduleDrain]) or synchronously in tests — never from a binder thread.
    */
   fun drainNow(): List<GattObservation> {
-    val observations = try {
-      GattCentralWire.parseObservations(drain())
+    val tagged = try {
+      synchronized(queueLock) {
+        GattCentralWire.parseObservations(drain()).map { observation ->
+          val scanStart = observation.event == "scan.start" ||
+            (observation.event == "scan" && observation.raw.contains("\"kind\":\"central.scan-start\""))
+          val generation = if (scanStart && scanGenerations.isNotEmpty()) scanGenerations.removeFirst() else null
+          val tags = observationTags[observation.event]
+          val tag = if (tags != null && tags.isNotEmpty()) tags.removeFirst() else null
+          if (tags != null && tags.isEmpty()) observationTags.remove(observation.event)
+          Triple(observation, generation, tag)
+        }
+      }
     } catch (th: Throwable) {
       listOf(
         GattObservation(
@@ -191,13 +227,27 @@ class UbmGattCentralBridge(
           operation = "gatt-drain",
           detail = "drain-call-failed",
           raw = th.message ?: th.javaClass.simpleName
-        )
+        ).let { Triple(it, null, null) }
       )
     }
+    val observations = tagged.map { it.first }
     try {
       onObservations(observations)
     } catch (_: Throwable) {
       // Observation consumers must never break the drain loop.
+    }
+    try {
+      onCorrelatedObservations?.invoke(tagged.map { it.first to it.third })
+    } catch (_: Throwable) {
+      // Observation consumers must never break the drain loop.
+    }
+    for ((observation, generation, tag) in tagged) {
+      try {
+        if (generation != null) onScanAdmission?.invoke(generation, observation)
+        if (tag != null) onTaggedObservation?.invoke(tag, observation)
+      } catch (_: Throwable) {
+        // Observation consumers must never break the drain loop.
+      }
     }
     return observations
   }

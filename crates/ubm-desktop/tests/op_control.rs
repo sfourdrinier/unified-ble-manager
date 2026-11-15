@@ -109,7 +109,10 @@ async fn wait_peer(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
 
 /// Connected, discovered peer with a measured MTU.
 async fn ready_peer(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
-    central.boundary().push_event(advertisement(peer_id));
+    central
+        .boundary()
+        .push_event(advertisement(peer_id))
+        .expect("synthetic event admission failed");
     wait_peer(central, peer_id).await;
     central
         .boundary()
@@ -214,7 +217,10 @@ async fn cancel_targets_exactly_one_of_two_dispatched_writes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_before_admission_never_reaches_the_radio() {
     let central = open().await;
-    central.boundary().push_event(advertisement("peer-c"));
+    central
+        .boundary()
+        .push_event(advertisement("peer-c"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "peer-c").await;
     let ctl = OpControl::budget_ms(5000);
     assert_eq!(
@@ -250,7 +256,10 @@ async fn cancel_before_admission_never_reaches_the_radio() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connect_success_before_cancel_keeps_the_handle_and_the_lease() {
     let central = open().await;
-    central.boundary().push_event(advertisement("peer-s"));
+    central
+        .boundary()
+        .push_event(advertisement("peer-s"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "peer-s").await;
     let ctl = OpControl::budget_ms(5000);
     let ticket = ctl.ticket.clone();
@@ -282,7 +291,10 @@ async fn connect_success_before_cancel_keeps_the_handle_and_the_lease() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_during_connect_releases_the_half_open_link() {
     let central = open().await;
-    central.boundary().push_event(advertisement("peer-h"));
+    central
+        .boundary()
+        .push_event(advertisement("peer-h"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "peer-h").await;
     central.boundary().block_op(FaultOp::Connect);
     let ctl = OpControl::budget_ms(5000);
@@ -449,7 +461,10 @@ async fn dispatched_write_expiry_is_never_retryable() {
 #[tokio::test(start_paused = true)]
 async fn discovery_is_bounded_and_retryable() {
     let central = open().await;
-    central.boundary().push_event(advertisement("peer-d"));
+    central
+        .boundary()
+        .push_event(advertisement("peer-d"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "peer-d").await;
     central
         .boundary()
@@ -496,7 +511,10 @@ async fn held_discovery_on_one_peer_never_stalls_another() {
         .map(|(_, epoch)| *epoch)
         .expect("enable epoch");
 
-    central.boundary().push_event(advertisement("peer-a"));
+    central
+        .boundary()
+        .push_event(advertisement("peer-a"))
+        .expect("synthetic event admission failed");
     wait_peer(&central, "peer-a").await;
     central
         .connect("peer-a", "lease-a", OpControl::budget_ms(5000))
@@ -514,7 +532,8 @@ async fn held_discovery_on_one_peer_never_stalls_another() {
     for value in 0..50u8 {
         central
             .boundary()
-            .push_event(notification("peer-b", epoch, vec![value]));
+            .push_event(notification("peer-b", epoch, vec![value]))
+            .expect("synthetic event admission failed");
     }
     let started = std::time::Instant::now();
     let mut delivered = Vec::new();
@@ -574,7 +593,10 @@ async fn held_discovery_on_one_peer_never_stalls_another() {
 async fn a_connect_without_a_budget_waits_until_the_os_answers_or_the_caller_cancels() {
     let central = open().await;
     for peer in ["peer-w", "peer-c"] {
-        central.boundary().push_event(advertisement(peer));
+        central
+            .boundary()
+            .push_event(advertisement(peer))
+            .expect("synthetic event admission failed");
         wait_peer(&central, peer).await;
     }
     central.boundary().block_op(FaultOp::Connect);

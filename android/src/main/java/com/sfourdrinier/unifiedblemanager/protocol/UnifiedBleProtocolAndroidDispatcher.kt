@@ -119,6 +119,9 @@ constructor(
       "coreShadowRejected",
       "${observation.code}|${observation.domain}|${observation.operation} ${observation.detail ?: ""}".trim()
     )
+    // Scan-start verdicts carry a generation in the bridge and are consumed
+    // by that scan's owner. A delayed rejection cannot reject a replacement.
+    if (observation.event == "scan.start") return
     // Authority bind: a core rejection must never leave a correlated pending
     // command reporting radio success. Fail every still-pending command of the
     // mapped kinds admitted before this rejection (claim-guarded: settled
@@ -234,11 +237,13 @@ constructor(
     // drainNow never throws: drain failures surface as data observations and
     // observation consumers are isolated inside the bridge.
     shadow.bridge.drainNow()
-    coreRejectionSince(seqBefore, CoreCommandAuthority.coreEventsFor(commandKind))?.let { rejection ->
+    val rejection = if (commandKind == "scanStart") null else
+      coreRejectionSince(seqBefore, CoreCommandAuthority.coreEventsFor(commandKind))
+    rejection?.let {
       // The pending-bind in onCoreRejection already attempted this terminal
       // during the drain; the claim guard makes this a safe deterministic
       // second attempt with the same code.
-      emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage(commandKind, rejection))
+      emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage(commandKind, it))
       return null
     }
     when (result) {
@@ -257,7 +262,7 @@ constructor(
         "Android core failed to enqueue $commandKind (${result.message}); $commandKind was not executed"
       )
       is UbmGattCentralBridge.PostResult.ScheduleFailed -> {
-        if (commandKind == "connect") {
+        if (commandKind == "connect" || commandKind == "scanStart") {
           // The line is queued and the synchronous drain above may already
           // have produced the exact connect admission. Let the caller consume
           // that receipt; never discard a real core lease merely because the
@@ -425,8 +430,34 @@ constructor(
   private val activeDatabases = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val activeSubscriptions = ConcurrentHashMap<String, SubscriptionRoute>()
   private val pendingSubscriptions = ConcurrentHashMap<String, SubscriptionRoute>()
+  private val subscriptionGroups = mutableMapOf<ProtocolWireRecord, SubscriptionGroup>()
+  private var nextSubscriptionEpoch = 1L
+  private class SubscriptionGroup(
+    val path: ProtocolWireRecord,
+    val endpoint: CharacteristicEndpoint,
+    val mode: String?,
+    val epoch: Long,
+    val pending: MutableMap<String, ProtocolWireRecord> = mutableMapOf(),
+    val owners: MutableSet<String> = mutableSetOf(),
+    var state: String = "enabling",
+    var nativeStart: Long? = null,
+    var cancellingSubscription: String? = null
+  )
+
   private val radioOperationIds = ConcurrentHashMap<String, Long>()
   private val activeScanCommand = AtomicReference<ProtocolWireRecord?>(null)
+  private val scanStartGuard = Any()
+  private val scanCancellationGuard = Any()
+  private val scanStopTargets = ConcurrentHashMap<String, ProtocolWireRecord>()
+  private val scanStopsRetiredByReset = ConcurrentHashMap.newKeySet<String>()
+  private val scanCoreOperations = ConcurrentHashMap<String, String>()
+  private val scanPendingAdmissions = ConcurrentHashMap.newKeySet<String>()
+  private val scanCoreSettlementGuard = Any()
+  private val scanResetGeneration = AtomicLong(0)
+  private var scanResetHandled = 0L
+  private var scanResetCoreHandled = 0L
+  private var scanResetCorePending: Long? = null
+  private var scanResetNotified: ProtocolWireRecord? = null
   private val cancelledScanCommands = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val attachmentCloseRequested = AtomicBoolean(false)
   /** Security events are enabled only after a security-aware JS peer sends a security command. */
@@ -435,9 +466,11 @@ constructor(
 
   init {
     radio.onAdapterState = { adapterState ->
+      val resetting = adapterState == "PoweredOff" || adapterState == "Resetting"
+      if (resetting) synchronized(scanCancellationGuard) { scanResetGeneration.incrementAndGet() }
       clearGattProtocolOwnershipForAdapterLoss(adapterState)
-      if (adapterState == "PoweredOff" || adapterState == "Resetting") {
-        coreShadow?.postAdapterReset()
+      if (resetting) {
+        synchronized(scanStartGuard) { reconcileScanReset() }
       }
       emitCurrentAdapterState()
     }
@@ -540,6 +573,9 @@ constructor(
               command.requiredString(3) != "disconnect" &&
               connectionIdentityMatches(command, established.connection)
           }
+          subscriptionGroups.entries.removeIf { entry ->
+            databaseConnectionMatches(entry.key.requiredRecord(1).requiredRecord(1), established.connection)
+          }
           pendingSubscriptions.entries.removeIf { entry ->
             connectionIdentityMatchesRecords(entry.value.connection, established.connection)
           }
@@ -553,57 +589,30 @@ constructor(
         emitConnectionLost(established.connection, status)
       }
     }
-    radio.onScanFailed = { errorCode ->
-      val failedCommand = activeScanCommand.get()
-      val stopFailure = radio.stopScan()
-      if (stopFailure == null) {
-        failedCommand?.let { activeScanCommand.compareAndSet(it, null) }
-        completeCancelledScanCommands()
-      }
-      if (stopFailure != null) {
-        radio.reportCleanupFailure(stopFailure)
-        UnifiedBleProtocolJsiBinding.emitDiagnostic(
-          nativeHandle,
-          "scanStopFailed",
-          "Android scan failure cleanup failed: ${stopFailure.throwable.message ?: "unknown error"}"
-        )
-      }
-      if (failedCommand != null) {
-        emitFailure(
-          failedCommand,
-          "scanFailed",
-          "Android scan failed code=$errorCode"
-        )
-      }
-      UnifiedBleProtocolJsiBinding.emitDiagnostic(nativeHandle, "scanFailed", "Android scan failed code=$errorCode")
-    }
-    radio.onProtocolScanResult = { advertisement ->
-      if (activeScanCommand.get() != null) {
-        UnifiedBleProtocolJsiBinding.emitAdvertisement(
-          nativeHandle,
-          advertisement.deviceId,
-          advertisement.name,
-          advertisement.rssi,
-          advertisement.txPower ?: 0,
-          advertisement.txPower != null,
-          advertisement.connectable.toNativeConnectableState(),
-          advertisement.appearance?.toLong() ?: 0L,
-          advertisement.appearance != null,
-          advertisement.rawRecord,
-          advertisement.serviceUuids?.toTypedArray(),
-          advertisement.solicitedServiceUuids?.toTypedArray(),
-          advertisement.serviceData?.map { entry -> entry.serviceUuid }?.toTypedArray(),
-          advertisement.serviceData?.map { entry -> entry.value }?.toTypedArray(),
-          advertisement.manufacturerData?.map { entry -> entry.companyIdentifier }?.toIntArray(),
-          advertisement.manufacturerData?.map { entry -> entry.value }?.toTypedArray()
-        )
-      }
-    }
-    radio.onProtocolNotification = { deviceId, characteristic, value ->
+    radio.onProtocolNotification = { deviceId, _, path, value ->
       (pendingSubscriptions.values.asSequence() + activeSubscriptions.values.asSequence())
-        .filter { route -> route.matches(deviceId, characteristic, radio) }
+        .filter { route -> route.matches(deviceId, path) }
         .forEach { route ->
           UnifiedBleProtocolJsiBinding.emitNotification(nativeHandle, route.subscriptionId, value)
+        }
+    }
+    radio.onProtocolNotificationLoss = { deviceId, _, path, items, bytes ->
+      (pendingSubscriptions.values.asSequence() + activeSubscriptions.values.asSequence())
+        .filter { route -> route.matches(deviceId, path) }
+        .forEach { route ->
+          UnifiedBleProtocolJsiBinding.emitNotificationLoss(nativeHandle, route.subscriptionId, items, bytes)
+        }
+    }
+    radio.onProtocolNotificationFailure = { deviceId, _, _, _, path, reason ->
+      val failure = com.sfourdrinier.unifiedblemanager.rustcore.classifyAndroidNotificationStop(reason)
+      val sourcePath = path ?: throw IllegalStateException("notification failure has no characteristic path")
+      (pendingSubscriptions.values.asSequence() + activeSubscriptions.values.asSequence())
+        .filter { route -> route.matches(deviceId, sourcePath) }
+        .forEach { route ->
+          UnifiedBleProtocolJsiBinding.emitNotificationTerminated(
+            nativeHandle, route.subscriptionId, failure.kind.wire,
+            failure.nativeCode ?: "NOTIFICATION_DELIVERY_UNCERTAIN", failure.gattStatus, failure.detail
+          )
         }
     }
   }
@@ -637,6 +646,7 @@ constructor(
     activeDatabases.clear()
     pendingSubscriptions.clear()
     activeSubscriptions.clear()
+    synchronized(ownershipGuard) { subscriptionGroups.clear() }
   }
 
   fun emitCurrentAdapterState() {
@@ -749,12 +759,145 @@ constructor(
       activeDatabases.clear()
       pendingSubscriptions.clear()
       activeSubscriptions.clear()
+      synchronized(ownershipGuard) { subscriptionGroups.clear() }
       activeScanCommand.set(null)
+      scanCoreOperations.clear()
+      scanPendingAdmissions.clear()
     }
     return result.isSuccessful
   }
 
-  private fun startScan(command: ProtocolWireRecord) {
+  private fun handleScanFailure(failedCommand: ProtocolWireRecord, errorCode: Int, stop: () -> Pair<Boolean, com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure?>) {
+      if (activeScanCommand.get() !== failedCommand) return
+      val (stale, stopFailure) = stop()
+      if (stale) return
+      if (stopFailure == null) {
+        if (settleCoreScan(failedCommand, beginStop = true) && retireScanOwner(failedCommand)) {
+          cancelledScanCommands.remove(operationKey(failedCommand))?.let { emitCancelled(it) }
+        }
+      }
+      if (stopFailure != null) {
+        radio.reportCleanupFailure(stopFailure)
+        UnifiedBleProtocolJsiBinding.emitDiagnostic(
+          nativeHandle,
+          "scanStopFailed",
+          "Android scan failure cleanup failed: ${stopFailure.throwable.message ?: "unknown error"}"
+        )
+      }
+      if (activeScanCommand.get() === failedCommand || stopFailure == null) {
+        emitFailure(
+          failedCommand,
+          "scanFailed",
+          "Android scan failed code=$errorCode"
+        )
+      }
+      UnifiedBleProtocolJsiBinding.emitScanFailure(nativeHandle, ProtocolWireEncoder.encode(failedCommand.requiredRecord(2)), "Android scan failed code=$errorCode")
+    }
+
+  private fun handleScanAdvertisement(command: ProtocolWireRecord, advertisement: com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidProtocolAdvertisement) {
+      if (activeScanCommand.get() === command) {
+        UnifiedBleProtocolJsiBinding.emitAdvertisement(
+          nativeHandle,
+          ProtocolWireEncoder.encode(command.requiredRecord(2)),
+          advertisement.deviceId,
+          advertisement.name,
+          advertisement.rssi,
+          advertisement.txPower ?: 0,
+          advertisement.txPower != null,
+          advertisement.connectable.toNativeConnectableState(),
+          advertisement.appearance?.toLong() ?: 0L,
+          advertisement.appearance != null,
+          advertisement.rawRecord,
+          advertisement.serviceUuids?.toTypedArray(),
+          advertisement.solicitedServiceUuids?.toTypedArray(),
+          advertisement.serviceData?.map { entry -> entry.serviceUuid }?.toTypedArray(),
+          advertisement.serviceData?.map { entry -> entry.value }?.toTypedArray(),
+          advertisement.manufacturerData?.map { entry -> entry.companyIdentifier }?.toIntArray(),
+          advertisement.manufacturerData?.map { entry -> entry.value }?.toTypedArray()
+        )
+      }
+    }
+
+  /** Called with scanStartGuard held. A verdict belongs to the loss that posted it. */
+  private fun reconcileCoreReset(): Boolean {
+    val shadow = coreShadow ?: return false
+    synchronized(scanCoreSettlementGuard) {
+      while (scanResetCoreHandled != scanResetGeneration.get()) {
+        if (scanResetCorePending == null) {
+          val generation = scanResetGeneration.get()
+          val result = shadow.postAdapterReset()
+          if (result !is UbmGattCentralBridge.PostResult.Queued && result !is UbmGattCentralBridge.PostResult.ScheduleFailed) {
+            UnifiedBleProtocolJsiBinding.emitDiagnostic(nativeHandle, "coreResetRetryable", "Android core adapter reset could not be enqueued")
+            return false
+          }
+          scanResetCorePending = generation
+        }
+        shadow.bridge.drainNow()
+        when (shadow.adapterResetVerdict()) {
+          true -> {
+            shadow.forgetAdapterReset()
+            scanResetCoreHandled = scanResetCorePending!!
+            scanResetCorePending = null
+            activeScanCommand.get()?.let { target ->
+              scanStopTargets.forEach { (key, candidate) ->
+                if (candidate === target) scanStopsRetiredByReset.add(key)
+              }
+              scanCoreOperations.remove(operationKey(target))
+              scanPendingAdmissions.remove(operationKey(target))
+            }
+          }
+          false -> { shadow.forgetAdapterReset(); scanResetCorePending = null; return false }
+          null -> return false
+        }
+      }
+    }
+    return true
+  }
+
+  /** Core invalidation and retryable native scan cleanup are independent owners. */
+  private fun reconcileScanReset(): Boolean {
+    val generation = scanResetGeneration.get()
+    if (generation == scanResetHandled) return true
+    val target = activeScanCommand.get()
+    if (target != null && scanResetNotified !== target) {
+      scanResetNotified = target
+      UnifiedBleProtocolJsiBinding.emitScanFailure(nativeHandle, ProtocolWireEncoder.encode(target.requiredRecord(2)), "Android adapter reset interrupted the scan")
+    }
+    val coreReset = reconcileCoreReset()
+    if (target != null) {
+      val failure = radio.stopLegacyScan(target)
+      if (failure != null) {
+        radio.reportCleanupFailure(failure)
+        return false
+      }
+    }
+    if (!coreReset) return false
+    synchronized(scanCoreSettlementGuard) {
+      if (target != null) {
+        scanCoreOperations.remove(operationKey(target))
+        scanPendingAdmissions.remove(operationKey(target))
+        retireScanOwner(target)
+        completeCancelledScanCommand(target)
+      }
+    }
+    scanResetNotified = null
+    scanResetHandled = generation
+    return scanResetGeneration.get() == generation
+  }
+
+  private fun startScan(command: ProtocolWireRecord) = synchronized(scanStartGuard) {
+    if (!reconcileScanReset()) {
+      emitFailure(command, CoreCommandAuthority.CODE_UNAVAILABLE, "Android adapter reset remains unresolved")
+      return
+    }
+    val resetGeneration = scanResetGeneration.get()
+    synchronized(scanCancellationGuard) {
+      if (cancelledScanCommands.containsKey(operationKey(command))) {
+        retireRegistryScan(command)
+        completeCancelledScanCommand(command)
+        return
+      }
+    }
     val options = command.requiredRecord(12)
     val serviceUuids = options.requiredStringList(1).toTypedArray()
     require(activeScanCommand.compareAndSet(null, command)) { "A protocol scan is already active" }
@@ -766,74 +909,248 @@ constructor(
       // Authority: admit the core scan BEFORE touching the radio. A refused
       // command releases the active-scan claim here and never scans.
       admission = admitCoreCommand(command, "scanStart") { shadow ->
-        shadow.postScanStart(serviceUuids.toList(), allowDuplicates)
+        shadow.postScanStart(serviceUuids.toList(), allowDuplicates, operationKey(command))
       } ?: run {
-        activeScanCommand.compareAndSet(command, null)
+        retireScanOwner(command)
         return
       }
-      radio.startScan(
+      when (val verdict = admission.shadow.currentScanAdmission(operationKey(command))) {
+        is UbmGattCoreBinding.ScanAdmission.Admitted -> scanCoreOperations[operationKey(command)] = verdict.operation
+        is UbmGattCoreBinding.ScanAdmission.Rejected -> {
+          retireScanOwner(command)
+          emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("scanStart", verdict.observation))
+          return
+        }
+        UbmGattCoreBinding.ScanAdmission.Missing -> {
+          scanPendingAdmissions.add(operationKey(command))
+          val code = if (admission.schedulerFailure != null) CoreCommandAuthority.CODE_SCHEDULE_FAILED else CoreCommandAuthority.CODE_UNAVAILABLE
+          emitFailure(command, code, "Android core scan admission remains unresolved; cleanup is required")
+          return
+        }
+      }
+      if (admission.schedulerFailure != null) {
+        scanPendingAdmissions.add(operationKey(command))
+        emitFailure(command, CoreCommandAuthority.CODE_SCHEDULE_FAILED,
+          "Android core queued scanStart but scheduling failed (${admission.schedulerFailure}); cleanup is required")
+        return
+      }
+      synchronized(scanCancellationGuard) {
+        if (scanResetGeneration.get() != resetGeneration) {
+          reconcileScanReset()
+          emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android adapter reset interrupted the scan start")
+          return
+        } else if (cancelledScanCommands.containsKey(operationKey(command))) {
+          finishCancelledScanStart(command)
+          return
+        }
+      }
+      radio.startLegacyScanSession(
         serviceUuids = serviceUuids,
         scanMode = options.requiredSignedInteger(3).toInt(),
         callbackType = options.requiredSignedInteger(4).toInt(),
         legacyScan = options.requiredBoolean(5),
         allowDuplicates = allowDuplicates,
-        deviceAddresses = options.optionalStringList(6).toTypedArray()
+        deviceAddresses = options.optionalStringList(6).toTypedArray(),
+        onSessionAdvertisement = { advertisement -> handleScanAdvertisement(command, advertisement) },
+        onSessionFailure = { code, stop -> handleScanFailure(command, code, stop) },
+        identity = command
       )
-      // Re-check before reporting: a worker verdict may have landed between
-      // admission and radio start. On rejection stop the radio scan rather
-      // than reporting success over a core refusal.
-      val admitted = admission
-      coreRejectionSince(admitted.seqBefore, CoreCommandAuthority.coreEventsFor("scanStart"))?.let { rejection ->
-        activeScanCommand.compareAndSet(command, null)
-        radio.stopScan()?.let { failure -> radio.reportCleanupFailure(failure) }
-        emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("scanStart", rejection))
+      if (scanResetGeneration.get() != resetGeneration || activeScanCommand.get() !== command) {
+        reconcileScanReset()
+        emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android adapter reset interrupted the scan start")
         return
       }
-      emitSuccess(command, "scanStarted")
+      val op = scanCoreOperations[operationKey(command)]
+      if (op != null) {
+        if (activeScanCommand.get() === command) {
+          val before = coreVerdictSeq.get()
+          val started = admission.shadow.postScanPlatformStarted(op)
+          admission.shadow.bridge.drainNow()
+          if (started !is UbmGattCentralBridge.PostResult.Queued ||
+            admission.shadow.scanPlatformStartedVerdict(op) != true ||
+            coreRejectionSince(before, setOf("scan.platform-started", "gatt-drain")) != null) {
+            val failure = radio.stopLegacyScan(command)
+            if (failure == null) {
+              if (settleCoreScan(command, beginStop = true)) retireScanOwner(command)
+            } else radio.reportCleanupFailure(failure)
+            emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android core could not record the platform scan start")
+            return
+          }
+        }
+      } else {
+        val failure = radio.stopLegacyScan(command)
+        if (failure != null) radio.reportCleanupFailure(failure)
+        emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android core scan identity is unavailable")
+        return
+      }
+      synchronized(scanCancellationGuard) {
+        if (scanResetGeneration.get() != resetGeneration) {
+          reconcileScanReset()
+          emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android adapter reset interrupted the scan start")
+        } else if (cancelledScanCommands.containsKey(operationKey(command))) {
+          finishCancelledScanStart(command)
+        } else {
+          emitSuccess(command, "scanStarted")
+        }
+      }
     } catch (error: Exception) {
       // Core-first compensation: the admitted core scan has no radio peer, so
       // attempt its stop rather than orphaning the core op. Best effort — the
       // rethrown radio error stays the loud terminal.
-      if (admission != null) compensateCoreScanStop()
-      if (!radio.hasScanCleanupOwnership()) {
-        activeScanCommand.compareAndSet(command, null)
+      val radioReleased = !radio.hasLegacyScanCleanupOwnership(command)
+      val coreSettled = admission == null || (radioReleased && settleCoreScan(command, beginStop = true))
+      if (radioReleased && coreSettled) {
+        retireScanOwner(command)
+      } else {
+        val cleanupDetail = error.suppressed.joinToString("; ") { it.message ?: it.javaClass.simpleName }
+        val reason = if (cleanupDetail.isNotEmpty()) cleanupDetail else "native or core scan cleanup remains retryable"
+        val code = when (error) {
+          is SecurityException -> "permissionDenied"
+          is IllegalArgumentException -> "invalidCommand"
+          is IllegalStateException -> "radioFailure"
+          else -> "platformFailure"
+        }
+        emitFailure(command, code, "${error.message ?: "Android scan start failed"}; cleanup failed: $reason")
+        return
       }
       throw error
     }
   }
 
-  /** Best-effort core scan-stop compensation after a radio refusal. */
-  private fun compensateCoreScanStop() {
-    val compensation = try {
-      coreShadow?.postScanStop()
-    } catch (_: Throwable) {
-      null
+  // Clear the C++ owner only for the scan whose platform/core cleanup completed.
+  // A stale cleanup must never retire a replacement scan.
+  private fun retireScanOwner(command: ProtocolWireRecord): Boolean {
+    if (!activeScanCommand.compareAndSet(command, null)) return false
+    retireRegistryScan(command)
+    return true
+  }
+
+  private fun retireRegistryScan(command: ProtocolWireRecord) {
+    val correlation = command.requiredRecord(2)
+    UnifiedBleProtocolJsiBinding.retireScan(nativeHandle, correlation.requiredUnsigned(2), correlation.requiredString(3))
+  }
+
+  private fun finishCancelledScanStart(command: ProtocolWireRecord) {
+    if (activeScanCommand.get() !== command) {
+      retireRegistryScan(command)
+      completeCancelledScanCommand(command)
+      return
     }
-    if (compensation !is UbmGattCentralBridge.PostResult.Queued) {
+    val failure = radio.stopLegacyScan(command)
+    if (failure != null) {
+      radio.reportCleanupFailure(failure)
+      UnifiedBleProtocolJsiBinding.emitDiagnostic(
+        nativeHandle,
+        "scanCancellationCleanupRetryable",
+        failure.throwable.message ?: "Android scan cancellation cleanup remains retryable"
+      )
+      return
+    }
+    if (!settleCoreScan(command, beginStop = true)) return
+    retireScanOwner(command)
+    completeCancelledScanCommand(command)
+  }
+
+  /** The platform's successful cleanup settles the exact admitted core scan. */
+  private fun settleCoreScan(command: ProtocolWireRecord, beginStop: Boolean): Boolean = synchronized(scanCoreSettlementGuard) {
+    val op = scanCoreOperations[operationKey(command)] ?: return false
+    val shadow = coreShadow ?: return false
+    val before = coreVerdictSeq.get()
+    val stop = if (beginStop) shadow.postScanStop(op) else null
+    if (stop != null && stop !is UbmGattCentralBridge.PostResult.Queued && stop !is UbmGattCentralBridge.PostResult.ScheduleFailed) {
       UnifiedBleProtocolJsiBinding.emitDiagnostic(
         nativeHandle,
         "coreCompensationFailed",
-        "Android core scan compensation failed after radio refusal"
+        "Android core scan stop could not be admitted"
       )
+      return false
     }
+    val settled = if (shadow.scanSettlementQueued(op)) null else shadow.postScanStopped(op)
+    shadow.bridge.drainNow()
+    if ((settled != null && settled !is UbmGattCentralBridge.PostResult.Queued && settled !is UbmGattCentralBridge.PostResult.ScheduleFailed) ||
+      shadow.scanSettlementVerdict(op) != true ||
+      coreRejectionSince(before, setOf("scan.stop", "scan.platform-event", "gatt-drain")) != null) {
+      UnifiedBleProtocolJsiBinding.emitDiagnostic(nativeHandle, "coreCompensationFailed", "Android core scan settlement failed")
+      return false
+    }
+    shadow.forgetStoppedScan(op)
+    scanCoreOperations.remove(operationKey(command), op)
+    return true
   }
 
   private fun stopScan(command: ProtocolWireRecord) {
-    // Authority: admit (or attest the no-op of) the core stop before the
-    // radio stop. A refused command never touches the radio.
-    val admission = admitCoreCommand(command, "scanStop") { shadow -> shadow.postScanStop() } ?: return
-    val failure = radio.stopScan()
-    if (failure == null) {
-      activeScanCommand.set(null)
-      coreRejectionSince(admission.seqBefore, CoreCommandAuthority.coreEventsFor("scanStop"))?.let { rejection ->
-        emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("scanStop", rejection))
+    val target = synchronized(scanStartGuard) {
+      if (!reconcileScanReset()) {
+        emitFailure(command, CoreCommandAuthority.CODE_UNAVAILABLE, "Android adapter reset remains unresolved")
         return
       }
-      completeCancelledScanCommands()
-      emitSuccess(command, "accepted")
-    } else {
-      radio.reportCleanupFailure(failure)
-      emitFailure(command, "scanStopFailed", failure.throwable.message ?: "Android scan stop failed")
+      activeScanCommand.get().also {
+        if (it != null) scanStopTargets[operationKey(command)] = it
+      }
+    }
+    try {
+      val stopKey = operationKey(command)
+      // Admission and reset settlement share the same owner lock. This also
+      // covers an unresolved scan-start admission captured by the stop.
+      val admission = synchronized(scanCoreSettlementGuard) {
+        if (stopKey in scanStopsRetiredByReset) {
+          null
+        } else {
+          if (scanResetCorePending != null || scanResetCoreHandled != scanResetGeneration.get()) {
+            emitFailure(command, CoreCommandAuthority.CODE_UNAVAILABLE, "Android core adapter reset remains unresolved")
+            return
+          }
+          if (target != null && operationKey(target) in scanPendingAdmissions) {
+            val shadow = coreShadow ?: run {
+              emitFailure(command, CoreCommandAuthority.CODE_UNAVAILABLE, "Android core scan admission remains unresolved")
+              return
+            }
+            shadow.bridge.drainNow()
+            when (val verdict = shadow.currentScanAdmission(operationKey(target))) {
+              is UbmGattCoreBinding.ScanAdmission.Admitted -> scanCoreOperations[operationKey(target)] = verdict.operation
+              is UbmGattCoreBinding.ScanAdmission.Rejected -> {
+                scanPendingAdmissions.remove(operationKey(target))
+                retireScanOwner(target)
+                completeCancelledScanCommand(target)
+                emitSuccess(command, "accepted")
+                return
+              }
+              UbmGattCoreBinding.ScanAdmission.Missing -> {
+                emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android core scan admission remains unresolved")
+                return
+              }
+            }
+            scanPendingAdmissions.remove(operationKey(target))
+          }
+          // Admit the core stop before touching the radio.
+          admitCoreCommand(command, "scanStop") { shadow ->
+            shadow.postScanStop(target?.let { scanCoreOperations[operationKey(it)] })
+          } ?: return
+        }
+      }
+      val failure = target?.let { radio.stopLegacyScan(it) }
+      if (failure == null) {
+        val settled = synchronized(scanCoreSettlementGuard) {
+          target == null || stopKey in scanStopsRetiredByReset || settleCoreScan(target, beginStop = false)
+        }
+        if (!settled) {
+          emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android core scan settlement failed")
+          return
+        }
+        if (target != null) retireScanOwner(target)
+        admission?.let { coreRejectionSince(it.seqBefore, CoreCommandAuthority.coreEventsFor("scanStop")) }?.let { rejection ->
+          emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("scanStop", rejection))
+          return
+        }
+        if (target != null) completeCancelledScanCommand(target)
+        emitSuccess(command, "accepted")
+      } else {
+        radio.reportCleanupFailure(failure)
+        emitFailure(command, "scanStopFailed", failure.throwable.message ?: "Android scan stop failed")
+      }
+    } finally {
+      scanStopTargets.remove(operationKey(command))
+      scanStopsRetiredByReset.remove(operationKey(command))
     }
   }
 
@@ -856,8 +1173,13 @@ constructor(
     var admittedGeneration = ""
     try {
       // Authority: admit the core connect BEFORE touching the radio.
-      val admission = admitCoreCommand(command, "connect") { shadow ->
-        shadow.postConnect(peerId, lease)
+      val admission = synchronized(scanStartGuard) {
+        if (!reconcileCoreReset()) {
+          emitFailure(command, CoreCommandAuthority.CODE_UNAVAILABLE, "Android core adapter reset remains unresolved")
+          null
+        } else {
+          admitCoreCommand(command, "connect") { shadow -> shadow.postConnect(peerId, lease) }
+        }
       } ?: run {
         synchronized(ownershipGuard) {
           removePendingConnect(peerId.uppercase(), command)
@@ -1489,71 +1811,227 @@ constructor(
 
   private fun subscribe(command: ProtocolWireRecord, enable: Boolean) {
     val subscriptionId = command.requiredString(7)
-    if (!enable && !activeSubscriptions.containsKey(subscriptionId)) {
-      emitSuccess(command, "unsubscribed")
+    val path = command.requiredRecord(4)
+    val endpoint = characteristicEndpoint(path)
+    if (!enable) {
+      val route: SubscriptionRoute
+      val group: SubscriptionGroup
+      synchronized(ownershipGuard) {
+        route = activeSubscriptions[subscriptionId] ?: run {
+          emitSuccess(command, "unsubscribed")
+          return
+        }
+        require(route.endpoint == endpoint) { "Subscription characteristic does not match its owner" }
+        group = subscriptionGroups[path] ?: throw IllegalStateException("Subscription group is unavailable")
+        require(group.owners.contains(subscriptionId)) { "Subscription generation does not match its owner" }
+        if (group.state != "ready" && group.state != "cleanup-failed") throw IllegalStateException("Subscription cleanup is in progress")
+        if (group.owners.size > 1) {
+          group.owners.remove(subscriptionId)
+          activeSubscriptions.remove(subscriptionId, route)
+          emitSuccess(command, "unsubscribed")
+          return
+        }
+        group.state = "disabling"
+      }
+      try {
+        radio.setNotifyExact(endpoint.deviceId, endpoint.serviceUuid, endpoint.serviceOccurrence,
+        endpoint.characteristicUuid, endpoint.characteristicOccurrence, false, sourceEpoch = group.epoch) { result ->
+        synchronized(ownershipGuard) {
+          if (subscriptionGroups[path] !== group) return@setNotifyExact
+          if (result.isFailure) {
+            group.state = "ready"
+            emitGattOperationFailure(command, "subscriptionFailed", result.exceptionOrNull()!!, "Android CCCD operation failed")
+          } else if (isPending(command)) {
+            group.owners.remove(subscriptionId)
+            activeSubscriptions.remove(subscriptionId, route)
+            subscriptionGroups.remove(path)
+            emitSuccess(command, "unsubscribed")
+          } else {
+            group.state = "restoring"
+            restoreCancelledSubscription(group, route)
+          }
+        }
+        }
+      } catch (error: Exception) {
+        synchronized(ownershipGuard) {
+          if (subscriptionGroups[path] === group && group.state == "disabling") group.state = "ready"
+        }
+        throw error
+      }
       return
     }
-    val endpoint = characteristicEndpoint(command.requiredRecord(4))
     val connection = connectionRecordForCommand(command)
       ?: throw IllegalArgumentException("Android subscription is missing its connection path")
-    val route = SubscriptionRoute(
-      subscriptionId,
-      endpoint,
-      connection,
-      command.optionalString(21)
-    )
-    if (enable) {
-      pendingSubscriptions[subscriptionId] = route
-    }
-    val radioOperationId = radio.setNotifyExact(
-      endpoint.deviceId,
-      endpoint.serviceUuid,
-      endpoint.serviceOccurrence,
-      endpoint.characteristicUuid,
-      endpoint.characteristicOccurrence,
-      enable,
-      subscriptionType = command.optionalString(21)
-    ) { result ->
-      result.fold(
-        onSuccess = {
-          if (!isPending(command)) {
-            pendingSubscriptions.remove(subscriptionId, route)
-            if (enable) {
-              radio.setNotifyExact(
-                endpoint.deviceId,
-                endpoint.serviceUuid,
-                endpoint.serviceOccurrence,
-                endpoint.characteristicUuid,
-                endpoint.characteristicOccurrence,
-                false
-              ) { disableResult ->
-                disableResult.exceptionOrNull()?.let { error ->
-                  UnifiedBleProtocolJsiBinding.emitDiagnostic(
-                    nativeHandle,
-                    "cancelledSubscriptionDisableFailed",
-                    error.message ?: "Android GATT cancellation cleanup failed"
-                  )
-                }
-              }
-            }
-            return@fold
-          }
-          if (enable) {
-            pendingSubscriptions.remove(subscriptionId, route)
-            activeSubscriptions[subscriptionId] = route
-          } else {
-            pendingSubscriptions.remove(subscriptionId)
-            activeSubscriptions.remove(subscriptionId)
-          }
-          emitSuccess(command, if (enable) "subscribed" else "unsubscribed")
-        },
-        onFailure = { error ->
-          pendingSubscriptions.remove(subscriptionId, route)
-          emitGattOperationFailure(command, "subscriptionFailed", error, "Android CCCD operation failed")
+    val constraint = command.optionalString(22)
+    val mode = resolveNotificationMode(endpoint, command.optionalString(21), constraint)
+    val route = SubscriptionRoute(subscriptionId, endpoint, connection, mode)
+    val group: SubscriptionGroup
+    synchronized(ownershipGuard) {
+      require(!activeSubscriptions.containsKey(subscriptionId) && !pendingSubscriptions.containsKey(subscriptionId)) {
+        "Subscription identifier is already in use"
+      }
+      val existing = subscriptionGroups[path]
+      if (existing != null) {
+        if (existing.state == "cleanup-failed" && existing.owners.isEmpty()) {
+          cleanupUnownedSubscription(existing)
+          throw IllegalStateException("Subscription cleanup is retrying")
         }
+        if (existing.state != "ready" && existing.state != "enabling") {
+          throw IllegalStateException("Subscription cleanup is in progress")
+        }
+        if ((constraint == "requireNotification" && existing.mode != "notification") ||
+          (constraint == "requireIndication" && existing.mode != "indication")) {
+          throw IllegalArgumentException("Required notification mode conflicts with existing subscription")
+        }
+        pendingSubscriptions[subscriptionId] = route
+        if (existing.state == "ready") {
+          pendingSubscriptions.remove(subscriptionId, route)
+          activeSubscriptions[subscriptionId] = route
+          existing.owners.add(subscriptionId)
+          emitSuccess(command, "subscribed")
+        } else existing.pending[subscriptionId] = command
+        return
+      }
+      check(nextSubscriptionEpoch < Long.MAX_VALUE) { "Notification subscription epoch exhausted" }
+      group = SubscriptionGroup(path, endpoint, mode, nextSubscriptionEpoch++)
+      group.pending[subscriptionId] = command
+      pendingSubscriptions[subscriptionId] = route
+      subscriptionGroups[path] = group
+    }
+    try {
+      val operationId = radio.setNotifyExact(endpoint.deviceId, endpoint.serviceUuid, endpoint.serviceOccurrence,
+      endpoint.characteristicUuid, endpoint.characteristicOccurrence, true, subscriptionType = mode, sourceEpoch = group.epoch) { result ->
+      synchronized(ownershipGuard) {
+        if (subscriptionGroups[path] !== group) return@setNotifyExact
+        val waiting = group.pending.toMap()
+        group.pending.clear()
+        val cancelling = group.cancellingSubscription
+        if (cancelling != null) {
+          pendingSubscriptions.remove(cancelling)
+          val cancelled = waiting[cancelling]
+          if (cancelled != null) emitCancelled(cancelled)
+          if (result.isSuccess) cleanupUnownedSubscription(group)
+          else subscriptionGroups.remove(path)
+          return@setNotifyExact
+        }
+        if (result.isFailure) {
+          subscriptionGroups.remove(path)
+          waiting.forEach { (id, pending) ->
+            pendingSubscriptions.remove(id)
+            emitGattOperationFailure(pending, "subscriptionFailed", result.exceptionOrNull()!!, "Android CCCD operation failed")
+          }
+        } else {
+          group.state = "ready"
+          waiting.forEach { (id, pending) ->
+            val candidate = pendingSubscriptions.remove(id)
+            if (candidate != null && isPending(pending)) {
+              activeSubscriptions[id] = candidate
+              group.owners.add(id)
+              emitSuccess(pending, "subscribed")
+            }
+          }
+          if (group.owners.isEmpty()) {
+            cleanupUnownedSubscription(group)
+          }
+        }
+      }
+      }
+      synchronized(ownershipGuard) {
+        if (subscriptionGroups[path] === group) {
+          group.nativeStart = operationId
+          if (group.cancellingSubscription != null) radio.cancelOperation(operationId)
+        }
+      }
+    } catch (error: Exception) {
+      val waiting = synchronized(ownershipGuard) {
+        if (subscriptionGroups[path] !== group || (group.state != "enabling" && group.state != "cancelling")) {
+          emptyList()
+        } else {
+          subscriptionGroups.remove(path)
+          group.pending.map { (id, pending) ->
+            pendingSubscriptions.remove(id)
+            pending
+          }.also { group.pending.clear() }
+        }
+      }
+      waiting.forEach { pending ->
+        if (pending.requiredString(7) == group.cancellingSubscription) emitCancelled(pending)
+        else emitGattOperationFailure(pending, "subscriptionFailed", error, "Android CCCD operation failed")
+      }
+    }
+  }
+
+  private fun resolveNotificationMode(endpoint: CharacteristicEndpoint, requested: String?, constraint: String?): String {
+    val service = radio.services(endpoint.deviceId).filter { it.uuid == endpoint.serviceUuid }
+      .getOrNull(endpoint.serviceOccurrence) ?: throw IllegalArgumentException("Subscription service not found")
+    val characteristic = service.characteristics.filter { it.uuid == endpoint.characteristicUuid }
+      .getOrNull(endpoint.characteristicOccurrence) ?: throw IllegalArgumentException("Subscription characteristic not found")
+    val notifiable = characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
+    val indicatable = characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
+    val chosen = requested ?: when (constraint) {
+      "requireIndication" -> "indication"
+      "requireNotification" -> "notification"
+      "preferIndication" -> if (indicatable) "indication" else "notification"
+      else -> if (notifiable) "notification" else "indication"
+    }
+    require((chosen == "notification" && notifiable) || (chosen == "indication" && indicatable)) {
+      "Subscription mode is not supported by the characteristic"
+    }
+    require((constraint != "requireNotification" || chosen == "notification") &&
+      (constraint != "requireIndication" || chosen == "indication")) {
+      "Subscription mode conflicts with its requirement"
+    }
+    return chosen
+  }
+
+  private fun cleanupUnownedSubscription(group: SubscriptionGroup) {
+    group.state = "disabling"
+    val endpoint = group.endpoint
+    fun failed(error: Throwable) {
+      if (subscriptionGroups[group.path] !== group) return
+      group.state = "cleanup-failed"
+      radio.reportCleanupFailure(OwnedRadioTeardownFailure("cancelledSubscriptionDisable", IllegalStateException("Android notification disable failed", error)))
+    }
+    try {
+      radio.setNotifyExact(endpoint.deviceId, endpoint.serviceUuid, endpoint.serviceOccurrence,
+        endpoint.characteristicUuid, endpoint.characteristicOccurrence, false, sourceEpoch = group.epoch) { result ->
+        synchronized(ownershipGuard) {
+          if (subscriptionGroups[group.path] !== group) return@setNotifyExact
+          result.fold(
+            onSuccess = { subscriptionGroups.remove(group.path) },
+            onFailure = { failed(it) }
+          )
+        }
+      }
+    } catch (error: Exception) {
+      synchronized(ownershipGuard) { failed(error) }
+    }
+  }
+
+  private fun restoreCancelledSubscription(group: SubscriptionGroup, route: SubscriptionRoute) {
+    val endpoint = group.endpoint
+    fun failed(error: Throwable) {
+      if (subscriptionGroups[group.path] !== group) return
+      group.state = "cleanup-failed"
+      radio.reportCleanupFailure(OwnedRadioTeardownFailure("cancelledUnsubscribeRestore", IllegalStateException("Android notification restoration failed", error)))
+      val failure = com.sfourdrinier.unifiedblemanager.rustcore.RustRadioHostAdapter.classify(error)
+      UnifiedBleProtocolJsiBinding.emitNotificationTerminated(
+        nativeHandle, route.subscriptionId, failure.kind.wire,
+        failure.nativeCode ?: "NOTIFICATION_RESTORE_FAILED", failure.gattStatus,
+        "Android notification restoration failed after cancellation"
       )
     }
-    radioOperationIds[operationKey(command)] = radioOperationId
+    try {
+      radio.setNotifyExact(endpoint.deviceId, endpoint.serviceUuid, endpoint.serviceOccurrence,
+        endpoint.characteristicUuid, endpoint.characteristicOccurrence, true, subscriptionType = group.mode, sourceEpoch = group.epoch) { result ->
+        synchronized(ownershipGuard) {
+          if (subscriptionGroups[group.path] !== group) return@setNotifyExact
+          result.fold(onSuccess = { group.state = "ready" }, onFailure = { failed(it) })
+        }
+      }
+    } catch (error: Exception) {
+      synchronized(ownershipGuard) { failed(error) }
+    }
   }
 
   private fun destroy(command: ProtocolWireRecord) {
@@ -1575,8 +2053,11 @@ constructor(
     activeDatabases.clear()
     pendingSubscriptions.clear()
     activeSubscriptions.clear()
+    synchronized(ownershipGuard) { subscriptionGroups.clear() }
     if (result.isSuccessful) {
       activeScanCommand.set(null)
+      scanCoreOperations.clear()
+      scanPendingAdmissions.clear()
       completeCancelledScanCommands()
       emitSuccess(command, "destroyed")
     } else {
@@ -1619,18 +2100,33 @@ constructor(
         null
       }
       if (commandKind == "scanStart") {
-        val cleanupFailure = radio.stopScan()
-        if (cleanupFailure != null) {
+        synchronized(scanCancellationGuard) {
+          if (!isPending(command)) return
           cancelledScanCommands[operationKey] = command
-          radio.reportCleanupFailure(cleanupFailure)
-          UnifiedBleProtocolJsiBinding.emitDiagnostic(
-            nativeHandle,
-            "scanCancellationCleanupRetryable",
-            cleanupFailure.throwable.message ?: "Android scan cancellation cleanup remains retryable"
-          )
-          return
         }
-        activeScanCommand.set(null)
+        synchronized(scanStartGuard) {
+          if (isPending(command)) finishCancelledScanStart(command)
+          else cancelledScanCommands.remove(operationKey, command)
+        }
+        return
+      }
+      if (commandKind == "subscribe") {
+        synchronized(ownershipGuard) {
+          val id = command.requiredString(7)
+          val group = subscriptionGroups[command.requiredRecord(4)]
+          if (group != null && group.pending[id] === command && group.pending.size == 1 && group.owners.isEmpty()) {
+            group.state = "cancelling"
+            group.cancellingSubscription = id
+            group.nativeStart?.let { radio.cancelOperation(it) }
+          } else {
+            pendingSubscriptions.remove(id)
+            group?.pending?.remove(id)
+            emitCancelled(command)
+          }
+        }
+        return
+      }
+      if (commandKind == "unsubscribe") {
         emitCancelled(command)
         return
       }
@@ -1693,52 +2189,19 @@ constructor(
         }
       }
       if (commandKind == "scanStop") {
-        radio.stopScan()?.let { failure ->
+        val target = scanStopTargets[operationKey] ?: return
+        radio.stopLegacyScan(target)?.let { failure ->
           radio.reportCleanupFailure(failure)
         } ?: run {
-          activeScanCommand.set(null)
-          completeCancelledScanCommands()
-        }
-      }
-      if (commandKind == "unsubscribe") {
-        val subscriptionId = command.requiredString(7)
-        val route = activeSubscriptions[subscriptionId]
-        if (route != null) {
-          radio.setNotifyExact(
-            route.endpoint.deviceId,
-            route.endpoint.serviceUuid,
-            route.endpoint.serviceOccurrence,
-            route.endpoint.characteristicUuid,
-            route.endpoint.characteristicOccurrence,
-            true,
-            subscriptionType = route.mode
-          ) { result ->
-            result.exceptionOrNull()?.let { error ->
-              radio.reportCleanupFailure(
-                OwnedRadioTeardownFailure("cancelledUnsubscribeRestore", error)
-              )
-            }
+          // Cancellation may win either before or after the stop command
+          // posts its core transition; settleCoreScan handles both states.
+          if (settleCoreScan(target, beginStop = true)) {
+            retireScanOwner(target)
+            completeCancelledScanCommand(target)
           }
         }
       }
-      if (commandKind == "subscribe") {
-        val endpoint = characteristicEndpoint(command.requiredRecord(4))
-        val subscriptionId = command.requiredString(7)
-        pendingSubscriptions.remove(subscriptionId)
-        activeSubscriptions.remove(subscriptionId)
-        radio.setNotifyExact(
-          endpoint.deviceId,
-          endpoint.serviceUuid,
-          endpoint.serviceOccurrence,
-          endpoint.characteristicUuid,
-          endpoint.characteristicOccurrence,
-          false
-        ) { result ->
-          result.exceptionOrNull()?.let { error ->
-            radio.reportCleanupFailure(OwnedRadioTeardownFailure("cancelledSubscriptionDisable", error))
-          }
-        }
-      }
+
     } catch (error: Exception) {
       UnifiedBleProtocolJsiBinding.emitDiagnostic(
         nativeHandle,
@@ -1753,6 +2216,10 @@ constructor(
       emitCancelled(command)
     }
     cancelledScanCommands.clear()
+  }
+
+  private fun completeCancelledScanCommand(command: ProtocolWireRecord) {
+    cancelledScanCommands.remove(operationKey(command))?.let { emitCancelled(it) }
   }
 
   private fun cancel(command: ProtocolWireRecord) {
@@ -2184,6 +2651,9 @@ constructor(
   }
 
   private fun clearSubscriptionRoutesForDevice(deviceId: String) {
+    synchronized(ownershipGuard) {
+      subscriptionGroups.entries.removeIf { it.value.endpoint.deviceId.equals(deviceId, ignoreCase = true) }
+    }
     pendingSubscriptions.entries.forEach { entry ->
       if (entry.value.endpoint.deviceId.equals(deviceId, ignoreCase = true)) {
         pendingSubscriptions.remove(entry.key, entry.value)
@@ -2220,27 +2690,11 @@ constructor(
     val connection: ProtocolWireRecord,
     val mode: String?
   ) {
-    fun matches(
-      deviceId: String,
-      characteristic: BluetoothGattCharacteristic,
-      radio: OwnedAndroidGattRadio
-    ): Boolean {
-      if (!endpoint.deviceId.equals(deviceId, ignoreCase = true)) return false
-      val service = characteristic.service ?: return false
-      if (service.uuid != endpoint.serviceUuid || characteristic.uuid != endpoint.characteristicUuid) return false
-      val serviceOccurrence = radio.services(deviceId)
-        .asSequence()
-        .filter { candidate -> candidate.uuid == service.uuid }
-        .takeWhile { candidate -> candidate !== service }
-        .count()
-      if (serviceOccurrence != endpoint.serviceOccurrence) return false
-      val characteristicOccurrence = service.characteristics
-        .asSequence()
-        .filter { candidate -> candidate.uuid == characteristic.uuid }
-        .takeWhile { candidate -> candidate !== characteristic }
-        .count()
-      return characteristicOccurrence == endpoint.characteristicOccurrence
-    }
+    fun matches(deviceId: String, path: com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidNotificationPath): Boolean =
+      endpoint.deviceId.equals(deviceId, ignoreCase = true) &&
+        endpoint.serviceUuid == path.serviceUuid && endpoint.serviceOccurrence == path.serviceOccurrence &&
+        endpoint.characteristicUuid == path.characteristicUuid &&
+        endpoint.characteristicOccurrence == path.characteristicOccurrence
   }
 
   private data class AdapterLossConnectFailure(

@@ -25,8 +25,10 @@
 //                          files that must match the compiled binary (T1):
 //                            napi   bindings/napi/src/{dispatch,lib}.rs
 //                            uniffi the UDL + generated Swift surface
-//                            jni    bindings/jni/src/lib.rs + every Java class
-//                                   named by an exported Java_* symbol
+//                            jni    bindings/jni/src/lib.rs + every production
+//                                   Java class named by an exported Java_* symbol;
+//                                   JVM-only exports are admitted only through
+//                                   their exact cfg-gated harness declarations
 //
 // Packed consumers ship this file (and only this file of scripts/): the
 // source-mode builders and the pod phase call it from inside node_modules,
@@ -481,20 +483,175 @@ function bindingSourceInputs(root, binding) {
   return [...inputs].sort()
 }
 
+function jniSymbol(symbol, relative) {
+  const segments = symbol.split('_')
+  const classIndex = segments.findIndex(segment => /^[A-Z]/.test(segment))
+  if (classIndex <= 0 || classIndex === segments.length - 1) {
+    throw new Error(
+      `native-build-identity: cannot resolve the Java class and method of JNI symbol Java_${symbol} in ${relative}`
+    )
+  }
+  return {
+    className: [...segments.slice(0, classIndex), segments[classIndex]].join('/'),
+    method: segments.slice(classIndex + 1).join('_')
+  }
+}
+
+function requireHarnessNativeMethod(root, relative, javaClass, method) {
+  const text = readRequired(root, relative, `JVM harness declaration for ${javaClass}`).toString('utf8')
+  if (!new RegExp(`\\bnative\\s+[^;()]+\\s+${method}\\s*\\(`).test(text)) {
+    throw new Error(`native-build-identity: JVM harness ${relative} lacks ${method} for ${javaClass}`)
+  }
+}
+
+function immediateFunctionAttributes(source, symbolIndex) {
+  const functionPrefix = 'pub extern "system" fn '
+  const functionStart = source.lastIndexOf(functionPrefix, symbolIndex)
+  if (functionStart === -1 || source.slice(functionStart + functionPrefix.length, symbolIndex) !== '') return []
+  const attributes = []
+  let before = source.slice(0, functionStart)
+  while (true) {
+    const attribute = /(?:^|\n)(#\[[^\n]+\])\s*$/.exec(before)
+    if (attribute === null) return attributes
+    attributes.push(attribute[1])
+    before = before.slice(0, attribute.index)
+  }
+}
+
+function requireRoundtripHarnessAttribute(source, symbolIndex, description) {
+  if (!immediateFunctionAttributes(source, symbolIndex).includes('#[cfg(ubm_jni_roundtrip)]')) {
+    throw new Error(`native-build-identity: ${description} must be cfg-gated by ubm_jni_roundtrip`)
+  }
+}
+
+const ORDERED_TEST_HARNESS_EXPORTS = Object.freeze([
+  Object.freeze({ className: 'com/ubm/core/TestBindingRoute', method: 'nativeTestOwnerDispatch', java: 'bindings/jni/java/com/ubm/core/TestBindingRoute.java' }),
+  Object.freeze({ className: 'com/ubm/core/TestOrdered', method: 'nativeExercise', java: 'bindings/jni/java/com/ubm/core/TestOrdered.java' }),
+  Object.freeze({ className: 'com/ubm/core/TestSlotWire', method: 'nativeVerify', java: 'bindings/jni/java-slot/com/ubm/core/TestSlotWire.java' })
+])
+
+const SCAN_RECOVERY_HARNESS_EXPORTS = Object.freeze([
+  'nativeTestClearRecoveryCleanupAliases',
+  'nativeTestRecoveryHandleCount',
+  'nativeTestRecoveryLeaseCount',
+  'nativeTestSeedScanFailureRecoveryForBinding',
+  'nativeTestSetRecoveryHandleLimit'
+])
+
+const TEST_ONLY_JNI_MODULES = Object.freeze([
+  Object.freeze({
+    source: 'bindings/jni/src/mobile/js_test_harness.rs',
+    module: 'js_test_harness',
+    gate: '#[cfg(all(feature = "synthetic-marker-harness", debug_assertions))]'
+  })
+])
+
+function validateTestOnlyJniModules(root) {
+  const moduleRelative = 'bindings/jni/src/mobile.rs'
+  if (!fs.existsSync(path.join(root, moduleRelative))) return new Set()
+  const module = readRequired(root, moduleRelative, 'JNI mobile module').toString('utf8')
+  const excluded = new Set()
+  for (const entry of TEST_ONLY_JNI_MODULES) {
+    if (!fs.existsSync(path.join(root, entry.source))) continue
+    const declarations = [...module.matchAll(new RegExp(`(?:#\\[[^\\]]+\\]\\s*)*mod\\s+${entry.module}\\s*;`, 'g'))]
+    if (declarations.length !== 1 || declarations[0][0] !== `${entry.gate}\nmod ${entry.module};`) {
+      throw new Error(`native-build-identity: ${entry.source} must be exclusively cfg-gated by ${entry.gate}`)
+    }
+    excluded.add(entry.source)
+  }
+  return excluded
+}
+
+function validateOrderedTestHarness(root) {
+  const moduleRelative = 'bindings/jni/src/mobile.rs'
+  const sourceRelative = 'bindings/jni/src/mobile/ordered_test_harness.rs'
+  if (!fs.existsSync(path.join(root, sourceRelative))) return
+  const module = readRequired(root, moduleRelative, 'JNI mobile module').toString('utf8')
+  const declaration = /(?:#\[[^\]]+\]\s*)*mod\s+ordered_test_harness\s*;/.exec(module)
+  if (declaration === null) {
+    throw new Error(`native-build-identity: ${sourceRelative} exists without a module declaration in ${moduleRelative}`)
+  }
+  if (declaration[0] !== '#[cfg(ubm_jni_roundtrip)]\nmod ordered_test_harness;') {
+    throw new Error(`native-build-identity: ${sourceRelative} must be exclusively cfg-gated by ubm_jni_roundtrip`)
+  }
+  const source = readRequired(root, sourceRelative, 'ordered JVM test harness').toString('utf8')
+  const exports = new Map()
+  for (const match of source.matchAll(/\bJava_([A-Za-z0-9_]+)/g)) {
+    const entry = jniSymbol(match[1], sourceRelative)
+    exports.set(`${entry.className}#${entry.method}`, entry)
+  }
+  const expected = new Set(ORDERED_TEST_HARNESS_EXPORTS.map(entry => `${entry.className}#${entry.method}`))
+  for (const key of exports.keys()) {
+    if (!expected.has(key)) {
+      throw new Error(`native-build-identity: unexpected JNI test harness export ${key} in ${sourceRelative}`)
+    }
+  }
+  for (const entry of ORDERED_TEST_HARNESS_EXPORTS) {
+    const key = `${entry.className}#${entry.method}`
+    if (!exports.has(key)) {
+      throw new Error(`native-build-identity: JVM test harness is missing expected export ${key}`)
+    }
+    requireHarnessNativeMethod(root, entry.java, entry.className, entry.method)
+  }
+}
+
+function validateScanRecoveryHarness(root, inputs) {
+  const relative = 'bindings/jni/src/mobile.rs'
+  if (!fs.existsSync(path.join(root, relative))) return
+  const source = readRequired(root, relative, 'JNI mobile module').toString('utf8')
+  const className = 'com/ubm/core/TestScanFailureEvidence'
+  const prefix = 'com_ubm_core_TestScanFailureEvidence_'
+  const exports = []
+  for (const match of source.matchAll(/\bJava_([A-Za-z0-9_]+)/g)) {
+    if (!match[1].startsWith(prefix)) continue
+    const entry = jniSymbol(match[1], relative)
+    try {
+      requireRoundtripHarnessAttribute(source, match.index, `scan recovery JVM harness export ${entry.method}`)
+    } catch (error) {
+      throw new Error(`native-build-identity: unexpected or ungated scan recovery JVM harness export ${entry.method}`)
+    }
+    exports.push(entry.method)
+  }
+  if (exports.length === 0) return
+  const actual = [...new Set(exports)].sort()
+  const expected = [...SCAN_RECOVERY_HARNESS_EXPORTS].sort()
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error('native-build-identity: unexpected or ungated scan recovery JVM harness export set')
+  }
+  const java = 'bindings/jni/java/com/ubm/core/TestScanFailureEvidence.java'
+  for (const method of expected) requireHarnessNativeMethod(root, java, className, method)
+  inputs.add(java)
+}
+
+function validateTerminalEvidenceHarness(root, inputs) {
+  const relative = 'bindings/jni/src/mobile.rs'
+  if (!fs.existsSync(path.join(root, relative))) return
+  const source = readRequired(root, relative, 'JNI mobile module').toString('utf8')
+  const symbol = 'Java_com_ubm_core_TestTerminalEvidenceRecovery_nativeTestSeedTerminalEvidenceForBinding'
+  const index = source.indexOf(symbol)
+  if (index === -1) return
+  requireRoundtripHarnessAttribute(source, index, 'terminal evidence JVM harness export')
+  const java = 'bindings/jni/java/com/ubm/core/TestTerminalEvidenceRecovery.java'
+  requireHarnessNativeMethod(root, java, 'com/ubm/core/TestTerminalEvidenceRecovery', 'nativeTestSeedTerminalEvidenceForBinding')
+  inputs.add(java)
+}
+
 function jniSchemaInputs(root) {
   const inputs = new Set(['bindings/jni/src/lib.rs'])
+  validateOrderedTestHarness(root)
+  validateScanRecoveryHarness(root, inputs)
+  validateTerminalEvidenceHarness(root, inputs)
+  const excludedTestModules = validateTestOnlyJniModules(root)
   const classes = new Set()
   for (const relative of walkFiles(root, 'bindings/jni/src')) {
+    if (relative === 'bindings/jni/src/mobile/ordered_test_harness.rs' || excludedTestModules.has(relative)) continue
     const text = fs.readFileSync(path.join(root, relative), 'utf8')
     for (const match of text.matchAll(/\bJava_([A-Za-z0-9_]+)/g)) {
-      const segments = match[1].split('_')
-      const classIndex = segments.findIndex(segment => /^[A-Z]/.test(segment))
-      if (classIndex <= 0) {
-        throw new Error(
-          `native-build-identity: cannot resolve the Java class of JNI symbol Java_${match[1]} in ${relative}`
-        )
-      }
-      classes.add([...segments.slice(0, classIndex), segments[classIndex]].join('/'))
+      if (
+        match[1].startsWith('com_ubm_core_TestScanFailureEvidence_') ||
+        match[1] === 'com_ubm_core_TestTerminalEvidenceRecovery_nativeTestSeedTerminalEvidenceForBinding'
+      ) continue
+      classes.add(jniSymbol(match[1], relative).className)
     }
   }
   for (const javaClass of [...classes].sort()) {
@@ -690,6 +847,17 @@ function libraryKey(entry) {
   return `${entry.libraryIdentifier}|${entry.platform}|${entry.variant}|${architectures}`
 }
 
+function isUnsafeSingletonSimulatorArchive(library, content) {
+  if (
+    !library.libraryIdentifier.endsWith('-simulator') ||
+    !Array.isArray(library.architectures) ||
+    library.architectures.length !== 1 ||
+    content.length < 4
+  ) return false
+  const magic = content.readUInt32BE(0)
+  return magic === 0xcafebabe || magic === 0xcafebabf || magic === 0xbebafeca || magic === 0xbfbafeca
+}
+
 function appleRerun(root) {
   return `UBM_NATIVE_BUILD=source pnpm --dir ${root} native:apple:prepare   (or: sh ${path.join(root, 'ios', 'build-rust-core.sh')})`
 }
@@ -707,6 +875,9 @@ function checkAppleStaging(root, dir = path.join(root, 'ios', 'RustCore')) {
     )
   }
   const framework = path.join(dir, 'RustCore.xcframework')
+  const canonicalModuleMap = fs.readFileSync(
+    path.join(root, 'bindings', 'uniffi', 'generated', 'swift', 'ubm_echoFFI.modulemap')
+  )
   const plist = path.join(framework, 'Info.plist')
   if (!fs.existsSync(plist)) throw new Error(`native-build-identity: missing ${plist}. Restage it:\n  ${rerun}`)
   if (sha256(fs.readFileSync(plist)) !== hexOrThrow(record.infoPlistSha256, 'infoPlistSha256')) {
@@ -739,9 +910,25 @@ function checkAppleStaging(root, dir = path.join(root, 'ios', 'RustCore')) {
     if (!fs.existsSync(archive))
       throw new Error(`native-build-identity: missing slice ${relative}. Restage it:\n  ${rerun}`)
     const content = fs.readFileSync(archive)
+    if (isUnsafeSingletonSimulatorArchive(library, content)) {
+      throw new Error(
+        `native-build-identity: ${relative} is a fat Mach-O archive but ${library.libraryIdentifier} declares one simulator architecture. Restage it:\n  ${rerun}`
+      )
+    }
     if (sha256(content) !== hexOrThrow(library.sha256, `${relative} sha256`) || content.length !== library.bytes) {
       throw new Error(
         `native-build-identity: slice ${relative} does not match build-identity.json (substituted or corrupted). Restage it:\n  ${rerun}`
+      )
+    }
+    const moduleMap = path.join(framework, library.libraryIdentifier, 'Headers', 'module.modulemap')
+    if (!fs.existsSync(moduleMap)) {
+      throw new Error(
+        `native-build-identity: ${library.libraryIdentifier} has no discoverable consumer module map at Headers/module.modulemap. Restage it:\n  ${rerun}`
+      )
+    }
+    if (!fs.readFileSync(moduleMap).equals(canonicalModuleMap)) {
+      throw new Error(
+        `native-build-identity: ${library.libraryIdentifier} consumer module map differs from the generated UniFFI map. Restage it:\n  ${rerun}`
       )
     }
   }
@@ -992,6 +1179,7 @@ module.exports = {
   BINDINGS,
   APPLE_DECLARED_LIBRARIES,
   ANDROID_DECLARED_ABIS,
+  isUnsafeSingletonSimulatorArchive,
   resolvePathDependencies,
   bindingSourceInputs,
   bindingSchemaInputs,

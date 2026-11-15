@@ -125,9 +125,18 @@ describe('Tauri v2 Rust plugin boundary', () => {
     // Finding 43: attachment identity and adapter.state come from the one
     // shared central (its own adapter selection, ambiguity refused); the
     // plugin opens no second btleplug Manager (a second CBCentralManager).
-    // The same central now also owns the trusted BlueZ policy. Do not
-    // bypass that authority when opening the Tauri host.
-    expect(dispatcher).toContain('DesktopCentral::open_btleplug_with_policy(profile, connection_policy)')
+    // The same central now also owns the trusted BlueZ policy and, when a
+    // trusted host configured it before opening the dispatcher, the
+    // exact native failure-evidence store. Do not bypass either authority
+    // when opening the Tauri host. The renderer cannot select the store: the
+    // production opener validates it before the central is constructed and
+    // refuses it explicitly on hosts that cannot install it.
+    expect(dispatcher).toContain('pub failure_evidence_store: Option<FailureEvidenceStoreOptions>')
+    expect(dispatcher).toContain('let opener = btleplug_opener(options.failure_evidence_store.clone())')
+    expect(dispatcher).toContain('FileFailureEvidenceStore::open(')
+    expect(dispatcher).toContain(
+      'DesktopCentral::open_btleplug_with_policy_and_failure_evidence_store('
+    )
     expect(dispatcher).not.toContain('DesktopCentral::open_btleplug(profile)')
     expect(dispatcher).toContain('authority.attachment()')
     expect(dispatcher).toContain('heard')
@@ -139,8 +148,10 @@ describe('Tauri v2 Rust plugin boundary', () => {
   test('preserves native scan emission diagnostics on the shared terminal contract', () => {
     const dispatcher = read('native/tauri/src/btleplug_dispatcher.rs')
 
-    expect(dispatcher).toContain('Err(error) => ("source-failed", Some(error))')
-    expect(dispatcher).toMatch(/"source-failed",\s+Some\(&error\)/)
+    // Terminal accounting now carries exact counters as a third tuple field;
+    // the native error itself remains attached to the source-failed terminal.
+    expect(dispatcher).toContain('Err(error) => (\n                                "source-failed",\n                                Some(error),')
+    expect(dispatcher).toContain('Some(DispatchError::from_core(&error))')
     expect(dispatcher).toContain('fn normalized_error(&self) -> IpcValue')
     expect(dispatcher).toContain('item.insert("error".to_owned(), error.normalized_error())')
     // R03 (restored contract): forwarder failures thread the real error —

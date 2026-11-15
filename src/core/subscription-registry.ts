@@ -22,10 +22,17 @@ import type { AttachmentBoundIdFactory, AttachmentId, ByteLimit, SubscriptionId 
 import type { BoundedAsyncStream, StreamItem } from '../backend-contract/streams'
 import { AggregateStreamQuota } from './aggregate-stream-quota'
 import { CoreBoundedStream } from './bounded-stream'
+import type { TerminalEvidenceReservation } from '../backend-contract/terminal-evidence'
+import type { TerminalEvidenceCommit } from '../backend-contract/terminal-evidence'
+import { hydrateTerminalEvidence } from './terminal-evidence-codec'
 import { assertSuccessfulOperationTerminal, awaitWithOperationAdmission } from './unified-ble-core-helpers'
 import { CoreOperationCoordinator, type CoreOperationDispatch, type CoreOperationResult } from './operation-coordinator'
 import { ResourceLedger } from './resource-ledger'
 import { CoreTraceRecorder } from './trace-recorder'
+import {
+  takeTrustedTerminalEvidenceScope,
+  type TrustedTerminalEvidenceScope
+} from '../manager/trusted-terminal-evidence'
 import {
   characteristicPathKey,
   characteristicPathsEqual,
@@ -47,16 +54,32 @@ interface PhysicalSubscription<Attachment extends string, Identity extends Backe
   readonly path: CurrentCharacteristicPath<Attachment>
   readonly queueKey: string
   readonly recording: RecordedSubscriptionOptions['recording'] | null
+  readonly incarnation: string
   readonly consumers: Set<CoreSubscription<Attachment, Identity>>
   backend: BackendSubscription<Attachment, string, string, string, string> | null
   ready: Promise<void> | null
   closed: boolean
   released: boolean
   releaseInFlight: Promise<CleanupRecord> | null
+  /**
+   * One service change reaches a physical CCCD both through its notification
+   * terminal and every joined logical database. Retain its outcome, including
+   * a refusal, so either lifecycle route cannot turn it into an implicit retry.
+   */
+  databaseInvalidationCleanup: Promise<CleanupRecord> | null
   releasedDuringEnable: boolean
   backendInvalidated: boolean
   lateSubscriptionPending: boolean
   pump: Promise<void> | null
+  terminalEvidence: TerminalEvidenceReservation | null
+  terminalEvidenceScope: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  } | null
+  readonly terminalEvidenceReaders: Set<CoreBoundedStream<NotificationValue>>
+  terminalEvidenceReleaseInFlight: Promise<CleanupRecord> | null
+  terminalEvidenceReleaseFailure: NormalizedBleError | null
 }
 
 export interface SubscriptionRegistryRuntime<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
@@ -69,6 +92,8 @@ export interface SubscriptionRegistryRuntime<Attachment extends string, Identity
   readonly trace: CoreTraceRecorder
   readonly now: () => number
   readonly maximumValueBytes: ByteLimit
+  readonly terminalEvidence?: { readonly maximumCanonicalBytes: number }
+  readonly managerId: string
   isPathCurrent(path: CurrentCharacteristicPath<Attachment>): boolean
 }
 
@@ -101,13 +126,31 @@ export class CoreSubscription<Attachment extends string, Identity extends Backen
     }
   }
 
-  invalidate(reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'): void {
+  invalidate(
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    evidence?: TerminalEvidenceCommit
+  ): void {
     if (!this.isActive()) {
       return
     }
     this.state = 'invalid'
     if (this.values instanceof CoreBoundedStream) {
-      this.values.closeWithReason(reason)
+      this.values.closeWithReason(reason, evidence === undefined ? null : undefined, evidence)
+    }
+  }
+
+  /** End a source or lifecycle stream after its accepted FIFO prefix drains. */
+  finish(
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    error: NormalizedBleError | null = null,
+    evidence?: TerminalEvidenceCommit
+  ): void {
+    if (!this.isActive()) {
+      return
+    }
+    this.state = 'invalid'
+    if (this.values instanceof CoreBoundedStream) {
+      this.values.finishWithReason(reason, error, evidence)
     }
   }
 
@@ -151,7 +194,9 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     options: SubscriptionOptions,
     queueKey: string
   ): Promise<CoreSubscription<Attachment, Identity>> {
-    return this.subscribeOwned(path, options, queueKey, null)
+    this.assertCurrent(path)
+    this.assertAdmission(options)
+    return this.subscribeOwned(path, options, queueKey, null, takeTrustedTerminalEvidenceScope(options))
   }
 
   async subscribeRecorded(
@@ -176,8 +221,16 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     if (this.runtime.backend.gatt.subscribeRecorded === undefined) {
       throw contractError('capability.unsupported', 'gatt', 'subscription-registry.recorded')
     }
+    this.assertCurrent(path)
+    this.assertAdmission(options)
     const key = `recorded:${this.nextSubscription}`
-    const subscription = await this.subscribeOwned(path, options, queueKey, options.recording)
+    const subscription = await this.subscribeOwned(
+      path,
+      options,
+      queueKey,
+      options.recording,
+      takeTrustedTerminalEvidenceScope(options)
+    )
     const changed = this.physicalByPath.get(key)?.backend?.changed
     if (changed === undefined) {
       await subscription.remove()
@@ -197,13 +250,22 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     path: CurrentCharacteristicPath<Attachment>,
     options: SubscriptionOptions,
     queueKey: string,
-    recording: RecordedSubscriptionOptions['recording'] | null
+    recording: RecordedSubscriptionOptions['recording'] | null,
+    delegatedTerminalEvidenceScope: TrustedTerminalEvidenceScope | null
   ): Promise<CoreSubscription<Attachment, Identity>> {
     this.assertCurrent(path)
     this.assertAdmission(options)
+    const incarnation = String(this.nextSubscription)
     const key =
-      recording === null ? physicalSubscriptionKey(path, options.deliveryMode) : `recorded:${this.nextSubscription}`
+      recording === null
+        ? physicalSubscriptionKey(path, options.deliveryMode, delegatedTerminalEvidenceScope)
+        : `recorded:${this.nextSubscription}`
     const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
+    if (this.runtime.terminalEvidence !== undefined && this.runtime.backend.gatt.readTerminalEvidence !== undefined) {
+      stream.setTerminalEvidenceHydrator(notice =>
+        hydrateTerminalEvidence(this.runtime.backend.gatt, notice, this.runtime.terminalEvidence!.maximumCanonicalBytes)
+      )
+    }
     this.runtime.aggregateQuota.register(stream)
     const subscription = new CoreSubscription(
       this.runtime.idFactory.subscriptionId(`subscription-${this.nextSubscription}`),
@@ -225,7 +287,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
           )
         }
         this.closeConsumer(subscription, 'owner-released')
-        return this.subscribe(path, options, queueKey)
+        return this.subscribeOwned(path, options, queueKey, recording, delegatedTerminalEvidenceScope)
       }
       existing.consumers.add(subscription)
       // Native CCCD enablement may yield a value before the shared enable promise settles.
@@ -249,7 +311,14 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
           }
           throw admissionError
         }
-        this.failEnableConsumers(existing)
+        const cleanup = await this.failEnableConsumers(existing)
+        if (cleanup.state === 'release-failed') {
+          throw new BackendContractError(
+            cleanup.failures[0]?.error ??
+              contractError('platform.failure', 'cleanup', 'subscription-registry.shared-enable-compensation')
+                .normalized
+          )
+        }
         throw this.normalizeEnableError(admissionError)
       }
     }
@@ -258,16 +327,23 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       path,
       queueKey,
       recording,
+      incarnation,
       consumers: new Set([subscription]),
       backend: null,
       ready: null,
       closed: false,
       released: false,
       releaseInFlight: null,
+      databaseInvalidationCleanup: null,
       releasedDuringEnable: false,
       backendInvalidated: false,
       lateSubscriptionPending: false,
-      pump: null
+      pump: null,
+      terminalEvidence: null,
+      terminalEvidenceScope: delegatedTerminalEvidenceScope,
+      terminalEvidenceReaders: new Set(),
+      terminalEvidenceReleaseInFlight: null,
+      terminalEvidenceReleaseFailure: null
     }
     this.physicalByPath.set(key, physical)
     // The consumer is not public until the await below resolves, so readiness here safely retains early native values.
@@ -277,7 +353,13 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       await physical.ready
       return subscription
     } catch (error) {
-      this.failEnableConsumers(physical)
+      const cleanup = await this.failEnableConsumers(physical)
+      if (cleanup.state === 'release-failed') {
+        throw new BackendContractError(
+          cleanup.failures[0]?.error ??
+            contractError('platform.failure', 'cleanup', 'subscription-registry.enable-compensation').normalized
+        )
+      }
       throw this.normalizeEnableError(
         error instanceof Error ? error : contractError('platform.failure', 'gatt', 'subscription-registry.enable')
       )
@@ -299,7 +381,9 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
 
   async invalidatePath(
     path: CurrentCharacteristicPath<Attachment>,
-    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    evidence?: TerminalEvidenceCommit,
+    error: NormalizedBleError | null = null
   ): Promise<CleanupRecord> {
     const physicals = [...this.physicalByPath.values()].filter(candidate =>
       characteristicPathsEqual(candidate.path, path)
@@ -309,7 +393,10 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     }
     const failures: CleanupFailure[] = []
     for (const physical of physicals) {
-      const cleanup = await this.invalidatePhysical(physical, reason)
+      const cleanup =
+        reason === 'service-changed'
+          ? await this.invalidateDatabasePhysical(physical, evidence, error)
+          : await this.invalidatePhysical(physical, reason, evidence, error)
       failures.push(...cleanup.failures)
     }
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
@@ -324,21 +411,66 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
 
   async invalidateDatabase(
     database: DatabasePath<Attachment, string, string>,
-    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    retainFailedDatabaseCleanup = false
   ): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
     for (const physical of [...this.physicalByPath.values()]) {
       if (!matchesDatabasePath(physical.path, database)) {
         continue
       }
+      await this.drainCommittedTerminalBeforeDatabaseInvalidation(physical, retainFailedDatabaseCleanup)
       for (const subscription of [...physical.consumers]) {
-        this.closeConsumer(subscription, reason)
+        this.terminalizeConsumer(subscription, reason)
         physical.consumers.delete(subscription)
       }
-      const result = await this.disable(physical)
+      const result = await (retainFailedDatabaseCleanup
+        ? this.invalidateDatabasePhysical(physical)
+        : this.disable(physical))
       failures.push(...result.failures)
     }
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
+  }
+
+  /**
+   * A terminal-evidence source may have accepted its exact terminal before a
+   * separately queued database event reaches this registry. For the
+   * UBM-provided notification streams, the existing pump drains that final
+   * state and owns delivery of the receipt; do not replace it with a synthetic
+   * service-change terminal. Open and non-observable sources keep the ordinary
+   * database invalidation path.
+   */
+  private async drainCommittedTerminalBeforeDatabaseInvalidation(
+    physical: PhysicalSubscription<Attachment, Identity>,
+    retainFailedDatabaseCleanup: boolean
+  ): Promise<void> {
+    const source = physical.backend?.notifications
+    if (
+      !retainFailedDatabaseCleanup ||
+      physical.terminalEvidence === null ||
+      physical.pump === null ||
+      source?.isTerminal?.() !== true
+    ) {
+      return
+    }
+    await physical.pump
+  }
+
+  /**
+   * A service change can arrive via a subscription terminal or fan out to
+   * joined database views. A failed first physical disable remains a real
+   * obligation, but only an explicit owner retry (or a distinct connection
+   * lifecycle path) may issue another native command.
+   */
+  private invalidateDatabasePhysical(
+    physical: PhysicalSubscription<Attachment, Identity>,
+    evidence?: TerminalEvidenceCommit,
+    error: NormalizedBleError | null = null
+  ): Promise<CleanupRecord> {
+    if (physical.databaseInvalidationCleanup !== null) return physical.databaseInvalidationCleanup
+    const cleanup = this.invalidatePhysical(physical, 'service-changed', evidence, error)
+    physical.databaseInvalidationCleanup = cleanup
+    return cleanup
   }
 
   async destroy(): Promise<CleanupRecord> {
@@ -358,6 +490,19 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     physical: PhysicalSubscription<Attachment, Identity>,
     options: SubscriptionOptions
   ): Promise<void> {
+    if (physical.terminalEvidenceScope === null && this.runtime.terminalEvidence !== undefined) {
+      const reserve = this.runtime.backend.gatt.reserveTerminalEvidence
+      if (reserve === undefined)
+        throw contractError('capability.unsupported', 'gatt', 'subscription-registry.terminal-evidence')
+      const scope = { managerId: this.runtime.managerId, operationId: physical.key, incarnation: physical.incarnation }
+      physical.terminalEvidence = await reserve.call(this.runtime.backend.gatt, {
+        producer: 'subscription',
+        maximumBytes: this.runtime.terminalEvidence.maximumCanonicalBytes,
+        formatVersion: 1,
+        scope
+      })
+      physical.terminalEvidenceScope = scope
+    }
     const result = await this.runtime.operationCoordinator.run({
       queueKey: physical.queueKey,
       fairnessKey: 'subscription',
@@ -373,8 +518,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       onLateSuccess: backendSubscription => this.compensateLateSubscription(physical, backendSubscription),
       onLateFailure: () => {
         physical.lateSubscriptionPending = false
-        this.finalizeUnusedPhysical(physical)
-        return Promise.resolve()
+        return this.failEnableConsumers(physical).then(() => undefined)
       }
     })
     const backendSubscription = requireOperationValue(result, 'subscription-registry.enable')
@@ -414,14 +558,23 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     const recorded = this.runtime.backend.gatt.subscribeRecorded
     const dispatch =
       physical.recording === null
-        ? this.runtime.backend.gatt.subscribe(physical.path, { operation: { ...options, correlation }, options })
+        ? this.runtime.backend.gatt.subscribe(physical.path, {
+            operation: { ...options, correlation },
+            options,
+            ...(physical.terminalEvidenceScope === null
+              ? {}
+              : { terminalEvidenceScope: physical.terminalEvidenceScope })
+          })
         : recorded === undefined
           ? (() => {
               throw contractError('capability.unsupported', 'gatt', 'subscription-registry.recorded')
             })()
           : recorded.call(this.runtime.backend.gatt, physical.path, {
               operation: { ...options, correlation },
-              options: { ...options, recording: physical.recording }
+              options: { ...options, recording: physical.recording },
+              ...(physical.terminalEvidenceScope === null
+                ? {}
+                : { terminalEvidenceScope: physical.terminalEvidenceScope })
             })
     return {
       completion: dispatch.completion.then(async subscription => {
@@ -502,7 +655,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     release.then(
       result => {
         physical.releaseInFlight = null
-        if (result.state === 'released') {
+        if (result.state === 'released' && physical.terminalEvidence === null) {
           physical.released = true
           this.physicalByPath.delete(physical.key)
         }
@@ -518,33 +671,35 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     if (physical.ready !== null) {
       try {
         await physical.ready
-      } catch (error) {
+      } catch {
         if (physical.releasedDuringEnable) {
-          return { state: 'released', failures: [] }
+          return this.releaseTerminalEvidenceIfReady(physical)
         }
         if (physical.backendInvalidated) {
-          return this.releaseInvalidatedBackend(physical)
+          this.releaseInvalidatedBackend(physical)
+          return this.releaseTerminalEvidenceIfReady(physical)
         }
         if (physical.backend !== null) {
-          return this.unsubscribePhysical(physical, physical.backend)
+          const cleanup = await this.unsubscribePhysical(physical, physical.backend)
+          return cleanup.state === 'release-failed' ? cleanup : this.releaseTerminalEvidenceIfReady(physical)
         }
-        if (error instanceof BackendContractError) {
-          return cleanupFailure('subscription', error.normalized)
-        }
-        return cleanupFailure(
-          'subscription',
-          contractError('platform.failure', 'cleanup', 'subscription-registry.ready').normalized
-        )
+        // The enablement failure has already been reported to its original
+        // caller. A closed physical with no backend now owns only its
+        // terminal-evidence debt; retry that debt before a new subscriber can
+        // replace this physical slot.
+        return this.releaseTerminalEvidenceIfReady(physical)
       }
     }
     if (physical.backendInvalidated) {
-      return this.releaseInvalidatedBackend(physical)
+      this.releaseInvalidatedBackend(physical)
+      return this.releaseTerminalEvidenceIfReady(physical)
     }
     const backendSubscription = physical.backend
     if (backendSubscription === null) {
-      return { state: 'released', failures: [] }
+      return this.releaseTerminalEvidenceIfReady(physical)
     }
-    return this.unsubscribePhysical(physical, backendSubscription)
+    const cleanup = await this.unsubscribePhysical(physical, backendSubscription)
+    return cleanup.state === 'release-failed' ? cleanup : this.releaseTerminalEvidenceIfReady(physical)
   }
 
   private releaseInvalidatedBackend(physical: PhysicalSubscription<Attachment, Identity>): CleanupRecord {
@@ -699,7 +854,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         dispatchedOperations: 0,
         quarantinedOperations: 0
       })
-      await this.invalidatePhysical(physical, 'source-failed')
+      await this.invalidatePhysical(physical, 'source-failed', undefined, normalized)
     }
   }
 
@@ -708,6 +863,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     item: StreamItem<NotificationValue>
   ): Promise<boolean> {
     if (item.kind === 'overflow') {
+      const terminated: typeof physical.consumers extends Set<infer S> ? S[] : never = []
       for (const subscription of [...physical.consumers]) {
         if (!subscription.isReady()) {
           continue
@@ -718,10 +874,19 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         }
         stream.observeSourceOverflow(item)
       }
+      for (const subscription of terminated) await subscription.remove()
       return false
     }
     if (item.kind !== 'value') {
       if (item.kind === 'terminal') {
+        if (
+          physical.terminalEvidenceScope !== null &&
+          (item.evidence === undefined ||
+            item.evidence.producer !== 'subscription' ||
+            !sameTerminalEvidenceScope(item.evidence.scope, physical.terminalEvidenceScope))
+        ) {
+          throw contractError('protocol.violation', 'gatt', 'subscription-registry.terminal-evidence-missing')
+        }
         const reason =
           item.reason === 'connection-lost'
             ? 'connection-lost'
@@ -732,9 +897,9 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
                 : 'source-failed'
         if (reason === 'connection-lost' || reason === 'service-changed') {
           if (reason === 'connection-lost') this.confirmConnectionReleased(physical.path)
-          await this.invalidatePath(physical.path, reason)
+          await this.invalidatePath(physical.path, reason, item.evidence, item.error ?? null)
         } else {
-          await this.invalidatePhysical(physical, reason)
+          await this.invalidatePhysical(physical, reason, item.evidence, item.error ?? null)
         }
         return true
       }
@@ -754,6 +919,10 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         {
           value: ownBytes(value, this.runtime.maximumValueBytes),
           delivery: item.value.delivery,
+          ...(item.value.sourceGeneration === undefined
+            ? {}
+            : { sourceGeneration: item.value.sourceGeneration, sourceOrdinal: item.value.sourceOrdinal }),
+          ...(item.value.provenance === undefined ? {} : { provenance: item.value.provenance }),
           ...(item.value.receipt === undefined ? {} : { receipt: Object.freeze({ ...item.value.receipt }) })
         },
         value.byteLength
@@ -777,12 +946,13 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
 
   private closeConsumer(
     subscription: CoreSubscription<Attachment, Identity>,
-    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    evidence?: TerminalEvidenceCommit
   ): void {
     if (!subscription.isActive()) {
       return
     }
-    subscription.invalidate(reason)
+    subscription.invalidate(reason, evidence)
     subscription.markRemoved()
     this.runtime.resourceLedger.decrement('subscriptionConsumers')
     if (subscription.values instanceof CoreBoundedStream) {
@@ -790,12 +960,40 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     }
   }
 
+  private terminalizeConsumer(
+    subscription: CoreSubscription<Attachment, Identity>,
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    evidence?: TerminalEvidenceCommit,
+    error: NormalizedBleError | null = null
+  ): void {
+    if (!subscription.isActive()) {
+      return
+    }
+    if (reason === 'owner-released') {
+      this.closeConsumer(subscription, reason, evidence)
+      return
+    }
+    subscription.finish(reason, error, evidence)
+    subscription.markRemoved()
+    this.runtime.resourceLedger.decrement('subscriptionConsumers')
+    const stream = subscription.values
+    if (stream instanceof CoreBoundedStream) {
+      // The source is closed, but its already accepted prefix and terminal
+      // remain readable. Keep its aggregate charge until that retained state
+      // has actually drained, as scan finalization does.
+      stream.onRetainedValuesDrained(() => this.runtime.aggregateQuota.unregister(stream))
+    }
+  }
+
   private async invalidatePhysical(
     physical: PhysicalSubscription<Attachment, Identity>,
-    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    evidence?: TerminalEvidenceCommit,
+    error: NormalizedBleError | null = null
   ): Promise<CleanupRecord> {
+    if (evidence !== undefined) this.retainTerminalEvidenceForConsumers(physical)
     for (const subscription of [...physical.consumers]) {
-      this.closeConsumer(subscription, reason)
+      this.terminalizeConsumer(subscription, reason, evidence, error)
       physical.consumers.delete(subscription)
     }
     // Database invalidation ends usability, not the native enablement. Keep
@@ -804,21 +1002,103 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     return this.disable(physical)
   }
 
-  private failEnableConsumers(physical: PhysicalSubscription<Attachment, Identity>): void {
+  private async failEnableConsumers(physical: PhysicalSubscription<Attachment, Identity>): Promise<CleanupRecord> {
     physical.closed = true
     for (const consumer of [...physical.consumers]) {
       this.closeConsumer(consumer, 'owner-released')
       physical.consumers.delete(consumer)
     }
+    const cleanup = await this.releaseTerminalEvidenceIfReady(physical)
     this.finalizeUnusedPhysical(physical)
+    return cleanup
   }
 
   private finalizeUnusedPhysical(physical: PhysicalSubscription<Attachment, Identity>): void {
-    if (physical.consumers.size > 0 || physical.backend !== null || physical.lateSubscriptionPending) {
+    if (
+      physical.consumers.size > 0 ||
+      physical.backend !== null ||
+      physical.lateSubscriptionPending ||
+      physical.terminalEvidence !== null
+    ) {
       return
     }
     physical.released = true
     this.physicalByPath.delete(physical.key)
+  }
+
+  /**
+   * A terminal may be read after its physical CCCD has been disabled. Keep the
+   * reservation until every consumer stream has delivered that terminal (and
+   * any retained views have drained), then retire it exactly once.
+   */
+  private retainTerminalEvidenceForConsumers(physical: PhysicalSubscription<Attachment, Identity>): void {
+    if (physical.terminalEvidence === null) return
+    for (const consumer of physical.consumers) {
+      if (consumer.values instanceof CoreBoundedStream) {
+        physical.terminalEvidenceReaders.add(consumer.values)
+      }
+    }
+    for (const stream of [...physical.terminalEvidenceReaders]) {
+      stream.onRetainedValuesDrained(() => {
+        physical.terminalEvidenceReaders.delete(stream)
+        this.releaseTerminalEvidenceIfReady(physical)
+          .then(() => this.finalizeUnusedPhysical(physical))
+          .catch(() => undefined)
+      })
+    }
+  }
+
+  /**
+   * Retains a failed release on the physical object. A repeated remove,
+   * invalidation, or destroy calls this again, so a storage outage cannot turn
+   * a reserved record into an unreachable leak.
+   */
+  private async releaseTerminalEvidenceIfReady(
+    physical: PhysicalSubscription<Attachment, Identity>
+  ): Promise<CleanupRecord> {
+    if (physical.terminalEvidence === null || physical.terminalEvidenceReaders.size > 0) {
+      return physical.terminalEvidenceReleaseFailure === null
+        ? { state: 'released', failures: [] }
+        : cleanupFailure('subscription', physical.terminalEvidenceReleaseFailure)
+    }
+    if (physical.terminalEvidenceReleaseInFlight !== null) return physical.terminalEvidenceReleaseInFlight
+    const reservation = physical.terminalEvidence
+    const release = (async (): Promise<CleanupRecord> => {
+      try {
+        await reservation.release()
+        if (physical.terminalEvidence === reservation) {
+          physical.terminalEvidence = null
+          physical.terminalEvidenceScope = null
+          physical.terminalEvidenceReleaseFailure = null
+        }
+        this.finalizeUnusedPhysical(physical)
+        return { state: 'released', failures: [] }
+      } catch (error) {
+        const normalized =
+          error instanceof BackendContractError
+            ? error.normalized
+            : contractError('platform.failure', 'cleanup', 'subscription-registry.terminal-evidence-release').normalized
+        physical.terminalEvidenceReleaseFailure = normalized
+        this.runtime.trace.record({
+          timestamp: this.runtime.now(),
+          resource: 'subscription',
+          transition: 'terminal-evidence-release-failed',
+          operation: null,
+          cause: normalized.code,
+          queuedOperations: 0,
+          dispatchedOperations: 0,
+          quarantinedOperations: 0
+        })
+        return cleanupFailure('subscription', normalized)
+      }
+    })()
+    physical.terminalEvidenceReleaseInFlight = release
+    release
+      .finally(() => {
+        if (physical.terminalEvidenceReleaseInFlight === release) physical.terminalEvidenceReleaseInFlight = null
+      })
+      .catch(() => undefined)
+    return release
   }
 
   private normalizeEnableError(error: Error): BackendContractError {
@@ -862,7 +1142,8 @@ function exactPathKey<Attachment extends string>(path: CurrentCharacteristicPath
 
 function physicalSubscriptionKey<Attachment extends string>(
   path: CurrentCharacteristicPath<Attachment>,
-  deliveryMode: SubscriptionOptions['deliveryMode']
+  deliveryMode: SubscriptionOptions['deliveryMode'],
+  terminalEvidenceScope: TrustedTerminalEvidenceScope | null
 ): string {
   // A hard requirement must not share the preference or automatic entry.
   // Identical require-* values still share one physical enable. A hard
@@ -876,7 +1157,11 @@ function physicalSubscriptionKey<Attachment extends string>(
         : deliveryMode === 'prefer-indication'
           ? 'indication'
           : 'automatic'
-  return `${exactPathKey(path)}|${physicalMode}`
+  return `${exactPathKey(path)}|${physicalMode}|${JSON.stringify(
+    terminalEvidenceScope === null
+      ? null
+      : [terminalEvidenceScope.managerId, terminalEvidenceScope.operationId, terminalEvidenceScope.incarnation]
+  )}`
 }
 
 function matchesDatabasePath<Attachment extends string>(
@@ -884,6 +1169,18 @@ function matchesDatabasePath<Attachment extends string>(
   database: DatabasePath<Attachment, string, string>
 ): boolean {
   return databasePathsEqual(characteristic, database)
+}
+
+function sameTerminalEvidenceScope(
+  actual: { readonly managerId: string; readonly operationId: string; readonly incarnation: string },
+  expected: { readonly managerId: string; readonly operationId: string; readonly incarnation: string } | null
+): boolean {
+  return (
+    expected !== null &&
+    actual.managerId === expected.managerId &&
+    actual.operationId === expected.operationId &&
+    actual.incarnation === expected.incarnation
+  )
 }
 
 function requireOperationValue<Attachment extends string, Value>(

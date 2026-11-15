@@ -2,15 +2,18 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use ubm_desktop::continuation_journal::{ContinuationJournal, JournalQuota};
+use ubm_desktop::continuation_journal::{ContinuationJournal, JournalQuota, JournalRegistry};
 use ubm_desktop::continuation_outbox::{CONTROL_RECORD_CAP, IngressClass, Outbox, WakeSink};
+
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
 
 struct NoWake;
 impl WakeSink for NoWake {
     fn wake(&self, _: u64) {}
 }
 static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, Arc<JournalRegistry>);
 impl Fixture {
     fn new() -> Self {
         let epoch = std::time::SystemTime::now()
@@ -23,12 +26,29 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
-        Self(path)
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        Self::from_path(path)
+    }
+    fn from_path(path: PathBuf) -> Self {
+        let registry = Arc::new(JournalRegistry::default());
+        #[cfg(windows)]
+        registry
+            .configure_directory_with_scan_recovery_storage(
+                &path,
+                Arc::new(
+                    ubm_desktop::continuation_journal::WindowsCurrentUserScanRecoveryStorageProtector::new(),
+                ),
+            )
+            .unwrap();
+        #[cfg(not(windows))]
+        registry.configure_directory(&path).unwrap();
+        Self(path, registry)
     }
     fn journal(&self, max_records: u64) -> Arc<ContinuationJournal> {
-        Arc::new(
-            ContinuationJournal::open(
-                &self.0.join("r.sqlite"),
+        self.1
+            .open(
                 "r",
                 &json!({}),
                 JournalQuota {
@@ -36,12 +56,12 @@ impl Fixture {
                     max_records,
                 },
             )
-            .unwrap(),
-        )
+            .unwrap()
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        self.1.release_idle_after_host_shutdown().unwrap();
         std::fs::remove_dir_all(&self.0).expect("remove isolated journal fixture");
     }
 }
@@ -145,7 +165,11 @@ fn coalesced_loss_quota_failure_is_reported_and_retained() {
 
 #[test]
 fn coalesced_loss_failed_append_exposes_storage_failure() {
-    let fixture = Fixture::new();
+    let test = "coalesced_loss_failed_append_exposes_storage_failure";
+    let Some(directory) = recording_fixture::isolated_fixture_process(test) else {
+        return;
+    };
+    let fixture = Fixture::from_path(directory.clone());
     let journal = fixture.journal(10000);
     let outbox = attach(&journal);
     outbox.push_ingress_drop_count(IngressClass::Control, 3);
@@ -157,6 +181,14 @@ fn coalesced_loss_failed_append_exposes_storage_failure() {
     assert_eq!(failure.unwrap().kind, "storage.busy");
     assert_eq!(journal.status().unwrap()["accepting"], false);
     assert_eq!(loss(&journal.prepare(2048, 4194304).unwrap(), "control"), 3);
+    drop(outbox);
+    drop(journal);
+    drop(blocker);
+    // The failed append intentionally retains a diagnostic owner that must
+    // survive until process exit. The parent fixture removes the directory
+    // only after this child has released that process-owned handle.
+    std::mem::forget(fixture);
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 #[test]
@@ -324,7 +356,7 @@ fn loss_exit_worker() {
     let Some(path) = std::env::var_os("UBM_DURABLE_LOSS_EXIT_PATH") else {
         return;
     };
-    let fixture = Fixture(PathBuf::from(path));
+    let fixture = Fixture::from_path(PathBuf::from(path));
     let journal = fixture.journal(10000);
     let outbox = attach(&journal);
     outbox.push_ingress_drop_count(IngressClass::Control, 3);

@@ -8,6 +8,15 @@ const abis = ['armeabi-v7a', 'arm64-v8a', 'x86_64']
 const jsiBinding = 'com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolJsiBinding'
 const rules = fs.readFileSync(path.join(root, 'android/consumer-rules.pro'), 'utf8')
 const ruleLines = rules.split('\n').filter(line => !line.trim().startsWith('#'))
+const jniRoot = path.join(root, 'bindings/jni/src')
+const testOnlyJniHarnesses = new Map([
+  [path.join('mobile', 'ordered_test_harness.rs'), '#[cfg(ubm_jni_roundtrip)]'],
+  [path.join('mobile', 'js_test_harness.rs'), '#[cfg(all(feature = "synthetic-marker-harness", debug_assertions))]']
+])
+const testOnlyJniClasses = new Map([
+  ['com/ubm/core/TestTerminalEvidenceRecovery', '#[cfg(ubm_jni_roundtrip)]'],
+  ['com/ubm/core/TestScanFailureEvidence', '#[cfg(ubm_jni_roundtrip)]']
+])
 
 const classGlobToRegExp = glob =>
   new RegExp(
@@ -46,6 +55,12 @@ for (const file of walk(javaRoot).filter(f => /\.(java|kt)$/.test(f))) {
   }
 }
 const classExists = binaryName => declaredClasses.has(binaryName)
+
+const productionJniRustSources = () =>
+  walk(jniRoot).filter(file => {
+    if (!file.endsWith('.rs')) return false
+    return !testOnlyJniHarnesses.has(path.relative(jniRoot, file))
+  })
 
 describe('Android consumer R8/ProGuard keep rules', () => {
   test('rules ship in the AAR and the npm package, wired through Gradle', () => {
@@ -100,17 +115,35 @@ describe('Android consumer R8/ProGuard keep rules', () => {
 
   test('every Java_ native entry exported by the Rust sources maps to a kept com.ubm class', () => {
     const exported = new Set()
-    for (const file of walk(path.join(root, 'bindings/jni/src')).filter(f => f.endsWith('.rs'))) {
+    for (const file of productionJniRustSources()) {
       for (const match of fs
         .readFileSync(file, 'utf8')
         .matchAll(/\bJava_com_ubm_([a-z]+)_([A-Za-z0-9]+)_[A-Za-z0-9]+/g)) {
-        exported.add(`com/ubm/${match[1]}/${match[2]}`)
+        const binaryName = `com/ubm/${match[1]}/${match[2]}`
+        if (!testOnlyJniClasses.has(binaryName)) exported.add(binaryName)
       }
     }
     expect(exported.size).toBeGreaterThan(0)
     for (const binaryName of exported) {
       expect(classExists(binaryName)).toBe(true)
       expect(isFullyKept(binaryName)).toBe(true)
+    }
+  })
+
+  test('JNI test harness exports are cfg-gated and excluded from the production source scan', () => {
+    const mobile = fs.readFileSync(path.join(jniRoot, 'mobile.rs'), 'utf8')
+    for (const [relative, guard] of testOnlyJniHarnesses) {
+      expect(mobile).toContain(`${guard}\nmod ${path.basename(relative, '.rs')};`)
+      expect(productionJniRustSources()).not.toContain(path.join(jniRoot, relative))
+    }
+    for (const [binaryName, guard] of testOnlyJniClasses) {
+      const className = binaryName.slice(binaryName.lastIndexOf('/') + 1)
+      expect(mobile).toMatch(
+        new RegExp(
+          `${guard.replace(/[()[\]{}.*+?^$\\|]/g, '\\$&')}\\s*#\\[unsafe\\(no_mangle\\)\\][\\s\\S]*?Java_com_ubm_core_${className}_`,
+          'u'
+        )
+      )
     }
   })
 

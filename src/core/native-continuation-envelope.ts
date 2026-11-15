@@ -39,7 +39,8 @@ export function encodeNativeContinuationFailure(error: unknown): string {
               domain: platform.domain,
               code: platform.code,
               message: platform.safeMessage,
-              metadata: platform.metadata
+              metadata: platform.metadata,
+              ...(platform.metadataEntries === undefined ? {} : { metadataEntries: platform.metadataEntries })
             }
     },
     commit: normalized.commit ?? null,
@@ -65,13 +66,27 @@ export function nativeContinuationTransportError(
 }
 
 export function assertContinuationRecordingConfigured(value: unknown): void {
+  const keys = typeof value === 'object' && value !== null && !Array.isArray(value) ? Object.keys(value) : null
+  const hasLegacyShape = keys?.length === 2 && keys.includes('state') && keys.includes('encrypted')
+  const hasRecoveryStorageShape =
+    keys?.length === 3 && keys.includes('state') && keys.includes('encrypted') && keys.includes('scanRecoveryStorage')
+  const scanRecoveryStorage =
+    typeof value === 'object' && value !== null ? Reflect.get(value, 'scanRecoveryStorage') : undefined
   if (
     typeof value !== 'object' ||
     value === null ||
     Array.isArray(value) ||
-    Object.keys(value).length !== 2 ||
+    (!hasLegacyShape && !hasRecoveryStorageShape) ||
     Reflect.get(value, 'state') !== 'configured' ||
-    Reflect.get(value, 'encrypted') !== false
+    Reflect.get(value, 'encrypted') !== false ||
+    (hasRecoveryStorageShape &&
+      (typeof scanRecoveryStorage !== 'string' ||
+        ![
+          'platform-owner-private',
+          'host-protected',
+          'windows-current-user-protected-dacl',
+          'capability.unsupported'
+        ].includes(scanRecoveryStorage)))
   ) {
     throw contractError('protocol.malformed', 'restoration', 'continuation.recording.configure')
   }

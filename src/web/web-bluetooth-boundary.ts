@@ -67,6 +67,8 @@ export interface WebBluetoothServiceBoundary {
 
 export interface WebBluetoothGattServerBoundary {
   readonly connected: boolean
+  /** Retires connection-owned identity when the link ends without a browser event. */
+  invalidateConnectionGeneration?(): void
   connect(): Promise<void>
   disconnect(): void
   getPrimaryServices(): Promise<readonly WebBluetoothServiceBoundary[]>

@@ -12,7 +12,7 @@ const { monotonicTimestamp, opaqueId, version, versionRange } = require('../../s
 const { BUILT_IN_FEATURE_CATALOG } = require('../../src/backend-contract/capabilities')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 6 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 10 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -159,7 +159,10 @@ function routeEnvelope(current, bootstrapValue, ordinal, command, payload) {
   return {
     kind: 'route',
     envelope: {
-      versions: { ...current.versions, ipcProtocol: negotiated('ipc-protocol') },
+      // Preserve the complete axes returned by bootstrap.  Its IPC offer is a
+      // negotiated v6..v10 range, not an independently reconstructed v10
+      // singleton.
+      versions: bootstrapValue.versions,
       attachment: current.currentAttachment,
       attachmentId: current.currentAttachment.attachmentId,
       renderer: bootstrapValue.renderer,

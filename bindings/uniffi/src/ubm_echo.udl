@@ -18,7 +18,7 @@
 // `protocol.incompatible` on every call: no effect without valid init.
 
 namespace ubm_echo {
-    // ---- Mobile Rust owner (crates/ubm-mobile, wire ubm-mobile-wire/2) ----
+    // ---- Mobile Rust owner (crates/ubm-mobile, wire ubm-mobile-wire/3) ----
     // One host per process; see docs/MOBILE_RUST_WIRE.md for the frozen
     // shape. Nothing below reaches the staged/fake radio.
     string mobile_build_identity_json();
@@ -26,8 +26,16 @@ namespace ubm_echo {
     string mobile_wire_revision();
     [Throws=MobileCoreError]
     MobileCoreHost mobile_host_install(MobilePlatformRadio radio, MobileWakeSink wake, string platform, string owner, string adapter_label);
+    [Throws=MobileCoreError]
+    MobileCoreHost mobile_host_install_bound(MobilePlatformRadio radio, MobileWakeSink wake, MobileHostBinding binding, string platform, string owner, string adapter_label);
     MobileCoreHost? mobile_host_current();
+    boolean mobile_host_has_pending_cleanup();
+    string mobile_host_retry_pending_cleanup();
+    u32 mobile_ordered_recording_version();
+    void mobile_recording_ordered_offline(string operation, string id, MobileInvokeCompletion completion);
     string mobile_recording_configure_directory(string path);
+    [Throws=MobileCoreError]
+    void mobile_configure_terminal_evidence_maximum_bytes(u64 maximum_bytes);
     string mobile_recording_control(string operation, string id, string token, u32 max_items, u32 max_bytes);
 };
 
@@ -37,6 +45,7 @@ interface MobileCoreError {
 };
 
 callback interface MobilePlatformRadio {
+    string ordered_admission_owner(u32 version);
     // Must not block; answer every request exactly once with
     // MobileCoreHost.complete(request id, completion).
     void submit(MobileRadioRequest request);
@@ -45,6 +54,10 @@ callback interface MobilePlatformRadio {
 
 callback interface MobileWakeSink {
     void wake(u64 session_id);
+};
+
+callback interface MobileHostBinding {
+    boolean bind(MobileCoreHost host);
 };
 
 callback interface MobileInvokeCompletion {
@@ -57,6 +70,76 @@ dictionary MobileInstance {
     u64 service_occurrence;
     string characteristic_uuid;
     u64 characteristic_occurrence;
+};
+dictionary MobileGattSnapshotIdentity { string owner; u64 attachment; u64 revision; };
+
+[Enum]
+interface MobileOrderedGeneration { Counter(u64 value); Opaque(string value); };
+dictionary MobileOrderedMember { u64 member_id; MobileInstance instance; };
+dictionary MobileOrderedRegistration { u64 member_id; u64 source_member; u64 epoch; };
+// Private ordered-admission v2 descriptors. They are additive while the
+// mobile core and native holder still use the v1 request route.
+dictionary MobileOrderedOpenSpec { string connection_generation; string database_generation; MobileGattSnapshotIdentity snapshot_identity; sequence<MobileOrderedMember> members; u32 item_capacity; u32 byte_capacity; };
+dictionary MobileOrderedOpenIdentity { u32 version; string owner_incarnation; u32 slot; u64 slot_generation; u64 original_request_id; u64 native_group_id; string peer_id; MobileOrderedOpenSpec spec; };
+dictionary MobileOrderedSlotIdentity { string owner_incarnation; u32 slot; u64 slot_generation; };
+dictionary MobileOrderedFailureV2 { string kind; i32? gatt_status; string? native_domain; i64? native_code; string? native_name; string detail; boolean dispatched; };
+[Enum]
+interface MobileOwnerOutstandingClass { Attachments(); Reservations(); NativeWork(); Callbacks(); Cleanup(); };
+[Enum]
+interface MobileOwnerRejection { WrongOwner(); ConflictingRetirement(); Malformed(); };
+[Enum]
+interface MobileOwnerRetirementState { FencedPending(sequence<MobileOwnerOutstandingClass> outstanding_classes, sequence<MobileOrderedFailureV2> failures); Quiescent(); Rejected(MobileOwnerRejection reason); };
+[Enum]
+interface MobileOrderedOwnershipV2 { NotCreated(); Created(MobileOrderedGeneration source_generation, sequence<MobileOrderedRegistration> members); };
+[Enum]
+interface MobileOrderedIndeterminateReason { Failure(MobileOrderedFailureV2 failure); Reason(string reason); };
+[Enum]
+interface MobileOrderedOpenOutcome { Pending(); Opened(MobileOrderedGeneration source_generation, sequence<MobileOrderedRegistration> members); Failed(MobileOrderedFailureV2 original_failure, MobileOrderedOwnershipV2 ownership); Indeterminate(MobileOrderedIndeterminateReason original_failure_or_reason); };
+[Enum]
+interface MobileOrderedOpenCompletion { Result(MobileOrderedSlotIdentity slot_identity, MobileOrderedOpenOutcome outcome); Retired(MobileOrderedSlotIdentity slot_identity); };
+
+dictionary MobilePlatformFailure { string kind; i32? gatt_status; string? native_domain; i64? native_code; string detail; boolean dispatched; };
+dictionary MobileOrderedActivation { MobileInstance instance; string connection_generation; MobileOrderedGeneration source_generation; u64 group_id; MobileOrderedRegistration member; u64 activation_epoch; };
+[Enum]
+interface MobileOrderedMarkerAdmission { Pending(); NotAdmitted(); Admitted(u64 ordinal); Rejected(MobilePlatformFailure failure); };
+[Enum]
+interface MobileOrderedMarkerWriteState { Initiating(); NotStarted(MobilePlatformFailure? failure); Started(MobilePlatformFailure? failure); Settled(MobilePlatformFailure? failure); };
+dictionary MobileOrderedMarkerWriteStatus { MobileOrderedMarkerAdmission admission; MobileOrderedMarkerWriteState write; };
+[Enum]
+interface MobileOrderedEnableStatus {
+    Pending();
+    Enabled(string delivery);
+    Released(MobilePlatformFailure? failure);
+    Uncertain(MobilePlatformFailure failure);
+};
+[Enum]
+interface MobileOrderedOpenOwnership {
+    NotCreated();
+    Created(MobileOrderedGeneration generation, sequence<MobileOrderedRegistration> members);
+    Indeterminate(u64 recovery_key);
+};
+[Enum]
+interface MobileOrderedRejected {
+    Value(MobileOrderedRegistration member, u64 byte_count);
+    Loss(string scope, u64? member_id, string unit, u64? count, u64? byte_count);
+    Fence(MobileOrderedRegistration member);
+    Barrier(u64 barrier_id);
+    Marker(u64 marker_id);
+    Unmapped();
+};
+[Enum]
+interface MobileOrderedRecord {
+    Value(MobileOrderedRegistration member, u64 ordinal, bytes value, string delivery, string provenance);
+    Loss(string scope, u64? member_id, string unit, u64? count, u64? byte_count);
+    Fence(MobileOrderedRegistration member, boolean uncertain_tail);
+    Barrier(u64 barrier_id, boolean uncertain_tail);
+    Marker(u64 marker_id, u64 ordinal);
+    Terminal(string reason, boolean uncertain_tail, string? native_domain, string? native_code, MobileOrderedRegistration? failure_member, MobileOrderedRejected? rejected);
+    BridgeFailure(string code, string detail);
+    SourceFailed(boolean uncertain_tail, MobilePlatformFailure failure, string? native_domain, string? native_code, MobileOrderedRegistration? failure_member, MobileOrderedRejected? rejected);
+    SubsequentSourceFailure(MobilePlatformFailure failure);
+    FailureObservationsOmitted();
+    SubsequentSourceFailureV2(MobilePlatformFailure failure, MobileInstance instance, string source_generation, u64 source_member, u64 epoch, u64 batch_id, u32 record_index);
 };
 
 // Every enum-like string field carries the frozen wire string documented in
@@ -74,7 +157,50 @@ interface MobileRadioRequest {
     ReadDescriptor(u64 id, MobileInstance instance, string descriptor_uuid, u64 descriptor_occurrence);
     WriteDescriptor(u64 id, MobileInstance instance, string descriptor_uuid, u64 descriptor_occurrence, bytes value);
     EnableNotifications(u64 id, MobileInstance instance, u64 epoch, string? requested, string? preferred);
-    DisableNotifications(u64 id, MobileInstance instance);
+    OrderedEnableNotifications(u64 id, MobileOrderedActivation activation, string? requested, string? preferred);
+    OrderedDisableNotifications(u64 id, MobileOrderedActivation activation);
+    OrderedEnableSettlement(u64 id, MobileOrderedActivation activation);
+    OrderedForgetEnableReceipt(u64 id, MobileOrderedActivation activation);
+    DisableNotifications(u64 id, MobileInstance instance, u64 epoch);
+    OrderedOpenV2(u64 id, MobileOrderedOpenIdentity identity);
+    OrderedRecoverOpenV2(u64 id, MobileOrderedOpenIdentity identity);
+    OrderedAcknowledgeOpenV2(u64 id, MobileOrderedOpenIdentity identity);
+    OrderedOpen(u64 id, u64 group_id, string connection_generation, string database_generation, MobileGattSnapshotIdentity snapshot_identity, sequence<MobileOrderedMember> members, u32 item_capacity, u32 byte_capacity);
+    OrderedRecoverOpen(u64 id, u64 group_id, u64 open_request_id, string peer_id);
+    OrderedAcknowledgeOpen(u64 id, u32 version, u64 group_id, u64 open_request_id, string peer_id);
+    OrderedRegister(u64 id, MobileOrderedGeneration generation, u64 group_id, MobileOrderedRegistration member);
+    OrderedRetire(u64 id, MobileOrderedGeneration generation, u64 group_id, MobileOrderedRegistration member);
+    OrderedDrain(u64 id, MobileOrderedGeneration generation, u64 group_id);
+    OrderedBarrier(u64 id, MobileOrderedGeneration generation, u64 group_id, u64 barrier_id);
+    OrderedGraphAuthorityReserve(u64 id, u64 request);
+    OrderedGraphAuthorityReserveStatus(u64 id, u64 request);
+    OrderedGraphAuthorityReserveFence(u64 id, u64 request);
+    OrderedGraphAuthorityReserveForget(u64 id, u64 request);
+    OrderedGraphAuthorityOpen(u64 id, u64 receipt_id);
+    OrderedGraphAuthorityStatus(u64 id, u64 receipt_id);
+    OrderedGraphAuthorityFenceOpen(u64 id, u64 receipt_id);
+    OrderedGraphAuthorityForgetOpen(u64 id, u64 receipt_id);
+    OrderedGraphAuthorityClose(u64 id, u64 authority_id);
+    OrderedGraphAuthorityForget(u64 id, u64 authority_id);
+    OrderedGraphPermitReserve(u64 id, u64 authority_id, u64 request, string peer_id, string connection_generation, MobileGattSnapshotIdentity snapshot_identity);
+    OrderedGraphPermitReserveStatus(u64 id, u64 authority_id, u64 request, string peer_id, string connection_generation, MobileGattSnapshotIdentity snapshot_identity);
+    OrderedGraphPermitReserveFence(u64 id, u64 authority_id, u64 request, string peer_id, string connection_generation, MobileGattSnapshotIdentity snapshot_identity);
+    OrderedGraphPermitForgetRequest(u64 id, u64 authority_id, u64 request, string peer_id, string connection_generation, MobileGattSnapshotIdentity snapshot_identity);
+    OrderedGraphPermitAcquire(u64 id, string peer_id, string connection_generation, MobileGattSnapshotIdentity snapshot_identity, u64 authority_id, u64 permit_id);
+    OrderedGraphPermitRelease(u64 id, string peer_id, string connection_generation, MobileGattSnapshotIdentity snapshot_identity, u64 authority_id, u64 permit_id);
+    OrderedGraphPermitCommit(u64 id, string peer_id, string connection_generation, MobileGattSnapshotIdentity snapshot_identity, u64 authority_id, u64 permit_id);
+    OrderedGraphPermitForget(u64 id, string peer_id, string connection_generation, MobileGattSnapshotIdentity snapshot_identity, u64 authority_id, u64 permit_id);
+    OrderedMarkerWrite(u64 id, MobileOrderedGeneration generation, u64 group_id, u64 marker_id, string connection_generation, MobileGattSnapshotIdentity snapshot_identity, MobileInstance instance, bytes value, boolean with_response);
+    OrderedMarkerWriteSettlement(u64 id, MobileOrderedGeneration generation, u64 group_id, u64 marker_id);
+    OrderedCancelMarkerWrite(u64 id, MobileOrderedGeneration generation, u64 group_id, u64 marker_id);
+    OrderedForgetMarkerWriteReceipt(u64 id, MobileOrderedGeneration generation, u64 group_id, u64 marker_id);
+    OrderedAcknowledgeBatch(u64 id, MobileOrderedGeneration generation, u64 group_id, u64 batch_id);
+    OrderedClose(u64 id, MobileOrderedGeneration generation, u64 group_id);
+    OrderedSeal(u64 id, MobileOrderedGeneration generation, u64 group_id);
+    OrderedRetainClaim(u64 id, MobileOrderedGeneration generation, u64 group_id, MobileOrderedRegistration member);
+    OrderedConfirmCleanup(u64 id, MobileOrderedGeneration generation, u64 group_id, MobileOrderedRegistration member);
+    OrderedRemove(u64 id, MobileOrderedGeneration generation, u64 group_id);
+    OrderedForgetRemovalReceipt(u64 id, MobileOrderedGeneration generation, u64 group_id);
     ReadMtu(u64 id, string peer_id);
     ReadWriteLimits(u64 id, string peer_id);
     ReadWriteReadiness(u64 id, string peer_id);
@@ -99,6 +225,10 @@ interface MobileRadioRequest {
     ObservePresence(u64 id, string peer_id);
     StopPresence(u64 id, string peer_id);
     Close(u64 id);
+    OwnerFence(u64 id, string owner_incarnation, string retirement_id);
+    OwnerStatus(u64 id, string owner_incarnation, string retirement_id);
+    OrderedDrainV2(u64 id, u32 version, MobileOrderedGeneration generation, u64 group_id);
+    OrderedAcknowledgeBatchV2(u64 id, u32 version, MobileOrderedGeneration generation, u64 group_id, u64 batch_id);
 };
 
 dictionary MobileAdapterSnapshot {
@@ -161,6 +291,15 @@ dictionary MobileCloseFailure {
 };
 
 [Enum]
+interface MobileGraphReserveStatus { Pending(); NotCreated(); Issued(u64 receipt_id); };
+
+[Enum]
+interface MobileGraphAuthorityStatus { Pending(); NotCreated(); Opened(u64 authority_id); Closed(u64 authority_id); };
+
+[Enum]
+interface MobileGraphPermitState { Acquired(); Stale(); Busy(); Committed(); Released(); Forgotten(); };
+
+[Enum]
 interface MobileRadioCompletion {
     Unit();
     // A descriptor read's value.
@@ -170,7 +309,26 @@ interface MobileRadioCompletion {
     Read(bytes value, string provenance);
     Adapter(MobileAdapterSnapshot snapshot);
     Discovered(sequence<MobileGattService> services);
+    DiscoveredScoped(sequence<MobileGattService> services, MobileGattSnapshotIdentity identity);
     NotifyEnabled(string delivery);
+    OrderedEnableReleased(string kind, i32? gatt_status, string? native_domain, i64? native_code, string detail, boolean dispatched);
+    OrderedEnableStatus(MobileOrderedEnableStatus status);
+    OrderedGraphPermitReserved(u64 permit_id);
+    OrderedGraphAuthorityReserved(u64 receipt_id);
+    OrderedGraphReserveStatus(MobileGraphReserveStatus status);
+    OrderedGraphAuthorityOpened(u64 authority_id);
+    OrderedGraphAuthorityStatus(MobileGraphAuthorityStatus status);
+    OrderedGraphPermit(MobileGraphPermitState state);
+    OrderedGraphPermitInvalidated(MobilePlatformFailure failure);
+    OrderedGraphPermitNotAcquired(MobilePlatformFailure failure);
+    OrderedMarkerWriteStatus(MobileOrderedMarkerWriteStatus status);
+    OrderedOpenResultV2(MobileOrderedSlotIdentity slot_identity, MobileOrderedOpenOutcome outcome);
+    OrderedOpenRetiredV2(MobileOrderedSlotIdentity slot_identity);
+    OrderedOpened(MobileOrderedGeneration generation, sequence<MobileOrderedRegistration> members);
+    OrderedOpenFailed(MobilePlatformFailure failure, MobileOrderedOpenOwnership ownership);
+    OrderedRegistered(MobileOrderedRegistration member);
+    OrderedClaim(MobileOrderedGeneration generation, MobileOrderedRegistration member);
+    OrderedRecords(u64? batch_id, sequence<MobileOrderedRecord> records);
     Mtu(u16? mtu);
     WriteLimits(u16 with_response, u16 without_response);
     Ready(boolean ready);
@@ -189,6 +347,7 @@ interface MobileRadioCompletion {
     // dispatched = false: the platform refused before sending anything to
     // the peer (a failed write then reports commit "not-dispatched").
     Failed(string kind, i32? gatt_status, string? native_domain, i64? native_code, string detail, boolean dispatched);
+    OwnerRetirement(string owner_incarnation, string retirement_id, MobileOwnerRetirementState state);
 };
 
 dictionary MobileManufacturerData {
@@ -228,6 +387,9 @@ interface MobileRadioIngress {
     ConnectionScoped(string peer_id, string expected_generation, boolean connected, i32? status);
     ServicesChanged(string peer_id);
     Notification(MobileInstance instance, u64 epoch, bytes value);
+    NotificationSourceFailed(u32 version, MobileInstance instance, u64 epoch, MobilePlatformFailure failure);
+    OrderedWake(MobileOrderedGeneration generation, u64 group_id);
+    OrderedWakeFailure(MobileOrderedGeneration generation, u64 group_id);
     AdapterState(MobileAdapterSnapshot snapshot);
     ScanFailed(string detail);
     SecurityChanged(string peer_id, MobileSecurityState state);
@@ -237,7 +399,27 @@ interface MobileRadioIngress {
 };
 
 interface MobileCoreHost {
+    // Process-selected terminal evidence recovery. These methods expose only
+    // opaque native aliases; no foreign caller selects an owner or recording.
+    string terminal_evidence_recovery_open_selected();
+    string terminal_evidence_recovery_list(string lease_id, u32 max_items, u64 max_bytes);
+    string terminal_evidence_recovery_list_with_status(string lease_id, u32 max_items, u64 max_bytes);
+    string terminal_evidence_recovery_read(string handle, string offset, u32 max_bytes);
+    string terminal_evidence_recovery_acknowledge(string handle);
     string continuation_configure_recording_directory(string path);
+    // Retired raw configuration entry point. Production bindings claim the
+    // non-forgeable adapter authority during host installation instead.
+    string configure_notification_failure_spool_v1(string recording_id);
+    // Retired raw configuration entry point; see
+    // `claim_notification_failure_spool_configuration_authority_v3`.
+    string configure_notification_failure_spool_v2(string recording_id, string max_bytes, string max_records);
+    // This capability is claimable exactly once while the native binding is
+    // being installed. The production adapter keeps it private and uses it
+    // only while its route/replay fence is held.
+    MobileNotificationFailureSpoolConfigurationAuthority? claim_notification_failure_spool_configuration_authority_v3();
+    // Claimed only during native host installation. The authority accepts an
+    // opaque host-authorized recording id and never exposes a path or secret.
+    MobileScanFailureRecoveryConfigurationAuthority? claim_scan_failure_recovery_configuration_authority_v1();
     string continuation_recording_control(string operation, string id, string token, u32 max_items, u32 max_bytes);
     string continuation_reserve_declaration(string declaration_json);
     string continuation_commit_declaration(string reservation_token);
@@ -248,8 +430,50 @@ interface MobileCoreHost {
     void continuation_execute(string peer_id, string declaration_json, MobileInvokeCompletion completion);
     void continuation_prepare_claim(u32 max_items, u32 max_bytes, MobileInvokeCompletion completion);
     void continuation_acknowledge_claim(string claim_token, MobileInvokeCompletion completion);
+    void continuation_prepare_retained_claim_v1(u32 max_items, u32 max_bytes, MobileInvokeCompletion completion);
+    // Version is explicitly negotiated. Version 1 retains the current
+    // prefix contract; version 2 is required before recovery descriptors.
+    void continuation_prepare_claim_versioned(u32 version, u32 max_items, u32 max_bytes, MobileInvokeCompletion completion);
+    void continuation_acknowledge_retained_claim_v1(string claim_token, MobileInvokeCompletion completion);
+    void continuation_acknowledge_retained_claim_v2(string claim_token, MobileInvokeCompletion completion);
+    void continuation_read_peer_failure_recovery(string recovery_record, string offset, MobileInvokeCompletion completion);
+    void continuation_acknowledge_peer_failure_recovery(string recovery_record, MobileInvokeCompletion completion);
+    void continuation_retire_claim_receipt(string claim_token, MobileInvokeCompletion completion);
+    // Additive recovery for a legacy 5.2.1-shaped claim. The original claim
+    // payload is unchanged; records retain their source ordinals here.
+    void continuation_legacy_evidence_page(string claim_token, u64 after_ordinal, u32 max_items, u32 max_bytes, MobileInvokeCompletion completion);
+    void continuation_legacy_evidence_retire(string claim_token, u64 ordinal, MobileInvokeCompletion completion);
     // "delivered" | "late" | "mismatched"
     string complete(u64 request_id, MobileRadioCompletion completion);
+    // 1 for the exact ordered, replayable receipt protocol; 0 if unsupported.
+    u32 notification_failure_ingress_version(u32 offered);
+    // Exact "accepted" | "full" | "closed" | "invalid"; only accepted transfers ownership.
+    string ingest_notification_failure_v1(u64 sequence, MobileInstance instance, u64 epoch, MobilePlatformFailure failure);
+    // Exact durable overflow append: committed | full | closed | unsupported | invalid.
+    string append_notification_failure_v1(u64 sequence, MobileInstance instance, u64 epoch, MobilePlatformFailure failure);
+    // Decimal u64 watermark (including 0), or closed | unsupported | invalid.
+    string notification_failure_spool_resume_sequence_v1(MobileInstance instance, u64 epoch);
+    // Bounded JSON export/replay page; records remain retained until exact ACK.
+    string notification_failure_spool_page_v1(MobileInstance instance, u64 epoch, u64 after_sequence, u32 max_items);
+    string acknowledge_notification_failure_spool_v1(u64 sequence, MobileInstance instance, u64 epoch, MobilePlatformFailure failure);
+    // V2 is the single durable FIFO across every callback route. `captureOrdinal`
+    // remains source identity; replay gives each process a fresh V1 receipt sequence.
+    string notification_failure_spool_resume_global_v2();
+    string notification_failure_spool_page_global_v2(u64 after_capture_ordinal, u32 max_items);
+    string acknowledge_notification_failure_spool_global_v2(u64 capture_ordinal);
+    // V3 requires the immutable source identity emitted by the page. Unlike
+    // V2's ordinal-only compatibility ACK, it cannot retire a different
+    // retained occurrence that happens to share a caller cursor.
+    string acknowledge_notification_failure_spool_global_v3(u64 capture_ordinal, u64 source_sequence, MobileInstance instance, u64 epoch, MobilePlatformFailure failure);
+    // Explicitly releases V3's exact lost-reply proof after the caller has
+    // durably accepted the ACK. It requires the same immutable identity.
+    string retire_notification_failure_spool_acknowledgement_v3(u64 capture_ordinal, u64 source_sequence, MobileInstance instance, u64 epoch, MobilePlatformFailure failure);
+    // V4 returns JSON with an opaque retirement capability after exact ACK.
+    // Persist that capability before final confirmation, which may reclaim the
+    // receipt while preserving lost-reply retry semantics.
+    string acknowledge_notification_failure_spool_global_v4(u64 capture_ordinal, u64 source_sequence, MobileInstance instance, u64 epoch, MobilePlatformFailure failure);
+    string confirm_notification_failure_spool_acknowledgement_retirement_v4(u64 capture_ordinal, u64 source_sequence, MobileInstance instance, u64 epoch, MobilePlatformFailure failure, string retirement_capability);
+    string notification_failure_spool_pending_retirements_v4(u32 max_items);
     // "accepted" | "dropped-advertisement" | "dropped-notification" | "dropped-control" | "closed"
     string ingest(MobileRadioIngress ingress);
     [Throws=MobileCoreError]
@@ -258,10 +482,78 @@ interface MobileCoreHost {
     string shutdown();
 };
 
+// An opaque, host-bound capability. Its configuration methods are the only
+// supported way to change the active Apple notification-failure spool.
+interface MobileNotificationFailureSpoolConfigurationAuthority {
+    string configure_v1(string recording_id);
+    string configure_v2(string recording_id, string max_bytes, string max_records);
+};
+
+// Trusted-native-host-only recovery attachment authority. It does not expose
+// the persisted recovery credential or any filesystem capability.
+interface MobileScanFailureRecoveryConfigurationAuthority {
+    // "attached" | "closed" | "denied"
+    string attach_recording_v1(string recording_id);
+    [Throws=MobileCoreError]
+    MobileScanFailureRecovery attach_recording_v2(string recording_id);
+};
+
+// Trusted native recovery objects. These foreign handles are bound to the
+// authority that attached a host-authorized recording; no secret capability,
+// session identifier, or cleanup confirmation crosses this boundary.
+interface MobileScanFailureRecovery {
+    sequence<MobileScanFailureRecoveryOwner> owners();
+    // Reacquires opaque cleanup receipts after a cold reopen. The caller must
+    // explicitly retire each receipt after its own durable completion.
+    [Throws=MobileCoreError] sequence<MobileScanFailureCleanupReceipt> pending_cleanup_receipts();
+};
+dictionary MobileScanFailureIdentity { bytes host; bytes scan; bytes start; bytes source_generation; bytes occurrence; };
+dictionary MobileScanFailureMember { bytes recipient; bytes delivery; };
+// Stable non-secret owner ordinal for native opaque-handle deduplication. The
+// recovery capability never crosses this boundary.
+dictionary MobileScanFailureRecoveryOwnerInfo { string owner_id; boolean prepared; boolean producer_finished; boolean raw_retired; boolean raw_released; u64 member_count; boolean released; };
+dictionary MobileScanFailureRecoveryHeadInfo { u32 protocol; string representation; MobileScanFailureIdentity identity; MobileScanFailureMember member; string encoded_length; u32 chunk_bytes; };
+dictionary MobileScanFailureRecoveryPage { string offset; string next_offset; bytes bytes; boolean done; };
+dictionary MobileScanFailureRawInfo { MobileScanFailureIdentity identity; u64 member_count; u64 token_count; };
+[Enum]
+interface MobileScanFailureRawToken { Null(); Bool(boolean value); I64(i64 value); U64(string value); F64Bits(string value); Text(string total, bytes bytes); Bytes(string total, bytes bytes); Map(string entries); Array(string entries); };
+interface MobileScanFailureRecoveryOwner {
+    [Throws=MobileCoreError] MobileScanFailureRecoveryOwnerInfo info();
+    [Throws=MobileCoreError] MobileScanFailureMember member(u64 index);
+    [Throws=MobileCoreError] MobileScanFailureRecoveryHead? head(u64 member_index);
+    [Throws=MobileCoreError] MobileScanFailureRawInfo raw_info();
+    [Throws=MobileCoreError] MobileScanFailureMember raw_member(u64 index);
+    [Throws=MobileCoreError] MobileScanFailureRawToken raw_token(u64 index, string offset, u32 max_bytes);
+    [Throws=MobileCoreError] void raw_retire();
+    [Throws=MobileCoreError] void raw_release();
+    [Throws=MobileCoreError] MobileScanFailureCleanupReceipt raw_finalize();
+};
+interface MobileScanFailureRecoveryHead {
+    MobileScanFailureRecoveryHeadInfo info();
+    [Throws=MobileCoreError] MobileScanFailureRecoveryPage read(string offset);
+    [Throws=MobileCoreError] void acknowledge();
+    [Throws=MobileCoreError] void retire();
+    [Throws=MobileCoreError] void release();
+    [Throws=MobileCoreError] MobileScanFailureCleanupReceipt finalize();
+};
+// Opaque, non-serializable receipt. It contains the private retirement
+// capability and cannot be constructed by a foreign caller.
+interface MobileScanFailureCleanupReceipt {
+    [Throws=MobileCoreError] void retire();
+};
+
 interface MobileCoreSession {
     u64 session_id();
     // {"sessionId","contractRevision","wireRevision","buildIdentity"}
     string admission_json();
+    [Throws=MobileCoreError]
+    string negotiate_scan_end_version(string offered_json);
+    [Throws=MobileCoreError]
+    string negotiate_scan_end_version_qualified(string offered_json);
+    void ordered_recording_receipt_control(string operation, string id, MobileInvokeCompletion completion);
+    void stop_ordered_recording(string id, MobileInvokeCompletion completion);
+    void ordered_recording_context(string id, MobileInvokeCompletion completion);
+    void start_ordered_recording(string handle, string recording_id, string max_bytes, string max_records, string declaration_json, u64 budget_ms, MobileInvokeCompletion completion);
     void invoke(string op, string args_json, MobileInvokeCompletion completion);
     string drain(u32 max_items, u32 max_bytes);
 };

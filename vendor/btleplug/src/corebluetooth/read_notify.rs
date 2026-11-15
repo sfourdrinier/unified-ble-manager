@@ -74,6 +74,17 @@ pub fn enable_not_notifying_error() -> PlatformError {
     .with("nsErrorDomain", "UBMCoreBluetooth")
 }
 
+/// True only for the callback's explicit observation that an enable left
+/// the characteristic not notifying; arbitrary platform failures are uncertain.
+pub(super) fn is_enable_not_notifying(error: &PlatformError) -> bool {
+    error.domain == "corebluetooth"
+        && error.code == ENABLE_NOT_NOTIFYING_CODE.to_string()
+        && error
+            .metadata
+            .iter()
+            .any(|(key, value)| *key == "nsErrorDomain" && value == "UBMCoreBluetooth")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ReadNotifyState, ValueRoute};

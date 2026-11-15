@@ -69,7 +69,7 @@ class FakeCore : MobileCorePort {
 
   override fun buildIdentityJson() = "{\"schema\":\"ubm-native-build-identity/1\"}"
   override fun contractRevision() = "C-UBM.test"
-  override fun wireRevision() = "ubm-mobile-wire/2"
+  override fun wireRevision() = "ubm-mobile-wire/3"
 
   override fun installHost(radio: MobileCoreBridge.RadioHost, wake: MobileCoreBridge.WakeListener, owner: String, adapterLabel: String) {
     installCount++
@@ -157,6 +157,14 @@ class FakeCore : MobileCorePort {
   override fun completeFailure(requestId: Long, failure: RadioFailure) =
     failures.put(requestId, failure).let { record("failure:$requestId:${failure.kind.wire}:${failure.gattStatus}") }
 
+  /** Ordered enables retain an activation receipt even when no native write ran. */
+  val orderedEnableReleases = mutableMapOf<Long, RadioFailure>()
+
+  override fun completeOrderedEnableReleased(requestId: Long, failure: RadioFailure) =
+    orderedEnableReleases.put(requestId, failure).let {
+      record("ordered-enable-released:$requestId:${failure.kind.wire}:${failure.gattStatus}")
+    }
+
   val advertisements = mutableListOf<AdvertisementFacts>()
   val connectionGenerationIngress = mutableListOf<Triple<String, String, Boolean>>()
 
@@ -176,12 +184,17 @@ class FakeCore : MobileCorePort {
   override fun ingestNotification(instance: CharacteristicInstance, epoch: Long, value: ByteArray) =
     ingress("value:${instance.peerId}:${instance.characteristicUuid}#${instance.characteristicOccurrence}:$epoch:${value.toList()}")
 
+  override fun ingestNotificationSourceFailed(instance: CharacteristicInstance, epoch: Long, failure: RadioFailure) =
+    ingress("notification-source-failed:${instance.peerId}:${instance.characteristicUuid}#${instance.characteristicOccurrence}:$epoch:${failure.kind.wire}:${failure.gattStatus}:${failure.nativeCode}")
+
   override fun ingestAdapterState(state: AdapterFacts) = ingress("adapter-state:${state.power}")
   override fun ingestScanFailed(detail: String) = ingress("scan-failed:$detail")
+  override fun ingestScanFailed(detail: String, scanIdentity: String, errorCode: Int) = ingress("scan-failed:$detail:$scanIdentity:$errorCode")
   override fun ingestSecurity(peerId: String, security: SecurityFacts) = ingress("security-changed:$peerId:${security.bond}")
   override fun ingestSecurityFailure(peerId: String?, failure: RadioFailure, encryptionStatus: Int?) =
     ingress("security-failed:$peerId:${failure.kind.wire}:$encryptionStatus")
   override fun ingestDropped(ingressClass: String, detail: String) = ingress("dropped:$ingressClass")
+  override fun ingestDroppedCount(ingressClass: String, detail: String, count: Long) = ingress("dropped:$ingressClass:$count")
   override fun ingestRestored(peers: List<PresenceRestoredPeer>) =
     ingress(peers.joinToString(",") { "restored:${it.peerId}:${it.connected}" })
 }
@@ -244,6 +257,10 @@ internal class FakeRadio : AndroidRadioPort {
     onComplete(disconnectAnswer)
   }
 
+  override fun cancelConnect(peerId: String, attempt: GattConnectAttempt, onComplete: (Throwable?) -> Unit) {
+    disconnect(peerId, onComplete)
+  }
+
   private fun <T> park(name: String, onResult: (Result<T>) -> Unit): Long {
     calls.add(name)
     @Suppress("UNCHECKED_CAST")
@@ -276,8 +293,12 @@ internal class FakeRadio : AndroidRadioPort {
   override fun writeDescriptor(descriptor: DescriptorInstance, value: ByteArray, onResult: (Result<Unit>) -> Unit): Long =
     park("writeDescriptor:${descriptor.descriptorUuid}:${value.toList()}", onResult)
 
-  override fun setNotification(instance: CharacteristicInstance, enable: Boolean, mode: String?, onResult: (Result<Unit>) -> Unit): Long =
-    park("notify:${instance.characteristicUuid}:$enable:$mode", onResult)
+  val notificationEpochs = mutableListOf<Pair<Boolean, Long?>>()
+
+  override fun setNotification(instance: CharacteristicInstance, enable: Boolean, mode: String?, epoch: Long?, onResult: (Result<Unit>) -> Unit): Long {
+    notificationEpochs.add(enable to epoch)
+    return park("notify:${instance.characteristicUuid}:$enable:$mode", onResult)
+  }
 
   override fun readMtu(peerId: String, onResult: (Result<Int?>) -> Unit): Long = park("readMtu:$peerId", onResult)
   override fun requestMtu(peerId: String, mtu: Int, onResult: (Result<Int>) -> Unit): Long = park("requestMtu:$peerId:$mtu", onResult)

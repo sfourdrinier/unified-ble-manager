@@ -427,6 +427,12 @@ describe('binding schema (T1)', () => {
     })
   })
 
+  test('uniffi regenerates its Rust scaffold when the UDL changes', () => {
+    const buildScript = fs.readFileSync(path.join(repoRoot, 'bindings/uniffi/build.rs'), 'utf8')
+    expect(buildScript).toContain('cargo:rerun-if-changed=src/ubm_echo.udl')
+    expect(buildScript).toContain('uniffi::generate_scaffolding("src/ubm_echo.udl")')
+  })
+
   test('jni binds lib.rs plus every Java class its exported symbols name', () => {
     withFixture(root => {
       expect(identity.bindingSchemaInputs(root, 'jni')).toEqual([
@@ -435,6 +441,82 @@ describe('binding schema (T1)', () => {
         'bindings/jni/java/com/ubm/echo/EchoBridge.java',
         'bindings/jni/src/lib.rs'
       ])
+    })
+  })
+
+  test('the gated JVM harness is not a shipped JNI class and remains a source input', () => {
+    withFixture(root => {
+      writeFile(root, 'bindings/jni/src/mobile.rs', '#[cfg(ubm_jni_roundtrip)]\nmod ordered_test_harness;\n')
+      writeFile(root, 'bindings/jni/src/mobile/ordered_test_harness.rs', 'pub extern "system" fn Java_com_ubm_core_TestOrdered_nativeExercise() {}\n')
+      writeFile(root, 'bindings/jni/java/com/ubm/core/TestOrdered.java', 'private static native int nativeExercise();\n')
+      fs.appendFileSync(path.join(root, 'bindings/jni/src/mobile/ordered_test_harness.rs'), 'pub extern "system" fn Java_com_ubm_core_TestSlotWire_nativeVerify() {}\n')
+      writeFile(root, 'bindings/jni/java-slot/com/ubm/core/TestSlotWire.java', 'private static native int nativeVerify();\n')
+      fs.appendFileSync(
+        path.join(root, 'bindings/jni/src/mobile/ordered_test_harness.rs'),
+        'pub extern "system" fn Java_com_ubm_core_TestBindingRoute_nativeTestOwnerDispatch() {}\n'
+      )
+      writeFile(
+        root,
+        'bindings/jni/java/com/ubm/core/TestBindingRoute.java',
+        'private static native int nativeTestOwnerDispatch(long binding);\n'
+      )
+      expect(identity.bindingSchemaInputs(root, 'jni')).not.toContain('bindings/jni/java/com/ubm/core/TestOrdered.java')
+      expect(identity.bindingSchemaInputs(root, 'jni')).not.toContain('bindings/jni/java-slot/com/ubm/core/TestSlotWire.java')
+      expect(identity.bindingSchemaInputs(root, 'jni')).not.toContain('bindings/jni/java/com/ubm/core/TestBindingRoute.java')
+      expect(identity.bindingSourceInputs(root, 'jni')).toContain('bindings/jni/src/mobile/ordered_test_harness.rs')
+      writeFile(root, 'bindings/jni/java-slot/com/ubm/core/TestSlotWire.java', 'class TestSlotWire {}\n')
+      expect(() => identity.bindingSchemaInputs(root, 'jni')).toThrow(/lacks nativeVerify/)
+      writeFile(root, 'bindings/jni/java-slot/com/ubm/core/TestSlotWire.java', 'private static native int nativeVerify();\n')
+      writeFile(root, 'bindings/jni/java/com/ubm/core/TestBindingRoute.java', 'class TestBindingRoute {}\n')
+      expect(() => identity.bindingSchemaInputs(root, 'jni')).toThrow(/lacks nativeTestOwnerDispatch/)
+      writeFile(
+        root,
+        'bindings/jni/java/com/ubm/core/TestBindingRoute.java',
+        'private static native int nativeTestOwnerDispatch(long binding);\n'
+      )
+      writeFile(root, 'bindings/jni/src/mobile.rs', 'mod ordered_test_harness;\n')
+      expect(() => identity.bindingSchemaInputs(root, 'jni')).toThrow(/exclusively cfg-gated/)
+      writeFile(root, 'bindings/jni/src/mobile.rs', '#[cfg(ubm_jni_roundtrip)]\nmod ordered_test_harness;\n')
+      fs.appendFileSync(path.join(root, 'bindings/jni/src/mobile/ordered_test_harness.rs'), 'fn Java_com_ubm_core_Unexpected_native() {}\n')
+      expect(() => identity.bindingSchemaInputs(root, 'jni')).toThrow(/unexpected JNI test harness export/)
+    })
+  })
+
+  test('the cfg-only scan recovery JVM fixture has exact declared exports', () => {
+    withFixture(root => {
+      const methods = [
+        ['nativeTestSetRecoveryHandleLimit', 'void'],
+        ['nativeTestRecoveryLeaseCount', 'int'],
+        ['nativeTestRecoveryHandleCount', 'int'],
+        ['nativeTestSeedScanFailureRecoveryForBinding', 'void'],
+        ['nativeTestClearRecoveryCleanupAliases', 'void']
+      ]
+      writeFile(root, 'bindings/jni/src/mobile.rs', methods.map(([method]) =>
+        `#[cfg(ubm_jni_roundtrip)]\n#[unsafe(no_mangle)]\npub extern "system" fn Java_com_ubm_core_TestScanFailureEvidence_${method}() {}`).join('\n'))
+      writeFile(root, 'bindings/jni/java/com/ubm/core/TestScanFailureEvidence.java',
+        methods.map(([method, type]) => `private static native ${type} ${method}();`).join('\n'))
+      expect(identity.bindingSchemaInputs(root, 'jni')).toContain('bindings/jni/java/com/ubm/core/TestScanFailureEvidence.java')
+      writeFile(root, 'bindings/jni/java/com/ubm/core/TestScanFailureEvidence.java', 'class TestScanFailureEvidence {}\n')
+      expect(() => identity.bindingSchemaInputs(root, 'jni')).toThrow(/lacks nativeTest/)
+      writeFile(root, 'bindings/jni/java/com/ubm/core/TestScanFailureEvidence.java',
+        methods.map(([method, type]) => `private static native ${type} ${method}();`).join('\n'))
+      writeFile(root, 'bindings/jni/src/mobile.rs',
+        '#[cfg(ubm_jni_roundtrip)]\nfn unrelated_roundtrip_fixture() {}\n#[unsafe(no_mangle)]\npub extern "system" fn Java_com_ubm_core_TestScanFailureEvidence_nativeTestSetRecoveryHandleLimit() {}\n')
+      expect(() => identity.bindingSchemaInputs(root, 'jni')).toThrow(/unexpected or ungated scan recovery JVM harness export/)
+      writeFile(root, 'bindings/jni/src/mobile.rs', methods.map(([method]) =>
+        `#[cfg(ubm_jni_roundtrip)]\n#[unsafe(no_mangle)]\npub extern "system" fn Java_com_ubm_core_TestScanFailureEvidence_${method}() {}`).join('\n'))
+      fs.appendFileSync(path.join(root, 'bindings/jni/src/mobile.rs'), '\n#[cfg(ubm_jni_roundtrip)]\n#[unsafe(no_mangle)]\npub extern "system" fn Java_com_ubm_core_TestScanFailureEvidence_unexpected() {}\n')
+      expect(() => identity.bindingSchemaInputs(root, 'jni')).toThrow(/unexpected or ungated scan recovery JVM harness export/)
+    })
+  })
+
+  test('a direct JVM harness export requires an immediate cfg attribute', () => {
+    withFixture(root => {
+      writeFile(root, 'bindings/jni/java/com/ubm/core/TestTerminalEvidenceRecovery.java',
+        'private static native void nativeTestSeedTerminalEvidenceForBinding();\n')
+      writeFile(root, 'bindings/jni/src/mobile.rs',
+        '#[cfg(ubm_jni_roundtrip)]\nfn unrelated_roundtrip_fixture() {}\n#[unsafe(no_mangle)]\npub extern "system" fn Java_com_ubm_core_TestTerminalEvidenceRecovery_nativeTestSeedTerminalEvidenceForBinding() {}\n')
+      expect(() => identity.bindingSchemaInputs(root, 'jni')).toThrow(/terminal evidence JVM harness export must be cfg-gated/)
     })
   })
 
@@ -547,6 +629,9 @@ describe('generated TypeScript identity (src/generated/native-build-identity.ts)
 
 function appleFixture(root, overrides = {}) {
   const current = identity.computeBindingIdentity(root, 'uniffi')
+  const canonicalModuleMap = fs.readFileSync(
+    path.join(root, 'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap')
+  )
   const dir = path.join(root, 'ios', 'RustCore')
   const framework = path.join(dir, 'RustCore.xcframework')
   const plist = writeFile(root, 'ios/RustCore/RustCore.xcframework/Info.plist', '<plist>fixture</plist>\n')
@@ -554,6 +639,11 @@ function appleFixture(root, overrides = {}) {
     const libraryPath = 'libubm5_uniffi_echo.a'
     const content = Buffer.from(`slice ${declared.libraryIdentifier}`)
     writeFile(root, path.join('ios/RustCore/RustCore.xcframework', declared.libraryIdentifier, libraryPath), content)
+    writeFile(
+      root,
+      path.join('ios/RustCore/RustCore.xcframework', declared.libraryIdentifier, 'Headers/module.modulemap'),
+      canonicalModuleMap
+    )
     return { ...declared, libraryPath, sha256: sha256(content), bytes: content.length }
   })
   const record = {
@@ -572,10 +662,51 @@ function appleFixture(root, overrides = {}) {
 }
 
 describe('Apple staging hash chain (--check-apple)', () => {
+  test('only a singleton simulator architecture rejects a fat archive wrapper', () => {
+    const fatArchive = Buffer.from([0xca, 0xfe, 0xba, 0xbe])
+    expect(
+      identity.isUnsafeSingletonSimulatorArchive(
+        { libraryIdentifier: 'ios-arm64-simulator', architectures: ['arm64'] },
+        fatArchive
+      )
+    ).toBe(true)
+    expect(
+      identity.isUnsafeSingletonSimulatorArchive(
+        { libraryIdentifier: 'ios-arm64-simulator', architectures: ['arm64', 'x86_64'] },
+        fatArchive
+      )
+    ).toBe(false)
+  })
+
+  test('ordinary ar archive bytes remain valid for a singleton simulator architecture', () => {
+    expect(
+      identity.isUnsafeSingletonSimulatorArchive(
+        { libraryIdentifier: 'ios-arm64-simulator', architectures: ['arm64'] },
+        Buffer.from('!<arch>\\n')
+      )
+    ).toBe(false)
+  })
+
   test('a current, intact staging passes', () => {
     withFixture(root => {
       appleFixture(root)
       expect(identity.checkAppleStaging(root)).toBe(true)
+    })
+  })
+
+  test('a staging without the discoverable consumer module map is stale', () => {
+    withFixture(root => {
+      const { framework } = appleFixture(root)
+      fs.rmSync(path.join(framework, 'ios-arm64', 'Headers', 'module.modulemap'))
+      expect(() => identity.checkAppleStaging(root)).toThrow(/discoverable consumer module map/)
+    })
+  })
+
+  test('a substituted consumer module map fails and names its slice', () => {
+    withFixture(root => {
+      const { framework } = appleFixture(root)
+      fs.appendFileSync(path.join(framework, 'ios-arm64', 'Headers', 'module.modulemap'), '// tampered\n')
+      expect(() => identity.checkAppleStaging(root)).toThrow(/ios-arm64[\s\S]*consumer module map/)
     })
   })
 

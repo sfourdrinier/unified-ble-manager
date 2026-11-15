@@ -3,12 +3,29 @@
 package com.sfourdrinier.unifiedblemanager.protocol;
 
 import com.facebook.react.bridge.ReactApplicationContext;
+import com.facebook.react.bridge.ReadableMap;
+import com.facebook.react.bridge.ReadableType;
 import com.facebook.react.turbomodule.core.CallInvokerHolderImpl;
 
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Installs the versioned native binary transport into the active JSI runtime. */
 final class UnifiedBleProtocolJsiBinding {
+  /** Refuse older JS consumers before installing a correlated event stream. */
+  static void requireScanEventIdentitySupport(ReadableMap request) {
+    if (!request.hasKey("scanEventIdentitySupported") ||
+        request.isNull("scanEventIdentitySupported") ||
+        request.getType("scanEventIdentitySupported") != ReadableType.Boolean ||
+        !request.getBoolean("scanEventIdentitySupported")) {
+      throw new IllegalArgumentException("JS peer lacks correlated scan event support");
+    }
+    if (!request.hasKey("androidRegistryAdmissionSupported") ||
+        request.isNull("androidRegistryAdmissionSupported") ||
+        request.getType("androidRegistryAdmissionSupported") != ReadableType.Boolean ||
+        !request.getBoolean("androidRegistryAdmissionSupported")) {
+      throw new IllegalArgumentException("JS peer lacks Android registry admission support");
+    }
+  }
   private static final DispatcherInstallRegistry<UnifiedBleProtocolAndroidDispatcher> DISPATCHERS =
       new DispatcherInstallRegistry<>();
 
@@ -72,6 +89,10 @@ final class UnifiedBleProtocolJsiBinding {
     return requestCancellationNative(nativeHandle, dispatchEpoch, nonce);
   }
 
+  static boolean retireScan(long nativeHandle, long dispatchEpoch, String nonce) {
+    return retireScanNative(nativeHandle, dispatchEpoch, nonce);
+  }
+
   static boolean emitRecord(long nativeHandle, byte[] encodedRecord) {
     return emitRecordNative(nativeHandle, encodedRecord);
   }
@@ -96,8 +117,17 @@ final class UnifiedBleProtocolJsiBinding {
     emitNotificationNative(nativeHandle, subscriptionId, value);
   }
 
+  static void emitNotificationLoss(long nativeHandle, String subscriptionId, long items, long bytes) {
+    emitNotificationLossNative(nativeHandle, subscriptionId, items, bytes);
+  }
+
+  static void emitNotificationTerminated(long nativeHandle, String subscriptionId, String failureKindWire, String nativeCode, Integer gattStatus, String safeMessage) {
+    emitNotificationTerminatedNative(nativeHandle, subscriptionId, failureKindWire, nativeCode, gattStatus != null, gattStatus != null ? gattStatus : 0, safeMessage);
+  }
+
   static void emitAdvertisement(
       long nativeHandle,
+      byte[] scanCorrelation,
       String deviceId,
       String name,
       int rssi,
@@ -113,8 +143,9 @@ final class UnifiedBleProtocolJsiBinding {
       byte[][] serviceDataValues,
       int[] manufacturerCompanyIdentifiers,
       byte[][] manufacturerDataValues) {
-    emitAdvertisementNative(
+    emitAdvertisementWithScanIdentityNative(
         nativeHandle,
+        scanCorrelation,
         deviceId,
         name,
         rssi,
@@ -134,6 +165,18 @@ final class UnifiedBleProtocolJsiBinding {
 
   static void emitDiagnostic(long nativeHandle, String code, String message) {
     emitDiagnosticNative(nativeHandle, code, message);
+  }
+
+  static void emitScanFailure(long nativeHandle, byte[] scanCorrelation, String message) {
+    emitScanFailureNative(nativeHandle, scanCorrelation, message);
+  }
+
+  static boolean scanEventIdentityAvailable() {
+    try {
+      return scanEventIdentityAvailableNative() && registryAdmissionAvailableNative();
+    } catch (UnsatisfiedLinkError oldNativeLibrary) {
+      return false;
+    }
   }
 
   static void emitDispatcherFailure(long nativeHandle, String message) {
@@ -200,12 +243,15 @@ final class UnifiedBleProtocolJsiBinding {
   private static native void installNative(CallInvokerHolderImpl jsCallInvokerHolder, long nativeHandle);
   private static native void uninstallNative(long nativeHandle);
   private static native String requestCancellationNative(long nativeHandle, long dispatchEpoch, String nonce);
+  private static native boolean retireScanNative(long nativeHandle, long dispatchEpoch, String nonce);
   private static native boolean emitRecordNative(long nativeHandle, byte[] encodedRecord);
   private static native void emitAdapterStateNative(long nativeHandle, byte[] encodedAdapterState);
   private static native void emitReadNative(long nativeHandle, long dispatchEpoch, String nonce, byte[] value);
   private static native void emitDescriptorReadNative(long nativeHandle, long dispatchEpoch, String nonce, byte[] value);
   private static native byte[] copyCommandBinaryNative(long nativeHandle, long dispatchEpoch, String nonce);
   private static native void emitNotificationNative(long nativeHandle, String subscriptionId, byte[] value);
+  private static native void emitNotificationLossNative(long nativeHandle, String subscriptionId, long items, long bytes);
+  private static native void emitNotificationTerminatedNative(long nativeHandle, String subscriptionId, String failureKindWire, String nativeCode, boolean hasGattStatus, int gattStatus, String safeMessage);
   private static native void emitAdvertisementNative(
       long nativeHandle,
       String deviceId,
@@ -224,5 +270,13 @@ final class UnifiedBleProtocolJsiBinding {
       int[] manufacturerCompanyIdentifiers,
       byte[][] manufacturerDataValues);
   private static native void emitDiagnosticNative(long nativeHandle, String code, String message);
+  private static native boolean scanEventIdentityAvailableNative();
+  private static native boolean registryAdmissionAvailableNative();
+  private static native void emitScanFailureNative(long nativeHandle, byte[] scanCorrelation, String message);
+  private static native void emitAdvertisementWithScanIdentityNative(
+      long nativeHandle, byte[] scanCorrelation, String deviceId, String name, int rssi, int txPower,
+      boolean hasTxPower, int connectableState, long appearance, boolean hasAppearance, byte[] rawRecord,
+      String[] serviceUuids, String[] solicitedServiceUuids, String[] serviceDataUuids,
+      byte[][] serviceDataValues, int[] manufacturerCompanyIdentifiers, byte[][] manufacturerDataValues);
   private static native void emitDispatcherFailureNative(long nativeHandle, String message);
 }

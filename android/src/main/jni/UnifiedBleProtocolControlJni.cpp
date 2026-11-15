@@ -100,7 +100,7 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolControlModule
     jclass) {
   try {
     return reinterpret_cast<jlong>(new RuntimeHandle{
-        .runtime = std::make_shared<protocol::NativeProtocolControlRuntime>(),
+        .runtime = std::make_shared<protocol::NativeProtocolControlRuntime>(protocol::NativeEpochAllocation::androidScanLanes),
     });
   } catch (const std::exception& error) {
     throwJava(environment, error);

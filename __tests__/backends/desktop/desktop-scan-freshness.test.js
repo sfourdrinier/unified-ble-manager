@@ -12,7 +12,8 @@ const {
   nextValue,
   openBackend,
   realBinding,
-  scanOptions
+  scanOptions,
+  withTimeout
 } = require('../../helpers/desktop-rust-core-harness')
 const { createTestDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
 
@@ -63,6 +64,7 @@ async function openInjectingBackend(platform, control) {
         if (typeof value !== 'function') return value
         if (property === 'takeScanObservation') {
           return async () => {
+            if (typeof control.take === 'function') return control.take(target, value)
             if (control.inject.length > 0) return control.inject.shift()(control)
             return Reflect.apply(value, target, [])
           }
@@ -146,6 +148,129 @@ describe('the provider attributes and stamps from the core’s own facts', () =>
       await backend.destroy()
     }
   })
+})
+
+test('a held prior scan take cannot block stop/start or deliver into the replacement scan', async () => {
+  let releaseHeldTake
+  let heldTakeReleased = false
+  let markTakeEntered
+  const takeEntered = new Promise(resolve => {
+    markTakeEntered = resolve
+  })
+  let hold = true
+  const control = {
+    inject: [],
+    scanIds: [],
+    take: () => {
+      if (!hold) {
+        if (control.inject.length > 0) return Promise.resolve(control.inject.shift()(control))
+        return Promise.resolve(null)
+      }
+      hold = false
+      markTakeEntered()
+      return new Promise(resolve => {
+        releaseHeldTake = resolve
+      })
+    }
+  }
+  const backend = await openInjectingBackend('bluez', control)
+  try {
+    const first = await backend.scanner.start(scanOptions(), 'client-1')
+    await takeEntered
+    const firstOperation = control.scanIds[0]
+    await expect(withTimeout(first.stop(), 250, 'held first scan stop')).resolves.toEqual({
+      state: 'released',
+      failures: []
+    })
+
+    const second = await backend.scanner.start(scanOptions(), 'client-1')
+    const values = second.observations[Symbol.asyncIterator]()
+    releaseHeldTake(ad({ scanOperationId: firstOperation, localName: 'Stale held first scan' })(control))
+    heldTakeReleased = true
+    control.inject.push(ad({ localName: 'Fresh replacement scan' }))
+    expect((await nextValue(values, 5000)).localName).toMatchObject({ value: 'Fresh replacement scan' })
+    await second.stop()
+  } finally {
+    if (!heldTakeReleased && releaseHeldTake !== undefined) releaseHeldTake(null)
+    await backend.destroy()
+  }
+})
+
+test('a rejected provider take ends the current scan and leaves the next scan pump usable', async () => {
+  let rejectTake = true
+  const control = {
+    inject: [],
+    scanIds: [],
+    take: () => {
+      if (rejectTake) {
+        rejectTake = false
+        return Promise.reject(new Error('controlled shared scan take rejection'))
+      }
+      if (control.inject.length > 0) return Promise.resolve(control.inject.shift()(control))
+      return Promise.resolve(null)
+    }
+  }
+  const backend = await openInjectingBackend('bluez', control)
+  try {
+    const first = await backend.scanner.start(scanOptions(), 'client-1')
+    const firstItems = first.observations[Symbol.asyncIterator]()
+    expect(await nextItem(firstItems, 5000)).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
+    await expect(withTimeout(first.stop(), 1000, 'rejected first scan stop')).resolves.toEqual({
+      state: 'released',
+      failures: []
+    })
+
+    const second = await backend.scanner.start(scanOptions(), 'client-1')
+    const secondItems = second.observations[Symbol.asyncIterator]()
+    control.inject.push(ad({ localName: 'Fresh after rejected take' }))
+    expect((await nextValue(secondItems, 5000)).localName).toMatchObject({ value: 'Fresh after rejected take' })
+    await second.stop()
+  } finally {
+    await backend.destroy()
+  }
+})
+
+test('a held old take rejection does not source-fail its replacement scan', async () => {
+  let rejectHeldTake
+  let markTakeEntered
+  const takeEntered = new Promise(resolve => {
+    markTakeEntered = resolve
+  })
+  let hold = true
+  const control = {
+    inject: [],
+    scanIds: [],
+    take: () => {
+      if (hold) {
+        hold = false
+        markTakeEntered()
+        return new Promise((_, reject) => {
+          rejectHeldTake = reject
+        })
+      }
+      if (control.inject.length > 0) return Promise.resolve(control.inject.shift()(control))
+      return Promise.resolve(null)
+    }
+  }
+  const backend = await openInjectingBackend('bluez', control)
+  try {
+    const first = await backend.scanner.start(scanOptions(), 'client-1')
+    await takeEntered
+    await expect(withTimeout(first.stop(), 250, 'held first scan stop')).resolves.toEqual({
+      state: 'released',
+      failures: []
+    })
+
+    const second = await backend.scanner.start(scanOptions(), 'client-1')
+    const values = second.observations[Symbol.asyncIterator]()
+    rejectHeldTake(new Error('controlled old scan take rejection'))
+    control.inject.push(ad({ localName: 'Fresh after old rejection' }))
+    expect((await nextValue(values, 5000)).localName).toMatchObject({ value: 'Fresh after old rejection' })
+    await second.stop()
+  } finally {
+    if (rejectHeldTake !== undefined) rejectHeldTake(new Error('test cleanup'))
+    await backend.destroy()
+  }
 })
 
 // LEGACY-AUDIT-5 S2 / finding 122: an observation is labelled with what it

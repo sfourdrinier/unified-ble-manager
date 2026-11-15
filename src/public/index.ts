@@ -18,6 +18,8 @@ export type {
   PublicStreamItem,
   PublicStreamLimits,
   PublicStreamOverflowNotice,
+  PublicStreamSourceLossNotice,
+  PublicStreamPeerSourceLossNotice,
   PublicStreamOverflowPolicy,
   PublicStreamTerminalNotice,
   PublicStreamTerminalReason,
@@ -45,7 +47,20 @@ export type {
   GattDescriptor,
   GattSubscription,
   GattValueEvent,
+  GattOrderedMember,
+  GattOrderedRecordingStart,
+  GattOrderedRecordingStartResult,
+  GattOrderedRecordingReclaim,
+  GattOrderedRecordingReclaimReceipt,
+  GattOrderedRecordingReclaimStatus,
+  GattOrderedMarkerWrite,
+  GattOrderedMarkerWritePhase,
+  GattOrderedMarkerWriteStatus,
+  GattOrderedSetup,
+  GattOrderedStream,
+  GattOrderedItem,
   NotificationReceipt,
+  NotificationProvenance,
   GattValueStream,
   GattDatabaseChangedEvent,
   GattWriteReceipt,
@@ -104,7 +119,7 @@ export type {
   NormalizedScanObservation
 } from './ble-manager'
 export type { ObservationOrigin, ObservationSource } from './scan-query'
-export type { BleDiagnostics, BleDiagnosticsSnapshot, BleResourceCounters } from './diagnostics'
+export type { BleDiagnosticWarning, BleDiagnostics, BleDiagnosticsSnapshot, BleResourceCounters } from './diagnostics'
 export type { BlePeerDirectory, BlePeerState, KnownPeerQuery, PeerSource } from './peer-directory'
 export type { PeerDirectoryRecord } from './peer-directory'
 export { mergePeerDirectoryRecords } from './peer-directory'

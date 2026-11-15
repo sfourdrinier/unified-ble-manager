@@ -18,7 +18,16 @@ describe('IPC direct peer-reference connection', () => {
     const manager = await createElectronRendererBleManager({
       transport: {
         invoke: async request => {
-          if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+          if (request.kind === 'bootstrap') {
+            const value = bootstrap()
+            const selected = { axis: 'ipc-protocol', value: 11 }
+            value.versions.ipcProtocol = {
+              axis: 'ipc-protocol', selected,
+              localRange: { axis: 'ipc-protocol', minimum: selected, maximum: selected },
+              remoteRange: { axis: 'ipc-protocol', minimum: selected, maximum: selected }
+            }
+            return { kind: 'bootstrap', bootstrap: value }
+          }
           if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
           calls.push(request.envelope)
           if (request.envelope.command === 'peers.resolve') return { kind: 'route', payload: { peer: await resolve() } }
@@ -90,6 +99,165 @@ describe('IPC direct peer-reference connection', () => {
 })
 
 describe('Electron public manager façade', () => {
+  test('opts into terminal evidence through opaque IPC recovery handles', async () => {
+    let acknowledged = false
+    const manager = await createElectronRendererBleManager({
+      terminalEvidence: { maximumCanonicalBytes: 3 },
+      transport: {
+        invoke: async request => {
+          if (request.kind === 'bootstrap') {
+            const value = bootstrap()
+            const selected = { axis: 'ipc-protocol', value: 11 }
+            value.versions.ipcProtocol = {
+              axis: 'ipc-protocol', selected,
+              localRange: { axis: 'ipc-protocol', minimum: selected, maximum: selected },
+              remoteRange: { axis: 'ipc-protocol', minimum: selected, maximum: selected }
+            }
+            return { kind: 'bootstrap', bootstrap: value }
+          }
+          if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+          if (request.envelope.command === 'terminalEvidence.recovery.list') {
+            expect(request.envelope.payload).toEqual({ version: 1 })
+            return { kind: 'route', payload: acknowledged ? { records: [] } : { records: [{ handle: 'opaque', producer: 'scan', byteLength: 3, digest: 'a'.repeat(64), formatVersion: 1 }] } }
+          }
+          if (request.envelope.command === 'terminalEvidence.recovery.read') {
+            expect(request.envelope.payload).toEqual({ version: 1, handle: 'opaque', maximumBytes: 3 })
+            return { kind: 'route', payload: { kind: 'committed', canonicalBytes: new Uint8Array([1, 2, 3]), digest: 'a'.repeat(64) } }
+          }
+          if (request.envelope.command === 'terminalEvidence.recovery.ack') {
+            expect(request.envelope.payload).toEqual({ version: 1, handle: 'opaque' })
+            acknowledged = true
+            return { kind: 'route', payload: { state: 'released' } }
+          }
+          throw new Error(`unexpected ${request.envelope.command}`)
+        },
+        subscribe: () => () => undefined,
+        acknowledge: async () => ({ kind: 'event.ack' })
+      }
+    })
+    const [record] = await manager.terminalEvidenceRecovery.list()
+    expect(record).toEqual({ handle: 'opaque', producer: 'scan', byteLength: 3, digest: 'a'.repeat(64), formatVersion: 1 })
+    await expect(manager.terminalEvidenceRecovery.read(record.handle, 3)).resolves.toEqual({
+      canonicalBytes: new Uint8Array([1, 2, 3]), digest: 'a'.repeat(64)
+    })
+    await manager.terminalEvidenceRecovery.acknowledge(record.handle)
+    await expect(manager.terminalEvidenceRecovery.list()).resolves.toEqual([])
+    await manager.destroy()
+  })
+
+  test('rejects duplicate busy producer lanes in terminal-evidence recovery status', async () => {
+    const statusBootstrap = bootstrap()
+    const selected = { axis: 'ipc-protocol', value: 11 }
+    statusBootstrap.versions.ipcProtocol = {
+      axis: 'ipc-protocol', selected,
+      localRange: { axis: 'ipc-protocol', minimum: selected, maximum: selected },
+      remoteRange: { axis: 'ipc-protocol', minimum: selected, maximum: selected }
+    }
+    const manager = await createElectronRendererBleManager({
+      terminalEvidence: { maximumCanonicalBytes: 3 },
+      transport: {
+        invoke: async request => {
+          if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: statusBootstrap }
+          if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+          if (request.envelope.command === 'terminalEvidence.recovery.listWithStatus') {
+            return { kind: 'route', payload: { records: [], busyProducers: ['scan', 'scan'] } }
+          }
+          throw new Error(`unexpected ${request.envelope.command}`)
+        },
+        subscribe: () => () => undefined,
+        acknowledge: async () => ({ kind: 'event.ack' })
+      }
+    })
+    await expect(manager.terminalEvidenceRecovery.listWithStatus()).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'electron.terminal-evidence-recovery.list-with-status' }
+    })
+    await manager.destroy()
+  })
+
+  test('fails closed on malformed raw recovery envelopes and owns canonical token bytes', async () => {
+    const manager = await createElectronRendererBleManager({
+      transport: {
+        invoke: async request => {
+          if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+          if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+          if (request.envelope.command === 'scanFailureRecovery.raw.token')
+            return { kind: 'route', payload: { token: { kind: 'bytes', total: '2', bytes: [1, 2] } } }
+          if (request.envelope.command === 'scanFailureRecovery.raw.info')
+            return { kind: 'route', payload: { info: { memberCount: 1, tokenCount: 1 } } }
+          throw new Error(`unexpected ${request.envelope.command}`)
+        },
+        subscribe: () => () => undefined,
+        acknowledge: async () => ({ kind: 'event.ack' })
+      }
+    })
+    const token = await manager.scanFailureRecovery.rawToken('recovery', 'owner', 0, 0, 2)
+    expect(token).toEqual({ kind: 'bytes', total: '2', bytes: new Uint8Array([1, 2]) })
+    expect(token.bytes).not.toBeInstanceOf(Array)
+    await expect(manager.scanFailureRecovery.rawInfo('recovery', 'owner')).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed' }
+    })
+    await expect(manager.scanFailureRecovery.rawToken('recovery', 'owner', 0, 0, 0)).rejects.toMatchObject({
+      normalized: { code: 'argument.invalid' }
+    })
+    await expect(manager.scanFailureRecovery.rawToken('recovery', 'owner', 0, 0, 65537)).rejects.toMatchObject({
+      normalized: { code: 'argument.invalid' }
+    })
+    await manager.destroy()
+  })
+
+  test('projects durable recovery through opaque handles without renderer provenance authority', async () => {
+    const calls = []
+    const manager = await createElectronRendererBleManager({
+      transport: {
+        invoke: async request => {
+          if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+          if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+          calls.push(request.envelope)
+          if (request.envelope.command === 'peerFailureRecovery.list')
+            return {
+              kind: 'route',
+              payload: {
+                recoveries: [
+                  {
+                    handleId: 'opaque-handle',
+                    peerId: 'private-peer',
+                    selector: {
+                      serviceUuid: '180d',
+                      serviceOccurrence: '0',
+                      characteristicUuid: '2a37',
+                      characteristicOccurrence: '0'
+                    },
+                    contiguousRead: '0',
+                    acknowledged: false,
+                    producerAck: 'not-started'
+                  }
+                ]
+              }
+            }
+          if (request.envelope.command === 'peerFailureRecovery.read')
+            return {
+              kind: 'route',
+              payload: { offset: '0', nextOffset: '2', bytes: new Uint8Array([1, 2]), done: true }
+            }
+          if (request.envelope.command === 'peerFailureRecovery.ack')
+            return { kind: 'route', payload: { acknowledged: true } }
+          throw new Error(`unexpected ${request.envelope.command}`)
+        },
+        subscribe: () => () => undefined,
+        acknowledge: async () => ({ kind: 'event.ack' })
+      }
+    })
+    const [recovery] = await manager.peerFailureRecovery.list()
+    expect(recovery).toMatchObject({ handleId: 'opaque-handle', peerId: 'private-peer' })
+    expect(recovery).not.toHaveProperty('consumer')
+    expect(recovery).not.toHaveProperty('recipientLease')
+    await manager.peerFailureRecovery.read(recovery.handleId, '0')
+    await manager.peerFailureRecovery.acknowledge(recovery.handleId)
+    expect(calls.map(call => call.payload)).toContainEqual({ handleId: 'opaque-handle', offset: '0' })
+    expect(calls.map(call => call.payload)).toContainEqual({ handleId: 'opaque-handle' })
+    await manager.destroy()
+  })
+
   test('retains native security capabilities and routes its measured state', async () => {
     const current = bootstrap()
     const invoke = jest.fn(async request => {
@@ -137,8 +305,19 @@ describe('Electron public manager façade', () => {
     expect(invoke).toHaveBeenCalledTimes(1)
   })
 
-  test('uses the common public connection/GATT surface over the renderer transport', async () => {
+  test('protocol-6 peer supports the 5.2.1 connection/GATT route set and gates v10 recovery before dispatch', async () => {
     const current = bootstrap()
+    const protocol6 = { axis: 'ipc-protocol', value: 6 }
+    const protocol6Range = { axis: 'ipc-protocol', minimum: protocol6, maximum: protocol6 }
+    current.versions = {
+      ...current.versions,
+      ipcProtocol: {
+        axis: 'ipc-protocol',
+        selected: protocol6,
+        localRange: protocol6Range,
+        remoteRange: protocol6Range
+      }
+    }
     const commands = []
     const invoke = jest.fn(async request => {
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: current }
@@ -211,6 +390,10 @@ describe('Electron public manager façade', () => {
     }
 
     const manager = await createElectronRendererBleManager({ transport })
+    await expect(manager.peerFailureRecovery.list()).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
+    expect(commands).not.toContain('peerFailureRecovery.list')
     const connection = await manager.connect('peer-1', { timeoutMs: 1_000 })
     const database = await connection.discover({ timeoutMs: 1_000 })
     await expect(database.characteristic('180d', '2a37').read({ timeoutMs: 1_000 })).resolves.toEqual(

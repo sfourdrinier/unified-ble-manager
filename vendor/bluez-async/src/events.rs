@@ -1,6 +1,6 @@
 use bluez_generated::{
-    ORG_BLUEZ_ADAPTER1_NAME, ORG_BLUEZ_DEVICE1_NAME, ORG_BLUEZ_GATT_CHARACTERISTIC1_NAME,
     OrgBluezAdapter1Properties, OrgBluezDevice1Properties, OrgBluezGattCharacteristic1Properties,
+    ORG_BLUEZ_ADAPTER1_NAME, ORG_BLUEZ_DEVICE1_NAME, ORG_BLUEZ_GATT_CHARACTERISTIC1_NAME,
 };
 use dbus::message::{MatchRule, SignalArgs};
 use dbus::nonblock::stdintf::org_freedesktop_dbus::{
@@ -57,6 +57,8 @@ pub enum DeviceEvent {
     Discovered,
     /// The device has connected or disconnected.
     Connected { connected: bool },
+    /// The connection property was invalidated; its current value is unknown.
+    ConnectionUnknown,
     /// A new value is available for the RSSI of the device.
     Rssi { rssi: i16 },
     /// A new value is available for the manufacturer-specific advertisement data of the device.
@@ -76,6 +78,8 @@ pub enum DeviceEvent {
     },
     /// Service discovery has completed.
     ServicesResolved,
+    /// Previously resolved services are no longer valid.
+    ServicesUnresolved,
     /// UBM patch (`vendor/btleplug/UBM_PATCHES.md` #18): one `Device1`
     /// `PropertiesChanged` signal, whatever it changed (`Name`, `Alias`,
     /// `TxPower`, `Appearance`, `AddressType`, `Class`, RSSI, data, …),
@@ -197,7 +201,16 @@ impl BluetoothEvent {
             ORG_BLUEZ_DEVICE1_NAME => {
                 let id = DeviceId { object_path };
                 let device = OrgBluezDevice1Properties(changed_properties);
-                if let Some(connected) = device.connected() {
+                if properties_changed
+                    .invalidated_properties
+                    .iter()
+                    .any(|name| name == "Connected")
+                {
+                    events.push(BluetoothEvent::Device {
+                        id: id.clone(),
+                        event: DeviceEvent::ConnectionUnknown,
+                    });
+                } else if let Some(connected) = device.connected() {
                     events.push(BluetoothEvent::Device {
                         id: id.clone(),
                         event: DeviceEvent::Connected { connected },
@@ -233,10 +246,23 @@ impl BluetoothEvent {
                         },
                     })
                 }
-                if device.services_resolved() == Some(true) {
+                let resolved = if properties_changed
+                    .invalidated_properties
+                    .iter()
+                    .any(|name| name == "ServicesResolved")
+                {
+                    Some(false)
+                } else {
+                    device.services_resolved()
+                };
+                if let Some(resolved) = resolved {
                     events.push(BluetoothEvent::Device {
                         id: id.clone(),
-                        event: DeviceEvent::ServicesResolved,
+                        event: if resolved {
+                            DeviceEvent::ServicesResolved
+                        } else {
+                            DeviceEvent::ServicesUnresolved
+                        },
                     });
                 }
                 let mut properties: Vec<String> = changed_properties
@@ -545,6 +571,46 @@ mod tests {
                 }]
             );
         }
+    }
+
+    #[test]
+    fn invalidated_services_resolved_is_unresolved() {
+        let path = "/org/bluez/hci0/dev_11_22_33_44_55_66";
+        let message = PropertiesPropertiesChanged {
+            interface_name: "org.bluez.Device1".into(),
+            changed_properties: HashMap::new(),
+            invalidated_properties: vec!["ServicesResolved".into()],
+        }
+        .to_emit_message(&path.into());
+        assert!(BluetoothEvent::message_to_events(message)
+            .iter()
+            .any(|event| matches!(
+                event,
+                BluetoothEvent::Device {
+                    event: DeviceEvent::ServicesUnresolved,
+                    ..
+                }
+            )));
+    }
+
+    #[test]
+    fn invalidated_connection_is_unknown() {
+        let path = "/org/bluez/hci0/dev_11_22_33_44_55_66";
+        let message = PropertiesPropertiesChanged {
+            interface_name: "org.bluez.Device1".into(),
+            changed_properties: HashMap::new(),
+            invalidated_properties: vec!["Connected".into()],
+        }
+        .to_emit_message(&path.into());
+        assert!(BluetoothEvent::message_to_events(message)
+            .iter()
+            .any(|event| matches!(
+                event,
+                BluetoothEvent::Device {
+                    event: DeviceEvent::ConnectionUnknown,
+                    ..
+                }
+            )));
     }
 
     fn new_device_message(device_path: &'static str) -> Message {

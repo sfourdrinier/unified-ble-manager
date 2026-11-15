@@ -74,6 +74,7 @@ try {
         'es2022',
         '--moduleResolution',
         'node',
+        '--strict',
         '--skipLibCheck',
         '--declaration',
         'false',

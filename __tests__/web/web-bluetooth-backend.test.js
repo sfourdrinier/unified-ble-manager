@@ -13,6 +13,16 @@ const { createPublicBleManager } = require('../../src/public/ble-manager')
 const { opaqueId } = require('../../src/backend-contract/primitives')
 const { normalizeScanQuery } = require('../../src/public/scan-query')
 const { InMemoryWebBluetoothTckBoundary } = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
+const { createWebRecordingPartition, webRecordingDependencies } = require('../../src/web/web-recording-partition')
+const { createWebTerminalEvidenceSource } = require('../../src/web/web-terminal-evidence')
+const { encodeTerminalEvidence, hydrateTerminalEvidence } = require('../../src/core/terminal-evidence-codec')
+const { transactionalDatabase } = require('./web-ordered-recording-journal-helper')
+const { createHash, webcrypto } = require('crypto')
+const {
+  createWebBleManagerWithEnvironment,
+  createWebTerminalEvidenceRecovery,
+  retryWebTerminalEvidence
+} = require('../../src/web')
 
 const HEART_RATE_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb'
 const HEART_RATE_MEASUREMENT = '00002a37-0000-1000-8000-00805f9b34fb'
@@ -638,10 +648,7 @@ describe('WebBluetoothBackend', () => {
       }
     })
     expect(connectCalls).toBe(1)
-    expectConsoleErrorMatching(
-      '[WebBluetoothBackend.connect] Browser connect rejected:',
-      expect.objectContaining({ name })
-    )
+    expectConsoleErrorMatching('[WebBluetoothBackend.connect] Browser connect rejected:', { errors: [{ name }] })
   })
 
   test('invalidates the old database generation after rediscovery', async () => {
@@ -1466,6 +1473,459 @@ async function createAttachedWebBackend(boundary) {
   return { backend, provider }
 }
 
+function terminalEvidenceLocks() {
+  const held = new Set()
+  return {
+    request(name, _options, callback) {
+      if (held.has(name)) return Promise.resolve(callback(null))
+      held.add(name)
+      return Promise.resolve(callback({})).finally(() => held.delete(name))
+    },
+    reset: () => held.clear()
+  }
+}
+
+function terminalEvidenceDigest(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+async function publicTerminalEvidenceFixture(database) {
+  const partition = createWebRecordingPartition({
+    database,
+    locks: terminalEvidenceLocks(),
+    crypto: webcrypto,
+    digest: async value => terminalEvidenceDigest(value)
+  })
+  const mock = createBoundary()
+  mock.characteristic.startNotifications = async () => {}
+  const provider = createWebBluetoothProvider(mock.boundary, {
+    ...webRecordingDependencies(partition),
+    terminalEvidenceMaximumDurableBytes: 4096
+  })
+  const [adapter] = await provider.listAdapters()
+  const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+  const attachedBackend = await attachBleBackend(backend, provider.descriptor.compatibility)
+  const manager = await createBleManager(
+    {
+      attachedBackend,
+      clientId: opaqueId('terminal-evidence-client', 'client', 'web-terminal-evidence'),
+      managerId: opaqueId('terminal-evidence-manager', 'manager', 'web-terminal-evidence'),
+      ownerMode: 'owning'
+    },
+    createManagerOwnershipAuthority(attachedBackend),
+    { ...DEFAULT_BLE_MANAGER_OPTIONS, terminalEvidence: { maximumCanonicalBytes: 2048, maximumDurableBytes: 4096 } }
+  )
+  const selected = await backend.choose(chooserRequest(), noDeadline())
+  const connection = await manager.connect(selected.peerId, noDeadline())
+  const source = await connection.discover(noDeadline())
+  const publicDatabase = await require('../../src/public/gatt').createPublicGattDatabase(source)
+  const characteristic = publicDatabase.characteristic(HEART_RATE_SERVICE, HEART_RATE_MEASUREMENT)
+  return { mock, database, backend, manager, connection, characteristic }
+}
+
+test('Web scanner reads, validates, and explicitly retires exact durable terminal evidence', async () => {
+  const database = transactionalDatabase()
+  const fixture = await publicTerminalEvidenceFixture(database)
+  const scope = { managerId: 'web-scanner-manager', operationId: 'web-scanner-operation', incarnation: '1' }
+  const terminal = {
+    kind: 'terminal',
+    reason: 'source-failed',
+    droppedItems: 0,
+    droppedBytes: 0,
+    replacedItems: 0,
+    error: {
+      code: 'adapter.powered-off',
+      domain: 'adapter',
+      operation: 'web-scanner.source',
+      retryability: 'never',
+      platform: null
+    }
+  }
+  try {
+    const canonicalBytes = encodeTerminalEvidence(terminal, scope)
+    const reservation = await fixture.backend.scanner.reserveTerminalEvidence({
+      producer: 'scan',
+      maximumBytes: canonicalBytes.byteLength,
+      formatVersion: 1,
+      scope
+    })
+    const digest = await terminalEvidenceDigest(canonicalBytes)
+    const receipt = await reservation.commit({ canonicalBytes, digest })
+    expect(receipt).toMatchObject({
+      producer: 'scan',
+      byteLength: canonicalBytes.byteLength,
+      digest,
+      scope
+    })
+    await reservation.release()
+    const notice = { ...terminal, evidence: receipt }
+    await expect(hydrateTerminalEvidence(fixture.backend.scanner, notice, canonicalBytes.byteLength)).resolves.toEqual(
+      notice
+    )
+    await fixture.backend.scanner.releaseTerminalEvidence(receipt.ref)
+    await expect(fixture.backend.scanner.readTerminalEvidence(receipt.ref, canonicalBytes.byteLength)).resolves.toEqual({
+      kind: 'missing'
+    })
+  } finally {
+    await fixture.connection.release()
+    await fixture.manager.destroy()
+  }
+})
+
+test('public Web subscription publishes accepted values before its durably committed terminal', async () => {
+  const database = transactionalDatabase()
+  const fixture = await publicTerminalEvidenceFixture(database)
+  try {
+    const readTerminalEvidence = jest.spyOn(fixture.backend.gatt, 'readTerminalEvidence')
+    const subscription = await fixture.characteristic.subscribe()
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    for (const listener of fixture.mock.notificationListeners) listener(new Uint8Array([1]))
+    for (const listener of fixture.mock.notificationListeners) listener(new Uint8Array([2]))
+    expect((await iterator.next()).value).toMatchObject({ kind: 'value', value: { value: new Uint8Array([1]) } })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'value', value: { value: new Uint8Array([2]) } })
+
+    database.pauseNextCompletion()
+    fixture.mock.device.gatt.disconnect()
+    await database.requestsProcessed()
+    let terminalPublished = false
+    const terminal = iterator.next().then(value => {
+      terminalPublished = true
+      return value
+    })
+    await flushWebTckMicrotasks()
+    expect(terminalPublished).toBe(false)
+    expect(database.rows('terminalEvidence')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ producer: 'subscription', state: 'reserved' })])
+    )
+
+    database.complete()
+    const publishedTerminal = await terminal
+    expect(publishedTerminal).toMatchObject({
+      done: false,
+      value: { kind: 'terminal', reason: 'connection-lost' }
+    })
+    expect(readTerminalEvidence).toHaveBeenCalledWith(expect.any(String), 2048)
+    expect(database.rows('terminalEvidence')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ producer: 'subscription', state: 'committed' })])
+    )
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+  } finally {
+    await fixture.connection.release()
+    await fixture.manager.destroy()
+  }
+})
+
+test('public Web subscription preserves a notification accepted before same-turn disconnect', async () => {
+  const database = transactionalDatabase()
+  const fixture = await publicTerminalEvidenceFixture(database)
+  try {
+    const subscription = await fixture.characteristic.subscribe()
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    for (const listener of fixture.mock.notificationListeners) listener(new Uint8Array([42]))
+    fixture.mock.device.gatt.disconnect()
+
+    expect(await iterator.next()).toMatchObject({
+      done: false,
+      value: { kind: 'value', value: { value: new Uint8Array([42]) } }
+    })
+    expect(await iterator.next()).toMatchObject({
+      done: false,
+      value: { kind: 'terminal', reason: 'connection-lost' }
+    })
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+  } finally {
+    await fixture.connection.release()
+    await fixture.manager.destroy()
+  }
+})
+
+test('public Web subscription discards an unread notification when its owner explicitly removes it', async () => {
+  const database = transactionalDatabase()
+  const fixture = await publicTerminalEvidenceFixture(database)
+  try {
+    const subscription = await fixture.characteristic.subscribe()
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    for (const listener of fixture.mock.notificationListeners) listener(new Uint8Array([43]))
+
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(await iterator.next()).toMatchObject({
+      done: false,
+      value: { kind: 'terminal', reason: 'owner-released' }
+    })
+  } finally {
+    await fixture.connection.release()
+    await fixture.manager.destroy()
+  }
+})
+
+test('public Web terminal recovery retries a durable failure without replaying accepted notifications', async () => {
+  const database = transactionalDatabase()
+  const partition = createWebRecordingPartition({
+    database,
+    locks: terminalEvidenceLocks(),
+    crypto: webcrypto,
+    digest: async value => terminalEvidenceDigest(value)
+  })
+  const listeners = new Set()
+  const disconnected = new Set()
+  const characteristic = {
+    uuid: HEART_RATE_MEASUREMENT,
+    properties: { notify: true },
+    value: null,
+    getDescriptors: async () => [],
+    startNotifications: async () => characteristic,
+    stopNotifications: async () => characteristic,
+    addEventListener: (_kind, listener) => listeners.add(listener),
+    removeEventListener: (_kind, listener) => listeners.delete(listener)
+  }
+  const gatt = {
+    connected: false,
+    connect: async () => {
+      gatt.connected = true
+      return gatt
+    },
+    disconnect: () => {
+      gatt.connected = false
+      for (const listener of disconnected) listener()
+    },
+    getPrimaryServices: async () => [{ uuid: HEART_RATE_SERVICE, getCharacteristics: async () => [characteristic] }]
+  }
+  const device = {
+    id: 'public-terminal-recovery',
+    gatt,
+    addEventListener: (_kind, listener) => disconnected.add(listener),
+    removeEventListener: (_kind, listener) => disconnected.delete(listener)
+  }
+  const environment = {
+    implementationVersion: 'test',
+    browserEngine: 'test',
+    bluetooth: { getAvailability: async () => true, requestDevice: async () => device },
+    isSecureContext: () => true,
+    hasTransientUserActivation: () => true,
+    now: () => 1,
+    setTimer: callback => ({ callback }),
+    clearTimer: () => {},
+    addPageLifecycleListener: () => () => {}
+  }
+  const manager = await createWebBleManagerWithEnvironment({
+    environment,
+    recordingPartition: partition,
+    createOptions: { terminalEvidence: { maximumCanonicalBytes: 2048, maximumDurableBytes: 4096 } }
+  })
+  try {
+    const peer = await manager.choose({ acceptAllDevices: true, optionalServices: [HEART_RATE_SERVICE] })
+    const connection = await manager.connect(peer)
+    const publicDatabase = await connection.discover()
+    const subscription = await publicDatabase.characteristic(HEART_RATE_SERVICE, HEART_RATE_MEASUREMENT).subscribe()
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    characteristic.value = new DataView(Uint8Array.from([7]).buffer)
+    for (const listener of listeners) listener({ target: characteristic })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'value', value: { value: new Uint8Array([7]) } })
+    database.pauseNextCompletion()
+    gatt.disconnect()
+    await database.requestsProcessed()
+    database.complete()
+    database.abortNext(new Error('durability unavailable'))
+    await flushWebTckMicrotasks()
+    let ended = false
+    const terminal = iterator.next().then(item => {
+      ended = true
+      return item
+    })
+    await flushWebTckMicrotasks()
+    expect(ended).toBe(false)
+    expect(database.rows('terminalEvidence')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ state: 'staged' })])
+    )
+    await retryWebTerminalEvidence(partition)
+    await expect(terminal).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'connection-lost' } })
+    expect(database.rows('terminalEvidence')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ state: 'committed' })])
+    )
+  } finally {
+    await manager.destroy()
+  }
+})
+
+test('public Web terminal recovery rehydrates staged evidence after restart and requires explicit acknowledgement', async () => {
+  const database = transactionalDatabase()
+  const locks = terminalEvidenceLocks()
+  const partition = createWebRecordingPartition({
+    database,
+    locks,
+    crypto: webcrypto,
+    digest: async value => terminalEvidenceDigest(value)
+  })
+  const listeners = new Set()
+  const disconnected = new Set()
+  const characteristic = {
+    uuid: HEART_RATE_MEASUREMENT,
+    properties: { notify: true },
+    value: null,
+    getDescriptors: async () => [],
+    startNotifications: async () => characteristic,
+    stopNotifications: async () => characteristic,
+    addEventListener: (_kind, listener) => listeners.add(listener),
+    removeEventListener: (_kind, listener) => listeners.delete(listener)
+  }
+  const gatt = {
+    connected: false,
+    connect: async () => {
+      gatt.connected = true
+      return gatt
+    },
+    disconnect: () => {
+      gatt.connected = false
+      for (const listener of disconnected) listener()
+    },
+    getPrimaryServices: async () => [{ uuid: HEART_RATE_SERVICE, getCharacteristics: async () => [characteristic] }]
+  }
+  const device = {
+    id: 'public-terminal-restart',
+    gatt,
+    addEventListener: (_kind, listener) => disconnected.add(listener),
+    removeEventListener: (_kind, listener) => disconnected.delete(listener)
+  }
+  const environment = {
+    implementationVersion: 'test',
+    browserEngine: 'test',
+    bluetooth: { getAvailability: async () => true, requestDevice: async () => device },
+    isSecureContext: () => true,
+    hasTransientUserActivation: () => true,
+    now: () => 1,
+    setTimer: callback => ({ callback }),
+    clearTimer: () => {},
+    addPageLifecycleListener: () => () => {}
+  }
+  const manager = await createWebBleManagerWithEnvironment({
+    environment,
+    recordingPartition: partition,
+    createOptions: { terminalEvidence: { maximumCanonicalBytes: 2048, maximumDurableBytes: 4096 } }
+  })
+  try {
+    const peer = await manager.choose({ acceptAllDevices: true, optionalServices: [HEART_RATE_SERVICE] })
+    const connection = await manager.connect(peer)
+    const publicDatabase = await connection.discover()
+    const subscription = await publicDatabase.characteristic(HEART_RATE_SERVICE, HEART_RATE_MEASUREMENT).subscribe()
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    database.pauseNextCompletion()
+    gatt.disconnect()
+    await database.requestsProcessed()
+    database.complete()
+    database.abortNext(new Error('final terminal commit unavailable'))
+    await flushWebTckMicrotasks()
+    const terminal = iterator.next()
+    await flushWebTckMicrotasks()
+    expect(database.rows('terminalEvidence')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ state: 'staged', bytes: expect.any(Array), digest: expect.any(String) })
+      ])
+    )
+    await manager.destroy()
+    expect(database.rows('terminalEvidence')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ state: 'staged' })])
+    )
+    locks.reset()
+
+    database.abortNext(new Error('reconciliation still unavailable'))
+    await expect(retryWebTerminalEvidence(partition)).rejects.toThrow('reconciliation still unavailable')
+    expect(database.rows('terminalEvidence')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ state: 'staged' })])
+    )
+
+    await expect(retryWebTerminalEvidence(partition)).resolves.toBeUndefined()
+    const committed = database.rows('terminalEvidence').find(row => row.state === 'committed')
+    expect(committed).toEqual(expect.objectContaining({ bytes: expect.any(Array), digest: expect.any(String) }))
+    const recovery = await createWebTerminalEvidenceRecovery(partition)
+    const [entry] = await recovery.list()
+    expect(entry).toMatchObject({ ref: committed.ref, state: 'committed', digest: committed.digest })
+    await expect(recovery.listWithStatus()).resolves.toEqual({
+      records: [expect.objectContaining({ ref: committed.ref, state: 'committed', digest: committed.digest })],
+      busyProducers: []
+    })
+    await expect(recovery.read(entry.ref, 2048)).resolves.toMatchObject({
+      kind: 'committed',
+      canonicalBytes: Uint8Array.from(committed.bytes),
+      digest: committed.digest
+    })
+    await expect(recovery.acknowledge(entry.ref)).resolves.toBeUndefined()
+    await expect(recovery.list()).resolves.toEqual([])
+  } finally {
+    await manager.destroy()
+  }
+})
+
+test('public Web terminal recovery reports a live Web Lock owner instead of offering its committed row', async () => {
+  const database = transactionalDatabase()
+  const partition = createWebRecordingPartition({
+    database,
+    locks: terminalEvidenceLocks(),
+    crypto: webcrypto,
+    digest: async value => terminalEvidenceDigest(value)
+  })
+  const dependencies = webRecordingDependencies(partition)
+  const source = createWebTerminalEvidenceSource({
+    database,
+    locks: dependencies.locks,
+    digest: dependencies.digest,
+    digestBytes: dependencies.terminalEvidenceDigest,
+    maximumRetainedBytes: 32
+  })
+  const reservation = await source.reserveTerminalEvidence({
+    producer: 'scan',
+    maximumBytes: 32,
+    formatVersion: 1,
+    scope: { managerId: 'live-web-owner', operationId: 'terminal', incarnation: 'one' }
+  })
+  const bytes = new Uint8Array([1, 2, 3])
+  await reservation.commit({ canonicalBytes: bytes, digest: await dependencies.terminalEvidenceDigest(bytes) })
+
+  const recovery = await createWebTerminalEvidenceRecovery(partition)
+  await expect(recovery.listWithStatus()).resolves.toEqual({ records: [], busyProducers: ['scan'] })
+
+  await reservation.release()
+  await expect(recovery.listWithStatus()).resolves.toEqual({
+    records: [expect.objectContaining({ producer: 'scan', state: 'committed' })],
+    busyProducers: []
+  })
+})
+
+test('public Web terminal recovery rejects a held corrupt producer instead of silently omitting it', async () => {
+  const database = transactionalDatabase()
+  const partition = createWebRecordingPartition({
+    database,
+    locks: terminalEvidenceLocks(),
+    crypto: webcrypto,
+    digest: async value => terminalEvidenceDigest(value)
+  })
+  const dependencies = webRecordingDependencies(partition)
+  const source = createWebTerminalEvidenceSource({
+    database,
+    locks: dependencies.locks,
+    digest: dependencies.digest,
+    digestBytes: dependencies.terminalEvidenceDigest,
+    maximumRetainedBytes: 32
+  })
+  const reservation = await source.reserveTerminalEvidence({
+    producer: 'scan',
+    maximumBytes: 32,
+    formatVersion: 1,
+    scope: { managerId: 'corrupt-web-owner', operationId: 'terminal', incarnation: 'one' }
+  })
+  const bytes = new Uint8Array([7])
+  await reservation.commit({ canonicalBytes: bytes, digest: await dependencies.terminalEvidenceDigest(bytes) })
+  const ref = database.rows('terminalEvidence')[0].ref
+  database.mutate('terminalEvidence', row => {
+    row.producer = 'unknown'
+  })
+
+  const recovery = await createWebTerminalEvidenceRecovery(partition)
+  await expect(recovery.list()).rejects.toThrow('web-terminal-evidence.producer')
+  await expect(recovery.listWithStatus()).rejects.toThrow('web-terminal-evidence.producer')
+  await expect(recovery.read(ref, 32)).rejects.toThrow('web-terminal-evidence.producer')
+  await reservation.release()
+})
+
 function chooserRequest() {
   return {
     filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null }],
@@ -1500,3 +1960,332 @@ async function flushWebTckMicrotasks() {
     await Promise.resolve()
   }
 }
+
+test('public ordered subscription keeps alternating member callbacks in one stream', async () => {
+  const mock = createBoundary()
+  mock.characteristic.startNotifications = async () => {}
+  const otherListeners = new Set()
+  const other = {
+    ...mock.characteristic,
+    addNotificationListener: listener => otherListeners.add(listener),
+    removeNotificationListener: listener => otherListeners.delete(listener)
+  }
+  mock.service.getCharacteristics = async () => [mock.characteristic, other]
+  const provider = createWebBluetoothProvider(mock.boundary)
+  const [adapter] = await provider.listAdapters()
+  const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+  const attachedBackend = await attachBleBackend(backend, provider.descriptor.compatibility)
+  const manager = await createBleManager(
+    {
+      attachedBackend,
+      clientId: opaqueId('ordered-client', 'client', 'ordered'),
+      managerId: opaqueId('ordered-manager', 'manager', 'ordered'),
+      ownerMode: 'owning'
+    },
+    createManagerOwnershipAuthority(attachedBackend),
+    DEFAULT_BLE_MANAGER_OPTIONS
+  )
+  const selection = await backend.choose(chooserRequest(), noDeadline())
+  const connection = await manager.connect(selection.peerId, noDeadline())
+  const source = await connection.discover(noDeadline())
+  const database = await require('../../src/public/gatt').createPublicGattDatabase(source)
+  const first = database.characteristic(HEART_RATE_SERVICE, HEART_RATE_MEASUREMENT, { characteristicOccurrence: 0 })
+  const second = database.characteristic(HEART_RATE_SERVICE, HEART_RATE_MEASUREMENT, { characteristicOccurrence: 1 })
+  await expect(
+    database.subscribeOrdered([
+      { memberId: 'a', characteristic: first },
+      { memberId: 'a', characteristic: second }
+    ])
+  ).rejects.toMatchObject({ code: 'argument.invalid' })
+  const setup = await database.subscribeOrdered([
+    { memberId: 'a', characteristic: first },
+    { memberId: 'b', characteristic: second }
+  ])
+  expect(setup.state).toBe('ready')
+  for (const listener of mock.notificationListeners) listener(new Uint8Array([1]))
+  for (const listener of otherListeners) listener(new Uint8Array([2]))
+  for (const listener of mock.notificationListeners) listener(new Uint8Array([3]))
+  const iterator = setup.stream[Symbol.asyncIterator]()
+  const values = [(await iterator.next()).value, (await iterator.next()).value, (await iterator.next()).value]
+  expect(values.map(value => [value.memberId, value.ordinal, [...value.value]])).toEqual([
+    ['a', '1', [1]],
+    ['b', '2', [2]],
+    ['a', '3', [3]]
+  ])
+  expect(await setup.stream.close()).toMatchObject({
+    group: { state: 'released' },
+    members: [
+      { memberId: 'a', cleanup: { state: 'released' } },
+      { memberId: 'b', cleanup: { state: 'released' } }
+    ]
+  })
+  await connection.release()
+  await manager.destroy()
+})
+
+test('public ordered setup failure retains staged observations and retryable cleanup', async () => {
+  const mock = createBoundary()
+  mock.characteristic.startNotifications = async () => {
+    for (const listener of mock.notificationListeners) listener(new Uint8Array([4]))
+    throw new Error('start failed')
+  }
+  const provider = createWebBluetoothProvider(mock.boundary)
+  const [adapter] = await provider.listAdapters()
+  const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+  const attachedBackend = await attachBleBackend(backend, provider.descriptor.compatibility)
+  const manager = await createBleManager(
+    {
+      attachedBackend,
+      clientId: opaqueId('ordered-fail-client', 'client', 'ordered'),
+      managerId: opaqueId('ordered-fail-manager', 'manager', 'ordered'),
+      ownerMode: 'owning'
+    },
+    createManagerOwnershipAuthority(attachedBackend),
+    DEFAULT_BLE_MANAGER_OPTIONS
+  )
+  const selection = await backend.choose(chooserRequest(), noDeadline())
+  const connection = await manager.connect(selection.peerId, noDeadline())
+  const database = await require('../../src/public/gatt').createPublicGattDatabase(
+    await connection.discover(noDeadline())
+  )
+  const characteristic = database.characteristic(HEART_RATE_SERVICE, HEART_RATE_MEASUREMENT)
+  const setup = await database.subscribeOrdered([{ memberId: 'heart', characteristic }])
+  expectConsoleErrorMatching('[WebBluetoothGattRuntime.enableSubscription] Notification start rejected:', {
+    errors: [{ name: 'Error' }]
+  })
+  expect(setup).toMatchObject({
+    state: 'failed',
+    members: [{ memberId: 'heart', acquisition: 'indeterminate' }],
+    observations: [],
+    uncertainTail: true
+  })
+  const iterator = setup.stream[Symbol.asyncIterator]()
+  expect((await iterator.next()).value).toMatchObject({
+    kind: 'value',
+    memberId: 'heart',
+    ordinal: '1',
+    value: new Uint8Array([4])
+  })
+  expect((await iterator.next()).value).toMatchObject({ kind: 'terminal' })
+  expect(await setup.close()).toMatchObject({ group: { state: 'released' } })
+  await connection.release()
+  await manager.destroy()
+})
+
+async function publicMarkerFixture() {
+  const mock = createBoundary()
+  mock.characteristic.startNotifications = async () => {}
+  const provider = createWebBluetoothProvider(mock.boundary)
+  const [adapter] = await provider.listAdapters()
+  const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+  const attachedBackend = await attachBleBackend(backend, provider.descriptor.compatibility)
+  const manager = await createBleManager(
+    {
+      attachedBackend,
+      clientId: opaqueId('marker-client', 'client', 'marker'),
+      managerId: opaqueId('marker-manager', 'manager', 'marker'),
+      ownerMode: 'owning'
+    },
+    createManagerOwnershipAuthority(attachedBackend),
+    DEFAULT_BLE_MANAGER_OPTIONS
+  )
+  const selection = await backend.choose(chooserRequest(), noDeadline())
+  const connection = await manager.connect(selection.peerId, noDeadline())
+  const database = await require('../../src/public/gatt').createPublicGattDatabase(
+    await connection.discover(noDeadline())
+  )
+  const characteristic = database.characteristic(HEART_RATE_SERVICE, HEART_RATE_MEASUREMENT)
+  const setup = await database.subscribeOrdered([{ memberId: 'a', characteristic }])
+  return { mock, manager, connection, database, characteristic, stream: setup.stream }
+}
+
+test('public hard modes refuse an active Web subscription without disturbing it', async () => {
+  const { mock, manager, connection, database, characteristic, stream } = await publicMarkerFixture()
+  try {
+    await expect(characteristic.subscribe({ delivery: 'require-notification' })).rejects.toMatchObject({
+      code: 'capability.limited'
+    })
+    const setup = await database.subscribeOrdered([
+      { memberId: 'required', characteristic, delivery: 'require-notification' }
+    ])
+    expect(setup).toMatchObject({ state: 'failed', error: { code: 'capability.limited' } })
+    await setup.close()
+    for (const listener of mock.notificationListeners) listener(new Uint8Array([19]))
+    expect((await stream[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'value',
+      value: new Uint8Array([19]),
+      delivery: 'unknown',
+      provenance: 'read-or-notification'
+    })
+  } finally {
+    await stream.close()
+    await connection.release()
+    await manager.destroy()
+  }
+})
+
+test('public Web marker orders callbacks, replays one write, and retires after FIFO delivery', async () => {
+  const { mock, manager, connection, characteristic, stream } = await publicMarkerFixture()
+  const handle = stream.reserveMarkerWrite()
+  expect(await handle.status()).toEqual({ state: 'idle' })
+  for (const listener of mock.notificationListeners) listener(new Uint8Array([1]))
+  const write = jest.spyOn(mock.characteristic, 'writeValueWithResponse').mockImplementation(() => {
+    for (const listener of mock.notificationListeners) listener(new Uint8Array([2]))
+    return Promise.resolve()
+  })
+  expect(await handle.start(characteristic, new Uint8Array([5]), 'with-response')).toMatchObject({
+    state: 'admitted',
+    ordinal: '2'
+  })
+  expect(await handle.start(characteristic, new Uint8Array([5]), 'with-response')).toMatchObject({
+    state: 'admitted',
+    ordinal: '2'
+  })
+  expect(write).toHaveBeenCalledTimes(1)
+  await expect(handle.forget()).rejects.toMatchObject({ code: 'lifecycle.invalid-state' })
+  const iterator = stream[Symbol.asyncIterator]()
+  expect((await iterator.next()).value).toMatchObject({ kind: 'value', ordinal: '1' })
+  expect((await iterator.next()).value).toMatchObject({ kind: 'marker', ordinal: '2' })
+  expect((await iterator.next()).value).toMatchObject({ kind: 'value', ordinal: '3' })
+  await handle.forget()
+  expect(await handle.status()).toEqual({ state: 'retired' })
+  await stream.close()
+  await connection.release()
+  await manager.destroy()
+})
+
+test('public Web marker pre-cancellation is retained and never writes on retry', async () => {
+  const { mock, manager, connection, characteristic, stream } = await publicMarkerFixture()
+  const handle = stream.reserveMarkerWrite()
+  const controller = new AbortController()
+  controller.abort()
+  const write = jest.spyOn(mock.characteristic, 'writeValueWithResponse')
+  expect(
+    await handle.start(characteristic, new Uint8Array([5]), 'with-response', { signal: controller.signal })
+  ).toMatchObject({ state: 'not-admitted', error: { code: 'operation.aborted' } })
+  expect(await handle.start(characteristic, new Uint8Array([5]), 'with-response')).toMatchObject({
+    state: 'not-admitted'
+  })
+  expect(write).not.toHaveBeenCalled()
+  await handle.forget()
+  await stream.close()
+  await connection.release()
+  await manager.destroy()
+})
+
+test('public Web marker keeps an in-flight receipt through source disconnect', async () => {
+  const { mock, manager, connection, characteristic, stream } = await publicMarkerFixture()
+  let settle
+  const completion = new Promise(resolve => {
+    settle = resolve
+  })
+  const write = jest.spyOn(mock.characteristic, 'writeValueWithResponse').mockReturnValue(completion)
+  const handle = stream.reserveMarkerWrite()
+  expect(await handle.start(characteristic, new Uint8Array([8]), 'with-response')).toMatchObject({
+    state: 'admitted',
+    ordinal: '1',
+    write: { state: 'started' }
+  })
+  mock.device.gatt.disconnect()
+  expect(await handle.status()).toMatchObject({ state: 'admitted', ordinal: '1', write: { state: 'started' } })
+  expect(await handle.start(characteristic, new Uint8Array([8]), 'with-response')).toMatchObject({
+    state: 'admitted',
+    ordinal: '1'
+  })
+  expect(write).toHaveBeenCalledTimes(1)
+  settle()
+  await completion
+  const iterator = stream[Symbol.asyncIterator]()
+  expect((await iterator.next()).value).toMatchObject({ kind: 'marker', ordinal: '1' })
+  expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'connection-lost' })
+  await handle.forget()
+  await stream.close()
+  await connection.release()
+  await manager.destroy()
+})
+
+test('public Web marker rejects a target from another GATT database before writing', async () => {
+  const first = await publicMarkerFixture()
+  const second = await publicMarkerFixture()
+  const write = jest.spyOn(second.mock.characteristic, 'writeValueWithResponse')
+  const handle = first.stream.reserveMarkerWrite()
+  await expect(handle.start(second.characteristic, new Uint8Array([1]), 'with-response')).rejects.toBeDefined()
+  expect(write).not.toHaveBeenCalled()
+  expect(await handle.status()).toEqual({ state: 'idle' })
+  await handle.forget()
+  for (const f of [first, second]) {
+    await f.stream.close()
+    await f.connection.release()
+    await f.manager.destroy()
+  }
+})
+
+test('public Web marker cancellation before start is retained without consuming an ID', async () => {
+  const { mock, manager, connection, characteristic, stream } = await publicMarkerFixture()
+  const cancelled = stream.reserveMarkerWrite()
+  const write = jest.spyOn(mock.characteristic, 'writeValueWithResponse')
+  expect(await cancelled.cancel()).toMatchObject({ state: 'not-admitted', error: { code: 'operation.aborted' } })
+  expect(await cancelled.cancel()).toEqual(await cancelled.status())
+  expect(await cancelled.start(characteristic, new Uint8Array([1]), 'with-response')).toMatchObject({
+    state: 'not-admitted'
+  })
+  expect(write).not.toHaveBeenCalled()
+  await cancelled.forget()
+  await expect(cancelled.start(characteristic, new Uint8Array([1]), 'with-response')).rejects.toBeDefined()
+  const next = stream.reserveMarkerWrite()
+  expect(await next.start(characteristic, new Uint8Array([2]), 'with-response')).toMatchObject({ state: 'admitted' })
+  const iterator = stream[Symbol.asyncIterator]()
+  expect((await iterator.next()).value).toMatchObject({ kind: 'marker', markerId: '0' })
+  await next.forget()
+  await stream.close()
+  await connection.release()
+  await manager.destroy()
+})
+
+test('public Web marker reports the started write after repeated cancel', async () => {
+  const { mock, manager, connection, characteristic, stream } = await publicMarkerFixture()
+  let settle
+  const completion = new Promise(resolve => {
+    settle = resolve
+  })
+  const write = jest.spyOn(mock.characteristic, 'writeValueWithResponse').mockReturnValue(completion)
+  const handle = stream.reserveMarkerWrite()
+  await handle.start(characteristic, new Uint8Array([3]), 'with-response')
+  expect(await handle.cancel()).toMatchObject({ state: 'admitted', write: { state: 'started' } })
+  expect(await handle.cancel()).toMatchObject({ state: 'admitted', write: { state: 'started' } })
+  expect(write).toHaveBeenCalledTimes(1)
+  settle()
+  await completion
+  expect(await handle.status()).toMatchObject({ state: 'admitted', write: { state: 'settled', error: null } })
+  const iterator = stream[Symbol.asyncIterator]()
+  expect((await iterator.next()).value.kind).toBe('marker')
+  await handle.forget()
+  await stream.close()
+  await connection.release()
+  await manager.destroy()
+})
+
+test('public Web marker credit refusal retains not-admitted result and never writes', async () => {
+  const { CoreOrderedNotificationStream } = require('../../src/core/ordered-notification-stream')
+  const { contractError } = require('../../src/backend-contract/errors')
+  const { mock, manager, connection, characteristic, stream } = await publicMarkerFixture()
+  const refusal = jest.spyOn(CoreOrderedNotificationStream.prototype, 'reserveMarker').mockImplementation(() => {
+    throw contractError('stream.quota', 'stream', 'test.marker')
+  })
+  try {
+    const handle = stream.reserveMarkerWrite()
+    const write = jest.spyOn(mock.characteristic, 'writeValueWithResponse')
+    expect(await handle.start(characteristic, new Uint8Array([4]), 'with-response')).toMatchObject({
+      state: 'not-admitted',
+      error: { code: 'stream.quota' }
+    })
+    expect(await handle.status()).toMatchObject({ state: 'not-admitted' })
+    expect(write).not.toHaveBeenCalled()
+    await handle.forget()
+  } finally {
+    refusal.mockRestore()
+  }
+  await stream.close()
+  await connection.release()
+  await manager.destroy()
+})

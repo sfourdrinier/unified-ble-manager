@@ -88,7 +88,321 @@ async function connectAndDiscover(fixture, manager) {
   return { connection, database }
 }
 
+function emptyPublicGattSnapshot() {
+  return {
+    path: {
+      attachmentId: 'projection-attachment',
+      peerId: 'projection-peer',
+      connectionId: 'projection-connection',
+      ownerLeaseId: 'projection-lease',
+      connectionGeneration: 'projection-connection-generation',
+      databaseId: 'projection-database',
+      databaseGeneration: 'projection-database-generation'
+    },
+    services: [],
+    characteristics: [],
+    descriptors: []
+  }
+}
+
+function orderedPublicGattSnapshot() {
+  const path = emptyPublicGattSnapshot().path
+  const servicePath = { ...path, serviceUuid: '180f', serviceOccurrence: '0' }
+  return {
+    path,
+    services: [{ path: servicePath, primary: true, includedServices: [] }],
+    characteristics: [{
+      path: { ...servicePath, characteristicUuid: '2a19', characteristicOccurrence: '0', validity: 'current' },
+      properties: { read: true, writeWithResponse: true, writeWithoutResponse: true, notify: true, indicate: false }
+    }],
+    descriptors: []
+  }
+}
+
 describe('stable public GATT object model (PR3 TDD)', () => {
+  test('ordered reclaim snapshots nested public error metadata and rejects malformed producer evidence', async () => {
+    const { createPublicGattDatabase } = require('../src/public/gatt')
+    const bytes = new Uint8Array([7])
+    const goodError = {
+      code: 'platform.failure',
+      domain: 'platform',
+      operation: 'ordered.reclaim',
+      retryability: 'never',
+      platform: { domain: 'native', code: 'E', safeMessage: 'failed', metadata: { bytes } }
+    }
+    const good = await createPublicGattDatabase({
+      snapshot: async () => emptyPublicGattSnapshot(),
+      reserveOrderedRecordingReclaim: () => ({ start: async () => ({ state: 'failed', mappingCommitted: false, error: goodError }) })
+    })
+    const receipt = await good.reserveOrderedRecordingReclaim({ kind: 'ordered-recording-recovery' }).start()
+    expect(receipt).toMatchObject({ state: 'failed', error: { platform: { metadata: { bytes: new Uint8Array([7]) } } } })
+    bytes[0] = 99
+    expect(receipt.error.platform.metadata.bytes).toEqual(new Uint8Array([7]))
+
+    const markerAndStart = await createPublicGattDatabase({
+      snapshot: async () => emptyPublicGattSnapshot(),
+      reserveOrderedRecordingMarker: () => ({
+        status: async () => ({ state: 'not-admitted', error: goodError }),
+        cancel: async () => ({ state: 'not-admitted', error: goodError }),
+        start: async () => ({ state: 'not-admitted', error: goodError }),
+        forget: async () => undefined
+      }),
+      reserveOrderedRecordingStart: () => ({
+        status: async () => ({
+          state: 'result',
+          result: {
+            kind: 'prepare-failed',
+            leaseCleanup: { state: 'release-failed', failures: [{ resourceKind: 'recording', error: goodError }] },
+            receipt: { version: 2, state: 'prepare-failed', recordingId: 'r', sourceStarted: false, journalEffect: 'none', error: { kind: 'source', source: { code: 'platform.failure', domain: 'platform', operation: 'ordered.reclaim', detail: null, platformDomain: null, platformCode: null, platformMessage: null, platformMetadata: {} } } }
+          }
+        }),
+        start: async () => { throw new Error('not used') },
+        retire: async () => undefined
+      })
+    })
+    await expect(markerAndStart.reserveOrderedRecordingMarker('r').status()).resolves.toMatchObject({
+      state: 'not-admitted',
+      error: { platform: { metadata: { bytes: new Uint8Array([99]) } } }
+    })
+    await expect(markerAndStart.reserveOrderedRecordingStart().status()).resolves.toMatchObject({
+      state: 'result',
+      result: { kind: 'prepare-failed', leaseCleanup: { state: 'release-failed' } }
+    })
+
+    const failureMetadata = { note: { kind: 'text', value: 'original' } }
+    const startedReceipt = {
+      version: 2, recordingId: 'recording', collectionId: '1', state: 'active', sourceGeneration: { kind: 'counter', value: '2' },
+      members: [{ memberId: '0', acquisition: 'acquired', delivery: 'notification', cleanupReleased: true, cleanupError: null }],
+      setupFailure: null, fenceFailure: null,
+      error: { kind: 'source', source: { code: 'source.failure', domain: 'source', operation: 'start', detail: null, platformDomain: 'native', platformCode: 'E', platformMessage: null, platformMetadata: failureMetadata } },
+      inspectionError: null, driverError: null
+    }
+    const started = await createPublicGattDatabase({
+      snapshot: async () => emptyPublicGattSnapshot(),
+      reserveOrderedRecordingStart: () => {
+        let calls = 0
+        return {
+        status: async () => ({ state: 'result', result: calls++ === 0 ? { kind: 'started', receipt: startedReceipt } : { kind: 'owner-failed', recordingId: 'recording', collectionId: '1', error: startedReceipt.error } }),
+        start: async () => { throw new Error('not used') },
+        retire: async () => undefined
+        }
+      }
+    })
+    const startedHandle = started.reserveOrderedRecordingStart()
+    const startedStatus = await startedHandle.status()
+    const ownerFailedStatus = await startedHandle.status()
+    failureMetadata.note.value = 'mutated'
+    startedReceipt.sourceGeneration.value = 'mutated'
+    expect(startedStatus).toMatchObject({ state: 'result', result: { kind: 'started', receipt: { sourceGeneration: { value: '2' }, error: { source: { platformMetadata: { note: { value: 'original' } } } } } } })
+    expect(ownerFailedStatus).toMatchObject({ state: 'result', result: { kind: 'owner-failed', error: { source: { platformMetadata: { note: { value: 'original' } } } } } })
+
+    const malformedStart = await createPublicGattDatabase({
+      snapshot: async () => emptyPublicGattSnapshot(),
+      reserveOrderedRecordingStart: () => ({ status: async () => ({ state: 'result', result: { kind: 'bogus' } }), retire: async () => undefined })
+    })
+    await expect(malformedStart.reserveOrderedRecordingStart().status()).rejects.toMatchObject({ code: 'protocol.malformed' })
+
+    const malformedMetadata = await createPublicGattDatabase({
+      snapshot: async () => emptyPublicGattSnapshot(),
+      reserveOrderedRecordingStart: () => ({
+        status: async () => ({
+          state: 'result',
+          result: {
+            kind: 'started',
+            receipt: {
+              ...startedReceipt,
+              error: {
+                ...startedReceipt.error,
+                source: {
+                  ...startedReceipt.error.source,
+                  platformMetadata: { bad: { kind: 'bogus', value: 'x' } }
+                }
+              }
+            }
+          }
+        }),
+        retire: async () => undefined
+      })
+    })
+    await expect(malformedMetadata.reserveOrderedRecordingStart().status()).rejects.toMatchObject({ code: 'protocol.malformed' })
+
+    const malformed = await createPublicGattDatabase({
+      snapshot: async () => emptyPublicGattSnapshot(),
+      reserveOrderedRecordingReclaim: () => ({
+        start: async () => ({
+          state: 'failed',
+          mappingCommitted: false,
+          error: { ...goodError, platform: { ...goodError.platform, metadata: new Date() } }
+        })
+      })
+    })
+    await expect(malformed.reserveOrderedRecordingReclaim({ kind: 'ordered-recording-recovery' }).start()).rejects.toMatchObject({
+      code: 'protocol.malformed'
+    })
+  })
+
+  test('ordered public stream snapshots nested source evidence on iteration, cancellation, cleanup, and failed setup', async () => {
+    const { createPublicGattDatabase } = require('../src/public/gatt')
+    const bytes = new Uint8Array([7])
+    const membership = { member: 'native-member', epoch: '1' }
+    const sourceGeneration = { kind: 'counter', value: '2' }
+    const item = {
+      kind: 'value', collectionId: 'collection', connectionGeneration: 'connection', databaseGeneration: 'database',
+      memberId: 'battery', ordinal: '1', sourceGeneration, sourceMembership: membership, value: bytes,
+      delivery: 'notification', provenance: 'notification',
+      receipt: { receivedAtUtcMs: 1, receivedAtMonotonicMs: 2, clockId: 'native-clock', origin: 'native' }
+    }
+    const cleanup = {
+      group: { state: 'released', failures: [] }, members: [],
+      discarded: {
+        values: '1', bytes: '1', controls: '1', uncertainTail: false,
+        losses: [{ kind: 'loss', scope: { kind: 'member', memberId: 'battery' }, reason: 'overflow', lostValues: '1', lostBytes: '1', lostSourceRecords: '1' }],
+        markers: [{ kind: 'marker', collectionId: 'collection', connectionGeneration: 'connection', databaseGeneration: 'database', sourceGeneration, sourceMembership: membership, markerId: 'marker', ordinal: '2' }],
+        trustedValues: [{ memberId: 'battery', ordinal: '1', sourceMembership: membership, bytes: '1' }]
+      }
+    }
+    const iterator = {
+      next: async () => ({ done: false, value: item }),
+      return: async () => ({ done: false, value: item }),
+      throw: async () => ({ done: false, value: item })
+    }
+    const stream = {
+      limits: { itemCapacity: 2, byteCapacity: 64, reservedControlCapacity: 1 },
+      [Symbol.asyncIterator]: () => iterator,
+      close: async () => cleanup,
+      discard: async () => cleanup
+    }
+    const database = await createPublicGattDatabase({
+      snapshot: async () => orderedPublicGattSnapshot(), monotonicNow: () => 0,
+      subscribeOrdered: async members => ({
+        state: 'ready', members: members.map(member => ({ ...member, requestedDelivery: member.deliveryMode, effectiveDelivery: 'notification' })), stream
+      })
+    })
+    const characteristic = database.service('180f').characteristic('2a19')
+    const setup = await database.subscribeOrdered([{ memberId: 'battery', characteristic }])
+    expect(setup.state).toBe('ready')
+    if (setup.state !== 'ready') throw new Error('expected ready setup')
+    const publicIterator = setup.stream[Symbol.asyncIterator]()
+    const first = await publicIterator.next()
+    const fromReturn = await publicIterator.return()
+    const fromThrow = await publicIterator.throw(new Error('cancel'))
+    const publicCleanup = await setup.stream.discard()
+    bytes[0] = 99
+    membership.epoch = 'mutated'
+    sourceGeneration.value = 'mutated'
+    cleanup.discarded.losses[0].scope.memberId = 'mutated'
+    expect(first.value).toMatchObject({ value: new Uint8Array([7]), sourceGeneration: { value: '2' }, sourceMembership: { epoch: '1' } })
+    expect(fromReturn.value).toMatchObject({ value: new Uint8Array([7]), sourceGeneration: { value: '2' } })
+    expect(fromThrow.value).toMatchObject({ value: new Uint8Array([7]), sourceMembership: { epoch: '1' } })
+    expect(publicCleanup.discarded).toMatchObject({ losses: [{ scope: { memberId: 'battery' } }], markers: [{ sourceGeneration: { value: '2' }, sourceMembership: { epoch: '1' } }], trustedValues: [{ sourceMembership: { epoch: '1' } }] })
+
+    const failedBytes = new Uint8Array([8])
+    const failed = await createPublicGattDatabase({
+      snapshot: async () => orderedPublicGattSnapshot(), monotonicNow: () => 0,
+      subscribeOrdered: async () => ({
+        state: 'failed', error: { code: 'platform.failure', domain: 'platform', operation: 'ordered', retryability: 'never', platform: null },
+        members: [], observations: [{ ...item, value: failedBytes }], uncertainTail: false, cleanup, stream,
+        close: async () => { throw require('../src/backend-contract/errors').contractError('platform.failure', 'platform', 'ordered.close') }
+      })
+    })
+    const failedCharacteristic = failed.service('180f').characteristic('2a19')
+    const failedSetup = await failed.subscribeOrdered([{ memberId: 'battery', characteristic: failedCharacteristic }])
+    expect(failedSetup.state).toBe('failed')
+    if (failedSetup.state !== 'failed') throw new Error('expected failed setup')
+    failedBytes[0] = 88
+    expect(failedSetup.observations).toMatchObject([{ kind: 'value', value: new Uint8Array([8]) }])
+    await expect(failedSetup.close()).rejects.toMatchObject({ code: 'platform.failure' })
+
+    const malformedItem = await createPublicGattDatabase({
+      snapshot: async () => orderedPublicGattSnapshot(), monotonicNow: () => 0,
+      subscribeOrdered: async members => ({ state: 'ready', members: members.map(member => ({ ...member, requestedDelivery: member.deliveryMode, effectiveDelivery: 'notification' })), stream: { ...stream, [Symbol.asyncIterator]: () => ({ next: async () => ({ done: false, value: { kind: 'bogus' } }) }) } })
+    })
+    const malformedItemSetup = await malformedItem.subscribeOrdered([{ memberId: 'battery', characteristic: malformedItem.service('180f').characteristic('2a19') }])
+    if (malformedItemSetup.state !== 'ready') throw new Error('expected ready setup')
+    await expect(malformedItemSetup.stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'protocol.malformed' })
+
+    let stale = false
+    const markerStart = jest.fn(async () => ({ state: 'pending' }))
+    const markerDatabase = await createPublicGattDatabase({
+      snapshot: async () => orderedPublicGattSnapshot(), monotonicNow: () => 0,
+      assertCurrent: () => { if (stale) throw require('../src/backend-contract/errors').contractError('gatt.stale-handle', 'gatt', 'marker') },
+      reserveOrderedRecordingMarker: () => ({ start: markerStart, status: async () => ({ state: 'bogus' }), cancel: async () => ({ state: 'bogus' }), forget: async () => undefined })
+    })
+    const markerCharacteristic = markerDatabase.service('180f').characteristic('2a19')
+    const marker = markerDatabase.reserveOrderedRecordingMarker('recording')
+    await marker.start(markerCharacteristic, new Uint8Array([1]), 'with-response')
+    stale = true
+    await expect(marker.start(markerCharacteristic, new Uint8Array([1]), 'with-response')).rejects.toMatchObject({ code: 'gatt.stale-handle' })
+    expect(markerStart).toHaveBeenCalledTimes(1)
+    stale = false
+    await expect(marker.status()).rejects.toMatchObject({ code: 'protocol.malformed' })
+    await expect(marker.cancel()).rejects.toMatchObject({ code: 'protocol.malformed' })
+
+    let pendingRetryStale = false
+    const pendingRetryStart = jest.fn(async () => ({ state: 'pending' }))
+    const pendingRetryDatabase = await createPublicGattDatabase({
+      snapshot: async () => orderedPublicGattSnapshot(), monotonicNow: () => 0,
+      assertCurrent: () => {
+        if (pendingRetryStale)
+          throw require('../src/backend-contract/errors').contractError('gatt.stale-handle', 'gatt', 'marker')
+      },
+      reserveOrderedRecordingMarker: () => ({
+        start: pendingRetryStart,
+        status: async () => ({ state: 'pending' }),
+        cancel: async () => ({ state: 'pending' }),
+        forget: async () => undefined
+      })
+    })
+    const pendingRetryCharacteristic = pendingRetryDatabase.service('180f').characteristic('2a19')
+    const pendingRetryMarker = pendingRetryDatabase.reserveOrderedRecordingMarker('recording')
+    await pendingRetryMarker.start(pendingRetryCharacteristic, new Uint8Array([1]), 'with-response')
+    pendingRetryStale = true
+    await expect(
+      pendingRetryMarker.start(pendingRetryCharacteristic, new Uint8Array([1]), 'with-response')
+    ).rejects.toMatchObject({ code: 'gatt.stale-handle' })
+    expect(pendingRetryStart).toHaveBeenCalledTimes(1)
+
+    const admittedRetryStart = jest.fn(async () => ({
+      state: 'admitted', ordinal: '1', write: { state: 'settled', error: null }
+    }))
+    let admittedRetryStale = false
+    const admittedRetryDatabase = await createPublicGattDatabase({
+      snapshot: async () => orderedPublicGattSnapshot(), monotonicNow: () => 0,
+      assertCurrent: () => {
+        if (admittedRetryStale)
+          throw require('../src/backend-contract/errors').contractError('gatt.stale-handle', 'gatt', 'marker')
+      },
+      reserveOrderedRecordingMarker: () => ({
+        start: admittedRetryStart,
+        status: async () => ({ state: 'admitted', ordinal: '1', write: { state: 'settled', error: null } }),
+        cancel: async () => ({ state: 'admitted', ordinal: '1', write: { state: 'settled', error: null } }),
+        forget: async () => undefined
+      })
+    })
+    const admittedRetryCharacteristic = admittedRetryDatabase.service('180f').characteristic('2a19')
+    const admittedRetryMarker = admittedRetryDatabase.reserveOrderedRecordingMarker('recording')
+    await admittedRetryMarker.start(admittedRetryCharacteristic, new Uint8Array([1]), 'with-response')
+    admittedRetryStale = true
+    await expect(
+      admittedRetryMarker.start(admittedRetryCharacteristic, new Uint8Array([1]), 'with-response')
+    ).resolves.toMatchObject({ state: 'admitted', ordinal: '1' })
+    expect(admittedRetryStart).toHaveBeenCalledTimes(1)
+    await expect(
+      admittedRetryMarker.start(admittedRetryCharacteristic, new Uint8Array([2]), 'without-response')
+    ).rejects.toMatchObject({ code: 'lifecycle.invalid-state' })
+    await expect(
+      admittedRetryMarker.start(admittedRetryCharacteristic, new Int8Array([1]), 'with-response')
+    ).rejects.toMatchObject({ code: 'argument.invalid' })
+    expect(admittedRetryStart).toHaveBeenCalledTimes(1)
+
+    const malformedMarkerWrite = await createPublicGattDatabase({
+      snapshot: async () => orderedPublicGattSnapshot(), monotonicNow: () => 0,
+      reserveOrderedRecordingMarker: () => ({ start: async () => ({ state: 'admitted', ordinal: '1', write: { state: 'bogus', error: null } }), status: async () => ({ state: 'idle' }), cancel: async () => ({ state: 'idle' }), forget: async () => undefined })
+    })
+    const malformedMarker = malformedMarkerWrite.reserveOrderedRecordingMarker('recording')
+    await expect(malformedMarker.start(malformedMarkerWrite.service('180f').characteristic('2a19'), new Uint8Array([1]), 'with-response')).rejects.toMatchObject({ code: 'protocol.malformed' })
+  })
+
   test('service graph preserves secondary status, duplicate occurrence edges and unknown metadata', async () => {
     const { createPublicGattDatabase } = require('../src/public/gatt')
     const { fixture, manager } = await createPublicFixture()
@@ -559,4 +873,25 @@ describe('stable public GATT object model (PR3 TDD)', () => {
     await expect(settle(fixture, connection.release())).resolves.toMatchObject({ state: 'released' })
     await expect(settle(fixture, manager.destroy())).resolves.toMatchObject({ state: 'released' })
   })
+})
+
+test('ordered subscription refuses unsupported backends without using independent streams', async () => {
+  const { fixture, manager } = await createPublicFixture()
+  const { connection, database } = await connectAndDiscover(fixture, manager)
+  const characteristic = database.service('180f', { occurrence: 0 }).characteristic('2a19')
+  await expect(database.subscribeOrdered([{ memberId: 'battery', characteristic }])).rejects.toMatchObject({ code: 'capability.unsupported' })
+  await settle(fixture, connection.release())
+  await settle(fixture, manager.destroy())
+})
+
+
+test('ordered subscription rejects malformed and sparse members before backend admission', async () => {
+  const { fixture, manager } = await createPublicFixture()
+  const { connection, database } = await connectAndDiscover(fixture, manager)
+  const characteristic = database.service('180f', { occurrence: 0 }).characteristic('2a19')
+  for (const members of [[null], [undefined], [42], Array(1), [{ memberId: 'valid', characteristic }, ,]]) {
+    await expect(database.subscribeOrdered(members)).rejects.toMatchObject({ code: 'argument.invalid' })
+  }
+  await settle(fixture, connection.release())
+  await settle(fixture, manager.destroy())
 })

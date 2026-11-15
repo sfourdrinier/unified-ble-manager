@@ -19,6 +19,14 @@ pub fn isolated_fixture_process(test: &str) -> Option<std::path::PathBuf> {
         SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir(&directory).unwrap();
+    // The production journal rejects group-accessible private storage. A host
+    // umask such as 0002 would otherwise make this parent-owned fixture fail
+    // before its child can exercise the intended recording scenario.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let outcome = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", test, "--nocapture"])
         .env(DIRECTORY_ENV, &directory)

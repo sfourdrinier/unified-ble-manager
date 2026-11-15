@@ -395,12 +395,12 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       radio.indexOf("private fun rollbackNotifyRegistration")
     )
     val nonExactRegistration = nonExact.substring(
-      nonExact.indexOf("if (!gatt.setCharacteristicNotification(ch, enable))"),
+      nonExact.indexOf("if (!withNativeAdmission(gatt) { gatt.setCharacteristicNotification(ch, enable) })"),
       nonExact.indexOf("val cccd = ch.getDescriptor(CCCD_UUID)")
     )
     val exactRegistration = exact.substring(
-      exact.indexOf("if (!gatt.setCharacteristicNotification(characteristic, enable))"),
-      exact.indexOf("val gattGeneration = gattGenerations")
+      exact.indexOf("if (!localAccepted)"),
+      exact.indexOf("val rollbackRegistration =")
     )
     for (registrationReject in listOf(nonExactRegistration, exactRegistration)) {
       assertTrue(registrationReject.contains("classifyAndroidNotificationRegistrationFailure("))
@@ -514,8 +514,11 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       radio.indexOf("private fun rollbackNotifyRegistration")
     )
 
-    assertTrue(completion.contains("androidGattTerminalResult(result, rollbackFailure)"))
-    assertTrue(completion.contains("registerRetryableCleanup(rollbackFailure.operation)"))
+    assertTrue(completion.contains("androidGattTerminalResult(effectiveResult, rollbackFailure)"))
+    // Exact local rollback ownership is now retained by the helper so the
+    // replacement admission cannot race a cleanup retry. The completion path
+    // must delegate rather than reintroducing an unowned inline cleanup.
+    assertTrue(completion.contains("retainLocalNotificationCleanup("))
     assertTrue(completion.contains("reportCleanupFailure(rollbackFailure)"))
 
     val terminal = radio.substring(
@@ -614,7 +617,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(exactSubscribe.contains("AndroidCccdSubmissionFailure"))
     assertTrue(exactSubscribe.contains("AndroidCccdSubmissionFailure(status)"))
     assertTrue(exactSubscribe.contains("AndroidCccdSubmissionFailure(null)"))
-    assertTrue(completion.contains("androidGattTerminalResult(result, rollbackFailure)"))
+    assertTrue(completion.contains("androidGattTerminalResult(effectiveResult, rollbackFailure)"))
   }
 
   @Test
@@ -985,6 +988,8 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
   @Test
   fun nativeSubscriptionOwnershipIsBoundToTheGattGenerationAndInvalidatedForThatGeneration() {
     val ownership = OwnedAndroidSubscriptionOwnership<String>()
+    ownership.arm("AA:BB", 7L, "heart-rate")
+    ownership.arm("CC:DD", 3L, "battery")
     ownership.activate("AA:BB", 7L, "heart-rate")
     ownership.activate("CC:DD", 3L, "battery")
 
@@ -1383,9 +1388,9 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
     )
 
-    assertTrue(dispatcher.contains("subscriptionType = command.optionalString(21)"))
     assertTrue(dispatcher.contains("command.optionalString(21)"))
-    assertTrue(dispatcher.contains("subscriptionType = route.mode"))
+    assertTrue(dispatcher.contains("subscriptionType = mode"))
+    assertTrue(dispatcher.contains("subscriptionType = group.mode"))
     assertTrue(radio.contains("resolveCccdPayload(enable, subscriptionType"))
   }
 
@@ -1497,7 +1502,9 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       radio.indexOf("internal fun unregisterAdapterStateReceiver")
     )
 
-    assertTrue(transition.contains("pendingReconnect.clear()"))
+    // Pending reconnects must be settled through their exact attempts; a
+    // blind clear would lose their terminal route and violate owner cleanup.
+    assertTrue(transition.contains("settleQueuedConnects()"))
     assertTrue(transition.contains("failPendingForDevice(key, \"adapter unavailable\")"))
     assertTrue(transition.contains("completeGattTeardown(key, gatt)"))
     assertFalse(transition.contains("scheduleSafeClose"))
@@ -1575,7 +1582,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       dispatcher.indexOf("private fun subscribe(command: ProtocolWireRecord, enable: Boolean)"),
       dispatcher.indexOf("private fun destroy(command: ProtocolWireRecord)")
     )
-    val absentRouteIndex = subscribe.indexOf("!enable && !activeSubscriptions.containsKey(subscriptionId)")
+    val absentRouteIndex = subscribe.indexOf("route = activeSubscriptions[subscriptionId] ?: run")
     val successIndex = subscribe.indexOf("emitSuccess(command, \"unsubscribed\")")
     val nativeIndex = subscribe.indexOf("radio.setNotifyExact(")
     assertTrue(absentRouteIndex >= 0)

@@ -6,12 +6,180 @@ import com.ubm.core.MobileCoreBridge
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import java.security.SecureRandom
 import java.util.ArrayDeque
 import java.util.concurrent.Executor
 
 class RustCoreSessionsTest {
+  @Test fun scanRecoveryCannotOpenUntilTrustedNativeBootstrapSelectsARecording() {
+    val host = RustCoreProcessHost(FakeCore(), { unusedRadioHost() }, { _, task -> task.run() }) { }
+    try {
+      host.openSelectedScanFailureRecovery()
+      fail("unselected recovery must not be opened")
+    } catch (error: RustCoreRejection) {
+      assertEquals("capability.unsupported", error.code)
+      assertEquals("scan.failure-recovery.open", error.operation)
+    }
+  }
+
+  @Test fun invokeAndDrainRequireContextOwnershipAndRejectDisposingSessions() {
+    val native = FakeCore()
+    val process = RustCoreProcessHost(native, { unusedRadioHost() }, { _, task -> task.run() }) { }
+    val first = RustCoreSessions(native, process, DirectExecutor, {}, { null }, SecureRandom(), {})
+    val second = RustCoreSessions(native, process, DirectExecutor, {}, { null }, SecureRandom(), {})
+    Captured().also { first.openSession("first", "ubm-mobile-wire/3", it) }.single()
+    native.openRecord = { "{\"sessionId\":8}" }
+    Captured().also { second.openSession("second", "ubm-mobile-wire/3", it) }.single()
+    val foreignInvoke = Captured(); second.invoke("7", "session.dispose", "{}", foreignInvoke)
+    assertEquals("ownership.denied", foreignInvoke.rejection().code)
+    val foreignDrain = Captured(); second.drain("7", 1.0, 128.0, foreignDrain)
+    assertEquals("ownership.denied", foreignDrain.rejection().code)
+    val reverse = Captured(); first.drain("8", 1.0, 128.0, reverse)
+    assertEquals("ownership.denied", reverse.rejection().code)
+    assertTrue(native.invokes.isEmpty())
+    val disposal = Captured(); first.invoke("7", "session.dispose", "{}", disposal)
+    val during = Captured(); first.drain("7", 1.0, 128.0, during)
+    assertEquals("ownership.denied", during.rejection().code)
+    native.callbacks.last().onResult("{\"ok\":true,\"value\":{\"state\":\"released\"}}")
+    disposal.single()
+    val after = Captured(); first.invoke("7", "adapter.state", "{}", after)
+    assertEquals("ownership.denied", after.rejection().code)
+    val close = Captured(); second.closeSession("8", close)
+    val duringClose = Captured(); second.invoke("8", "adapter.state", "{}", duringClose)
+    assertEquals("ownership.denied", duringClose.rejection().code)
+    native.callbacks.last().onResult("{\"ok\":true,\"value\":{\"state\":\"released\"}}")
+    close.single()
+  }
+
+  @Test fun queuedInvokeAndDrainCannotOutrunContextInvalidation() {
+    val native = FakeCore()
+    val queue = QueuedExecutor()
+    val process = RustCoreProcessHost(native, { unusedRadioHost() }, { _, task -> task.run() }) { }
+    val module = RustCoreSessions(native, process, queue, {}, { null }, SecureRandom(), {})
+    val opened = Captured(); module.openSession("first", "ubm-mobile-wire/3", opened); queue.runAll(); opened.single()
+    val invoke = Captured(); module.invoke("7", "adapter.state", "{}", invoke)
+    val drain = Captured(); module.drain("7", 1.0, 128.0, drain)
+    module.invalidate()
+    queue.runAll()
+    assertEquals("lifecycle.destroyed", invoke.rejection().code)
+    assertEquals("lifecycle.destroyed", drain.rejection().code)
+    assertEquals(listOf("session.dispose"), native.invokes.map { it.second })
+    assertTrue(native.calls.none { it.startsWith("drain:") })
+  }
+  @Test fun retainedClaimV1UsesTheOwningPortAndReturnsNativeValues() {
+    val calls = mutableListOf<String>()
+    var retirement = "{\"ok\":true,\"value\":{}}"
+    val native = object : MobileCorePort by FakeCore() {
+      override fun continuationPrepareClaimVersioned(version: Int, maxItems: Int, maxBytes: Int, callback: MobileCoreBridge.InvokeCallback) {
+        calls.add("prepare:$version:$maxItems:$maxBytes")
+        callback.onResult("{\"ok\":true,\"value\":{\"claimToken\":\"claim\"}}")
+      }
+      override fun continuationAcknowledgeClaimV1(token: String, callback: MobileCoreBridge.InvokeCallback) {
+        calls.add("ack:$token"); callback.onResult("{\"ok\":true,\"value\":{\"disposed\":true}}")
+      }
+      override fun continuationRetireClaimReceipt(token: String, callback: MobileCoreBridge.InvokeCallback) {
+        calls.add("retire:$token"); callback.onResult(retirement)
+      }
+    }
+    val process = RustCoreProcessHost(native, { unusedRadioHost() }, { _, task -> task.run() }) { }
+    val module = RustCoreSessions(native, process, DirectExecutor, {}, { null }, SecureRandom(), {})
+    val prepared = Captured(); module.prepareRetainedContinuationClaimV1(2.0, 4096.0, prepared)
+    assertEquals("{\"claimToken\":\"claim\"}", prepared.single())
+    val ack = Captured(); module.acknowledgeRetainedContinuationClaimV1("claim", ack)
+    assertEquals("{\"disposed\":true}", ack.single())
+    val retired = Captured(); module.retireRetainedContinuationClaimReceiptV1("claim", retired)
+    assertEquals("{}", retired.single())
+    assertEquals(listOf("prepare:1:2:4096", "ack:claim", "retire:claim"), calls)
+    retirement = "{\"ok\":false,\"error\":{\"code\":\"ownership.denied\",\"domain\":\"restoration\",\"operation\":\"retire\",\"detail\":\"wrong owner\"}}"
+    val refused = Captured(); module.retireRetainedContinuationClaimReceiptV1("foreign", refused)
+    assertEquals("ownership.denied", refused.rejection().code)
+    retirement = "{bad json"
+    val malformed = Captured(); module.retireRetainedContinuationClaimReceiptV1("claim", malformed)
+    assertEquals("protocol.malformed", malformed.rejection().code)
+    val invalid = Captured(); module.prepareRetainedContinuationClaimV1(Double.NaN, 5.0, invalid)
+    assertEquals("argument.invalid", invalid.rejection().code)
+  }
+
+  @Test fun retainedClaimV2UsesExplicitPrepareAndAcknowledgeSymbols() {
+    val calls = mutableListOf<String>()
+    val native = object : MobileCorePort by FakeCore() {
+      override fun continuationPrepareClaimVersioned(version: Int, maxItems: Int, maxBytes: Int, callback: MobileCoreBridge.InvokeCallback) {
+        calls.add("prepare:$version:$maxItems:$maxBytes")
+        callback.onResult("{\"ok\":true,\"value\":{\"claimToken\":\"v2\",\"version\":2}}")
+      }
+      override fun continuationAcknowledgeClaimV2(token: String, callback: MobileCoreBridge.InvokeCallback) {
+        calls.add("ack-v2:$token")
+        callback.onResult("{\"ok\":true,\"value\":{\"disposed\":true}}")
+      }
+      override fun continuationAcknowledgeClaimV1(token: String, callback: MobileCoreBridge.InvokeCallback) {
+        calls.add("ack-v1:$token")
+        callback.onResult("{\"ok\":true,\"value\":{}}")
+      }
+    }
+    val process = RustCoreProcessHost(native, { unusedRadioHost() }, { _, task -> task.run() }) { }
+    val module = RustCoreSessions(native, process, DirectExecutor, {}, { null }, SecureRandom(), {})
+    val prepared = Captured(); module.prepareRetainedContinuationClaimV2(2.0, 4096.0, prepared)
+    assertEquals("{\"claimToken\":\"v2\",\"version\":2}", prepared.single())
+    val acknowledged = Captured(); module.acknowledgeRetainedContinuationClaimV2("v2", acknowledged)
+    assertEquals("{\"disposed\":true}", acknowledged.single())
+    assertEquals(listOf("prepare:2:2:4096", "ack-v2:v2"), calls)
+    val invalid = Captured(); module.acknowledgeRetainedContinuationClaimV2("", invalid)
+    assertEquals("argument.invalid", invalid.rejection().code)
+  }
+
+  @Test fun independentProcessHostsRouteOverlappingSessionIdsAndInvalidateIndependently() {
+    val a = FakeCore()
+    val b = FakeCore()
+    val firstHost = RustCoreProcessHost(a, { unusedRadioHost() }, { _, task -> task.run() }) { }
+    val secondHost = RustCoreProcessHost(b, { unusedRadioHost() }, { _, task -> task.run() }) { }
+    val wakesA = mutableListOf<String>()
+    val wakesB = mutableListOf<String>()
+    val first = RustCoreSessions(a, firstHost, DirectExecutor, { wakesA.add(it) }, { null }, SecureRandom(), {})
+    val second = RustCoreSessions(b, secondHost, DirectExecutor, { wakesB.add(it) }, { null }, SecureRandom(), {})
+    Captured().also { first.openSession("a", "ubm-mobile-wire/3", it) }.single()
+    Captured().also { second.openSession("b", "ubm-mobile-wire/3", it) }.single()
+    a.installedWake!!.onWake(7)
+    assertEquals(listOf("7"), wakesA)
+    assertTrue(wakesB.isEmpty())
+    b.installedWake!!.onWake(7)
+    assertEquals(listOf("7"), wakesB)
+    first.invalidate()
+    a.callbacks.last().onResult("{\"ok\":true,\"value\":{\"state\":\"released\"}}")
+    b.installedWake!!.onWake(7)
+    assertEquals(listOf("7", "7"), wakesB)
+    assertTrue(b.releasedScopes.isEmpty())
+  }
+
+  @Test fun failedInstallKeepsItsPortUntilCleanupAndThenUsesAFreshPort() {
+    val tasks = ArrayDeque<Runnable>()
+    var cleanupAllowed = false
+    var cleanups = 0
+    val failed = object : MobileCorePort by FakeCore() {
+      override fun installHost(radio: MobileCoreBridge.RadioHost, wake: MobileCoreBridge.WakeListener, owner: String, adapterLabel: String) {
+        throw IllegalStateException("install failed after retaining radio")
+      }
+      override fun cleanupFailedInstall(): Boolean { cleanups++; return cleanupAllowed }
+    }
+    val replacement = FakeCore()
+    var created = 0
+    val process = RustCoreProcessHost(failed, { unusedRadioHost() }, { _, task -> tasks.add(task) }, log = {})
+    process.setCoreFactory { created++; replacement }
+    try { process.ensureInstalled(); throw AssertionError("install succeeded") } catch (_: IllegalStateException) { }
+    assertEquals(0, created)
+    tasks.removeFirst().run()
+    assertEquals(1, cleanups)
+    assertEquals(0, created)
+    cleanupAllowed = true
+    tasks.removeFirst().run()
+    assertEquals(2, cleanups)
+    assertEquals(1, created)
+    process.ensureInstalled()
+    assertEquals(1, replacement.installCount)
+    assertTrue(process.core === replacement)
+  }
+
   private val core = FakeCore()
   private val logs = mutableListOf<String>()
   private val radioHost = unusedRadioHost()
@@ -20,6 +188,93 @@ class RustCoreSessionsTest {
   private val wakes = mutableListOf<String>()
   private var packageName: String? = "com.example.app"
   private val sessions = RustCoreSessions(core, host, DirectExecutor, { wakes.add(it) }, { packageName }, SecureRandom(), { logs.add(it) })
+
+  @Test fun scanVersionNegotiationRequiresTheExactOwningModule() {
+    val calls = mutableListOf<Pair<Long, String>>()
+    val versionCore = object : MobileCorePort by core {
+      override fun negotiateScanEndVersion(sessionId: Long, offeredJson: String): String {
+        calls.add(sessionId to offeredJson)
+        return "{\"version\":1}"
+      }
+    }
+    val process = RustCoreProcessHost(versionCore, { unusedRadioHost() }, { _, task -> task.run() }) { }
+    val first = RustCoreSessions(versionCore, process, DirectExecutor, {}, { packageName }, SecureRandom(), {})
+    val second = RustCoreSessions(versionCore, process, DirectExecutor, {}, { packageName }, SecureRandom(), {})
+    Captured().also { first.openSession("first", "ubm-mobile-wire/3", it) }.single()
+    val denied = Captured(); second.negotiateScanEndVersion("7", "[1,2]", denied)
+    assertEquals("ownership.denied", denied.rejection().code)
+    val nonCanonical = Captured(); first.negotiateScanEndVersion("07", "[1,2]", nonCanonical)
+    assertEquals("argument.invalid", nonCanonical.rejection().code)
+    assertTrue(calls.isEmpty())
+    val accepted = Captured(); first.negotiateScanEndVersion("7", "[1,2]", accepted)
+    assertEquals("{\"version\":1}", accepted.single())
+    assertEquals(listOf(7L to "[1,2]"), calls)
+  }
+
+  @Test fun orderedRecordingRequiresOwningModuleAndPreservesNativeEnvelopes() {
+    val calls = mutableListOf<String>()
+    val callbacks = mutableListOf<MobileCoreBridge.InvokeCallback>()
+    val recordingCore = object : MobileCorePort by core {
+      override fun orderedRecordingVersion() = 0
+      override fun orderedRecordingReceiptControl(sessionId: Long, operation: String, id: String, callback: MobileCoreBridge.InvokeCallback) {
+        calls.add("$operation:$sessionId:$id"); callback.onResult("{\"ok\":true,\"value\":{\"version\":1,\"state\":\"reserved\",\"handle\":\"handle-1\"}}")
+      }
+      override fun orderedRecordingStart(sessionId: Long, handle: String, id: String, maxBytes: String, maxRecords: String, declaration: String, budgetMs: Long, callback: MobileCoreBridge.InvokeCallback) {
+        calls.add("start:$sessionId:$handle:$id:$maxBytes:$maxRecords:$budgetMs"); callbacks.add(callback)
+      }
+      override fun orderedRecordingContext(sessionId: Long, id: String, callback: MobileCoreBridge.InvokeCallback) { calls.add("context:$sessionId:$id"); callbacks.add(callback) }
+      override fun orderedRecordingStop(sessionId: Long, id: String, callback: MobileCoreBridge.InvokeCallback) { calls.add("stop:$sessionId:$id"); callbacks.add(callback) }
+      override fun orderedRecordingOffline(operation: String, id: String, callback: MobileCoreBridge.InvokeCallback) { calls.add("offline:$operation:$id"); callbacks.add(callback) }
+    }
+    val recordingHost = RustCoreProcessHost(recordingCore, { unusedRadioHost() }, { _, task -> task.run() }) { logs.add(it) }
+    val directory = java.nio.file.Files.createTempDirectory("ubm-ordered-routing").toFile()
+    try {
+      recordingHost.attachRecordingDirectory { directory }
+      val first = RustCoreSessions(recordingCore, recordingHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
+      val second = RustCoreSessions(recordingCore, recordingHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
+      val probe = Captured(); first.orderedRecordingVersion(probe); assertEquals("0", probe.single())
+      val opened = Captured(); first.openSession("first", "ubm-mobile-wire/3", opened); opened.single()
+      core.openRecord = { "{\"sessionId\":8}" }
+      val other = Captured(); second.openSession("second", "ubm-mobile-wire/3", other); other.single()
+      val nonCanonical = Captured(); first.orderedRecordingReceiptControl("07", "recording", "status", nonCanonical)
+      assertEquals("argument.invalid", nonCanonical.rejection().code)
+      val deniedReceipt = Captured(); second.orderedRecordingReceiptControl("7", "recording", "status", deniedReceipt)
+      assertEquals("ownership.denied", deniedReceipt.rejection().code)
+      val denied = Captured(); second.orderedRecordingControl("7", "recording", true, denied)
+      assertEquals("ownership.denied", denied.rejection().code)
+      val deniedStart = Captured(); second.orderedRecordingStart("7", "handle-1", "recording", "9", "8", "{}", 10.0, deniedStart)
+      assertEquals("ownership.denied", deniedStart.rejection().code)
+      assertTrue(calls.isEmpty())
+      val reserve = Captured(); first.orderedRecordingReceiptControl("7", "recording", "reserve", reserve)
+      assertEquals("{\"ok\":true,\"value\":{\"version\":1,\"state\":\"reserved\",\"handle\":\"handle-1\"}}", reserve.single())
+      val status = Captured(); first.orderedRecordingReceiptControl("7", "handle-1", "status", status)
+      status.single(); assertEquals("status:7:handle-1", calls.last())
+      val retire = Captured(); first.orderedRecordingReceiptControl("7", "handle-1", "retire", retire)
+      retire.single(); assertEquals("retire:7:handle-1", calls.last())
+      val start = Captured(); first.orderedRecordingStart("7", "handle-1", "recording", "18446744073709551615", "8", "{}", 10.0, start)
+      assertEquals("start:7:handle-1:recording:18446744073709551615:8:10", calls.last())
+      val pending = "{\"ok\":true,\"value\":{\"state\":\"waiting-source\"}}"
+      callbacks.removeAt(0).onResult(pending); assertEquals(pending, start.single())
+      val offline = Captured(); first.orderedRecordingOffline("context", "recording", offline)
+      val refused = "{\"ok\":false,\"error\":{\"code\":\"ownership.denied\"}}"
+      callbacks.removeAt(0).onResult(refused); assertEquals(refused, offline.single())
+      val cold = Captured(); first.orderedRecordingOffline("context", "recording", cold)
+      val recovered = "{\"ok\":true,\"value\":{\"state\":\"interrupted\"}}"
+      callbacks.removeAt(0).onResult(recovered); assertEquals(recovered, cold.single())
+      val offlineStatus = Captured(); first.orderedRecordingOffline("status", "recording", offlineStatus)
+      assertEquals("offline:status:recording", calls.last())
+      callbacks.removeAt(0).onResult(recovered); assertEquals(recovered, offlineStatus.single())
+      val offlineStop = Captured(); first.orderedRecordingOffline("stop", "recording", offlineStop)
+      assertEquals("offline:stop:recording", calls.last())
+      val finished = "{\"ok\":true,\"value\":{\"state\":\"finished\"}}"
+      callbacks.removeAt(0).onResult(finished); assertEquals(finished, offlineStop.single())
+      val context = Captured(); first.orderedRecordingControl("7", "recording", false, context)
+      val nativeContext = "{\"ok\":true,\"value\":{\"peerId\":\"peer\"}}"
+      callbacks.removeAt(0).onResult(nativeContext); assertEquals(nativeContext, context.single())
+      val stop = Captured(); first.orderedRecordingControl("7", "recording", true, stop)
+      callbacks.removeAt(0).onResult(pending); assertEquals(pending, stop.single())
+    } finally { directory.deleteRecursively() }
+  }
 
   @Test fun recoveryObserversSeeOnlyCompletedCleanupAndCanDetachWithoutRadio() {
     var first = 0
@@ -130,7 +385,7 @@ class RustCoreSessionsTest {
     }
   }
 
-  private fun open(): Captured = Captured().also { sessions.openSession("manager-a", "ubm-mobile-wire/2", it) }
+  private fun open(): Captured = Captured().also { sessions.openSession("manager-a", "ubm-mobile-wire/3", it) }
 
   private class QueuedExecutor : Executor {
     private val tasks = ArrayDeque<Runnable>()
@@ -161,13 +416,13 @@ class RustCoreSessionsTest {
   @Test
   fun admissionRefusalRejectsWithStructuredJson() {
     core.openFailure = MobileCoreBridge.MobileCoreException(
-      "protocol.incompatible|core|ubm-mobile.session.open|caller speaks x, owner speaks ubm-mobile-wire/2"
+      "protocol.incompatible|core|ubm-mobile.session.open|caller speaks x, owner speaks ubm-mobile-wire/3"
     )
     val rejection = open().rejection()
     assertEquals("protocol.incompatible", rejection.code)
     assertEquals(
       "{\"code\":\"protocol.incompatible\",\"domain\":\"core\",\"operation\":\"ubm-mobile.session.open\"," +
-        "\"detail\":\"caller speaks x, owner speaks ubm-mobile-wire/2\"}",
+        "\"detail\":\"caller speaks x, owner speaks ubm-mobile-wire/3\"}",
       rejection.toJson()
     )
     assertTrue(sessions.ownedSessions().isEmpty())
@@ -203,11 +458,12 @@ class RustCoreSessionsTest {
   }
 
   @Test
-  fun unknownSessionFromRustIsAStructuredRejection() {
+  fun unknownSessionIsRejectedBeforeRust() {
     core.invokeFailure = MobileCoreBridge.MobileCoreException("lifecycle.destroyed|core|mobile.session.invoke|unknown or disposed session")
     val reply = Captured()
     sessions.invoke("99", "adapter.state", "{}", reply)
-    assertEquals("lifecycle.destroyed", reply.rejection().code)
+    assertEquals("ownership.denied", reply.rejection().code)
+    assertTrue(core.invokes.isEmpty())
   }
 
   @Test
@@ -289,7 +545,7 @@ class RustCoreSessionsTest {
     open().single()
     val other = RustCoreSessions(core, host, DirectExecutor, { }, { packageName }, SecureRandom(), { })
     core.openRecord = { "{\"sessionId\":9}" }
-    Captured().also { other.openSession("manager-b", "ubm-mobile-wire/2", it) }.single()
+    Captured().also { other.openSession("manager-b", "ubm-mobile-wire/3", it) }.single()
     val scopes = core.openScopes
     assertEquals(3, scopes.size)
     assertEquals("a manager destroy/recreate stays in the module's scope", scopes[0], scopes[1])
@@ -314,7 +570,7 @@ class RustCoreSessionsTest {
     val processHost = RustCoreProcessHost(core, { unusedRadioHost() },
       { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
     val moduleSessions = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
-    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/2", it) }.single()
+    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/3", it) }.single()
     core.scopeRelease = "{\"failures\":[{\"resourceKind\":\"background\",\"code\":\"platform.failure\"}],\"state\":\"release-failed\"}"
     moduleSessions.invalidate()
     core.callbacks.forEach { it.onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}") }
@@ -329,9 +585,9 @@ class RustCoreSessionsTest {
       { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
     val first = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
     val second = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
-    Captured().also { first.openSession("first", "ubm-mobile-wire/2", it) }.single()
+    Captured().also { first.openSession("first", "ubm-mobile-wire/3", it) }.single()
     core.openRecord = { "{\"sessionId\":8}" }
-    Captured().also { second.openSession("second", "ubm-mobile-wire/2", it) }.single()
+    Captured().also { second.openSession("second", "ubm-mobile-wire/3", it) }.single()
     val firstScope = core.openScopes[0]
     val secondScope = core.openScopes[1]
     core.scopeRelease = "{\"failures\":[{\"resourceKind\":\"background\",\"code\":\"platform.failure\"}],\"state\":\"release-failed\"}"
@@ -355,7 +611,7 @@ class RustCoreSessionsTest {
     val processHost = RustCoreProcessHost(core, { unusedRadioHost() },
       { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
     val moduleSessions = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
-    Captured().also { moduleSessions.openSession("manager", "ubm-mobile-wire/2", it) }.single()
+    Captured().also { moduleSessions.openSession("manager", "ubm-mobile-wire/3", it) }.single()
     val acquisition = Captured()
     moduleSessions.invoke("7", "background.acquire", "{\"kind\":\"connected-device\"}", acquisition)
     assertEquals(1, core.callbacks.size)
@@ -436,7 +692,7 @@ class RustCoreSessionsTest {
     )
     val admission = Captured()
 
-    queuedSessions.openSession("queued-manager", "ubm-mobile-wire/2", admission)
+    queuedSessions.openSession("queued-manager", "ubm-mobile-wire/3", admission)
     queuedSessions.invalidate()
     queued.runAll()
 
@@ -446,7 +702,7 @@ class RustCoreSessionsTest {
     queuedHost.wake.onWake(7)
     assertTrue(queuedWakes.isEmpty())
     assertEquals(1L, queuedHost.unroutedWakeCount())
-    assertEquals(1, core.releasedScopes.size)
+    assertTrue("an unopened module has no scope to release", core.releasedScopes.isEmpty())
   }
 
   @Test
@@ -467,7 +723,7 @@ class RustCoreSessionsTest {
       SecureRandom(),
       { logs.add(it) }
     )
-    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/2", it) }.single()
+    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/3", it) }.single()
 
     moduleSessions.invalidate()
     core.callbacks.single().onResult(
@@ -489,7 +745,7 @@ class RustCoreSessionsTest {
     val wire = Captured().also { sessions.wireRevision(it) }
     assertEquals(core.buildIdentityJson(), build.single())
     assertEquals("C-UBM.test", contract.single())
-    assertEquals("ubm-mobile-wire/2", wire.single())
+    assertEquals("ubm-mobile-wire/3", wire.single())
   }
 
   @Test
@@ -498,7 +754,8 @@ class RustCoreSessionsTest {
       override fun wireRevision(): String = throw UnsatisfiedLinkError("libubm5_jni_echo.so not found")
     }
     val reply = Captured()
-    RustCoreSessions(broken, host, DirectExecutor, {}, { null }, SecureRandom(), {}).wireRevision(reply)
+    val brokenHost = RustCoreProcessHost(broken, { unusedRadioHost() }) { }
+    RustCoreSessions(broken, brokenHost, DirectExecutor, {}, { null }, SecureRandom(), {}).wireRevision(reply)
     assertEquals("platform.failure", reply.rejection().code)
   }
 

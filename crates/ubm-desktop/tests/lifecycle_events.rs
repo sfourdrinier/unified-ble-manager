@@ -78,7 +78,10 @@ async fn wait_peer(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
 }
 
 async fn ready_peer(central: &DesktopCentral<FakeRadio>, peer_id: &str) -> Option<String> {
-    central.boundary().push_event(advertisement(peer_id));
+    central
+        .boundary()
+        .push_event(advertisement(peer_id))
+        .expect("synthetic event admission failed");
     wait_peer(central, peer_id).await;
     central
         .boundary()
@@ -135,7 +138,8 @@ async fn idle_link_loss_publishes_link_lost_and_ends_the_stream() {
     // No operation follows: the OS alone reports the loss.
     central
         .boundary()
-        .push_event(RadioEvent::Disconnected("peer-1".to_owned()));
+        .push_event(RadioEvent::Disconnected("peer-1".to_owned()))
+        .expect("synthetic event admission failed");
     let event = next_event(&mut events).await;
     assert_eq!(event.peer_id, "peer-1");
     assert_eq!(event.kind, LifecycleKind::LinkLost);
@@ -168,7 +172,8 @@ async fn idle_link_loss_publishes_link_lost_and_ends_the_stream() {
     // A second report for the ended link is stale: nothing is published.
     central
         .boundary()
-        .push_event(RadioEvent::Disconnected("peer-1".to_owned()));
+        .push_event(RadioEvent::Disconnected("peer-1".to_owned()))
+        .expect("synthetic event admission failed");
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(events.try_recv().is_err(), "stale loss publishes nothing");
 }
@@ -190,7 +195,8 @@ async fn requested_release_publishes_released_exactly_once() {
     // The OS event that follows the release is for an ended link.
     central
         .boundary()
-        .push_event(RadioEvent::Disconnected("peer-2".to_owned()));
+        .push_event(RadioEvent::Disconnected("peer-2".to_owned()))
+        .expect("synthetic event admission failed");
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(events.try_recv().is_err(), "the release is published once");
     assert_eq!(
@@ -229,7 +235,8 @@ async fn service_change_publishes_and_invalidates_with_its_cause() {
     let mut events = central.lifecycle_events();
     central
         .boundary()
-        .push_event(RadioEvent::ServicesChanged("peer-3".to_owned()));
+        .push_event(RadioEvent::ServicesChanged("peer-3".to_owned()))
+        .expect("synthetic event admission failed");
     let event = next_event(&mut events).await;
     assert_eq!(event.kind, LifecycleKind::ServicesChanged);
     assert_eq!(event.connection_generation, generation);
@@ -271,7 +278,8 @@ async fn a_slow_receiver_sees_lagged_never_a_silent_gap() {
     for _ in 0..total {
         central
             .boundary()
-            .push_event(RadioEvent::ServicesChanged("peer-4".to_owned()));
+            .push_event(RadioEvent::ServicesChanged("peer-4".to_owned()))
+            .expect("synthetic event admission failed");
         // Pace the scripted source (its control queue is bounded) on a
         // receiver that keeps up.
         next_event(&mut pacer).await;
@@ -291,7 +299,8 @@ async fn events_nobody_observes_are_counted() {
     assert_eq!(central.lifecycle_unobserved_count(), 0);
     central
         .boundary()
-        .push_event(RadioEvent::Disconnected("peer-5".to_owned()));
+        .push_event(RadioEvent::Disconnected("peer-5".to_owned()))
+        .expect("synthetic event admission failed");
     for _ in 0..2000 {
         if central.lifecycle_unobserved_count() == 1 {
             break;
@@ -340,18 +349,22 @@ async fn the_observer_sees_advertisements_values_and_the_same_lifecycle_events()
         .await
         .expect("subscribe");
     let epoch = central.boundary().enable_epochs()[0].1;
-    central.boundary().push_event(RadioEvent::Notification {
-        peer_id: "peer-6".to_owned(),
-        service_uuid: HRM_SERVICE.to_owned(),
-        service_occurrence: 0,
-        characteristic_uuid: HRM_MEASUREMENT.to_owned(),
-        characteristic_occurrence: 0,
-        epoch,
-        value: vec![0xAB],
-    });
     central
         .boundary()
-        .push_event(RadioEvent::Disconnected("peer-6".to_owned()));
+        .push_event(RadioEvent::Notification {
+            peer_id: "peer-6".to_owned(),
+            service_uuid: HRM_SERVICE.to_owned(),
+            service_occurrence: 0,
+            characteristic_uuid: HRM_MEASUREMENT.to_owned(),
+            characteristic_occurrence: 0,
+            epoch,
+            value: vec![0xAB],
+        })
+        .expect("synthetic event admission failed");
+    central
+        .boundary()
+        .push_event(RadioEvent::Disconnected("peer-6".to_owned()))
+        .expect("synthetic event admission failed");
     let broadcast = next_event(&mut events).await;
     tokio::time::sleep(Duration::from_millis(20)).await;
     let signals = seen.lock().expect("sink").clone();
@@ -499,22 +512,31 @@ async fn the_observer_is_signalled_for_security_readiness_and_scan_end() {
         bond: ubm_desktop::BondState::Bonded,
         pairing_possible: Some(true),
     };
-    central.boundary().push_event(RadioEvent::SecurityChanged {
-        peer_id: "peer-w".to_owned(),
-        state,
-    });
-    central.boundary().push_event(RadioEvent::WriteReadiness {
-        peer_id: "peer-w".to_owned(),
-        ready: true,
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::SecurityChanged {
+            peer_id: "peer-w".to_owned(),
+            state,
+        })
+        .expect("synthetic event admission failed");
+    central
+        .boundary()
+        .push_event(RadioEvent::WriteReadiness {
+            peer_id: "peer-w".to_owned(),
+            ready: true,
+        })
+        .expect("synthetic event admission failed");
     let session = central
         .start_scan("scanner", &[], OpControl::budget_ms(1000))
         .await
         .expect("scan");
-    central.boundary().push_event(RadioEvent::ScanTerminated {
-        aborted: true,
-        detail: "the OS ended the scan".to_owned(),
-    });
+    central
+        .boundary()
+        .push_event(RadioEvent::ScanTerminated {
+            aborted: true,
+            detail: "the OS ended the scan".to_owned(),
+        })
+        .expect("synthetic event admission failed");
     let signalled =
         |matches: &dyn Fn(&CentralSignal) -> bool| seen.lock().expect("sink").iter().any(matches);
     for _ in 0..2000 {

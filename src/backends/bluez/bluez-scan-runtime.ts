@@ -240,12 +240,12 @@ export async function stopBluezScan(runtime: BluezBackendRuntime, consumer: Blue
   }
   const group = runtime.scanGroup
   if (group === null || !group.consumers.has(String(consumer.leaseId))) {
-    consumer.stream.closeWithReason('owner-released')
+    if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
     return releasedBluezCleanup
   }
   if (consumer.leaseId !== group.ownerLeaseId) {
     group.consumers.delete(String(consumer.leaseId))
-    consumer.stream.closeWithReason('owner-released')
+    if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
     return releasedBluezCleanup
   }
   if (!group.physicalStarted && group.state === 'starting') {
@@ -293,7 +293,7 @@ export async function stopBluezScan(runtime: BluezBackendRuntime, consumer: Blue
     throw error
   }
   for (const joined of [...group.consumers.values()]) {
-    joined.stream.closeWithReason('owner-released')
+    if (!joined.stream.isTerminal()) joined.stream.finishWithReason('owner-released')
   }
   group.consumers.clear()
   runtime.scanGroup = null

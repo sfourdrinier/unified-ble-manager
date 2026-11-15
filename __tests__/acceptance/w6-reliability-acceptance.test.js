@@ -35,6 +35,7 @@ const path = require('path')
 const { BackendContractError } = require('../../src/backend-contract/errors')
 const {
   createAttachmentBoundIdFactory,
+  capacity,
   deadline,
   version,
   versionRange
@@ -143,10 +144,18 @@ function reportSkips(scenarioId, legId, skips) {
   }
 }
 
+function w6ScanOptions(allowSharing) {
+  const options = support.scanOptions(allowSharing)
+  // Desktop core charges a complete public advertisement at 512 bytes. Keep
+  // one control slot as well, so this setup fixture reaches the scenario
+  // instead of testing constrained-budget overflow (covered separately).
+  return { ...options, delivery: { ...options.delivery, byteCapacity: capacity(513) } }
+}
+
 async function findPeerId(ctx) {
   const { manager, fixture } = ctx
   const controller = fixture.controller
-  const scan = await controller.settle(manager.scan(support.scanOptions(false)))
+  const scan = await controller.settle(manager.scan(w6ScanOptions(false)))
   const observation = scan.observations[Symbol.asyncIterator]().next()
   await controller.perform('queue-advertisement', support.emptyInput)
   await controller.flush()
@@ -189,11 +198,11 @@ async function scenarioSharedScan(ctx) {
   const { manager, authority, fixture } = ctx
   const controller = fixture.controller
   const skips = []
-  const owner = await controller.settle(manager.scan(support.scanOptions(true)))
+  const owner = await controller.settle(manager.scan(w6ScanOptions(true)))
   expect(owner.shareToken).not.toBeNull()
   const second = await openBorrower(ctx, 's1', 'joiner')
   const joinOptions = extra => ({
-    ...support.scanOptions(false),
+    ...w6ScanOptions(false),
     ...extra,
     sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken }
   })

@@ -63,7 +63,10 @@ export async function connectToDeterministicPeer<
   definition: TckScenarioDefinition,
   intent: 'direct' | 'when-available' = 'direct'
 ) {
-  const scan = await fixture.controller.settle(manager.scan(scanOptions(false)))
+  const options = scanOptions<Attachment>(false)
+  const scan = await fixture.controller.settle(
+    manager.scan({ ...options, delivery: { ...options.delivery, byteCapacity: capacity(513) } })
+  )
   const observation = scan.observations[Symbol.asyncIterator]().next()
   await fixture.controller.perform('queue-advertisement', emptyInput)
   await fixture.controller.flush()
@@ -101,7 +104,7 @@ export function scanOptions<Attachment extends string>(allowSharing: boolean): S
     timestampPolicy: 'receipt-monotonic',
     delivery: {
       itemCapacity: capacity(4),
-      byteCapacity: capacity(128),
+      byteCapacity: capacity(513),
       reservedControlCapacity: capacity(1),
       overflowPolicy: 'drop-oldest'
     },

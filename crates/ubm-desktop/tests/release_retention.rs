@@ -253,7 +253,10 @@ async fn until(mut probe: impl FnMut() -> bool, what: &str) {
 }
 
 async fn ready_peer(central: &DesktopCentral<FakeRadio>, peer_id: &str) -> String {
-    central.boundary().push_event(advertisement(peer_id));
+    central
+        .boundary()
+        .push_event(advertisement(peer_id))
+        .expect("synthetic event admission failed");
     wait_peer(central, peer_id).await;
     central
         .boundary()

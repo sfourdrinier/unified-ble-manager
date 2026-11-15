@@ -25,6 +25,10 @@ pub const HR_MEASUREMENT: &str = "00002a37-0000-1000-8000-00805f9b34fb";
 pub const CCCD: &str = "00002902-0000-1000-8000-00805f9b34fb";
 pub const POLAR: &str = "A0:9E:1A:00:00:01";
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the scripted radio test fixture intentionally mirrors production completion values without allocation"
+)]
 pub enum Reply {
     Now(RadioCompletion),
     Hold,
@@ -33,6 +37,7 @@ pub enum Reply {
 type Responder = Box<dyn FnMut(&RadioRequest) -> Reply + Send>;
 
 pub struct Scripted {
+    ordered_owner: ubm_mobile::OrderedAdmissionOwner,
     pub subrate_available: AtomicBool,
     pub requests: Mutex<Vec<RadioRequest>>,
     pub cancels: Mutex<Vec<u64>>,
@@ -43,7 +48,14 @@ pub struct Scripted {
 
 impl Scripted {
     pub fn new(responder: Responder) -> Arc<Self> {
+        static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
+        let serial = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
         Arc::new(Self {
+            ordered_owner: ubm_mobile::OrderedAdmissionOwner::negotiate(
+                1,
+                &format!("12345678-1234-4abc-8def-{serial:012x}"),
+            )
+            .unwrap(),
             subrate_available: AtomicBool::new(false),
             requests: Mutex::new(Vec::new()),
             cancels: Mutex::new(Vec::new()),
@@ -105,6 +117,9 @@ impl Scripted {
 }
 
 impl PlatformRadio for Scripted {
+    fn ordered_admission_owner(&self) -> Option<ubm_mobile::OrderedAdmissionOwner> {
+        Some(self.ordered_owner)
+    }
     fn connection_subrate_available(&self) -> bool {
         self.subrate_available.load(Ordering::SeqCst)
     }
@@ -419,6 +434,12 @@ pub fn recording_test_directory(test_name: &str) -> Option<std::path::PathBuf> {
         std::process::id()
     ));
     std::fs::create_dir(&directory).expect("create isolated recording directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .expect("make isolated recording directory private");
+    }
     let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", test_name, "--nocapture"])
         .env(DIRECTORY, &directory)

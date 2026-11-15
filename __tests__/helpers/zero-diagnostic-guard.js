@@ -9,6 +9,7 @@ const diagnostics = {
   unhandledRejections: [],
   uncaughtExceptions: []
 }
+const awaitedConsoleErrors = []
 
 let testIsActive = false
 const guardedConsole = globalThis.console
@@ -28,6 +29,14 @@ function failOutsideActiveTest(kind, details) {
 function recordConsoleDiagnostic(kind, argumentsList) {
   const entries = diagnostics[kind]
   entries.push(argumentsList)
+  if (kind === 'errors') {
+    const index = awaitedConsoleErrors.findIndex(waiter => isDeepStrictEqual(argumentsList, waiter.expectedArguments))
+    if (index >= 0) {
+      const [waiter] = awaitedConsoleErrors.splice(index, 1)
+      entries.pop()
+      waiter.resolve()
+    }
+  }
   if (!testIsActive) {
     failOutsideActiveTest(`console.${kind.slice(0, -1)}`, renderArguments(argumentsList))
   }
@@ -107,6 +116,7 @@ function resetDiagnostics() {
   diagnostics.infos.length = 0
   diagnostics.unhandledRejections.length = 0
   diagnostics.uncaughtExceptions.length = 0
+  awaitedConsoleErrors.length = 0
 }
 
 const guardedConsoleError = (...argumentsList) => {
@@ -182,6 +192,15 @@ process.on('uncaughtExceptionMonitor', recordUncaughtException)
 
 global.expectConsoleError = (...expectedArguments) => {
   removeExactDiagnostic(diagnostics.errors, expectedArguments, 'error')
+}
+/** Await and consume one exact diagnostic emitted by the production boundary. */
+global.waitForConsoleError = (...expectedArguments) => {
+  const index = diagnostics.errors.findIndex(actualArguments => isDeepStrictEqual(actualArguments, expectedArguments))
+  if (index >= 0) {
+    diagnostics.errors.splice(index, 1)
+    return Promise.resolve()
+  }
+  return new Promise(resolve => awaitedConsoleErrors.push({ expectedArguments, resolve }))
 }
 global.expectConsoleWarn = (...expectedArguments) => {
   removeExactDiagnostic(diagnostics.warnings, expectedArguments, 'warn')

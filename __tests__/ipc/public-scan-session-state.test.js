@@ -2,6 +2,7 @@
 
 const { awaitSignal } = require('../helpers/async')
 const { IpcPublicManagerAdapter } = require('../../src/ipc/public-manager')
+const { emptyIpcDiagnostics } = require('../helpers/ipc-diagnostics')
 const { CoreBoundedStream } = require('../../src/core/bounded-stream')
 const { capacity } = require('../../src/backend-contract/primitives')
 
@@ -48,6 +49,7 @@ function createIpcScanFixture() {
   const ipc = {
     capabilities: capabilitySnapshot,
     bootstrap: { discovery: { kind: 'continuous-scan' } },
+    diagnostics: emptyIpcDiagnostics,
     scan: async () => ({
       plan: null,
       observations,

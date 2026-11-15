@@ -227,7 +227,7 @@ export class DeterministicTestBackend
         this.ingressOrdinal = broadcastDatabaseChanged(this.attachment(), database.path, this.ingressOrdinal, event =>
           this.broadcastEvent(event)
         )
-        this.invalidateDatabase(database)
+        this.invalidateDatabase(database, 'service-changed')
       }
     }
     this.recordTrace('resource', 'services-changed', null)
@@ -683,7 +683,10 @@ export class DeterministicTestBackend
     }
   }
 
-  private invalidateDatabase(database: DeterministicGattDatabase): void {
+  private invalidateDatabase(
+    database: DeterministicGattDatabase,
+    terminalReason: 'connection-lost' | 'service-changed' = 'connection-lost'
+  ): void {
     if (!database.isValid()) {
       return
     }
@@ -696,7 +699,7 @@ export class DeterministicTestBackend
     for (const physical of [...this.physicalSubscriptions.values()]) {
       if (physical.database === database) {
         for (const subscription of [...physical.consumers]) {
-          subscription.closeForInvalidation()
+          subscription.closeForInvalidation(terminalReason)
         }
         this.observeCleanup(this.disablePhysicalSubscription(physical), 'subscription-invalidation-remove-failed')
       }

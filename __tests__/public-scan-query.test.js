@@ -12,6 +12,7 @@ const {
   inspectPublicScanFingerprintAccountingForTests
 } = require('../src/public/ble-manager')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
+const { AggregateStreamQuota } = require('../src/core/aggregate-stream-quota')
 const { contractError } = require('../src/backend-contract/errors')
 const { capacity, resourceCount } = require('../src/backend-contract/primitives')
 const { createDeterministicTestBleManager } = require('../src/testing/deterministic/deterministic-test-manager')
@@ -200,26 +201,43 @@ describe('canonical public ScanQuery v1', () => {
   })
 
   test.each(['platform', 'backend'])('accepts optional native source clock scope for %s time', origin => {
-    for (const value of [{ monotonicMs: 100, origin }, { monotonicMs: 100, origin, clockScope: 'native-clock:adapter-1' }]) {
-      expect(() => normalizeScanObservation({
-        ...deterministicScenarioAdvertisement(),
-        sourceTimestamp: { state: 'present', provenance: 'observed', value }
-      })).not.toThrow()
+    for (const value of [
+      { monotonicMs: 100, origin },
+      { monotonicMs: 100, origin, clockScope: 'native-clock:adapter-1' }
+    ]) {
+      expect(() =>
+        normalizeScanObservation({
+          ...deterministicScenarioAdvertisement(),
+          sourceTimestamp: { state: 'present', provenance: 'observed', value }
+        })
+      ).not.toThrow()
     }
   })
 
   test.each(['', '   ', null, 42])('rejects malformed native source clock scope: %s', clockScope => {
-    expect(() => normalizeScanObservation({
-      ...deterministicScenarioAdvertisement(),
-      sourceTimestamp: { state: 'present', provenance: 'observed', value: { monotonicMs: 100, origin: 'platform', clockScope } }
-    })).toThrow()
+    expect(() =>
+      normalizeScanObservation({
+        ...deterministicScenarioAdvertisement(),
+        sourceTimestamp: {
+          state: 'present',
+          provenance: 'observed',
+          value: { monotonicMs: 100, origin: 'platform', clockScope }
+        }
+      })
+    ).toThrow()
   })
 
   test('source clock provenance still rejects unknown fields', () => {
-    expect(() => normalizeScanObservation({
-      ...deterministicScenarioAdvertisement(),
-      sourceTimestamp: { state: 'present', provenance: 'observed', value: { monotonicMs: 100, origin: 'platform', clockScope: 'native', extra: true } }
-    })).toThrow()
+    expect(() =>
+      normalizeScanObservation({
+        ...deterministicScenarioAdvertisement(),
+        sourceTimestamp: {
+          state: 'present',
+          provenance: 'observed',
+          value: { monotonicMs: 100, origin: 'platform', clockScope: 'native', extra: true }
+        }
+      })
+    ).toThrow()
   })
 
   test('rejects malformed normalized advertisement entries before canonical matching', () => {
@@ -687,9 +705,12 @@ describe('canonical public ScanQuery v1', () => {
     source.emit({ ...observation, peerId: 'dropped-peer' }, 32)
 
     const observations = scan.observations[Symbol.asyncIterator]()
-    const events = scan.events[Symbol.asyncIterator]()
+    const events = scan.lossAwareEventsV1[Symbol.asyncIterator]()
     await expect(observations.next()).resolves.toMatchObject({
       value: { kind: 'overflow', policy: 'drop-newest' }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'stream-loss', upstream: { droppedItems: 1 }, subscriber: { droppedItems: 0 } }
     })
     await expect(observations.next()).resolves.toMatchObject({
       value: { kind: 'value', value: { peer: { id: 'queued-peer' } } }
@@ -710,6 +731,243 @@ describe('canonical public ScanQuery v1', () => {
 
     await scan.stop()
     expect(nativeStop).toHaveBeenCalledTimes(1)
+  })
+
+  test('legacy scan views fail closed while loss-aware events preserve the original source loss', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(4) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan({
+      delivery: {
+        preset: 'custom',
+        budget: {
+          itemCapacity: 8,
+          byteCapacity: 4096,
+          reservedControlCapacity: 4,
+          overflowPolicy: 'drop-oldest'
+        }
+      }
+    })
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const legacyEvents = scan.events[Symbol.asyncIterator]()
+    const events = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    const loss = {
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'advertisement-ingress',
+      lostRecords: resourceCount(3)
+    }
+    source.emit(
+      {
+        peerId: 'loss-order-peer',
+        localName: 'Loss order peer',
+        rssi: -40,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      32
+    )
+    source.observeSourceLoss(loss)
+    source.finishWithReason('closed')
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'loss-order-peer' } } }
+    })
+    await expect(observations.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'overflow' } })
+    await expect(events.next()).resolves.toMatchObject({ value: { kind: 'observed', peer: { id: 'loss-order-peer' } } })
+    await expect(events.next()).resolves.toMatchObject({ value: loss })
+    await expect(legacyEvents.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'loss-order-peer' } }
+    })
+    await expect(legacyEvents.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    const lateObservations = scan.observations[Symbol.asyncIterator]()
+    const lateLegacyEvents = scan.events[Symbol.asyncIterator]()
+    const lateEvents = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    await expect(lateObservations.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'overflow' } })
+    await expect(lateLegacyEvents.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await expect(lateEvents.next()).resolves.toMatchObject({ value: loss })
+    await expect(lateEvents.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    expect(source.sourceLossObservers.size).toBe(0)
+    await scan.stop()
+  })
+
+  test('a shared claim drains its accepted prefix before a queued host-global loss', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(4) },
+      'drop-oldest',
+      true
+    )
+    new AggregateStreamQuota(4096).register(source)
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const scan = await (await createPublicBleManager(internal, () => 0)).scan()
+    const loss = {
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'advertisement-ingress',
+      lostRecords: resourceCount(1)
+    }
+    source.emit(
+      {
+        peerId: 'queued-prefix',
+        localName: 'Queued prefix',
+        rssi: -40,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      32
+    )
+    source.observeSourceLoss(loss)
+
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const losses = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'queued-prefix' } } }
+    })
+    await expect(observations.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'overflow' } })
+    await expect(losses.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'queued-prefix' } }
+    })
+    await expect(losses.next()).resolves.toMatchObject({ value: loss })
+    await expect(losses.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await scan.stop()
+  })
+
+  test.each([
+    ['null', null],
+    ['structured', contractError('platform.failure', 'scan', 'external-source').normalized]
+  ])('source loss remains the final overflow terminal for $0 source metadata', async (_name, error) => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(4) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const scan = await (await createPublicBleManager(internal, () => 0)).scan()
+    const earlyObservation = scan.observations[Symbol.asyncIterator]().next()
+    const earlyEvents = scan.events[Symbol.asyncIterator]()
+    const earlyV1 = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    const loss = {
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'advertisement-ingress',
+      lostRecords: resourceCount(1)
+    }
+    const earlyEvent = earlyEvents.next()
+    const earlyLoss = earlyV1.next()
+    source.observeSourceLoss(loss)
+    source.finishWithReason(error === null ? 'closed' : 'source-failed', error)
+    await expect(earlyObservation).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'overflow' } })
+    await expect(earlyLoss).resolves.toMatchObject({ value: loss })
+    await expect(earlyEvent).rejects.toMatchObject({ code: 'stream.overflow' })
+    await expect(earlyV1.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    const lateObservation = scan.observations[Symbol.asyncIterator]()
+    const lateEvent = scan.events[Symbol.asyncIterator]()
+    const lateV1 = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    await expect(lateObservation.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'overflow' } })
+    await expect(lateV1.next()).resolves.toMatchObject({ value: loss })
+    await expect(lateEvent.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await expect(lateV1.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await scan.stop()
+  })
+
+  test('a later-task structured source terminal cannot mutate the final source-loss overflow', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(4) },
+      'drop-oldest'
+    )
+    const error = contractError('platform.failure', 'scan', 'later-external-source').normalized
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const scan = await (await createPublicBleManager(internal, () => 0)).scan()
+    const earlyObservations = scan.observations[Symbol.asyncIterator]()
+    const earlyEvents = scan.events[Symbol.asyncIterator]()
+    const earlyV1 = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    const loss = {
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'advertisement-ingress',
+      lostRecords: resourceCount(1)
+    }
+    const earlyObservation = earlyObservations.next()
+    const earlyEvent = earlyEvents.next()
+    const earlyV1Observation = earlyV1.next()
+    source.emit(
+      {
+        peerId: 'before-loss',
+        localName: 'Before loss',
+        rssi: -40,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      32
+    )
+    await expect(earlyObservation).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'before-loss' } } }
+    })
+    await expect(earlyEvent).resolves.toMatchObject({ value: { kind: 'observed', peer: { id: 'before-loss' } } })
+    await expect(earlyV1Observation).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'before-loss' } }
+    })
+    const earlyTerminal = earlyObservations.next()
+    const earlyTerminalEvent = earlyEvents.next()
+    const earlyLoss = earlyV1.next()
+
+    source.observeSourceLoss(loss)
+    await expect(earlyTerminal).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'overflow' } })
+    await expect(earlyLoss).resolves.toMatchObject({ value: loss })
+    await expect(earlyTerminalEvent).rejects.toMatchObject({ code: 'stream.overflow' })
+    await expect(earlyV1.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    source.finishWithReason('source-failed', error)
+
+    const lateObservation = scan.observations[Symbol.asyncIterator]()
+    const lateEvents = scan.events[Symbol.asyncIterator]()
+    const lateV1 = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    await expect(lateObservation.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'overflow' } })
+    await expect(lateV1.next()).resolves.toMatchObject({ value: loss })
+    await expect(lateEvents.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await expect(lateV1.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await scan.stop()
   })
 
   test('drains an accepted observation before delivering the source terminal', async () => {
@@ -916,11 +1174,14 @@ describe('canonical public ScanQuery v1', () => {
     await scan.stop()
   })
 
-  test('scan evidence exhaustion preserves its normalized cause on the public terminal', async () => {
-    const source = new CoreBoundedStream(
-      { itemCapacity: capacity(8192), byteCapacity: capacity(1024 * 1024), reservedControlCapacity: capacity(1) },
-      'drop-oldest'
-    )
+  test('public observations and events resume the same claimed packet after cache pressure clears', async () => {
+    const limits = { itemCapacity: capacity(8), byteCapacity: capacity(8192), reservedControlCapacity: capacity(1) }
+    const source = new CoreBoundedStream(limits, 'error', true)
+    const blocker = new CoreBoundedStream(limits, 'error', true)
+    const quota = new AggregateStreamQuota(1400)
+    quota.register(source)
+    quota.register(blocker)
+    quota.emit(blocker, 'occupied', 1200)
     const stop = jest.fn(async () => ({ state: 'released', failures: [] }))
     const internal = {
       identity: null,
@@ -933,27 +1194,93 @@ describe('canonical public ScanQuery v1', () => {
       destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
     }
     const manager = await createPublicBleManager(internal, () => 0)
-    const scan = await manager.scan({ query: { anyOf: [{ names: { exact: ['never-matches'] } }] } })
-    const iterator = scan.observations[Symbol.asyncIterator]()
-    const terminal = iterator.next()
+    const scan = await manager.scan({ duplicates: 'all', query: { anyOf: [{ names: { exact: ['target'] } }] } })
+    const observations = scan.observations[Symbol.asyncIterator]()
     const events = scan.events[Symbol.asyncIterator]()
-    const eventFailure = expect(events.next()).rejects.toMatchObject({
-      code: 'stream.quota', domain: 'scan', operation: 'scan.evidence.peer-capacity', retryability: 'never'
+    const pending = observations.next()
+    const event = events.next()
+    quota.emit(source, { ...scanAdvertisement('blocked-peer'), localName: 'target' }, 100)
+    let delivered = false
+    pending.then(() => {
+      delivered = true
     })
-    for (let peer = 0; peer <= 4096; peer += 1) source.emit(scanAdvertisement(`quota-peer-${peer}`), 32)
-    await expect(terminal).resolves.toMatchObject({
-      done: false,
-      value: {
-        kind: 'terminal',
-        reason: 'source-failed',
-        error: { code: 'stream.quota', domain: 'scan', operation: 'scan.evidence.peer-capacity', retryability: 'never' }
-      }
-    })
-    await eventFailure
-    await expect(scan.events[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'stream.quota' })
-    await expect(iterator.next()).resolves.toMatchObject({ done: true })
-    await scan.stop()
-    expect(stop).toHaveBeenCalledTimes(1)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(delivered).toBe(false)
+    expect(source.retainedPayloadBytes()).toBe(100)
+    source.finishWithReason('owner-released')
+    await blocker.close()
+    expect((await pending).value.value.peer.id).toBe('blocked-peer')
+    expect((await event).value).toMatchObject({ kind: 'observed', peer: { id: 'blocked-peer' } })
+    expect((await observations.next()).value).toMatchObject({ kind: 'terminal', reason: 'owner-released' })
+    await observations.return()
+    await events.return()
+    await scan.observations.close()
+    await manager.destroy()
+  })
+
+  test('scan subscriber control reservations respect quota and admission resumes after return', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(8192), reservedControlCapacity: capacity(1) },
+      'error',
+      true
+    )
+    const quota = new AggregateStreamQuota(7)
+    quota.register(source)
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan({ duplicates: 'all' })
+    const first = scan.events[Symbol.asyncIterator]()
+    const second = scan.observations[Symbol.asyncIterator]()
+    const third = scan.events[Symbol.asyncIterator]()
+    try {
+      expect(quota.retainedBytes()).toBe(7)
+      expect(() => scan.observations[Symbol.asyncIterator]()).toThrow()
+      expect(quota.retainedBytes()).toBe(7)
+      await first.return()
+      const replacement = scan.observations[Symbol.asyncIterator]()
+      expect(quota.retainedBytes()).toBe(7)
+      await replacement.return()
+    } finally {
+      await second.return()
+      await third.return()
+      await scan.observations.close()
+      await manager.destroy()
+    }
+  })
+
+  test('closing a public scan wakes a cache-blocked read and discards the claimed source explicitly', async () => {
+    const limits = { itemCapacity: capacity(8), byteCapacity: capacity(8192), reservedControlCapacity: capacity(1) }
+    const source = new CoreBoundedStream(limits, 'error', true)
+    const quota = new AggregateStreamQuota(150)
+    quota.register(source)
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan({ query: { anyOf: [{ names: { exact: ['target'] } }] } })
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const pending = observations.next()
+    quota.emit(source, { ...scanAdvertisement('blocked-peer'), localName: 'target' }, 100)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    await scan.observations.close()
+    expect((await pending).value).toMatchObject({ kind: 'terminal', reason: 'closed', droppedItems: 1 })
+    await manager.destroy()
   })
 
   test('forwards a structured source-failed error through public scan observations', async () => {
@@ -1075,7 +1402,10 @@ describe('canonical public ScanQuery v1', () => {
         capabilities: () => [],
         scan: jest.fn(async () => ({
           observations: source,
-          stop: async () => ({ state: 'released', failures: [] })
+          stop: async () => {
+            source.finishWithReason('owner-released')
+            return { state: 'released', failures: [] }
+          }
         })),
         scheduleDeadline: jest.fn((deadline, action) => {
           const handle = { deadline, action, cancel: jest.fn() }
@@ -1197,7 +1527,10 @@ describe('canonical public ScanQuery v1', () => {
       capabilities: () => [],
       scan: jest.fn(async () => ({
         observations: source,
-        stop: async () => ({ state: 'released', failures: [] })
+        stop: async () => {
+          source.finishWithReason('owner-released')
+          return { state: 'released', failures: [] }
+        }
       })),
       scheduleDeadline: jest.fn((deadline, action) => {
         const handle = { deadline, action, cancel: jest.fn() }
@@ -1338,7 +1671,7 @@ describe('canonical public ScanQuery v1', () => {
     await manager.destroy()
   })
 
-  test('scan stop preserves native release-failed when view close throws', async () => {
+  test('scan stop and explicit view close report their separate failures', async () => {
     const inner = new CoreBoundedStream(
       { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
       'drop-oldest'
@@ -1348,6 +1681,7 @@ describe('canonical public ScanQuery v1', () => {
       limits: inner.limits,
       overflowPolicy: inner.overflowPolicy,
       emit: (value, bytes) => inner.emit(value, bytes),
+      close: () => inner.close(),
       [Symbol.asyncIterator]: () => {
         const iterator = inner[Symbol.asyncIterator]()
         return {
@@ -1406,12 +1740,8 @@ describe('canonical public ScanQuery v1', () => {
       32
     )
     await pending
-    await expect(scan.stop()).rejects.toMatchObject({
-      errors: expect.arrayContaining([
-        viewError,
-        expect.objectContaining({ name: 'BleCleanupError', cleanup: nativeCleanup })
-      ])
-    })
+    await expect(scan.stop()).resolves.toEqual(nativeCleanup)
+    await expect(scan.observations.close()).rejects.toMatchObject({ errors: expect.arrayContaining([viewError]) })
   })
 
   test('manager destroy preserves native release-failed when scan-view close throws', async () => {
@@ -1581,6 +1911,8 @@ describe('canonical public ScanQuery v1', () => {
       limits: inner.limits,
       overflowPolicy: inner.overflowPolicy,
       emit: (value, bytes) => inner.emit(value, bytes),
+      observeSourceOverflow: notice => inner.observeSourceOverflow(notice),
+      close: () => inner.close(),
       closeWithReason: (reason, error) => inner.closeWithReason(reason, error),
       finishWithReason: (reason, error) => inner.finishWithReason(reason, error),
       [Symbol.asyncIterator]: () => {
@@ -1606,7 +1938,11 @@ describe('canonical public ScanQuery v1', () => {
       capabilities: () => [],
       scan: jest.fn(async () => ({
         observations: source,
-        stop: nativeStop
+        stop: async () => {
+          const result = await nativeStop()
+          if (result.state === 'released') inner.finishWithReason('owner-released')
+          return result
+        }
       })),
       scheduleDeadline: jest.fn((deadline, action) => {
         const handle = { deadline, action, cancel: jest.fn() }
@@ -1642,15 +1978,25 @@ describe('canonical public ScanQuery v1', () => {
     const returned = scan.events[Symbol.asyncIterator]()
     await returned.return()
     const failure = contractError('adapter.powered-off', 'adapter', 'native.scan', {
-      domain: 'native-radio', code: 'powered-off', safeMessage: 'Radio powered off', metadata: { nativeStatus: 5 }
+      domain: 'native-radio',
+      code: 'powered-off',
+      safeMessage: 'Radio powered off',
+      metadata: { nativeStatus: 5 }
     }).normalized
     fixture.source.emit(scanAdvertisement('buffered-before-failure'), 32)
     await flushMicrotasks()
     fixture.source.finishWithReason('source-failed', failure)
     await flushMicrotasks()
-    await expect(events.next()).resolves.toMatchObject({ value: { kind: 'observed', peer: { id: 'buffered-before-failure' } } })
-    const expected = { code: failure.code, domain: failure.domain, operation: failure.operation,
-      retryability: failure.retryability, platform: { domain: 'native-radio', code: 'powered-off', metadata: { nativeStatus: 5 } } }
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'buffered-before-failure' } }
+    })
+    const expected = {
+      code: failure.code,
+      domain: failure.domain,
+      operation: failure.operation,
+      retryability: failure.retryability,
+      platform: { domain: 'native-radio', code: 'powered-off', metadata: { nativeStatus: 5 } }
+    }
     await expect(events.next()).rejects.toMatchObject(expected)
     await expect(events.next()).rejects.toMatchObject(expected)
     const late = scan.events[Symbol.asyncIterator]()
@@ -1658,8 +2004,12 @@ describe('canonical public ScanQuery v1', () => {
     await expect(returned.next()).resolves.toMatchObject({ done: true })
     await events.return()
     await expect(events.next()).resolves.toMatchObject({ done: true })
-    fixture.nativeStop.mockResolvedValueOnce({ state: 'release-failed', failures: [{ resourceKind: 'scan',
-      error: contractError('platform.failure', 'cleanup', 'native.stop').normalized }] })
+    fixture.nativeStop.mockResolvedValueOnce({
+      state: 'release-failed',
+      failures: [
+        { resourceKind: 'scan', error: contractError('platform.failure', 'cleanup', 'native.stop').normalized }
+      ]
+    })
     await expect(scan.stop()).resolves.toMatchObject({ state: 'release-failed' })
     await expect(late.next()).rejects.toMatchObject(expected)
     await expect(scan.stop()).resolves.toMatchObject({ state: 'released' })
@@ -1674,13 +2024,63 @@ describe('canonical public ScanQuery v1', () => {
     const scan = await manager.scan()
     const events = scan.events[Symbol.asyncIterator]()
     const failure = expect(events.next()).rejects.toMatchObject({
-      code: 'platform.failure', domain: 'stream', operation: 'public-scan.events'
+      code: 'platform.failure',
+      domain: 'stream',
+      operation: 'public-scan.events'
     })
     fixture.source.closeWithReason('source-failed')
     await failure
     await scan.stop()
     expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
     await events.return()
+  })
+
+  test('scan observations hydrate a retained durable terminal independently for early and late subscribers', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(2), byteCapacity: capacity(256), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const failure = contractError('adapter.powered-off', 'adapter', 'native.scan').normalized
+    let hydrations = 0
+    source.setTerminalEvidenceHydrator(async terminal => {
+      hydrations += 1
+      return { ...terminal, error: failure }
+    })
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const scan = await (await createPublicBleManager(internal, () => 0)).scan()
+    const early = scan.observations[Symbol.asyncIterator]()
+    source.finishWithReason('source-failed', null, {
+      producer: 'scan',
+      kind: 'committed',
+      ref: 'retained-terminal',
+      byteLength: 128,
+      digest: 'a'.repeat(64),
+      formatVersion: 1,
+      durability: 'committed',
+      scope: { managerId: 'manager', operationId: 'operation', incarnation: '1' }
+    })
+    const earlyTerminal = await early.next()
+    expect(hydrations).toBe(2)
+    expect(earlyTerminal).toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed', error: failure }
+    })
+    const late = scan.observations[Symbol.asyncIterator]()
+    await expect(late.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed', error: failure }
+    })
+    expect(hydrations).toBe(3)
+    await early.return()
+    await late.return()
+    await scan.stop()
   })
 
   test('returning a pending scan event iterator cancels only that view and preserves later source failure for other views', async () => {
@@ -1691,7 +2091,10 @@ describe('canonical public ScanQuery v1', () => {
     const pending = events.next()
     await events.return()
     await expect(pending).resolves.toMatchObject({ done: true })
-    fixture.source.finishWithReason('source-failed', contractError('adapter.powered-off', 'adapter', 'native.scan').normalized)
+    fixture.source.finishWithReason(
+      'source-failed',
+      contractError('adapter.powered-off', 'adapter', 'native.scan').normalized
+    )
     await flushMicrotasks()
     await expect(events.next()).resolves.toMatchObject({ done: true })
     const remaining = scan.events[Symbol.asyncIterator]()
@@ -1700,7 +2103,7 @@ describe('canonical public ScanQuery v1', () => {
     await scan.stop()
   })
 
-  test('explicit stop does not deliver queued observations or discovery events after it resolves', async () => {
+  test('explicit stop preserves queued observations and discovery events after it resolves', async () => {
     const fixture = createStopOverflowFixture()
     const manager = await createPublicBleManager(fixture.internal, () => 0)
     const scan = await manager.scan()
@@ -1711,8 +2114,16 @@ describe('canonical public ScanQuery v1', () => {
     await flushMicrotasks()
     await scan.stop()
     await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'queued-peer-1' } } }
+    })
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'queued-peer-2' } } }
+    })
+    await expect(observations.next()).resolves.toMatchObject({
       value: { kind: 'terminal', reason: 'owner-released' }
     })
+    await expect(events.next()).resolves.toMatchObject({ value: { kind: 'observed', peer: { id: 'queued-peer-1' } } })
+    await expect(events.next()).resolves.toMatchObject({ value: { kind: 'observed', peer: { id: 'queued-peer-2' } } })
     await expect(events.next()).resolves.toEqual({ done: true, value: undefined })
   })
 
@@ -1769,8 +2180,12 @@ describe('canonical public ScanQuery v1', () => {
     fixture.source.emit(scanAdvertisement('overflow-peer-2'), 32)
     await flushMicrotasks()
     await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'overflow-peer-1' } } }
+    })
+    await expect(observations.next()).resolves.toMatchObject({
       value: { kind: 'terminal', reason: 'overflow' }
     })
+    await expect(events.next()).resolves.toMatchObject({ value: { kind: 'observed', peer: { id: 'overflow-peer-1' } } })
     await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
     await scan.stop()
   })
@@ -1794,6 +2209,41 @@ describe('canonical public ScanQuery v1', () => {
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
+
+  test.each([false, true])(
+    'compact observations retain their original receipt time for presence deadlines (shared: %s)',
+    async shared => {
+      const fixture = createStopOverflowFixture()
+      let source = fixture.source
+      if (shared) {
+        source = new CoreBoundedStream(
+          { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+          'drop-oldest'
+        )
+        const quota = new AggregateStreamQuota(16384)
+        quota.register(source)
+        fixture.internal.scan.mockResolvedValue({
+          observations: source,
+          stop: async () => ({ state: 'released', failures: [] })
+        })
+      }
+      let armed = false
+      let calls = 0
+      const manager = await createPublicBleManager(fixture.internal, () => (armed ? (calls++ === 0 ? 1000 : 2000) : 0))
+      const scan = await manager.scan({ observation: { reportLostAfterMs: 10 } })
+      const reader = scan.observations[Symbol.asyncIterator]()
+      try {
+        armed = true
+        source.emit(scanAdvertisement('timed-peer'), 32)
+        expect((await reader.next()).value.kind).toBe('value')
+        expect(fixture.scheduled.at(-1).deadline).toBe(1010)
+      } finally {
+        await reader.return()
+        await scan.stop()
+        await manager.destroy()
+      }
+    }
+  )
 
   test('overflow native stop release-failed remains retryable through a later stop/destroy', async () => {
     const nativeCleanup = {
@@ -1910,10 +2360,11 @@ describe('canonical public ScanQuery v1', () => {
     await waitForNativeStop(fixture, 1)
     await flushMicrotasks()
 
-    await expect(scan.stop()).rejects.toMatchObject({ errors: expect.arrayContaining([viewFailure]) })
-    expect(manager.activeScanSessions.size).toBe(1)
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
     expect(manager.activeScanSessions.size).toBe(0)
+    await expect(scan.observations.close()).rejects.toMatchObject({ errors: expect.arrayContaining([viewFailure]) })
+    await expect(scan.observations.close()).rejects.toMatchObject({ errors: expect.arrayContaining([viewFailure]) })
+    await expect(scan.observations.close()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test('a refused parent release does not retire an unresolved automatic native cleanup', async () => {
@@ -2022,11 +2473,12 @@ describe('canonical public ScanQuery v1', () => {
     const scan = await manager.scan()
     void scan.observations[Symbol.asyncIterator]()
     await flushMicrotasks()
-    await expect(scan.stop()).rejects.toMatchObject({
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(scan.observations.close()).rejects.toMatchObject({
       errors: expect.arrayContaining([viewError])
     })
     expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
-    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(scan.observations.close()).resolves.toEqual({ state: 'released', failures: [] })
     expect(returnCalls).toBe(2)
     expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
   })
@@ -2045,13 +2497,14 @@ describe('canonical public ScanQuery v1', () => {
     const scan = await manager.scan()
     void scan.observations[Symbol.asyncIterator]()
     await flushMicrotasks()
-    await expect(scan.stop()).rejects.toMatchObject({
-      errors: expect.arrayContaining([viewError])
-    })
-    await expect(scan.stop()).rejects.toMatchObject({
-      errors: expect.arrayContaining([viewError])
-    })
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(scan.observations.close()).rejects.toMatchObject({
+      errors: expect.arrayContaining([viewError])
+    })
+    await expect(scan.observations.close()).rejects.toMatchObject({
+      errors: expect.arrayContaining([viewError])
+    })
+    await expect(scan.observations.close()).resolves.toEqual({ state: 'released', failures: [] })
     expect(returnCalls).toBe(3)
     expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
   })
@@ -2085,6 +2538,65 @@ describe('canonical public ScanQuery v1', () => {
     }
     return events
   }
+
+  test('versioned events distinguish source and subscriber loss and release both views', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: 'latest', duplicates: 'all' })
+    const aware = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    const legacy = scan.events[Symbol.asyncIterator]()
+    try {
+      fixture.source.observeSourceOverflow({
+        kind: 'overflow',
+        policy: 'drop-oldest',
+        droppedItems: resourceCount(2),
+        droppedBytes: resourceCount(7),
+        replacedItems: resourceCount(0)
+      })
+      await flushMicrotasks()
+      fixture.source.emit(scanAdvertisement('a'), 32)
+      await flushMicrotasks()
+      fixture.source.emit(scanAdvertisement('b'), 32)
+      await flushMicrotasks()
+      expect((await aware.next()).value).toMatchObject({
+        kind: 'stream-loss',
+        upstream: { droppedItems: 2, droppedBytes: 7 },
+        subscriber: { droppedItems: 1 }
+      })
+      expect((await legacy.next()).value).toMatchObject({ kind: 'observed', peer: { id: 'b' } })
+      expect((await aware.next()).value).toMatchObject({ kind: 'observed', peer: { id: 'b' } })
+    } finally {
+      await aware.return()
+      await legacy.return()
+      await scan.observations.close()
+      await manager.destroy()
+    }
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+  })
+
+  test('versioned events expose source loss reported only on a terminal', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const fixture = createStopOverflowFixture()
+    fixture.internal.scan = jest.fn(async () => ({ observations: source, stop: fixture.nativeStop }))
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    const events = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    try {
+      source.recordRejectedValue(7)
+      source.finishWithReason('closed')
+      await expect(events.next()).resolves.toMatchObject({
+        value: { kind: 'stream-loss', upstream: { droppedItems: 1, droppedBytes: 7 }, subscriber: { droppedItems: 0 } }
+      })
+      await expect(events.next()).resolves.toMatchObject({ done: true })
+    } finally {
+      await events.return()
+      await scan.observations.close()
+      await manager.destroy()
+    }
+  })
 
   async function consumeObservationsAtFullSpeed(scan, fixture, count, prefix) {
     const observations = scan.observations[Symbol.asyncIterator]()
@@ -2171,9 +2683,27 @@ describe('canonical public ScanQuery v1', () => {
     fixture.source.emit(scanAdvertisement('slow-events-1'), 32)
     fixture.source.emit(scanAdvertisement('slow-events-2'), 32)
     await flushMicrotasks()
+    await expect(events.next()).resolves.toMatchObject({ value: { kind: 'observed', peer: { id: 'slow-events-1' } } })
     await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
     await waitForNativeStop(fixture, 1)
     await scan.stop()
+  })
+
+  test('latest event delivery reports dropped events before continuing with the retained observation', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: 'latest', duplicates: 'all' })
+    const events = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    fixture.source.emit(scanAdvertisement('first'), 32)
+    fixture.source.emit(scanAdvertisement('second'), 32)
+    await flushMicrotasks()
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'stream-loss', subscriber: { droppedItems: 1 } }
+    })
+    await expect(events.next()).resolves.toMatchObject({ value: { kind: 'observed', peer: { id: 'second' } } })
+    await events.return()
+    await scan.stop()
+    await manager.destroy()
   })
 
   test('default balanced events-only consumer does not terminate on unused observation pressure', async () => {
@@ -2351,11 +2881,13 @@ describe('public scan-state-budget', () => {
 describe('public scan presence eviction completeness', () => {
   const { MAX_PUBLIC_SCAN_STATE_ENTRIES, MAX_PUBLIC_SCAN_STATE_BYTES } = require('../src/public/scan-state-budget')
 
-  async function createPresenceScan() {
+  async function createPresenceScan(shared = false) {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(512), byteCapacity: capacity(2 * 1024 * 1024), reservedControlCapacity: capacity(4) },
       'drop-oldest'
     )
+    const quota = shared ? new AggregateStreamQuota(2 * 1024 * 1024) : null
+    quota?.register(source)
     let now = 0
     const timers = []
     const collected = []
@@ -2407,6 +2939,7 @@ describe('public scan presence eviction completeness', () => {
     })()
     return {
       source,
+      quota,
       waitFor: (predicate, description) => {
         if (predicate()) return Promise.resolve()
         const pending = new Promise(resolve => {
@@ -2466,6 +2999,177 @@ describe('public scan presence eviction completeness', () => {
       ])
     )
     await closePresenceScan(fixture)
+  })
+
+  test('shared fanout publishes presence overflow before the observation that caused it', async () => {
+    const fixture = await createPresenceScan(true)
+    try {
+      for (let index = 0; index < MAX_PUBLIC_SCAN_STATE_ENTRIES + 1; index += 1) {
+        fixture.source.emit(advertisement(`peer-${index}`), 32)
+      }
+      await fixture.waitFor(
+        () =>
+          fixture.collected.some(
+            event => event.kind === 'observed' && event.peer.id === `peer-${MAX_PUBLIC_SCAN_STATE_ENTRIES}`
+          ),
+        'the final observation'
+      )
+      const overflowIndex = fixture.collected.findIndex(event => event.kind === 'presence-tracking-overflow')
+      const observedIndex = fixture.collected.findIndex(
+        event => event.kind === 'observed' && event.peer.id === `peer-${MAX_PUBLIC_SCAN_STATE_ENTRIES}`
+      )
+      expect(overflowIndex).toBeGreaterThanOrEqual(0)
+      expect(overflowIndex).toBeLessThan(observedIndex)
+    } finally {
+      await closePresenceScan(fixture)
+    }
+  })
+
+  test('timeout loss cannot exceed aggregate quota when another owner fills the available space', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(8192), reservedControlCapacity: capacity(4) },
+      'drop-oldest'
+    )
+    const quota = new AggregateStreamQuota(4096)
+    quota.register(source)
+    let now = 0
+    let timer
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      scheduleDeadline: (_deadline, action) => {
+        timer = action
+        return { cancel() {} }
+      },
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => now)
+    const scan = await manager.scan({ observation: { reportLostAfterMs: 10 }, delivery: 'balanced' })
+    const events = scan.events[Symbol.asyncIterator]()
+    // Keep the observation's shared occurrence alive after presence expires.
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const admission = source.createRetainedByteAdmission()
+    try {
+      const observed = events.next()
+      source.emit(advertisement('peer-' + 'x'.repeat(300)), 32)
+      expect((await observed).value.kind).toBe('observed')
+      expect(admission(4096 - quota.retainedBytes())).toBe(true)
+      now = 10
+      timer()
+      expect(quota.retainedBytes()).toBeLessThanOrEqual(4096)
+      await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    } finally {
+      admission(0)
+      await events.return()
+      await observations.return()
+      await scan.observations.close()
+      await manager.destroy()
+    }
+  })
+
+  test('latest shared event view reports loss when presence overflow is evicted by its observation', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(512), byteCapacity: capacity(2 * 1024 * 1024), reservedControlCapacity: capacity(4) },
+      'drop-oldest'
+    )
+    const quota = new AggregateStreamQuota(2 * 1024 * 1024)
+    quota.register(source)
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      scheduleDeadline: () => ({ cancel() {} }),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan({ observation: { reportLostAfterMs: 10 }, delivery: 'latest' })
+    const events = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    try {
+      for (let index = 0; index < MAX_PUBLIC_SCAN_STATE_ENTRIES; index += 1) {
+        const pending = events.next()
+        source.emit(advertisement(`peer-${index}`), 32)
+        expect((await pending).value.kind).toBe('observed')
+      }
+      source.emit(advertisement('last-peer'), 32)
+      for (let index = 0; index < 20; index += 1) await Promise.resolve()
+      const received = []
+      for await (const event of events) {
+        received.push(event)
+        if (event.kind === 'observed') break
+      }
+      expect(received).toEqual([
+        expect.objectContaining({ kind: 'stream-loss', subscriber: expect.objectContaining({ droppedItems: 1 }) }),
+        expect.objectContaining({ kind: 'observed', peer: expect.objectContaining({ id: 'last-peer' }) })
+      ])
+    } finally {
+      await events.return()
+      await scan.observations.close()
+      await manager.destroy()
+    }
+  })
+
+  test('presence eviction and both ordered events remain uncommitted when aggregate admission refuses', async () => {
+    const fixture = await createPresenceScan(true)
+    try {
+      for (let index = 0; index < MAX_PUBLIC_SCAN_STATE_ENTRIES; index += 1) {
+        fixture.source.emit(advertisement(`peer-${index}`), 32)
+      }
+      await fixture.waitFor(
+        () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES,
+        'the initial presence entries'
+      )
+      let signalRefusal
+      const refused = new Promise(resolve => {
+        signalRefusal = resolve
+      })
+      const original = fixture.quota.replaceSharedClaim.bind(fixture.quota)
+      let attempted = false
+      const replacement = jest.spyOn(fixture.quota, 'replaceSharedClaim').mockImplementation((...args) => {
+        if (!attempted && args[5].some(stage => stage.inspect().referenceCount === 2)) {
+          attempted = true
+          const result = original(...args.slice(0, 3), 4 * 1024 * 1024, ...args.slice(4))
+          expect(result).toBeNull()
+          signalRefusal()
+          return result
+        }
+        return original(...args)
+      })
+      fixture.source.emit(advertisement(`peer-${MAX_PUBLIC_SCAN_STATE_ENTRIES}`), 32)
+      await awaitSignal(refused, 'quota refusal of the ordered presence event')
+      expect(fixture.collected.some(event => event.kind === 'presence-tracking-overflow')).toBe(false)
+      expect(
+        fixture.collected.some(
+          event => event.kind === 'observed' && event.peer.id === `peer-${MAX_PUBLIC_SCAN_STATE_ENTRIES}`
+        )
+      ).toBe(false)
+      expect(fixture.timers[0].cancel).not.toHaveBeenCalled()
+      await fixture.waitFor(
+        () =>
+          fixture.collected.some(
+            event => event.kind === 'observed' && event.peer.id === `peer-${MAX_PUBLIC_SCAN_STATE_ENTRIES}`
+          ),
+        'the observation after quota retry'
+      )
+      const overflowIndex = fixture.collected.findIndex(event => event.kind === 'presence-tracking-overflow')
+      const observedIndex = fixture.collected.findIndex(
+        event => event.kind === 'observed' && event.peer.id === `peer-${MAX_PUBLIC_SCAN_STATE_ENTRIES}`
+      )
+      expect(overflowIndex).toBeGreaterThanOrEqual(0)
+      expect(overflowIndex).toBeLessThan(observedIndex)
+      expect(fixture.timers[0].cancel).toHaveBeenCalledTimes(1)
+      replacement.mockRestore()
+    } finally {
+      await closePresenceScan(fixture)
+    }
   })
 
   test('byte-cap eviction is fail-visible without fabricating lost', async () => {
@@ -2612,5 +3316,205 @@ describe('F8 find survives a scan-start burst against a capacity-1 stream', () =
       metadata: { policy: 'error', droppedItems: 2, droppedBytes: 64, itemCapacity: 1 }
     })
     await filtered.close()
+  })
+})
+
+describe('scan convenience ownership and terminal causes', () => {
+  function fixture() {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(4) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    return { source, internal }
+  }
+
+  const failure = contractError('scan.start-failed', 'scan', 'test.source', {
+    domain: 'android',
+    code: 'SCAN_FAILED_INTERNAL_ERROR',
+    safeMessage: 'source failed',
+    metadata: { callbackCode: 3 }
+  }).normalized
+
+  test('find closes its real replayable view and subscriber after a match', async () => {
+    const { source, internal } = fixture()
+    const manager = await createPublicBleManager(internal, () => 0)
+    source.emit(
+      { peerId: 'found', localName: 'found', rssi: -42, serviceUuids: [], manufacturerData: [], serviceData: [] },
+      32
+    )
+    await expect(manager.find()).resolves.toMatchObject({ id: 'found' })
+    expect(manager.retainedScanViews.size).toBe(0)
+  })
+
+  test.each([
+    ['events', 'source-failed'],
+    ['events', 'overflow'],
+    ['lossAwareEventsV1', 'source-failed'],
+    ['lossAwareEventsV1', 'overflow']
+  ])('%s iterator rejects with the delivered %s terminal error', async (view, reason) => {
+    const { source, internal } = fixture()
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const events = scan[view][Symbol.asyncIterator]()
+    source.recordRejectedValue(7)
+    source.finishWithReason(reason, failure)
+    if (view === 'lossAwareEventsV1') {
+      await expect(events.next()).resolves.toMatchObject({
+        value: { kind: 'stream-loss', upstream: { droppedItems: 1, droppedBytes: 7 } }
+      })
+    }
+    await expect(events.next()).rejects.toMatchObject({
+      code: failure.code,
+      operation: failure.operation,
+      platform: failure.platform
+    })
+    await events.return()
+    await scan.stop()
+    await scan.observations.close()
+  })
+
+  test('event subscriber reports its own peer-loss control failure', async () => {
+    const { source, internal } = fixture()
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan({
+      delivery: {
+        preset: 'custom',
+        budget: {
+          itemCapacity: 8,
+          byteCapacity: 4096,
+          reservedControlCapacity: 1,
+          overflowPolicy: 'drop-oldest'
+        }
+      }
+    })
+    const events = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    source.observeSourceLoss({ kind: 'source-loss', scope: 'peer', peerId: 'a', generation: '1', skippedRecords: null })
+    source.observeSourceLoss({ kind: 'source-loss', scope: 'peer', peerId: 'b', generation: '1', skippedRecords: null })
+    for (let i = 0; i < 20; i += 1) await Promise.resolve()
+    await expect(events.next()).resolves.toMatchObject({ value: { kind: 'source-loss', peerId: 'a' } })
+    await expect(events.next()).rejects.toMatchObject({
+      code: 'stream.overflow',
+      operation: 'public-scan.events'
+    })
+    await scan.stop()
+    await scan.observations.close()
+  })
+
+  test('loss-aware replay journal is aggregate-quota charged, stops ingress, and releases on close', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(4) },
+      'drop-oldest',
+      true
+    )
+    const loss = {
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'advertisement-ingress',
+      lostRecords: resourceCount(1)
+    }
+    // The source's own source-loss control must fit first. Leave precisely
+    // one byte beyond it and the event view's control reservation, which is
+    // insufficient for the separately retained public V1 replay record.
+    const quota = new AggregateStreamQuota(
+      source.retainedBytes() + 6 + new TextEncoder().encode(JSON.stringify(loss)).byteLength + 1
+    )
+    quota.register(source)
+    const nativeStop = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: nativeStop })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const legacyEvents = scan.events[Symbol.asyncIterator]()
+    const events = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+
+    source.observeSourceLoss(loss)
+
+    await expect(events.next()).rejects.toMatchObject({
+      code: 'stream.quota',
+      operation: 'public-scan.events.loss-journal'
+    })
+    await expect(legacyEvents.next()).rejects.toMatchObject({
+      code: 'stream.quota',
+      operation: 'public-scan.events.loss-journal'
+    })
+    await expect(observations.next()).resolves.toMatchObject({
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: { code: 'stream.quota', operation: 'public-scan.events.loss-journal' }
+      }
+    })
+    for (let attempt = 0; attempt < 50 && nativeStop.mock.calls.length === 0; attempt += 1) await Promise.resolve()
+    expect(nativeStop).toHaveBeenCalledTimes(1)
+    // The failed growth never escapes the shared ceiling; producer stop keeps
+    // its replayable view readable, then explicit view close releases both
+    // the source control and journal reservation.
+    await scan.stop()
+    await scan.observations.close()
+    expect(quota.retainedBytes()).toBe(0)
+    await observations.return()
+    await legacyEvents.return()
+    await events.return()
+    await manager.destroy()
+  })
+
+  test.each([
+    ['source-failed', 'abort'],
+    ['source-failed', 'deadline'],
+    ['overflow', 'abort'],
+    ['overflow', 'deadline']
+  ])('find preserves delivered %s error despite %s', async (reason, race) => {
+    const { source, internal } = fixture()
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    source.finishWithReason(reason, failure)
+    const controller = new AbortController()
+    if (race === 'abort') controller.abort()
+    await expect(
+      findPeerInScan(scan, 'first', {
+        signal: controller.signal,
+        deadline: race === 'deadline' ? 0 : null,
+        now: () => 1
+      })
+    ).rejects.toMatchObject({ code: failure.code, operation: failure.operation, platform: failure.platform })
+    await scan.stop()
+    await scan.observations.close()
+  })
+
+  test.each(['abort', 'deadline'])('find rejects a queued match after %s and returns its iterator', async race => {
+    const iterator = {
+      next: jest.fn(async () => ({ done: false, value: { kind: 'value', value: { peer: { id: 'late' } } } })),
+      return: jest.fn(async () => ({ done: true, value: undefined }))
+    }
+    const scan = { observations: { [Symbol.asyncIterator]: () => iterator } }
+    const controller = new AbortController()
+    if (race === 'abort') controller.abort()
+    await expect(
+      findPeerInScan(scan, 'first', {
+        signal: controller.signal,
+        deadline: race === 'deadline' ? 0 : null,
+        now: () => 1
+      })
+    ).rejects.toMatchObject({ code: race === 'abort' ? 'operation.aborted' : 'operation.timed-out' })
+    expect(iterator.return).toHaveBeenCalledTimes(1)
   })
 })

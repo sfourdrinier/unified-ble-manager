@@ -5,7 +5,8 @@ import {
   BLE_ERROR_CODES,
   BLE_ERROR_DOMAINS,
   BLE_RETRYABILITIES,
-  retryabilityForCode
+  retryabilityForCode,
+  snapshotOrderedFailure
 } from '../backend-contract/errors'
 import type { BleCommitUncertainty, BleErrorCode, BleErrorDomain, BleRetryability } from '../backend-contract/errors'
 import type { Limitation } from '../backend-contract/capabilities'
@@ -40,6 +41,8 @@ export class BleError extends Error {
    */
   readonly commit: BleCommitUncertainty | null
   readonly recovery: BleRecovery
+  /** Exact ordered v2 failure, including independent native cleanup evidence, when reported. */
+  readonly orderedFailure?: import('../core/ordered-recording').OrderedRecordingFailure
 
   constructor(
     code: BleErrorCode,
@@ -50,6 +53,7 @@ export class BleError extends Error {
       readonly limitations?: readonly Limitation[]
       readonly retryability?: BleRetryability
       readonly commit?: BleCommitUncertainty | null
+      readonly orderedFailure?: import('../core/ordered-recording').OrderedRecordingFailure
     } = {}
   ) {
     if (!BLE_ERROR_CODES.some(candidate => candidate === code)) {
@@ -76,6 +80,8 @@ export class BleError extends Error {
     this.code = code
     this.domain = domain
     this.operation = operation
+    if (options.orderedFailure !== undefined)
+      this.orderedFailure = snapshotOrderedFailure({ code, domain, operation, orderedFailure: options.orderedFailure })
     this.platform = platform
     this.retryability = retryability
     this.commit = commit

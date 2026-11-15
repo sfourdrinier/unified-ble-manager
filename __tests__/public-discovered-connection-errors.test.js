@@ -28,6 +28,15 @@ function emptyEvents() {
   }
 }
 
+function emptyDiagnostics() {
+  return {
+    snapshot: () => ({ trace: { records: [] }, resourceCounters: {} }),
+    resourceCounters: () => ({}),
+    startTrace: () => ({ stop: async () => ({ records: [] }) }),
+    warnings: () => []
+  }
+}
+
 async function fixture(
   host,
   clock,
@@ -78,7 +87,7 @@ async function fixture(
   const manager =
     host === 'IPC'
       ? new IpcPublicManagerAdapter(
-          { capabilities, bootstrap: { discovery: { kind: 'continuous-scan' } }, connect },
+          { capabilities, bootstrap: { discovery: { kind: 'continuous-scan' } }, connect, diagnostics: emptyDiagnostics },
           {
             capabilities,
             adapter: { id: 'adapter-1', state: async () => ({}), waitUntilReady: async () => ({}) }

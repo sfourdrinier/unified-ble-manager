@@ -1,7 +1,7 @@
 // src/backends/reactnative/react-native-rust-core.ts
 //
 // The React Native seam over the process-owned Rust mobile host
-// (docs/MOBILE_RUST_WIRE.md, wire `ubm-mobile-wire/2`). The production
+// (docs/MOBILE_RUST_WIRE.md, wire `ubm-mobile-wire/3`). The production
 // implementation is `createReactNativeRustCoreBinding` over the
 // `UnifiedBleRustCore` TurboModule; tests inject a binding built by the same
 // function over a deterministic native module, so every byte crosses the real
@@ -34,6 +34,21 @@ export interface ReactNativeRustCoreSession {
    * exact contract identity Rust reported, including the write commit state.
    */
   invoke<Op extends WireOp>(op: Op, args: WireJsonObject): Promise<WireOpResults[Op]>
+  /** Session-authorized ordered recording controls, present only on a compatible native host. */
+  orderedRecordingVersion?(): Promise<number>
+  orderedRecordingReserve?(id: string): Promise<string>
+  orderedRecordingStartStatus?(handle: string): Promise<string>
+  orderedRecordingRetire?(handle: string): Promise<string>
+  orderedRecordingStart?(
+    handle: string,
+    id: string,
+    maxBytes: string,
+    maxRecords: string,
+    declarationJson: string,
+    budgetMs: number
+  ): Promise<string>
+  orderedRecordingContext?(id: string): Promise<string>
+  orderedRecordingStop?(id: string): Promise<string>
   /** Drains queued records; ordinals are checked against the last delivered one. */
   drain(maxItems: number, maxBytes: number): Promise<WireDrainBatch>
   /** Registers the one wake listener of this session; returns its remover. */
@@ -50,6 +65,8 @@ export interface RustCoreRestorationIdentityRequest {
 
 /** Native Rust core entry. */
 export interface ReactNativeRustCoreBinding {
+  /** Trusted bootstrap only; must run before the first host installation. */
+  configureTerminalEvidenceMaximumBytes?(maximumBytes: string): Promise<void>
   /** Versioned OS accessory setup; no connection or radio fallback. */
   chooseAccessory?(requestId: string, optionsJson: string, timeoutMs: number): Promise<string>
   cancelAccessoryChoice?(requestId: string): Promise<void>
@@ -59,11 +76,15 @@ export interface ReactNativeRustCoreBinding {
   /** Verify the sealed binary and protocol revisions without acquiring a session. */
   verifyNativeIdentity(): Promise<void>
   onRecoveryHint?(listener: () => void): () => void
+  orderedRecordingOfflineContext?(id: string): Promise<string>
+  orderedRecordingOfflineStatus?(id: string): Promise<string>
+  orderedRecordingOfflineStop?(id: string): Promise<string>
   continuationRecordingStatus?(id: string): Promise<string>
   continuationRecordingPrepare?(id: string, maxItems: number, maxBytes: number): Promise<string>
   continuationRecordingAcknowledge?(id: string, token: string): Promise<string>
   continuationRecordingStop?(id: string): Promise<string>
   continuationRecordingClear?(id: string): Promise<string>
+  notificationFailureSpoolConfigure?(recordingId: string, maxBytes: string, maxRecords: string): Promise<string>
   /** Verifies the binary identity, then admits one session lease. */
   openSession(owner: string): Promise<ReactNativeRustCoreSession>
   /**
@@ -78,6 +99,21 @@ export interface ReactNativeRustCoreBinding {
   prepareContinuationClaim?(maxItems: number, maxBytes: number): Promise<string>
   /** Acknowledges a successfully decoded prepared claim and performs retryable native cleanup. */
   acknowledgeContinuationClaim?(claimToken: string): Promise<string>
+  /** Versioned retained-prefix operations, separate from the legacy complete claim. */
+  prepareRetainedContinuationClaimV1?(maxItems: number, maxBytes: number): Promise<string>
+  acknowledgeRetainedContinuationClaimV1?(claimToken: string): Promise<string>
+  retireRetainedContinuationClaimReceiptV1?(claimToken: string): Promise<string>
+  /** Explicitly negotiated V2 retained-prefix operations. */
+  prepareRetainedContinuationClaimV2?(maxItems: number, maxBytes: number): Promise<string>
+  acknowledgeRetainedContinuationClaimV2?(claimToken: string): Promise<string>
+  readPeerFailureRecovery?(recoveryRecord: string, offset: string): Promise<string>
+  acknowledgePeerFailureRecovery?(recoveryRecord: string): Promise<string>
+  /** Host-selected retained terminal evidence; handles are opaque and never name a manager or recording. */
+  terminalEvidenceRecoveryOpenSelected?(): Promise<string>
+  terminalEvidenceRecoveryList?(leaseId: string, maxItems: number, maxBytes: number): Promise<string>
+  terminalEvidenceRecoveryListWithStatus?(leaseId: string, maxItems: number, maxBytes: number): Promise<string>
+  terminalEvidenceRecoveryRead?(handle: string, offset: string, maxBytes: number): Promise<string>
+  terminalEvidenceRecoveryAcknowledge?(handle: string): Promise<string>
   /**
    * Reports the continuation posture (verbatim status JSON). Optional like
    * the declare method.

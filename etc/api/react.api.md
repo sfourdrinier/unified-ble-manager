@@ -35,7 +35,7 @@ export function BleProvider(props: BleProviderProps): React.ReactElement
 - `UseBleReadinessResult :: { readonly readiness: BleReadiness | null; readonly loading: boolean; readonly error: Error | null }`
 - `UseCharacteristicValueResult :: { readonly value: GattValueEvent | null; readonly loading: boolean; readonly error: Error | null }`
 - `UseConnectionStateResult :: { readonly state: ConnectionState | null; readonly loading: boolean; readonly error: Error | null }`
-- `UseDiscoveredPeersResult :: { readonly peers: readonly BlePeer[]; readonly state: "active" | "starting" | "stopped" | "failed" | "idle"; readonly error: Error | null }`
+- `UseDiscoveredPeersResult :: { readonly peers: readonly BlePeer[]; readonly state: "active" | "failed" | "idle" | "starting" | "stopped"; readonly error: Error | null }`
 - `getAdapterState :: (manager: Pick<BleManager, "adapter">) => Promise<BleAdapterState>`
 - `getBleCapability :: (manager: Pick<BleManager, "capabilities">, id: '${string}:${string}') => CapabilityDescriptor | undefined`
 - `getBleReadiness :: (manager: Pick<ExpoBleManager, "readiness">) => Promise<BleReadiness>`

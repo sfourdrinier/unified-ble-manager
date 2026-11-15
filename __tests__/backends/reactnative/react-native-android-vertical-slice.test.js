@@ -109,6 +109,13 @@ function operation() {
   return { signal: null, deadline: null }
 }
 
+function removeAdmissionMethod(runtime) {
+  const methods = Object.getOwnPropertyDescriptors(Object.getPrototypeOf(runtime))
+  delete methods.submitWithAdmission
+  Object.setPrototypeOf(runtime, Object.create(Object.prototype, methods))
+  return runtime
+}
+
 function scanOptions() {
   return {
     filter: { serviceUuids: [serviceUuid], manufacturerData: [], localNamePrefix: 'Polar' },
@@ -1216,6 +1223,418 @@ describe('React Native Android canonical protocol vertical slice', () => {
     expect(control.closedAttachments).toEqual([attachment])
   })
 
+  test('Android historical boundary submits mixed commands with disjoint contiguous epoch lanes', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-registry-epochs')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const epochs = []
+    const commands = []
+    const submit = runtime.submit.bind(runtime)
+    runtime.submit = bytes => {
+      const command = decodeNativeProtocolRecord(bytes)
+      epochs.push(requiredNumber(requiredRecord(command, 2), 2))
+      commands.push(Buffer.from(bytes).toString('hex'))
+      submit(bytes)
+    }
+    await boundary.stopScan()
+    await boundary.startScan(() => {}, [])
+    await boundary.stopScan()
+    await boundary.startScan(() => {}, [])
+    await boundary.stopScan()
+    await boundary.destroy()
+    expect(epochs).toEqual([2, 1, 4, 3, 6, 8])
+    if (process.env.UBM_ANDROID_REGISTRY_HELPER) {
+      const result = require('child_process').spawnSync(process.env.UBM_ANDROID_REGISTRY_HELPER, [], {
+        input: `${commands.join('\n')}\n`, encoding: 'utf8'
+      })
+      expect({ status: result.status, stdout: result.stdout, stderr: result.stderr }).toEqual({
+        status: 0, stdout: 'registered=6\n', stderr: ''
+      })
+      const first = decodeNativeProtocolRecord(Buffer.from(commands[0], 'hex'))
+      const correlation = requiredRecord(first, 2)
+      const invalid = record(first.kind, first.fields.map(item => item.id === 2
+        ? field(2, record(correlation.kind, correlation.fields.map(part => part.id === 2 ? field(2, 2 ** 52) : part)))
+        : item))
+      const rejected = require('child_process').spawnSync(process.env.UBM_ANDROID_REGISTRY_HELPER, [], {
+        input: `${Buffer.from(encodeNativeProtocolRecord(invalid)).toString('hex')}\n`, encoding: 'utf8'
+      })
+      expect({ status: rejected.status, stderr: rejected.stderr }).toEqual({
+        status: 10, stderr: 'registry-invalid-correlation: Native operation correlation is incomplete\n'
+      })
+    }
+  })
+
+  test('Apple historical boundary keeps its contiguous registry protocol', async () => {
+    const control = new DeterministicAndroidControl()
+    const handshake = control.handshake.bind(control)
+    control.handshake = async request => ({ ...(await handshake(request)), scanEventIdentityAvailable: false })
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAppleProtocolBoundary(control, 'apple-contiguous-registry')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const epochs = []
+    const submit = runtime.submit.bind(runtime)
+    runtime.submit = bytes => {
+      epochs.push(requiredNumber(requiredRecord(decodeNativeProtocolRecord(bytes), 2), 2))
+      submit(bytes)
+    }
+    removeAdmissionMethod(runtime)
+    await boundary.stopScan()
+    await boundary.startScan(() => {}, [])
+    await boundary.stopScan()
+    await boundary.destroy()
+    expect(epochs).toEqual([1, 2, 3, 4])
+  })
+
+  test('Android historical boundary ignores a delayed failure from the scan replaced after its native stop', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-scan-replacement')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const failures = []
+    const observations = []
+    boundary.onScanFailure(message => failures.push(message))
+    await boundary.startScan(() => {}, [])
+    const oldCorrelation = runtime.scanCorrelation
+    await boundary.stopScan()
+    await boundary.startScan(value => observations.push(value), [])
+    runtime.emitEvent('diagnostic', [
+      field(10, oldCorrelation),
+      field(14, record('error', [field(1, 'scanFailed'), field(2, 'android'), field(3, 'scan'), field(4, 'notRetryable'), field(7, 'old failure')]))
+    ])
+    runtime.emitEvent('diagnostic', [
+      field(10, oldCorrelation),
+      field(14, record('error', [field(1, 'scanFailed'), field(2, 'android'), field(3, 'scan'), field(4, 'notRetryable'), field(7, 'old failure again')]))
+    ])
+    runtime.emitAdvertisement()
+    expect(failures).toEqual([])
+    expect(observations).toHaveLength(1)
+    await boundary.stopScan()
+    await boundary.destroy()
+  })
+
+  test('Android historical boundary rejects a scan failure bearing an earlier stop correlation', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-non-scan-correlation')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const failures = []
+    boundary.onScanFailure(message => failures.push(message))
+    const submit = runtime.submit.bind(runtime)
+    let stopCorrelation
+    runtime.submit = bytes => {
+      const command = decodeNativeProtocolRecord(bytes)
+      if (requiredString(command, 3) === 'scanStop') stopCorrelation = requiredRecord(command, 2)
+      submit(bytes)
+    }
+    await boundary.startScan(() => {}, [])
+    await boundary.stopScan()
+    await boundary.startScan(() => {}, [])
+    runtime.emitEvent('diagnostic', [
+      field(10, stopCorrelation),
+      field(14, record('error', [field(1, 'scanFailed'), field(2, 'android'), field(3, 'scan'), field(4, 'notRetryable'), field(7, 'invalid')]))
+    ])
+    expect(failures).toEqual(['Android scan failure has an invalid identity'])
+    await boundary.destroy()
+  })
+
+  test('Android historical boundary rejects a scan-shaped identity for an epoch issued to stop', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-forged-scan-correlation')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const failures = []
+    boundary.onScanFailure(message => failures.push(message))
+    const submit = runtime.submit.bind(runtime)
+    let stopCorrelation
+    runtime.submit = bytes => {
+      const command = decodeNativeProtocolRecord(bytes)
+      if (requiredString(command, 3) === 'scanStop') stopCorrelation = requiredRecord(command, 2)
+      submit(bytes)
+    }
+    await boundary.startScan(() => {}, [])
+    await boundary.stopScan()
+    await boundary.startScan(() => {}, [])
+    const epoch = requiredNumber(stopCorrelation, 2)
+    const forged = record('operationCorrelation', [
+      field(1, requiredRecord(stopCorrelation, 1)), field(2, epoch), field(3, `rn-android-scan-${epoch}`)
+    ])
+    runtime.emitEvent('diagnostic', [
+      field(10, forged),
+      field(14, record('error', [field(1, 'scanFailed'), field(2, 'android'), field(3, 'scan'), field(4, 'notRetryable'), field(7, 'invalid')]))
+    ])
+    expect(failures).toEqual(['Android scan failure has an invalid identity'])
+    await boundary.destroy()
+  })
+
+  test('Android historical boundary bounds retirement state and quarantines arbitrarily old callbacks', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-bounded-retirement')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const failures = []
+    boundary.onScanFailure(message => failures.push(message))
+    await boundary.startScan(() => {}, [])
+    const first = runtime.scanCorrelation
+    await boundary.stopScan()
+    for (let i = 0; i < 1000; i++) {
+      await boundary.startScan(() => {}, [])
+      await boundary.stopScan()
+    }
+    expect(boundary.legacyIssuedScanEpochs.size).toBe(0)
+    await boundary.startScan(() => {}, [])
+    const error = field(14, record('error', [field(1, 'scanFailed'), field(2, 'android'), field(3, 'scan'), field(4, 'notRetryable'), field(7, 'very late failure')]))
+    runtime.emitEvent('diagnostic', [field(10, first), error])
+    runtime.emitEvent('diagnostic', [field(10, first), error])
+    expect(failures).toEqual([])
+    await boundary.stopScan()
+    await boundary.destroy()
+  })
+
+  test('Android historical boundary preserves permission identity and cleanup details', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-permission-cleanup')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const submit = runtime.submit.bind(runtime)
+    runtime.submit = bytes => {
+      const command = decodeNativeProtocolRecord(bytes)
+      if (requiredString(command, 3) === 'scanStart') {
+        runtime.emitFailureWithCode(command, 'permissionDenied', 'scan permission refused; cleanup failed: cleanup refused')
+        return
+      }
+      submit(bytes)
+    }
+    await expect(boundary.startScan(() => {}, [])).rejects.toMatchObject({
+      normalized: {
+        code: 'permission.denied',
+        platform: expect.objectContaining({ code: 'permissionDenied', safeMessage: expect.stringContaining('cleanup refused') })
+      }
+    })
+    await boundary.destroy()
+  })
+
+  test.each(['absent', 'unknown'])('Android historical boundary fails the current scan for %s failure identity', async identity => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, `historical-invalid-${identity}`)
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const failures = []
+    boundary.onScanFailure(message => failures.push(message))
+    await boundary.startScan(() => {}, [])
+    const old = runtime.scanCorrelation
+    await boundary.stopScan()
+    await boundary.startScan(() => {}, [])
+    const error = field(14, record('error', [field(1, 'scanFailed'), field(2, 'android'), field(3, 'scan'), field(4, 'notRetryable'), field(7, 'invalid failure')]))
+    const unknown = record('operationCorrelation', [field(1, requiredRecord(old, 1)), field(2, 9999), field(3, 'unknown')])
+    runtime.emitEvent('diagnostic', [...(identity === 'absent' ? [] : [field(10, unknown)]), error])
+    expect(failures).toHaveLength(1)
+    await boundary.destroy()
+  })
+
+  test('Android historical boundary quarantines repeated failed-cleanup events after replacement', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-repeated-failure')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const failures = []
+    const observations = []
+    boundary.onScanFailure(message => failures.push(message))
+    await boundary.startScan(() => {}, [])
+    const old = runtime.scanCorrelation
+    runtime.emitDiagnostic('scanFailed', 'first cleanup failed')
+    await boundary.startScan(value => observations.push(value), [])
+    const error = field(14, record('error', [field(1, 'scanFailed'), field(2, 'android'), field(3, 'scan'), field(4, 'notRetryable'), field(7, 'delayed old failure')]))
+    runtime.emitEvent('diagnostic', [field(10, old), error])
+    runtime.emitEvent('diagnostic', [field(10, old), error])
+    runtime.emitAdvertisement()
+    expect(failures).toEqual(['first cleanup failed'])
+    expect(observations).toHaveLength(1)
+    await boundary.stopScan()
+    await boundary.destroy()
+  })
+
+  test('Android historical boundary retries cleanup after a failed start before replacement', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-start-cleanup')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const submit = runtime.submit.bind(runtime)
+    let failStart = true
+    let failCleanup = true
+    runtime.submit = bytes => {
+      const command = decodeNativeProtocolRecord(bytes)
+      if (requiredString(command, 3) === 'scanStart' && failStart) {
+        failStart = false
+        runtime.commandKinds.push('scanStart')
+        runtime.emitFailureWithCode(command, 'scanStartCleanupFailed', 'start failed; cleanup failed')
+        return
+      }
+      if (requiredString(command, 3) === 'scanStop' && failCleanup) {
+        failCleanup = false
+        runtime.commandKinds.push('scanStop')
+        runtime.emitFailureWithCode(command, 'scanStopFailed', 'cleanup retry failed')
+        return
+      }
+      submit(bytes)
+    }
+    await expect(boundary.startScan(() => {}, [])).rejects.toThrow()
+    await expect(boundary.startScan(() => {}, [])).rejects.toThrow()
+    await boundary.startScan(() => {}, [])
+    expect(runtime.commandKinds.filter(kind => kind === 'scanStart' || kind === 'scanStop')).toEqual(['scanStart', 'scanStop', 'scanStop', 'scanStart'])
+    await boundary.stopScan()
+    await boundary.destroy()
+  })
+
+  test('Android historical boundary retries cleanup before a replacement after source failure', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-failure-cleanup')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    await boundary.startScan(() => {}, [])
+    runtime.emitDiagnostic('scanFailed', 'source failed')
+    await boundary.startScan(() => {}, [])
+    expect(runtime.commandKinds.filter(kind => kind === 'scanStart' || kind === 'scanStop')).toEqual(['scanStart', 'scanStop', 'scanStart'])
+    await boundary.stopScan()
+    await boundary.destroy()
+  })
+
+  test('Android historical boundary retains failed cleanup for the next scan attempt', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-cleanup-retry')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    await boundary.startScan(() => {}, [])
+    runtime.emitDiagnostic('scanFailed', 'source failed')
+    const submit = runtime.submit.bind(runtime)
+    let failStop = true
+    runtime.submit = bytes => {
+      const command = decodeNativeProtocolRecord(bytes)
+      if (requiredString(command, 3) === 'scanStop' && failStop) {
+        failStop = false
+        runtime.commandKinds.push('scanStop')
+        runtime.emitFailureWithCode(command, 'scanStopFailed', 'first cleanup failed')
+        return
+      }
+      submit(bytes)
+    }
+    await expect(boundary.startScan(() => {}, [])).rejects.toThrow()
+    expect(runtime.commandKinds.filter(kind => kind === 'scanStart')).toHaveLength(1)
+    await boundary.startScan(() => {}, [])
+    expect(runtime.commandKinds.filter(kind => kind === 'scanStart' || kind === 'scanStop')).toEqual(['scanStart', 'scanStop', 'scanStop', 'scanStart'])
+    await boundary.stopScan()
+    await boundary.destroy()
+  })
+
+  test('Android historical boundary releases a delayed advertisement from a replaced scan', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-scan-advertisement')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const observations = []
+    await boundary.startScan(() => {}, [])
+    const oldCorrelation = runtime.scanCorrelation
+    await boundary.stopScan()
+    await boundary.startScan(value => observations.push(value), [])
+    runtime.emitAdvertisement(new Uint8Array([1, 2]), {}, oldCorrelation)
+    expect(observations).toHaveLength(0)
+    expect(runtime.retainedPayloadCount()).toBe(0)
+    runtime.emitAdvertisement(new Uint8Array([3]))
+    expect(observations).toHaveLength(1)
+    expect(runtime.retainedPayloadCount()).toBe(0)
+    await boundary.stopScan()
+    await boundary.destroy()
+  })
+
+  test.each([[undefined, false], [false, false], [false, true]])(
+    'Android open rejects handshake support %s with admission method present=%s', async (available, methodPresent) => {
+    const control = new DeterministicAndroidControl()
+    const handshake = control.handshake.bind(control)
+    control.handshake = async request => ({ ...(await handshake(request)), scanEventIdentityAvailable: available })
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    if (!methodPresent) removeAdmissionMethod(runtime)
+    expect('submitWithAdmission' in runtime).toBe(methodPresent)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-old-native')
+    const attachment = deterministicAttachment()
+    boundary.bindAttachment(attachment)
+    const install = jest.spyOn(control, 'installExecutionRuntime')
+    await expect(boundary.open()).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    expect(control.handshakes[0].scanEventIdentitySupported).toBe(true)
+    expect(control.handshakes[0].androidRegistryAdmissionSupported).toBe(true)
+    expect(install).not.toHaveBeenCalled()
+    expect(control.closedAttachments).toEqual([attachment])
+    expect(runtime.commandKinds).toEqual([])
+    await boundary.destroy()
+    expect(control.closedAttachments).toEqual([attachment])
+  })
+
+  test('Android open rejects old Java and JSI missing admission with retryable attachment cleanup', async () => {
+    const control = new DeterministicAndroidControl(null, 1)
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    removeAdmissionMethod(runtime)
+    expect('submitWithAdmission' in runtime).toBe(false)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'old-java-jsi')
+    const attachment = deterministicAttachment()
+    boundary.bindAttachment(attachment)
+    const failure = await rejectedError(() => boundary.open())
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect(failure.errors[0]).toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    expect(failure.errors[1]).toMatchObject({ message: 'Native attachment close failed' })
+    expectConsoleErrorMatching('[ReactNativeAndroidProtocolBoundary.open] Handshake-open cleanup failed:',
+      expect.objectContaining({ message: 'Native attachment close failed' }))
+    expect(control.closeAttachmentAttempts).toEqual([attachment])
+    expect(runtime.listener).toBeNull()
+    expect(runtime.fatalListener).toBeUndefined()
+    expect(runtime.commandKinds).toEqual([])
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+    expect(control.closeAttachmentAttempts).toEqual([attachment, attachment])
+    expect(control.closedAttachments).toEqual([attachment])
+  })
+
+  test('Android historical boundary keeps the active correlation when another scan is refused', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'historical-scan-arbitration')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const observations = []
+    await boundary.startScan(value => observations.push(value), [])
+    await expect(boundary.startScan(() => {}, [])).rejects.toMatchObject({ normalized: { code: 'scan.already-active' } })
+    runtime.emitAdvertisement()
+    expect(observations).toHaveLength(1)
+    await boundary.stopScan()
+    await boundary.destroy()
+  })
+
   test('Android boundary fails closed and rejects pending work after runtime event ingress overflow', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
@@ -1462,6 +1881,161 @@ describe('React Native Android canonical protocol vertical slice', () => {
     )
     expect(runtime.retainedPayloadCount()).toBe(0)
     await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
+  test('Android stale write path leaves no retained bytes and the next command reaches the registry', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'stale-write-registry-sequence')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const commands = []
+    const submit = runtime.submit.bind(runtime)
+    runtime.submit = bytes => { commands.push(Buffer.from(bytes).toString('hex')); submit(bytes) }
+    await expect(boundary.write(characteristicAddress(), new Uint8Array([9]), true)).rejects.toThrow()
+    expect(runtime.retainedPayloadCount()).toBe(0)
+    await boundary.stopScan()
+    if (process.env.UBM_ANDROID_REGISTRY_HELPER) {
+      const result = require('child_process').spawnSync(process.env.UBM_ANDROID_REGISTRY_HELPER, [], {
+        input: `${commands.join('\n')}\n`, encoding: 'utf8'
+      })
+      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' })
+    }
+    await boundary.destroy()
+  })
+
+  test('Android retain failure does not consume the next registry epoch', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'retain-failure-registry-sequence')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const commands = []
+    const submit = runtime.submit.bind(runtime)
+    runtime.submit = bytes => { commands.push(Buffer.from(bytes).toString('hex')); submit(bytes) }
+    await boundary.connect(peerId)
+    await boundary.discover(peerId)
+    const retain = runtime.retain.bind(runtime)
+    runtime.retain = () => { throw new Error('capacity exhausted') }
+    await expect(boundary.write(characteristicAddress(), new Uint8Array([9]), true)).rejects.toThrow('capacity exhausted')
+    runtime.retain = retain
+    await boundary.stopScan()
+    expect(requiredNumber(requiredRecord(decodeNativeProtocolRecord(Buffer.from(commands[2], 'hex')), 2), 2)).toBe(6)
+    if (process.env.UBM_ANDROID_REGISTRY_HELPER) {
+      const result = require('child_process').spawnSync(process.env.UBM_ANDROID_REGISTRY_HELPER, [], {
+        input: `${commands.join('\n')}\n`, encoding: 'utf8'
+      })
+      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' })
+    }
+    await boundary.destroy()
+  })
+
+  test('Android encoding failure does not consume the next registry epoch', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'encoding-failure-registry-sequence')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const commands = []
+    const submit = runtime.submit.bind(runtime)
+    runtime.submit = bytes => { commands.push(Buffer.from(bytes).toString('hex')); submit(bytes) }
+    await expect(boundary.startScan(() => {}, ['x'.repeat(262144)])).rejects.toThrow()
+    await boundary.stopScan()
+    expect(requiredNumber(requiredRecord(decodeNativeProtocolRecord(Buffer.from(commands[0], 'hex')), 2), 2)).toBe(2)
+    if (process.env.UBM_ANDROID_REGISTRY_HELPER) {
+      const result = require('child_process').spawnSync(process.env.UBM_ANDROID_REGISTRY_HELPER, [], {
+        input: `${commands.join('\n')}\n`, encoding: 'utf8'
+      })
+      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' })
+    }
+    await boundary.destroy()
+  })
+
+  test.each([
+    ['notAdmitted', [2, 2]],
+    ['registrationFailed', [2, 4]]
+  ])('Android retries the correct epoch after native %s', async (state, expected) => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'native-admission-result')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const epochs = []
+    let first = true
+    runtime.submitWithAdmission = bytes => {
+      epochs.push(requiredNumber(requiredRecord(decodeNativeProtocolRecord(bytes), 2), 2))
+      if (first) {
+        first = false
+        return { state, message: 'registry refused' }
+      }
+      runtime.submit(bytes)
+      return { state: 'submitted' }
+    }
+    await expect(boundary.stopScan()).rejects.toThrow('registry refused')
+    await boundary.stopScan()
+    expect(epochs).toEqual(expected)
+    await boundary.destroy()
+  })
+
+  test('Android registry capacity rejection reuses the epoch after a slot is released', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'native-registry-capacity')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    const commands = []
+    const submit = runtime.submitWithAdmission.bind(runtime)
+    runtime.submitWithAdmission = bytes => {
+      commands.push(Buffer.from(bytes).toString('hex'))
+      if (commands.length === 1025) return { state: 'notAdmitted', message: 'registry capacity exhausted' }
+      return submit(bytes)
+    }
+    for (let i = 0; i < 1024; i++) await boundary.stopScan()
+    await expect(boundary.stopScan()).rejects.toThrow('registry capacity exhausted')
+    await boundary.stopScan()
+    expect(commands[1025]).toBe(commands[1024])
+    if (process.env.UBM_ANDROID_REGISTRY_HELPER) {
+      const result = require('child_process').spawnSync(process.env.UBM_ANDROID_REGISTRY_HELPER, ['capacity'], {
+        input: `${commands.join('\n')}\n`, encoding: 'utf8'
+      })
+      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' })
+    }
+    await boundary.destroy()
+  })
+
+  test('Android retires the attachment when a scan registration fails after admission', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'failed-admitted-scan')
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    runtime.submitWithAdmission = () => ({ state: 'registrationFailed', message: 'registration failed' })
+    await expect(boundary.startScan(() => {}, [])).rejects.toThrow()
+    await expect(boundary.startScan(() => {}, [])).rejects.toThrow()
+    expect(control.closedAttachments).toHaveLength(1)
+  })
+
+  test.each(['dispatchFailed', 'throws', 'invalid'])('Android retires an attachment for %s submission outcome', async mode => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, `unknown-admission-${mode}`)
+    boundary.bindAttachment(deterministicAttachment())
+    await boundary.open()
+    runtime.submitWithAdmission = () => {
+      if (mode === 'throws') throw new Error('admission transport failed')
+      if (mode === 'invalid') return undefined
+      return { state: 'dispatchFailed', message: 'dispatcher failed after admission' }
+    }
+    await expect(boundary.stopScan()).rejects.toThrow()
+    await expect(boundary.stopScan()).rejects.toThrow()
+    expect(control.closedAttachments).toHaveLength(1)
   })
 
   test.each([
@@ -1975,7 +2549,7 @@ class DeterministicAndroidControl {
     this.handshakes.push(request)
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 7,
+      abi: 8,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
@@ -1983,6 +2557,7 @@ class DeterministicAndroidControl {
       traceFormat: 1,
       maximumControlRecordBytes: 65536,
       maximumBinaryPayloadBytes: 524288,
+      scanEventIdentityAvailable: true,
       phyAvailable: this.phyAvailable
     })
   }
@@ -2134,6 +2709,15 @@ class DeterministicAndroidProtocolRuntime {
     this.subscribeFailure = null
   }
 
+  submitWithAdmission(bytes) {
+    try {
+      this.submit(bytes)
+      return { state: 'submitted' }
+    } catch (error) {
+      return { state: 'notAdmitted', message: error.message }
+    }
+  }
+
   retain(operationCorrelation, value) {
     const ownerToken = `deterministic-buffer-${this.nextBuffer}`
     this.nextBuffer += 1
@@ -2194,6 +2778,7 @@ class DeterministicAndroidProtocolRuntime {
     const kind = requiredString(command, 3)
     this.commandKinds.push(kind)
     if (kind === 'scanStart') {
+      this.scanCorrelation = requiredRecord(command, 2)
       this.emitResult(command, 'scanStarted')
       return
     }
@@ -2374,7 +2959,7 @@ class DeterministicAndroidProtocolRuntime {
     throw new Error(`Unsupported deterministic command: ${kind}`)
   }
 
-  emitAdvertisement(rawRecord = null, rich = {}) {
+  emitAdvertisement(rawRecord = null, rich = {}, correlation = this.scanCorrelation) {
     const fields = [
       field(1, peerId),
       field(2, 20),
@@ -2432,7 +3017,7 @@ class DeterministicAndroidProtocolRuntime {
     if (rich.scanResponseRecord instanceof Uint8Array) {
       fields.push(field(16, binaryReferenceRecord(this.retain('advertisement-scan-response', rich.scanResponseRecord))))
     }
-    this.emitEvent('advertisement', [field(12, record('advertisement', fields))])
+    this.emitEvent('advertisement', [field(10, correlation), field(12, record('advertisement', fields))])
   }
 
   emitNotification(_address, bytes) {
@@ -2506,6 +3091,7 @@ class DeterministicAndroidProtocolRuntime {
 
   emitDiagnostic(code, message, operation = 'scan') {
     this.emitEvent('diagnostic', [
+      ...(code === 'scanFailed' && message !== 'untagged old ABI failure' ? [field(10, this.scanCorrelation)] : []),
       field(
         14,
         record('error', [

@@ -22,6 +22,26 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   public static let shared = UnifiedBleRustCoreSessions(installer: { try installProductionHost(wake: $0) })
   private static let launchLock = NSLock()
   private static var restorationLaunchIdentifiers = [String]()
+
+  public func configureTerminalEvidenceMaximumBytes(_ maximumBytes: String) throws {
+    guard let value = UInt64(maximumBytes), value > 0 else {
+      throw MobileCoreError.Failed(code: "argument.invalid", domain: "core", operation: "mobile.terminal-evidence.configure", detail: "maximum must be a positive decimal integer")
+    }
+    // Rust admits a same-bound replay and rejects a conflict. This lets a
+    // later manager verify the fixed process configuration without mutating
+    // a host that has already installed its ledger.
+    try mobileConfigureTerminalEvidenceMaximumBytes(maximumBytes: value)
+  }
+
+  @objc(configureTerminalEvidenceMaximumBytes:completion:)
+  public func configureTerminalEvidenceMaximumBytes(_ maximumBytes: String, completion: @escaping (String?) -> Void) {
+    do {
+      try configureTerminalEvidenceMaximumBytes(maximumBytes)
+      completion(nil)
+    } catch {
+      completion(Self.failureJson(error, operation: "mobile.terminal-evidence.configure"))
+    }
+  }
   private var accessoryStartupFailure: String?
   private var accessoryStartupQueryInFlight = false
 
@@ -38,6 +58,62 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   }
 
   typealias Installer = (MobileWakeSink) throws -> MobileCoreHost
+
+  private final class ProductionHostBinding: MobileHostBinding {
+    let adapter: UnifiedBleRustRadioAdapter
+    init(_ adapter: UnifiedBleRustRadioAdapter) { self.adapter = adapter }
+    func bind(host: MobileCoreHost) -> Bool {
+      guard let authority = host.claimNotificationFailureSpoolConfigurationAuthorityV3() else { return false }
+      guard let scanRecoveryAuthority = host.claimScanFailureRecoveryConfigurationAuthorityV1() else { return false }
+      // Claim before attaching the live sink. A rejected/duplicate authority
+      // must not leave a host callback route that another binding can drive.
+      guard adapter.installNotificationFailureSpoolConfigurationAuthority(authority) else { return false }
+      // This authority remains inside native code. It accepts only a
+      // host-authorized opaque recording identifier and is never bridged to JS.
+      guard adapter.installScanFailureRecoveryConfigurationAuthority(scanRecoveryAuthority) else { return false }
+      guard adapter.bind(sink: host) else { return false }
+      adapter.installNotificationFailureSpool(host)
+      return true
+    }
+  }
+
+  private final class ProductionInstallDebt {
+    let radio: OwnedCoreBluetoothProtocolRadio
+    let adapter: UnifiedBleRustRadioAdapter
+    init(radio: OwnedCoreBluetoothProtocolRadio, adapter: UnifiedBleRustRadioAdapter) {
+      self.radio = radio
+      self.adapter = adapter
+    }
+  }
+  private static let productionDebtLock = NSLock()
+  private static var productionDebt: ProductionInstallDebt?
+  private static var productionInstallInProgress = false
+
+  private static func retryProductionInstallDebt() {
+    productionDebtLock.lock()
+    let debt = productionDebt
+    productionDebtLock.unlock()
+    guard let debt else { return }
+    if mobileHostHasPendingCleanup() {
+      let result = mobileHostRetryPendingCleanup()
+      guard !mobileHostHasPendingCleanup() else {
+        NSLog("[UnifiedBleRustCoreSessions] retained host cleanup is pending: %@", result)
+        return
+      }
+    }
+    debt.radio.releaseBorrowerIfCurrent(debt.adapter) { error in
+      if let error {
+        NSLog("[UnifiedBleRustCoreSessions] retrying retained borrower release: %@", error)
+        DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(1)) {
+          retryProductionInstallDebt()
+        }
+        return
+      }
+      productionDebtLock.lock()
+      if productionDebt === debt { productionDebt = nil }
+      productionDebtLock.unlock()
+    }
+  }
 
   private struct Entry {
     let session: MobileCoreSession
@@ -66,11 +142,66 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   private let retryDelay: DispatchTimeInterval
   private let lock = NSLock()
   private let continuationDeclarationGate = NSRecursiveLock()
+  private let hostLock = NSLock()
   private var host: MobileCoreHost?
+  private var hostInstalling = false
+  // The production adapter is the sole holder of the spool-configuration
+  // authority. Keep it paired with the exact host it bound, rather than
+  // recovering an adapter by process-global radio state.
+  private var notificationFailureSpoolAdapter: (host: MobileCoreHost, adapter: UnifiedBleRustRadioAdapter)?
+  // Scan-failure recovery uses the same process-host boundary. Its selected
+  // recording id is native embedding state, never an ObjC/TurboModule input.
+  private var scanFailureRecoveryAdapter: (host: MobileCoreHost, adapter: UnifiedBleRustRadioAdapter)?
+  private let scanFailureRecoverySelectionLock = NSLock()
+  private var selectedScanFailureRecoveryRecordingId: String?
+  private var scanFailureRecoverySelectionGeneration: UInt64 = 0
+  // Swift-internal deterministic fixture hooks. They are deliberately absent
+  // from ObjC/TurboModule and are installed only before a harness exercises a
+  // production recovery path.
+  private var testingBeforeSelectedScanRecoveryOpen: (() -> Void)?
+  private var testingBeforeScanRecoveryCleanupRetire: (() throws -> Void)?
+  private let scanFailureRecoveryHandlesLock = NSLock()
+  private struct ScanFailureRecoveryHandles {
+    let generation: UInt64
+    let lease: UnifiedBleRustScanFailureRecoveryLease
+    var owners: [String: MobileScanFailureRecoveryOwner] = [:]
+    var ownerHandles: [String: String] = [:]
+    var heads: [String: MobileScanFailureRecoveryHead] = [:]
+    var headHandles: [String: String] = [:]
+    var cleanup: [String: MobileScanFailureCleanupReceipt] = [:]
+    var cleanupEnumerated = false
+  }
+  private var scanFailureRecoveryHandles: [String: ScanFailureRecoveryHandles] = [:]
+  private static let maxScanRecoveryAliases = 1024
+
+  /// The only binary value returned to the recovery JSI host object. Keeping
+  /// metadata and bytes together makes one Rust read the atomic boundary.
+  @objc(UnifiedBleRustScanFailureRecoveryPage)
+  public final class ScanFailureRecoveryPage: NSObject {
+    @objc public let offset: String
+    @objc public let nextOffset: String
+    @objc public let done: Bool
+    @objc public let bytes: NSData
+    init(offset: String, nextOffset: String, done: Bool, bytes: Data) {
+      self.offset = offset
+      self.nextOffset = nextOffset
+      self.done = done
+      self.bytes = bytes as NSData
+    }
+  }
+  @objc(UnifiedBleRustScanFailureRawToken)
+  public final class ScanFailureRawToken: NSObject {
+    @objc public let kind: String; @objc public let value: NSObject?; @objc public let count: String?; @objc public let total: String?; @objc public let bytes: NSData?
+    init(kind: String, value: NSObject? = nil, count: String? = nil, total: String? = nil, bytes: Data? = nil) { self.kind = kind; self.value = value; self.count = count; self.total = total; self.bytes = bytes as NSData? }
+  }
   private let recordingQueue: DispatchQueue
   private let invokeQueue = DispatchQueue(label: "com.ubm.rust-core.invoke")
   private let recordingLock = NSLock()
   private var recordingConfigured = false
+  // Internal fixture seam only: production always resolves Application Support.
+  // It is deliberately Swift-only (not exported through ObjC/TurboModule) so an
+  // embedding app cannot redirect durable recording storage at runtime.
+  private var testingRecordingStorageDirectory: URL?
 
   private struct RecordingFailure: Error {
     let json: String
@@ -83,8 +214,13 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     if recordingConfigured { return }
     do {
     let manager = FileManager.default
-    var directory = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask,
-      appropriateFor: nil, create: true).appendingPathComponent("ubm-continuation", isDirectory: true)
+    var directory: URL
+    if let testingRecordingStorageDirectory {
+      directory = testingRecordingStorageDirectory
+    } else {
+      directory = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask,
+        appropriateFor: nil, create: true).appendingPathComponent("ubm-continuation", isDirectory: true)
+    }
     try manager.createDirectory(at: directory, withIntermediateDirectories: true)
     var attributes = URLResourceValues()
     attributes.isExcludedFromBackup = true
@@ -109,6 +245,126 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
       catch { throw RecordingFailure(json: Self.recordingFailureJson(error)) }
   }
 
+  /// Installs an isolated storage root before this process configures durable
+  /// recording. This is intentionally internal to the Swift module so the
+  /// Apple native harness can exercise the production configuration path
+  /// without relying on Foundation's user-home lookup.
+  func installTestingRecordingStorageDirectory(_ directory: URL) throws {
+    recordingLock.lock()
+    defer { recordingLock.unlock() }
+    guard !recordingConfigured else {
+      throw MobileCoreError.Failed(code: "lifecycle.invalid-state", domain: "restoration", operation: "continuation.recording.configure", detail: "recording storage is already configured")
+    }
+    testingRecordingStorageDirectory = directory
+  }
+
+  /// Installs deterministic, Swift-only lifecycle barriers for the Apple
+  /// harness. Passing `nil` clears an existing hook. Production embeddings
+  /// cannot access this surface through Objective-C or React Native.
+  func installTestingScanRecoveryHooks(beforeOpen: (() -> Void)? = nil,
+                                       beforeCleanupRetire: (() throws -> Void)? = nil) {
+    scanFailureRecoverySelectionLock.lock()
+    testingBeforeSelectedScanRecoveryOpen = beforeOpen
+    scanFailureRecoverySelectionLock.unlock()
+    scanFailureRecoveryHandlesLock.lock()
+    testingBeforeScanRecoveryCleanupRetire = beforeCleanupRetire
+    scanFailureRecoveryHandlesLock.unlock()
+  }
+
+  /// Probe only the linked native binary; this does not open storage or radio.
+  public func orderedRecordingVersion() -> UInt32 { mobileOrderedRecordingVersion() }
+
+  private func ownedEntry(_ sessionId: String, owner: NSObject, operation: String) -> Addressed {
+    guard let id = Self.sessionNumber(sessionId) else {
+      return .failure(Self.failureJson(code: "argument.invalid", domain: "core", operation: operation, detail: "invalid session id"))
+    }
+    lock.lock()
+    let found = sessions[id]
+    let authorized = found?.owner === owner && found?.ownerState.invalidated == false
+    lock.unlock()
+    guard authorized, let found else {
+      return .failure(Self.failureJson(code: "ownership.denied", domain: "core", operation: operation, detail: "session is not owned by this module"))
+    }
+    return .success(found)
+  }
+
+  public func negotiateScanEndVersion(sessionId: String, offeredJson: String, ownerToken: NSObject,
+                                      completion: (String?, String?) -> Void) {
+    let operation = "scan-end-version"
+    switch ownedEntry(sessionId, owner: ownerToken, operation: operation) {
+    case let .failure(failure): completion(nil, failure)
+    case let .success(entry):
+      do { completion(try entry.session.negotiateScanEndVersionQualified(offeredJson: offeredJson), nil) }
+      catch { completion(nil, Self.failureJson(error, operation: operation)) }
+    }
+  }
+
+  public func orderedRecordingReceiptControl(sessionId: String, id: String, operation: String, ownerToken: NSObject,
+                                             completion: @escaping (String?, String?) -> Void) {
+    guard operation == "reserve" || operation == "status" || operation == "retire" else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "core", operation: "ordered-recording.receipt", detail: "invalid operation"))
+    }
+    recordingQueue.async {
+      switch self.ownedEntry(sessionId, owner: ownerToken, operation: "ordered-recording.receipt") {
+      case let .failure(failure): completion(nil, failure)
+      case let .success(entry): entry.session.orderedRecordingReceiptControl(operation: operation, id: id, completion: InvokeCompletion { completion($0, nil) })
+      }
+    }
+  }
+
+  public func orderedRecordingStart(sessionId: String, handle: String, id: String, maxBytes: String, maxRecords: String,
+                                    declarationJson: String, budgetMs: Double, ownerToken: NSObject,
+                                    completion: @escaping (String?, String?) -> Void) {
+    guard let budget = UInt64(exactly: budgetMs), budget <= UInt64(Int32.max) else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "core", operation: "ordered-recording.start", detail: "invalid budget"))
+    }
+    recordingQueue.async {
+      guard case .success = self.ownedEntry(sessionId, owner: ownerToken, operation: "ordered-recording.start") else {
+        return completion(nil, Self.failureJson(code: "ownership.denied", domain: "core", operation: "ordered-recording.start", detail: "session is not owned by this module"))
+      }
+      do {
+        try self.configureRecordingStorage()
+        switch self.ownedEntry(sessionId, owner: ownerToken, operation: "ordered-recording.start") {
+        case let .failure(failure): completion(nil, failure)
+        case let .success(entry):
+          entry.session.startOrderedRecording(handle: handle, recordingId: id, maxBytes: maxBytes, maxRecords: maxRecords,
+            declarationJson: declarationJson, budgetMs: budget, completion: InvokeCompletion { completion($0, nil) })
+        }
+      } catch { completion(nil, Self.recordingFailureJson(error)) }
+    }
+  }
+
+  public func orderedRecordingControl(sessionId: String, id: String, stop: Bool, ownerToken: NSObject,
+                                      completion: @escaping (String?, String?) -> Void) {
+    recordingQueue.async {
+      guard case .success = self.ownedEntry(sessionId, owner: ownerToken, operation: "ordered-recording.control") else {
+        return completion(nil, Self.failureJson(code: "ownership.denied", domain: "core", operation: "ordered-recording.control", detail: "session is not owned by this module"))
+      }
+      do {
+        try self.configureRecordingStorage()
+        switch self.ownedEntry(sessionId, owner: ownerToken, operation: "ordered-recording.control") {
+        case let .failure(failure): completion(nil, failure)
+        case let .success(entry):
+          let callback = InvokeCompletion { completion($0, nil) }
+          if stop { entry.session.stopOrderedRecording(id: id, completion: callback) }
+          else { entry.session.orderedRecordingContext(id: id, completion: callback) }
+        }
+      } catch { completion(nil, Self.recordingFailureJson(error)) }
+    }
+  }
+
+  public func orderedRecordingOffline(operation: String, id: String, completion: @escaping (String?, String?) -> Void) {
+    guard operation == "context" || operation == "status" || operation == "stop" else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "core", operation: "ordered-recording.offline", detail: "invalid operation"))
+    }
+    recordingQueue.async {
+      do {
+        try self.configureRecordingStorage()
+        mobileRecordingOrderedOffline(operation: operation, id: id, completion: InvokeCompletion { completion($0, nil) })
+      } catch { completion(nil, Self.recordingFailureJson(error)) }
+    }
+  }
+
   public func recordingControl(_ operation: String, id: String, token: String, maxItems: Double, maxBytes: Double,
     completion: @escaping (String?, String?) -> Void) {
     recordingQueue.async {
@@ -124,6 +380,465 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
       } catch { completion(nil, Self.recordingFailureJson(error)) }
     }
   }
+
+  /// Explicitly attaches an existing host-owned recording to the durable
+  /// notification-failure sidecar. This never creates a recording or accepts
+  /// a path: Rust validates the opaque id against its live recording registry.
+  public func notificationFailureSpoolConfigure(_ recordingId: String, maxBytes: String, maxRecords: String,
+                                                completion: @escaping (String?, String?) -> Void) {
+    recordingQueue.async {
+      do {
+        guard !recordingId.isEmpty, let quotaBytes = UInt64(maxBytes), let quotaRecords = UInt64(maxRecords),
+              quotaBytes > 0, quotaRecords > 0 else {
+          throw MobileCoreError.Failed(code: "argument.invalid", domain: "restoration",
+            operation: "notification-failure-spool.configure", detail: "recording id or spool quota is invalid")
+        }
+        try self.configureRecordingStorage()
+        let host = try self.installedHost()
+        guard let adapter = self.notificationFailureSpoolAdapter(for: host) else {
+          throw MobileCoreError.Failed(code: "lifecycle.invalid-state", domain: "core",
+            operation: "notification-failure-spool.configure", detail: "installed host has no production spool adapter")
+        }
+        let change = adapter.reconfigureNotificationFailureSpoolV2(recordingId: recordingId,
+          maxBytes: maxBytes, maxRecords: maxRecords)
+        guard change.admitted, let result = change.result else {
+          completion("{\"status\":\"error\",\"error\":{\"domain\":\"storage\",\"code\":\"storage.busy\"}}", nil)
+          return
+        }
+        completion(result, nil)
+      } catch { completion(nil, Self.recordingFailureJson(error)) }
+    }
+  }
+
+  /// Native embedding bootstrap only. This method is intentionally Swift-only
+  /// (no `@objc` export): React Native cannot select a sidecar, path, or
+  /// recovery credential. Calling it again replaces the app-private selected
+  /// recording before a recovery handle is opened.
+  public func selectScanFailureRecoveryRecording(_ recordingId: String) throws {
+    guard Self.isNativeRecordingName(recordingId) else {
+      throw MobileCoreError.Failed(code: "argument.invalid", domain: "restoration",
+        operation: "scan.failure-recovery.select", detail: "recording id is not a native recording name")
+    }
+    scanFailureRecoverySelectionLock.lock()
+    selectedScanFailureRecoveryRecordingId = recordingId
+    scanFailureRecoverySelectionGeneration &+= 1
+    scanFailureRecoveryHandlesLock.lock()
+    scanFailureRecoveryHandles.removeAll()
+    scanFailureRecoveryHandlesLock.unlock()
+    scanFailureRecoverySelectionLock.unlock()
+  }
+
+  /// Opens the one recording selected by the native embedding and returns
+  /// opaque Swift foreign handles. Rust validates that the selected id names
+  /// a live host-owned recording; this method never creates a recording.
+  public func openSelectedScanFailureRecovery() throws -> UnifiedBleRustScanFailureRecoveryLease {
+    scanFailureRecoverySelectionLock.lock()
+    defer { scanFailureRecoverySelectionLock.unlock() }
+    let recordingId = selectedScanFailureRecoveryRecordingId
+    guard let recordingId else {
+      throw MobileCoreError.Failed(code: "capability.unsupported", domain: "restoration",
+        operation: "scan.failure-recovery.open", detail: "no native scan recovery recording is selected")
+    }
+    testingBeforeSelectedScanRecoveryOpen?()
+    try configureRecordingStorage()
+    let host = try installedHost()
+    guard let adapter = scanFailureRecoveryAdapter(for: host) else {
+      throw MobileCoreError.Failed(code: "lifecycle.invalid-state", domain: "core",
+        operation: "scan.failure-recovery.open", detail: "installed host has no scan recovery adapter")
+    }
+    return try adapter.openScanFailureRecovery(recordingId: recordingId)
+  }
+
+  private func scanRecoveryJSON(_ value: Any) throws -> String {
+    String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self)
+  }
+
+  private func scanRecoveryHandle() -> String { UUID().uuidString.lowercased() }
+
+  /// Terminal raw-owner controls invalidate only their own alias. Preserve all
+  /// other active aliases even when inventories are repeated or reordered.
+  private func reclaimOwnerAlias(_ handle: String, from state: inout ScanFailureRecoveryHandles) {
+    state.owners.removeValue(forKey: handle)
+    if let identity = state.ownerHandles.first(where: { $0.value == handle })?.key {
+      state.ownerHandles.removeValue(forKey: identity)
+    }
+  }
+
+  private func selectedScanRecoveryGeneration() -> UInt64 {
+    scanFailureRecoverySelectionLock.lock(); defer { scanFailureRecoverySelectionLock.unlock() }
+    return scanFailureRecoverySelectionGeneration
+  }
+
+  @objc public func hasSelectedScanFailureRecoveryRecording() -> Bool {
+    scanFailureRecoverySelectionLock.lock(); defer { scanFailureRecoverySelectionLock.unlock() }
+    return selectedScanFailureRecoveryRecordingId != nil
+  }
+
+  private func withScanRecovery<T>(_ leaseId: String, operation: String,
+                                   _ body: (inout ScanFailureRecoveryHandles) throws -> T) throws -> T {
+    scanFailureRecoverySelectionLock.lock()
+    let generation = scanFailureRecoverySelectionGeneration
+    scanFailureRecoveryHandlesLock.lock()
+    defer { scanFailureRecoveryHandlesLock.unlock(); scanFailureRecoverySelectionLock.unlock() }
+    guard var state = scanFailureRecoveryHandles[leaseId], state.generation == generation else {
+      throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: operation,
+        detail: "scan recovery handle is stale, foreign, or revoked")
+    }
+    try state.lease.requireLive(operation)
+    let result = try body(&state)
+    // A completion from a prior selection or binding must not be surfaced as
+    // if it belonged to the current native recovery route.
+    try state.lease.requireLive(operation)
+    scanFailureRecoveryHandles[leaseId] = state
+    return result
+  }
+
+  /// Opaque-handle bridge for the TurboModule/JSI pair. No recording id or
+  /// Rust capability leaves this boundary; each handle is selection-scoped.
+  public func scanFailureRecoveryOpen(completion: @escaping (String?, String?) -> Void) {
+    recordingQueue.async {
+      do {
+        self.scanFailureRecoverySelectionLock.lock()
+        defer { self.scanFailureRecoverySelectionLock.unlock() }
+        guard let recordingId = self.selectedScanFailureRecoveryRecordingId else {
+          throw MobileCoreError.Failed(code: "capability.unsupported", domain: "restoration", operation: "scan.failure-recovery.open", detail: "no native scan recovery recording is selected")
+        }
+        let generation = self.scanFailureRecoverySelectionGeneration
+        try self.configureRecordingStorage()
+        let host = try self.installedHost()
+        guard let adapter = self.scanFailureRecoveryAdapter(for: host) else {
+          throw MobileCoreError.Failed(code: "lifecycle.invalid-state", domain: "core", operation: "scan.failure-recovery.open", detail: "installed host has no scan recovery adapter")
+        }
+        let lease = try adapter.openScanFailureRecovery(recordingId: recordingId)
+        let id = self.scanRecoveryHandle()
+        self.scanFailureRecoveryHandlesLock.lock()
+        self.scanFailureRecoveryHandles[id] = ScanFailureRecoveryHandles(generation: generation, lease: lease)
+        self.scanFailureRecoveryHandlesLock.unlock()
+        completion(try self.scanRecoveryJSON(["leaseId": id]), nil)
+      } catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.open")) }
+    }
+  }
+
+  // Process-selected terminal recovery has no caller-selected manager or
+  // recording identifier. UniFFI keeps recovery aliases native-local.
+  public func terminalEvidenceRecoveryOpenSelected() throws -> String {
+    try installedHost().terminalEvidenceRecoveryOpenSelected()
+  }
+  public func terminalEvidenceRecoveryList(_ leaseId: String, maxItems: UInt32, maxBytes: UInt64) throws -> String {
+    try installedHost().terminalEvidenceRecoveryList(leaseId: leaseId, maxItems: maxItems, maxBytes: maxBytes)
+  }
+  public func terminalEvidenceRecoveryListWithStatus(_ leaseId: String, maxItems: UInt32, maxBytes: UInt64) throws -> String {
+    try installedHost().terminalEvidenceRecoveryListWithStatus(leaseId: leaseId, maxItems: maxItems, maxBytes: maxBytes)
+  }
+  public func terminalEvidenceRecoveryRead(_ handle: String, offset: String, maxBytes: UInt32) throws -> String {
+    try installedHost().terminalEvidenceRecoveryRead(handle: handle, offset: offset, maxBytes: maxBytes)
+  }
+  public func terminalEvidenceRecoveryAcknowledge(_ handle: String) throws -> String {
+    try installedHost().terminalEvidenceRecoveryAcknowledge(handle: handle)
+  }
+
+  @objc(terminalEvidenceRecoveryOpenSelectedWithCompletion:)
+  public func terminalEvidenceRecoveryOpenSelected(completion: @escaping (String?, String?) -> Void) {
+    do { completion(try terminalEvidenceRecoveryOpenSelected(), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.open")) }
+  }
+
+  @objc(terminalEvidenceRecoveryList:maxItems:maxBytes:completion:)
+  public func terminalEvidenceRecoveryList(_ leaseId: String, maxItems: Double, maxBytes: Double,
+                                           completion: @escaping (String?, String?) -> Void) {
+    guard let items = UInt32(exactly: maxItems), items > 0,
+          let bytes = UInt64(exactly: maxBytes), bytes > 0 else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "core", operation: "terminal-evidence.recovery.list", detail: "maxItems and maxBytes must be positive integers in range"))
+    }
+    do { completion(try terminalEvidenceRecoveryList(leaseId, maxItems: items, maxBytes: bytes), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.list")) }
+  }
+
+  @objc(terminalEvidenceRecoveryListWithStatus:maxItems:maxBytes:completion:)
+  public func terminalEvidenceRecoveryListWithStatus(_ leaseId: String, maxItems: Double, maxBytes: Double,
+                                                     completion: @escaping (String?, String?) -> Void) {
+    guard let items = UInt32(exactly: maxItems), items > 0,
+          let bytes = UInt64(exactly: maxBytes), bytes > 0 else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "core", operation: "terminal-evidence.recovery.list-with-status", detail: "maxItems and maxBytes must be positive integers in range"))
+    }
+    do { completion(try terminalEvidenceRecoveryListWithStatus(leaseId, maxItems: items, maxBytes: bytes), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.list-with-status")) }
+  }
+
+  @objc(terminalEvidenceRecoveryRead:offset:maxBytes:completion:)
+  public func terminalEvidenceRecoveryRead(_ handle: String, offset: String, maxBytes: Double,
+                                           completion: @escaping (String?, String?) -> Void) {
+    guard let bytes = UInt32(exactly: maxBytes), bytes > 0 else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "core", operation: "terminal-evidence.recovery.read", detail: "maxBytes must be a positive integer in range"))
+    }
+    do { completion(try terminalEvidenceRecoveryRead(handle, offset: offset, maxBytes: bytes), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.read")) }
+  }
+
+  @objc(terminalEvidenceRecoveryAcknowledge:completion:)
+  public func terminalEvidenceRecoveryAcknowledge(_ handle: String, completion: @escaping (String?, String?) -> Void) {
+    do { completion(try terminalEvidenceRecoveryAcknowledge(handle), nil) }
+    catch { completion(nil, Self.failureJson(error, operation: "terminal-evidence.recovery.acknowledge")) }
+  }
+
+  public func scanFailureRecoveryOwners(_ leaseId: String, completion: @escaping (String?, String?) -> Void) {
+    do {
+      let value: [[String: Any]] = try withScanRecovery(leaseId, operation: "scan.failure-recovery.owners") { state in
+        let owners = try state.lease.owners()
+        // Obtain the durable owner identities before mutating the opaque-handle
+        // registry. Repeated inventories must preserve live handles, while a
+        // new inventory cannot partially consume the bounded alias capacity.
+        let describedOwners = try owners.map { owner in (owner, try owner.info()) }
+        let newOwners = describedOwners.reduce(into: 0) { count, described in
+          if state.ownerHandles[described.1.ownerId] == nil { count += 1 }
+        }
+        guard state.owners.count <= Self.maxScanRecoveryAliases - newOwners else {
+          throw MobileCoreError.Failed(code: "storage.busy", domain: "restoration", operation: "scan.failure-recovery.owners", detail: "owner alias capacity exceeded")
+        }
+        return describedOwners.map { owner, info in
+          let id = state.ownerHandles[info.ownerId] ?? scanRecoveryHandle()
+          state.ownerHandles[info.ownerId] = id; state.owners[id] = owner
+          return ["handleId": id, "prepared": info.prepared, "producerFinished": info.producerFinished,
+                  "rawRetired": info.rawRetired, "rawReleased": info.rawReleased,
+                  "memberCount": NSNumber(value: info.memberCount), "released": info.released]
+        }
+      }
+      completion(try scanRecoveryJSON(["owners": value]), nil)
+    } catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.owners")) }
+  }
+
+  public func scanFailureRecoveryMember(_ leaseId: String, handleId: String, index: Double,
+                                        completion: @escaping (String?, String?) -> Void) {
+    do {
+      guard index.isFinite, index >= 0, index.rounded(.towardZero) == index, index <= Double(UInt64.max) else {
+        throw MobileCoreError.Failed(code: "argument.invalid", domain: "restoration", operation: "scan.failure-recovery.member", detail: "index is invalid")
+      }
+      let member: MobileScanFailureMember = try withScanRecovery(leaseId, operation: "scan.failure-recovery.member") { state in
+        guard let owner = state.owners[handleId] else { throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: "scan.failure-recovery.member", detail: "owner handle is stale") }
+        return try owner.member(index: UInt64(index))
+      }
+      completion(try scanRecoveryJSON(["member": ["recipient": member.recipient.map { String(format: "%02x", $0) }.joined(), "delivery": member.delivery.map { String(format: "%02x", $0) }.joined()]]), nil)
+    } catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.member")) }
+  }
+
+  private func scanRecoveryLeaseId(ownerHandle: String, operation: String) throws -> String {
+    scanFailureRecoverySelectionLock.lock()
+    let generation = scanFailureRecoverySelectionGeneration
+    scanFailureRecoveryHandlesLock.lock(); defer { scanFailureRecoveryHandlesLock.unlock(); scanFailureRecoverySelectionLock.unlock() }
+    guard let pair = scanFailureRecoveryHandles.first(where: { $0.value.generation == generation && $0.value.owners[ownerHandle] != nil }) else {
+      throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: operation, detail: "owner handle is stale")
+    }
+    return pair.key
+  }
+
+  public func scanFailureRecoveryMember(ownerHandle: String, index: Double, completion: @escaping (String?, String?) -> Void) {
+    do { try scanFailureRecoveryMember(scanRecoveryLeaseId(ownerHandle: ownerHandle, operation: "scan.failure-recovery.member"), handleId: ownerHandle, index: index, completion: completion) }
+    catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.member")) }
+  }
+
+  // Raw-source metadata/control mirrors the desktop opaque-owner route. Raw
+  // token bytes deliberately await the shared JSI binary contract.
+  public func scanFailureRecoveryRawInfo(ownerHandle: String, completion: @escaping (String?, String?) -> Void) {
+    do {
+      let lease = try scanRecoveryLeaseId(ownerHandle: ownerHandle, operation: "scan.failure-recovery.raw-info")
+      let result: [String: Any] = try withScanRecovery(lease, operation: "scan.failure-recovery.raw-info") { state in
+        guard let owner = state.owners[ownerHandle] else { throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: "scan.failure-recovery.raw-info", detail: "owner handle is stale") }
+        let info = try owner.rawInfo()
+        let hex = { (bytes: Data) in bytes.map { String(format: "%02x", $0) }.joined() }
+        return ["identity": ["host": hex(info.identity.host), "scan": hex(info.identity.scan), "start": hex(info.identity.start), "sourceGeneration": hex(info.identity.sourceGeneration), "occurrence": hex(info.identity.occurrence)], "memberCount": NSNumber(value: info.memberCount), "tokenCount": NSNumber(value: info.tokenCount)]
+      }
+      completion(try scanRecoveryJSON(result), nil)
+    } catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.raw-info")) }
+  }
+
+  public func scanFailureRecoveryRawMember(ownerHandle: String, index: Double, completion: @escaping (String?, String?) -> Void) {
+    do {
+      guard index.isFinite, index >= 0, index.rounded(.towardZero) == index, index <= Double(UInt64.max) else { throw MobileCoreError.Failed(code: "argument.invalid", domain: "restoration", operation: "scan.failure-recovery.raw-member", detail: "index is invalid") }
+      let lease = try scanRecoveryLeaseId(ownerHandle: ownerHandle, operation: "scan.failure-recovery.raw-member")
+      let member: MobileScanFailureMember = try withScanRecovery(lease, operation: "scan.failure-recovery.raw-member") { state in
+        guard let owner = state.owners[ownerHandle] else { throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: "scan.failure-recovery.raw-member", detail: "owner handle is stale") }
+        return try owner.rawMember(index: UInt64(index))
+      }
+      completion(try scanRecoveryJSON(["member": ["recipient": member.recipient.map { String(format: "%02x", $0) }.joined(), "delivery": member.delivery.map { String(format: "%02x", $0) }.joined()]]), nil)
+    } catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.raw-member")) }
+  }
+
+  @objc(readReactNativeScanFailureRecoveryRawToken:tokenIndex:offset:maxBytes:error:)
+  public func readReactNativeScanFailureRecoveryRawToken(_ ownerHandle: String, tokenIndex: Double, offset: String, maxBytes: String) throws -> ScanFailureRawToken {
+    guard tokenIndex.isFinite, tokenIndex >= 0, tokenIndex.rounded(.towardZero) == tokenIndex, tokenIndex <= 9_007_199_254_740_991,
+          offset.range(of: "^(?:0|[1-9][0-9]*)$", options: .regularExpression) != nil,
+          maxBytes.range(of: "^(?:[1-9][0-9]*)$", options: .regularExpression) != nil,
+          let boundedMaxBytes = UInt32(maxBytes), boundedMaxBytes <= 64 * 1024 else { throw MobileCoreError.Failed(code: "argument.invalid", domain: "restoration", operation: "scan.failure-recovery.raw-token", detail: "invalid bounded raw-token request") }
+    let lease = try scanRecoveryLeaseId(ownerHandle: ownerHandle, operation: "scan.failure-recovery.raw-token")
+    return try withScanRecovery(lease, operation: "scan.failure-recovery.raw-token") { state in
+      guard let owner = state.owners[ownerHandle] else { throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: "scan.failure-recovery.raw-token", detail: "owner handle is stale") }
+      switch try owner.rawToken(index: UInt64(tokenIndex), offset: offset, maxBytes: boundedMaxBytes) {
+      case .null: return ScanFailureRawToken(kind: "null")
+      case let .bool(value): return ScanFailureRawToken(kind: "bool", value: NSNumber(value: value))
+      case let .i64(value): return ScanFailureRawToken(kind: "i64", value: String(value) as NSString)
+      case let .u64(value): return ScanFailureRawToken(kind: "u64", value: value as NSString)
+      case let .f64Bits(value): return ScanFailureRawToken(kind: "f64Bits", value: value as NSString)
+      case let .map(entries): return ScanFailureRawToken(kind: "map", count: entries)
+      case let .array(entries): return ScanFailureRawToken(kind: "array", count: entries)
+      case let .text(total, bytes): return ScanFailureRawToken(kind: "text", total: total, bytes: bytes)
+      case let .bytes(total, bytes): return ScanFailureRawToken(kind: "bytes", total: total, bytes: bytes)
+      }
+    }
+  }
+
+  public func scanFailureRecoveryRawControl(ownerHandle: String, operation: String, completion: @escaping (String?, String?) -> Void) {
+    do {
+      let lease = try scanRecoveryLeaseId(ownerHandle: ownerHandle, operation: "scan.failure-recovery.raw-control")
+      let result: [String: Any] = try withScanRecovery(lease, operation: "scan.failure-recovery.raw-control") { state in
+        guard let owner = state.owners[ownerHandle] else { throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: "scan.failure-recovery.raw-control", detail: "owner handle is stale") }
+        switch operation {
+        case "retire":
+          try owner.rawRetire()
+          self.reclaimOwnerAlias(ownerHandle, from: &state)
+          return ["cleanupReceiptId": NSNull()]
+        case "release":
+          try owner.rawRelease()
+          self.reclaimOwnerAlias(ownerHandle, from: &state)
+          return ["cleanupReceiptId": NSNull()]
+        case "finalize":
+          guard state.cleanup.count < Self.maxScanRecoveryAliases else { throw MobileCoreError.Failed(code: "storage.busy", domain: "restoration", operation: "scan.failure-recovery.raw-control", detail: "cleanup alias capacity exceeded") }
+          let receipt = try owner.rawFinalize()
+          let id = scanRecoveryHandle()
+          state.cleanup[id] = receipt
+          self.reclaimOwnerAlias(ownerHandle, from: &state)
+          return ["cleanupReceiptId": id]
+        default: throw MobileCoreError.Failed(code: "argument.invalid", domain: "restoration", operation: "scan.failure-recovery.raw-control", detail: "unsupported control")
+        }
+      }
+      completion(try scanRecoveryJSON(result), nil)
+    } catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.raw-control")) }
+  }
+
+  public func scanFailureRecoveryHead(_ leaseId: String, handleId: String, index: Double,
+                                      completion: @escaping (String?, String?) -> Void) {
+    do {
+      guard index.isFinite, index >= 0, index.rounded(.towardZero) == index, index <= Double(UInt64.max) else {
+        throw MobileCoreError.Failed(code: "argument.invalid", domain: "restoration", operation: "scan.failure-recovery.head", detail: "index is invalid")
+      }
+      let body: [String: Any] = try withScanRecovery(leaseId, operation: "scan.failure-recovery.head") { state in
+        guard let owner = state.owners[handleId] else { throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: "scan.failure-recovery.head", detail: "owner handle is stale") }
+        let key = "\(handleId):\(UInt64(index))"
+        guard state.heads.count < Self.maxScanRecoveryAliases || state.headHandles[key] != nil else {
+          throw MobileCoreError.Failed(code: "storage.busy", domain: "restoration", operation: "scan.failure-recovery.head", detail: "head alias capacity exceeded")
+        }
+        guard let head = try owner.head(memberIndex: UInt64(index)) else { return ["head": NSNull()] }
+        let info = head.info(); let id = state.headHandles[key] ?? scanRecoveryHandle(); state.headHandles[key] = id; state.heads[id] = head
+        return ["head": ["handleId": id, "protocol": info.protocol, "representation": info.representation,
+                          "encodedLength": info.encodedLength, "chunkBytes": info.chunkBytes]]
+      }
+      completion(try scanRecoveryJSON(body), nil)
+    } catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.head")) }
+  }
+
+  public func scanFailureRecoveryHead(ownerHandle: String, index: Double, completion: @escaping (String?, String?) -> Void) {
+    do { try scanFailureRecoveryHead(scanRecoveryLeaseId(ownerHandle: ownerHandle, operation: "scan.failure-recovery.head"), handleId: ownerHandle, index: index, completion: completion) }
+    catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.head")) }
+  }
+
+  public func scanFailureRecoveryControl(_ leaseId: String, handleId: String, operation: String,
+                                         completion: @escaping (String?, String?) -> Void) {
+    do {
+      let result: [String: Any] = try withScanRecovery(leaseId, operation: "scan.failure-recovery.control") { state in
+        guard let head = state.heads[handleId] else { throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: "scan.failure-recovery.control", detail: "head handle is stale") }
+        switch operation {
+        case "acknowledge": try head.acknowledge(); return ["acknowledged": true, "completed": true]
+        case "retire":
+          try head.retire(); state.heads.removeValue(forKey: handleId); state.headHandles = state.headHandles.filter { $0.value != handleId }; return ["completed": true]
+        case "release":
+          try head.release(); state.heads.removeValue(forKey: handleId); state.headHandles = state.headHandles.filter { $0.value != handleId }; return ["completed": true]
+        case "finalize":
+          guard state.cleanup.count < Self.maxScanRecoveryAliases else { throw MobileCoreError.Failed(code: "storage.busy", domain: "restoration", operation: "scan.failure-recovery.control", detail: "cleanup alias capacity exceeded") }
+          let receipt = try head.finalize(); let id = scanRecoveryHandle(); state.cleanup[id] = receipt
+          state.heads.removeValue(forKey: handleId); state.headHandles = state.headHandles.filter { $0.value != handleId }
+          return ["cleanupReceiptId": id]
+        default: throw MobileCoreError.Failed(code: "argument.invalid", domain: "restoration", operation: "scan.failure-recovery.control", detail: "unsupported control")
+        }
+      }
+      completion(try scanRecoveryJSON(result), nil)
+    } catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.control")) }
+  }
+
+  private func scanRecoveryLeaseId(headHandle: String, operation: String) throws -> String {
+    scanFailureRecoverySelectionLock.lock()
+    let generation = scanFailureRecoverySelectionGeneration
+    scanFailureRecoveryHandlesLock.lock(); defer { scanFailureRecoveryHandlesLock.unlock(); scanFailureRecoverySelectionLock.unlock() }
+    guard let pair = scanFailureRecoveryHandles.first(where: { $0.value.generation == generation && $0.value.heads[headHandle] != nil }) else {
+      throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: operation, detail: "head handle is stale")
+    }
+    return pair.key
+  }
+
+  public func scanFailureRecoveryControl(headHandle: String, operation: String, completion: @escaping (String?, String?) -> Void) {
+    do { try scanFailureRecoveryControl(scanRecoveryLeaseId(headHandle: headHandle, operation: "scan.failure-recovery.control"), handleId: headHandle, operation: operation, completion: completion) }
+    catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.control")) }
+  }
+
+  public func scanFailureRecoveryPendingCleanup(_ leaseId: String, completion: @escaping (String?, String?) -> Void) {
+    do {
+      let ids: [String] = try withScanRecovery(leaseId, operation: "scan.failure-recovery.pending-cleanup") { state in
+        if state.cleanupEnumerated { return Array(state.cleanup.keys).sorted() }
+        let receipts = try state.lease.pendingCleanupReceipts()
+        guard state.cleanup.count + receipts.count <= Self.maxScanRecoveryAliases else { throw MobileCoreError.Failed(code: "storage.busy", domain: "restoration", operation: "scan.failure-recovery.pending-cleanup", detail: "cleanup alias capacity exceeded") }
+        for receipt in receipts { state.cleanup[scanRecoveryHandle()] = receipt }
+        state.cleanupEnumerated = true
+        return Array(state.cleanup.keys).sorted()
+      }
+      completion(try scanRecoveryJSON(["cleanupReceiptIds": ids]), nil)
+    } catch { completion(nil, Self.failureJson(error, operation: "scan.failure-recovery.pending-cleanup")) }
+  }
+
+  public func scanFailureRecoveryRetireCleanup(_ leaseId: String, handleId: String, completion: @escaping (String?) -> Void) {
+    do {
+      try withScanRecovery(leaseId, operation: "scan.failure-recovery.retire-cleanup") { state in
+        guard let receipt = state.cleanup[handleId] else { throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: "scan.failure-recovery.retire-cleanup", detail: "cleanup handle is stale") }
+        try self.testingBeforeScanRecoveryCleanupRetire?()
+        try receipt.retire()
+        state.cleanup.removeValue(forKey: handleId)
+      }
+      completion(nil)
+    } catch { completion(Self.failureJson(error, operation: "scan.failure-recovery.retire-cleanup")) }
+  }
+
+  private func scanRecoveryLeaseId(cleanupHandle: String, operation: String) throws -> String {
+    scanFailureRecoverySelectionLock.lock()
+    let generation = scanFailureRecoverySelectionGeneration
+    scanFailureRecoveryHandlesLock.lock(); defer { scanFailureRecoveryHandlesLock.unlock(); scanFailureRecoverySelectionLock.unlock() }
+    guard let pair = scanFailureRecoveryHandles.first(where: { $0.value.generation == generation && $0.value.cleanup[cleanupHandle] != nil }) else {
+      throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: operation, detail: "cleanup handle is stale")
+    }
+    return pair.key
+  }
+
+  public func scanFailureRecoveryRetireCleanup(handleId: String, completion: @escaping (String?) -> Void) {
+    do { try scanFailureRecoveryRetireCleanup(scanRecoveryLeaseId(cleanupHandle: handleId, operation: "scan.failure-recovery.retire-cleanup"), handleId: handleId, completion: completion) }
+    catch { completion(Self.failureJson(error, operation: "scan.failure-recovery.retire-cleanup")) }
+  }
+
+  /// Used only by the dedicated JSI binary provider. It takes exactly one
+  /// native page read while both selection and binding generations are live.
+  @objc(readReactNativeScanFailureRecoveryPage:offset:error:)
+  public func readReactNativeScanFailureRecoveryPage(_ headHandle: String, offset: String) throws -> ScanFailureRecoveryPage {
+    guard offset.range(of: "^(?:0|[1-9][0-9]*)$", options: .regularExpression) != nil else {
+      throw MobileCoreError.Failed(code: "argument.invalid", domain: "restoration", operation: "scan.failure-recovery.read", detail: "offset is not canonical")
+    }
+    let leaseId = try scanRecoveryLeaseId(headHandle: headHandle, operation: "scan.failure-recovery.read")
+    return try withScanRecovery(leaseId, operation: "scan.failure-recovery.read") { state in
+      guard let head = state.heads[headHandle] else {
+        throw MobileCoreError.Failed(code: "ownership.denied", domain: "restoration", operation: "scan.failure-recovery.read", detail: "head handle is stale")
+      }
+      let page = try head.read(offset: offset)
+      guard page.bytes.count <= 64 * 1024 else {
+        throw MobileCoreError.Failed(code: "protocol.malformed", domain: "restoration", operation: "scan.failure-recovery.read", detail: "native page exceeds the 64 KiB boundary")
+      }
+      return ScanFailureRecoveryPage(offset: page.offset, nextOffset: page.nextOffset, done: page.done, bytes: Data(page.bytes))
+    }
+  }
+
   private final class RecoveryObserver {
     weak var owner: NSObject?
     let callback: () -> Void
@@ -202,18 +917,66 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   }
 
   private func installedHost() throws -> MobileCoreHost {
-    lock.lock()
-    defer { lock.unlock() }
-    if let host { return host }
-    let installed = try installer(self)
-    host = installed
-    return installed
+    hostLock.lock()
+    if let host {
+      hostLock.unlock()
+      return host
+    }
+    guard !hostInstalling else {
+      hostLock.unlock()
+      throw MobileCoreError.Failed(code: "lifecycle.invalid-state", domain: "core",
+        operation: "rust-core.host.install", detail: "host installation is already in progress")
+    }
+    hostInstalling = true
+    hostLock.unlock()
+    do {
+      let installed = try installer(self)
+      hostLock.lock()
+      host = installed
+      hostInstalling = false
+      hostLock.unlock()
+      return installed
+    } catch {
+      hostLock.lock()
+      hostInstalling = false
+      hostLock.unlock()
+      throw error
+    }
   }
 
   private func existingHost() -> MobileCoreHost? {
-    lock.lock()
-    defer { lock.unlock() }
+    hostLock.lock()
+    defer { hostLock.unlock() }
     return host
+  }
+
+  /// Native host bootstrap seam shared by production installation and the
+  /// scripted Apple harness. It is Swift-only, so JS cannot register or
+  /// replace an adapter/authority.
+  func registerProductionRecoveryAdapter(_ adapter: UnifiedBleRustRadioAdapter, for host: MobileCoreHost) {
+    hostLock.lock()
+    notificationFailureSpoolAdapter = (host, adapter)
+    scanFailureRecoveryAdapter = (host, adapter)
+    hostLock.unlock()
+  }
+
+  private func notificationFailureSpoolAdapter(for host: MobileCoreHost) -> UnifiedBleRustRadioAdapter? {
+    hostLock.lock()
+    defer { hostLock.unlock() }
+    guard let installed = notificationFailureSpoolAdapter, installed.host === host else { return nil }
+    return installed.adapter
+  }
+
+  private func scanFailureRecoveryAdapter(for host: MobileCoreHost) -> UnifiedBleRustRadioAdapter? {
+    hostLock.lock()
+    defer { hostLock.unlock() }
+    guard let installed = scanFailureRecoveryAdapter, installed.host === host else { return nil }
+    return installed.adapter
+  }
+
+  private static func isNativeRecordingName(_ value: String) -> Bool {
+    !value.isEmpty && value.utf8.count <= 512 && !value.contains("/") &&
+      !value.contains("\\") && !value.unicodeScalars.contains(where: { $0.value == 0 })
   }
 
   /// The process central's configuration, read from the app bundle as the
@@ -241,6 +1004,24 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   }
 
   static func installProductionHost(wake: MobileWakeSink, bundle: Bundle = .main) throws -> MobileCoreHost {
+    retryProductionInstallDebt()
+    productionDebtLock.lock()
+    let available = productionDebt == nil && !productionInstallInProgress
+    if available { productionInstallInProgress = true }
+    productionDebtLock.unlock()
+    guard available else {
+      throw MobileCoreError.Failed(code: "lifecycle.invalid-state", domain: "cleanup",
+        operation: "rust-core.host.install", detail: "a previous radio binding is installing or awaiting cleanup")
+    }
+    defer {
+      productionDebtLock.lock()
+      productionInstallInProgress = false
+      productionDebtLock.unlock()
+    }
+    guard !mobileHostHasPendingCleanup() else {
+      throw MobileCoreError.Failed(code: "lifecycle.invalid-state", domain: "cleanup",
+        operation: "rust-core.host.install", detail: "an unpublished host is awaiting cleanup")
+    }
     let configuration = productionRadioConfiguration(bundle: bundle)
     let radio = OwnedCoreBluetoothProtocolRadioOwner.acquire(
       restoreIdentifierKey: configuration.restoreIdentifierKey,
@@ -278,19 +1059,27 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
       )
     }
     do {
-      let host = try mobileHostInstall(
+      let host = try mobileHostInstallBound(
         radio: adapter,
         wake: wake,
+        binding: ProductionHostBinding(adapter),
         platform: "apple",
         owner: "unified-ble-manager.react-native.apple",
         adapterLabel: "corebluetooth"
       )
-      adapter.bind(sink: host)
+      (wake as? UnifiedBleRustCoreSessions)?.registerProductionRecoveryAdapter(adapter, for: host)
       return host
     } catch {
-      radio.releaseBorrowerIfCurrent(adapter) { releaseError in
-        if let releaseError {
-          NSLog("[UnifiedBleRustCoreSessions] releasing the radio after a failed install failed: %@", releaseError)
+      if mobileHostHasPendingCleanup() {
+        let debt = ProductionInstallDebt(radio: radio, adapter: adapter)
+        productionDebtLock.lock()
+        productionDebt = debt
+        productionDebtLock.unlock()
+      } else {
+        radio.releaseBorrowerIfCurrent(adapter) { releaseError in
+          if let releaseError {
+            NSLog("[UnifiedBleRustCoreSessions] releasing the radio after a failed install failed: %@", releaseError)
+          }
         }
       }
       throw error
@@ -870,9 +1659,7 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
       }
       continuationDeclarationGate.lock()
       defer { continuationDeclarationGate.unlock() }
-      lock.lock()
-      let installed = host
-      lock.unlock()
+      let installed = existingHost()
       var token: String?
       if let installed {
         var reserveFailure: String?
@@ -950,9 +1737,7 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
         completion(String(decoding: data, as: UTF8.self), nil)
       } catch { completion(nil, Self.failureJson(error, operation: "continuation.status")) }
     }
-    lock.lock()
-    let installed = host
-    lock.unlock()
+    let installed = existingHost()
     guard let installed else { return finish(status) }
     let snapshot = status
     installed.continuationDescribeBacklog(completion: InvokeCompletion { envelope in
@@ -995,6 +1780,108 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     acknowledgeNativeContinuationClaim(claimToken) { envelope in
       Self.unwrapContinuation(envelope, operation: "continuation.claim", completion: completion)
     }
+  }
+
+  public func prepareRetainedContinuationClaimV1(maxItems: Double, maxBytes: Double, completion: @escaping (String?, String?) -> Void) {
+    let operation = "continuation.claim.v1"
+    guard let items = Self.positiveUInt32(maxItems), let bytes = Self.positiveUInt32(maxBytes) else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "restoration", operation: operation,
+        detail: "claim bounds must be positive UInt32 integers"))
+    }
+    guard let installed = existingHost() else {
+      return completion(nil, Self.failureJson(code: "lifecycle.invalid-state", domain: "restoration", operation: operation,
+        detail: "no native continuation process host is installed"))
+    }
+    installed.continuationPrepareRetainedClaimV1(maxItems: items, maxBytes: bytes, completion: InvokeCompletion { envelope in
+      Self.unwrapContinuation(envelope, operation: operation, completion: completion)
+    })
+  }
+
+  public func acknowledgeRetainedContinuationClaimV1(_ claimToken: String, completion: @escaping (String?, String?) -> Void) {
+    retainedContinuationClaimControlV1(claimToken, retire: false, completion: completion)
+  }
+
+  /// Explicit V2 retained-prefix operation. It is intentionally separate from
+  /// V1 so an older JavaScript caller cannot observe or acknowledge a V2
+  /// descriptor by accident.
+  public func prepareRetainedContinuationClaimV2(maxItems: Double, maxBytes: Double, completion: @escaping (String?, String?) -> Void) {
+    let operation = "continuation.claim.v2"
+    guard let items = Self.positiveUInt32(maxItems), let bytes = Self.positiveUInt32(maxBytes) else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "restoration", operation: operation,
+        detail: "claim bounds must be positive UInt32 integers"))
+    }
+    guard let installed = existingHost() else {
+      return completion(nil, Self.failureJson(code: "lifecycle.invalid-state", domain: "restoration", operation: operation,
+        detail: "no native continuation process host is installed"))
+    }
+    installed.continuationPrepareClaimVersioned(version: 2, maxItems: items, maxBytes: bytes, completion: InvokeCompletion { envelope in
+      Self.unwrapContinuation(envelope, operation: operation, completion: completion)
+    })
+  }
+
+  public func acknowledgeRetainedContinuationClaimV2(_ claimToken: String, completion: @escaping (String?, String?) -> Void) {
+    let operation = "continuation.claim.v2"
+    guard !claimToken.isEmpty, claimToken.utf8.count <= 256 else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "restoration", operation: operation,
+        detail: "claimToken must be 1..256 bytes"))
+    }
+    guard let installed = existingHost() else {
+      return completion(nil, Self.failureJson(code: "lifecycle.invalid-state", domain: "restoration", operation: operation,
+        detail: "no native continuation process host is installed"))
+    }
+    installed.continuationAcknowledgeRetainedClaimV2(claimToken: claimToken, completion: InvokeCompletion { envelope in
+      Self.unwrapContinuation(envelope, operation: operation, completion: completion)
+    })
+  }
+
+  public func readPeerFailureRecovery(_ recoveryRecord: String, offset: String, completion: @escaping (String?, String?) -> Void) {
+    let operation = "continuation.peer-source-failure.read"
+    guard !recoveryRecord.isEmpty, recoveryRecord.utf8.count <= 1_048_576,
+          UInt64(offset).map({ String($0) == offset }) == true else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "gatt", operation: operation,
+        detail: "recovery record or offset is invalid"))
+    }
+    guard let installed = existingHost() else {
+      return completion(nil, Self.failureJson(code: "lifecycle.invalid-state", domain: "restoration", operation: operation,
+        detail: "no native continuation process host is installed"))
+    }
+    installed.continuationReadPeerFailureRecovery(recoveryRecord: recoveryRecord, offset: offset, completion: InvokeCompletion { envelope in
+      Self.unwrapContinuation(envelope, operation: operation, completion: completion)
+    })
+  }
+
+  public func acknowledgePeerFailureRecovery(_ recoveryRecord: String, completion: @escaping (String?, String?) -> Void) {
+    let operation = "continuation.peer-source-failure.acknowledge"
+    guard !recoveryRecord.isEmpty, recoveryRecord.utf8.count <= 1_048_576 else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "gatt", operation: operation,
+        detail: "recovery record is invalid"))
+    }
+    guard let installed = existingHost() else {
+      return completion(nil, Self.failureJson(code: "lifecycle.invalid-state", domain: "restoration", operation: operation,
+        detail: "no native continuation process host is installed"))
+    }
+    installed.continuationAcknowledgePeerFailureRecovery(recoveryRecord: recoveryRecord, completion: InvokeCompletion { envelope in
+      Self.unwrapContinuation(envelope, operation: operation, completion: completion)
+    })
+  }
+
+  public func retireRetainedContinuationClaimReceiptV1(_ claimToken: String, completion: @escaping (String?, String?) -> Void) {
+    retainedContinuationClaimControlV1(claimToken, retire: true, completion: completion)
+  }
+
+  private func retainedContinuationClaimControlV1(_ token: String, retire: Bool, completion: @escaping (String?, String?) -> Void) {
+    let operation = "continuation.claim.v1"
+    guard !token.isEmpty, token.utf8.count <= 256 else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "restoration", operation: operation,
+        detail: "claimToken must be 1..256 bytes"))
+    }
+    guard let installed = existingHost() else {
+      return completion(nil, Self.failureJson(code: "lifecycle.invalid-state", domain: "restoration", operation: operation,
+        detail: "no native continuation process host is installed"))
+    }
+    let callback = InvokeCompletion { envelope in Self.unwrapContinuation(envelope, operation: operation, completion: completion) }
+    if retire { installed.continuationRetireClaimReceipt(claimToken: token, completion: callback) }
+    else { installed.continuationAcknowledgeRetainedClaimV1(claimToken: token, completion: callback) }
   }
 
   private static let continuationDefaultsKey = "com.sfourdrinier.unifiedblemanager.background-continuation"

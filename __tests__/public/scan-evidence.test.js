@@ -10,6 +10,8 @@ const {
 const { filterScanObservations } = require('../../src/public/ble-manager')
 const { normalizeScanQuery, normalizeScanObservation } = require('../../src/public/scan-query')
 const { CoreBoundedStream } = require('../../src/core/bounded-stream')
+const { AggregateStreamQuota } = require('../../src/core/aggregate-stream-quota')
+const { advertisementByteLength } = require('../../src/core/unified-ble-core-helpers')
 
 const HEART = '0000180d-0000-1000-8000-00805f9b34fb'
 
@@ -78,6 +80,252 @@ function keep(session, observation) {
 }
 
 describe('split advertisement evidence', () => {
+  test('core scan accounting includes variable observation metadata', () => {
+    const short = packet({ address: 'peer', name: 'x', capture: 1, clockScope: 'a' })
+    const long = packet({ address: 'peer', name: 'x'.repeat(2049), capture: 1, clockScope: 'a'.repeat(1025) })
+    expect(advertisementByteLength(long) - advertisementByteLength(short)).toBeGreaterThanOrEqual(2 * (2048 + 1024))
+  })
+  test('core charges peer identity and each UUID array entry', () => {
+    const base = packet({ address: 'p', services: [] })
+    const larger = packet({ address: 'p'.repeat(100), services: [canonicalUuid(HEART)] })
+    expect(advertisementByteLength(larger) - advertisementByteLength(base)).toBeGreaterThanOrEqual(2 * (99 + 36) + 8)
+  })
+  test('core charges a shared backing buffer once and releases the retained charge on delivery', async () => {
+    const backing = new Uint8Array(4096)
+    const observation = packet({ address: 'shared', manufacturer: [
+      { companyIdentifier: 1, value: backing.subarray(0, 1) },
+      { companyIdentifier: 2, value: backing.subarray(1, 2) }
+    ] })
+    const small = packet({ address: 'shared', manufacturer: [
+      { companyIdentifier: 1, value: new Uint8Array(1) },
+      { companyIdentifier: 2, value: new Uint8Array(1) }
+    ] })
+    expect(advertisementByteLength(observation) - advertisementByteLength(small)).toBe(4094)
+    const stream = new CoreBoundedStream({ itemCapacity: 1, byteCapacity: 128, reservedControlCapacity: 0 }, 'error', true)
+    const quota = new AggregateStreamQuota(10000)
+    quota.register(stream)
+    expect(quota.emit(stream, observation, 66, null, 2, advertisementByteLength(observation)).accepted).toBe(true)
+    expect(quota.retainedBytes()).toBeGreaterThanOrEqual(4096)
+    expect((await stream[Symbol.asyncIterator]().next()).value.kind).toBe('value')
+    expect(quota.retainedBytes()).toBe(0)
+  })
+
+  test('logical delivery payload can exceed its shared retained backing buffer', async () => {
+    const backing = new Uint8Array(1024)
+    const observation = packet({ address: 'overlap', manufacturer: [
+      { companyIdentifier: 1, value: backing }, { companyIdentifier: 2, value: backing }
+    ] })
+    const retained = advertisementByteLength(observation)
+    expect(retained).toBeLessThan(2048)
+    const stream = new CoreBoundedStream({ itemCapacity: 1, byteCapacity: 4096, reservedControlCapacity: 0 }, 'error', true)
+    const quota = new AggregateStreamQuota(4096)
+    quota.register(stream)
+    expect(quota.emit(stream, observation, 2112, null, 2048, retained).accepted).toBe(true)
+    expect((await stream[Symbol.asyncIterator]().next()).value.kind).toBe('value')
+    expect(quota.retainedBytes()).toBe(0)
+  })
+
+  test('drop-oldest releases the old retained charge independently of delivery bytes', async () => {
+    const stream = new CoreBoundedStream({ itemCapacity: 1, byteCapacity: 128, reservedControlCapacity: 0 }, 'drop-oldest', true)
+    const quota = new AggregateStreamQuota(5000)
+    quota.register(stream)
+    const first = packet({ address: 'a', name: 'x'.repeat(1000) })
+    const second = packet({ address: 'b', name: 'new' })
+    expect(quota.emit(stream, first, 64, null, 0, advertisementByteLength(first)).accepted).toBe(true)
+    expect(quota.emit(stream, second, 64, null, 0, advertisementByteLength(second)).accepted).toBe(true)
+    expect(quota.retainedBytes()).toBe(advertisementByteLength(second))
+    const iterator = stream[Symbol.asyncIterator]()
+    expect((await iterator.next()).value.kind).toBe('overflow')
+    expect((await iterator.next()).value.value.localName.value).toBe('new')
+    expect(quota.retainedBytes()).toBe(0)
+  })
+
+  test('evidence charges a shared clock scope once across facts and releases it on clear', () => {
+    let charged = 0
+    const session = new ScanEvidenceSession(bytes => { charged = bytes; return true })
+    const measure = scope => {
+      session.clear()
+      session.matchAdvertisement(packet({ address: 'clock', capture: 1, clockScope: scope,
+        name: 'name', services: [canonicalUuid(HEART)], rssi: -50 }), () => false)
+      return charged
+    }
+    expect(measure('x'.repeat(1025)) - measure('x')).toBe(2048)
+    session.clear()
+    expect(charged).toBe(0)
+  })
+  test('a staged candidate does not change live facts until committed', () => {
+    const session = new ScanEvidenceSession(() => true)
+    const first = packet({ address: 'staged', name: 'Polar H10', at: 1 })
+    const second = packet({ address: 'staged', services: [canonicalUuid(HEART)], at: 2, ordinal: 2 })
+    const staged = session.stage(candidate => keep(candidate, first))
+    expect(staged.matched).toBeNull()
+    expect(staged.bytes).toBeGreaterThan(0)
+    expect(keep(session, second)).toBeNull()
+    const replacement = session.stage(candidate => keep(candidate, first))
+    replacement.commit()
+    expect(keep(session, second)).not.toBeNull()
+  })
+
+  test('a refused replacement leaves the accepted fact and its ordering watermark intact', () => {
+    let limit = 100000
+    let charged = 0
+    const session = new ScanEvidenceSession(bytes => {
+      if (bytes > limit) return false
+      charged = bytes
+      return true
+    })
+    const initial = packet({ address: 'admission', capture: 200, at: 1,
+      manufacturer: [{ companyIdentifier: 7, value: new Uint8Array(32).fill(2) }] })
+    session.matchAdvertisement(initial, () => false)
+    const before = charged
+    expect(before).toBeGreaterThanOrEqual(32)
+    limit = before
+    expect(() => session.matchAdvertisement(packet({ address: 'admission', capture: 300, at: 2,
+      manufacturer: [{ companyIdentifier: 7, value: new Uint8Array(2048) }] }), () => false)).toThrow()
+    expect(charged).toBe(before)
+    const selected = session.matchAdvertisement(packet({ address: 'admission', capture: 250, at: 3 }), candidate =>
+      candidate.manufacturerData.value?.[0]?.value[0] === 2)
+    expect(selected.manufacturerData.value[0].value).toHaveLength(32)
+    session.clear()
+    expect(charged).toBe(0)
+  })
+
+  test('expiry releases the backing buffer while retaining a charged source watermark', () => {
+    let charged = 0
+    const session = new ScanEvidenceSession(bytes => { charged = bytes; return true })
+    const backing = new Uint8Array(4096)
+    session.matchAdvertisement(packet({ address: 'backing', capture: 200, at: 0,
+      manufacturer: [{ companyIdentifier: 7, value: backing.subarray(0, 1) }] }), () => false)
+    const before = charged
+    expect(before).toBeGreaterThanOrEqual(backing.byteLength)
+    session.matchAdvertisement(packet({ address: 'backing', capture: 300, at: 10001 }), () => false)
+    expect(charged).toBeGreaterThan(0)
+    expect(charged).toBeLessThan(before - 4000)
+    const watermarkCharge = charged
+    session.matchAdvertisement(packet({ address: 'backing', capture: 100, at: 10002,
+      manufacturer: [{ companyIdentifier: 7, value: new Uint8Array(64) }] }), () => false)
+    expect(charged).toBe(watermarkCharge)
+    session.clear()
+    expect(charged).toBe(0)
+  })
+
+  test('the filtered stream charges its cache and clears it when closed', async () => {
+    const source = new CoreBoundedStream({ itemCapacity: 4, byteCapacity: 8192, reservedControlCapacity: 0 }, 'error', true)
+    const quota = new AggregateStreamQuota(8192)
+    quota.register(source)
+    const query = normalizeScanQuery({ anyOf: [{ names: { exact: ['target'] } }] })
+    const filtered = filterScanObservations(source, query)
+    const iterator = filtered[Symbol.asyncIterator]()
+    source.emit(packet({ address: 'filtered', name: 'target', manufacturer: [{ companyIdentifier: 7, value: new Uint8Array(1024) }] }), 1200)
+    expect((await iterator.next()).value.kind).toBe('value')
+    expect(quota.retainedBytes()).toBeGreaterThanOrEqual(1024)
+    await filtered.close()
+    expect(quota.retainedBytes()).toBe(0)
+  })
+  test('charges a shared backing buffer once across retained packet fields', () => {
+    let charged = 0
+    const session = new ScanEvidenceSession(bytes => { charged = bytes; return true })
+    const backing = new Uint8Array(4096)
+    const make = (size) => packet({ address: 'shared', manufacturer: [
+      { companyIdentifier: 7, value: backing.subarray(0, size) },
+      { companyIdentifier: 8, value: backing.subarray(1, size + 1) }
+    ] })
+    session.matchAdvertisement(make(1), () => false)
+    const sharedCharge = charged
+    const other = new ScanEvidenceSession(bytes => { charged = bytes; return true })
+    other.matchAdvertisement(packet({ address: 'shared', manufacturer: [
+      { companyIdentifier: 7, value: new Uint8Array(1) },
+      { companyIdentifier: 8, value: new Uint8Array(1) }
+    ] }), () => false)
+    expect(sharedCharge - charged).toBe(4094)
+  })
+
+  test('filtered delivery waits for cache capacity and retries the same claimed observation', async () => {
+    const limits = { itemCapacity: 4, byteCapacity: 8192, reservedControlCapacity: 0 }
+    const source = new CoreBoundedStream(limits, 'error', true)
+    const blocker = new CoreBoundedStream(limits, 'error', true)
+    const quota = new AggregateStreamQuota(3000)
+    quota.register(source)
+    quota.register(blocker)
+    quota.emit(blocker, 'blocker', 1800)
+    quota.emit(source, packet({ address: 'retry', name: 'target', manufacturer: [
+      { companyIdentifier: 7, value: new Uint8Array(1024) }
+    ] }), 1100)
+    const filtered = filterScanObservations(source, normalizeScanQuery({ anyOf: [{ names: { exact: ['target'] } }] }))
+    const iterator = filtered[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    let settled = false
+    pending.then(() => { settled = true }, () => { settled = true })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(settled).toBe(false)
+    await blocker.close()
+    expect((await pending).value.value.manufacturerData[0].data).toHaveLength(1024)
+    await filtered.close()
+    expect(quota.retainedBytes()).toBe(0)
+  })
+
+  test('an impossible evidence admission reports quota and leaves the source occurrence retrievable', async () => {
+    const limits = { itemCapacity: 4, byteCapacity: 8192, reservedControlCapacity: 0 }
+    const source = new CoreBoundedStream(limits, 'error', true)
+    const quota = new AggregateStreamQuota(1500)
+    quota.register(source)
+    const name = 'x'.repeat(2048)
+    quota.emit(source, packet({ address: 'impossible', name }), 100)
+    const filtered = filterScanObservations(source, normalizeScanQuery({ anyOf: [{ names: { exact: [name] } }] }))
+    const iterator = filtered[Symbol.asyncIterator]()
+    const pending = iterator.next().then(() => 'delivered', error => error.normalized?.code ?? error.code)
+    const outcome = await pending
+    expect(outcome).toBe('stream.quota')
+    expect((await source[Symbol.asyncIterator]().next()).value.value.localName.value).toBe(name)
+    await filtered.close()
+    await source.close()
+  })
+
+  test('cancelling a cache-blocked filtered read releases the claim and wakes the read', async () => {
+    const limits = { itemCapacity: 4, byteCapacity: 8192, reservedControlCapacity: 0 }
+    const source = new CoreBoundedStream(limits, 'error', true)
+    const quota = new AggregateStreamQuota(1500)
+    quota.register(source)
+    quota.emit(source, packet({ address: 'cancel', name: 'target', manufacturer: [
+      { companyIdentifier: 7, value: new Uint8Array(1024) }
+    ] }), 1100)
+    const filtered = filterScanObservations(source, normalizeScanQuery({ anyOf: [{ names: { exact: ['target'] } }] }))
+    const iterator = filtered[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    await new Promise(resolve => setTimeout(resolve, 30))
+    await iterator.return()
+    await expect(pending).resolves.toMatchObject({ done: true })
+    expect((await source[Symbol.asyncIterator]().next()).value.kind).toBe('value')
+    await filtered.close()
+  })
+
+  test('cache retries do not refresh compact packet receipt time', async () => {
+    let now = 0
+    const limits = { itemCapacity: 4, byteCapacity: 8192, reservedControlCapacity: 0 }
+    const source = new CoreBoundedStream(limits, 'error', true)
+    const blocker = new CoreBoundedStream(limits, 'error', true)
+    const quota = new AggregateStreamQuota(1400)
+    quota.register(source)
+    quota.register(blocker)
+    quota.emit(blocker, 'blocker', 1200)
+    const compact = (peerId, localName, serviceUuids) => ({
+      peerId, localName, serviceUuids, rssi: null, manufacturerData: [], serviceData: []
+    })
+    quota.emit(source, compact('peer', 'target', []), 100)
+    const query = normalizeScanQuery({ anyOf: [{ names: { exact: ['target'] }, services: { any: [HEART] } }] })
+    const filtered = filterScanObservations(source, query, 'all', () => now)
+    const pending = filtered[Symbol.asyncIterator]().next()
+    await new Promise(resolve => setTimeout(resolve, 30))
+    now = 10001
+    await blocker.close()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    quota.emit(source, compact('peer', null, [HEART]), 100)
+    now = 10002
+    quota.emit(source, compact('complete', 'target', [HEART]), 100)
+    expect((await pending).value.value.peer.id).toBe('complete')
+    await filtered.close()
+  })
+
   test('an older captured packet cannot borrow name evidence from its captured future', () => {
     const session = new ScanEvidenceSession()
     keep(session, packet({ address: 'order', name: 'Polar H10 new', capture: 200, at: 200 }))

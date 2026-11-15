@@ -18,6 +18,7 @@ import { ReactNativeAndroidProtocolBoundary } from './rn-android-boundary'
  * Apple shares the versioned JSI codec, but this boundary has no caller-directed ATT MTU request.
  */
 export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocolBoundary {
+  protected override readonly requireScanEventIdentity: boolean = false
   override readonly connectionIntentCapabilities: Readonly<{ whenAvailable: 'unsupported' }> = Object.freeze({
     whenAvailable: 'unsupported'
   })

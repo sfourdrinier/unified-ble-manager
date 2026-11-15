@@ -434,6 +434,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   @Override
   public synchronized void handshake(ReadableMap request, Promise promise) {
     try {
+      UnifiedBleProtocolJsiBinding.requireScanEventIdentitySupport(request);
       requireVersionRange(request.getMap("nativeProtocol"), "nativeProtocol", NATIVE_PROTOCOL_VERSION);
       requireVersionRange(request.getMap("abi"), "abi", ABI_VERSION);
       requireVersionRange(request.getMap("controlSurface"), "controlSurface", CONTROL_SURFACE_VERSION);
@@ -469,6 +470,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       result.putInt("maximumControlRecordBytes", MAXIMUM_CONTROL_RECORD_BYTES);
       result.putInt("maximumBinaryPayloadBytes", MAXIMUM_BINARY_PAYLOAD_BYTES);
       result.putBoolean("phyAvailable", Build.VERSION.SDK_INT >= Build.VERSION_CODES.O);
+      result.putBoolean("scanEventIdentityAvailable", UnifiedBleProtocolJsiBinding.scanEventIdentityAvailable());
       result.putBoolean("securityAvailable", true);
       promise.resolve(result);
     } catch (RuntimeException error) {

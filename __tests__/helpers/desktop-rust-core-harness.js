@@ -37,12 +37,27 @@ function loadAddon() {
 const HOST_PLATFORM = Object.freeze({ bluez: 'linux', corebluetooth: 'darwin', winrt: 'win32' })
 
 /** Wrap a native central so every method call is recorded (this stays the native object). */
-function spyCentral(central, calls) {
+function spyCentral(central, calls, harness) {
   return new Proxy(central, {
     get(target, property) {
       const value = Reflect.get(target, property)
       if (typeof value !== 'function') return value
       return (...args) => {
+        if (property === 'confirmOrderedRecordingReclaim') {
+          calls.push([String(property), [{ ...args[0], capability: '[redacted]' }]])
+          return Reflect.apply(value, target, args)
+        }
+        if (property === 'orderedRecordingReclaim') {
+          calls.push([String(property), [args[0], { ...args[1], capability: '[redacted]' }]])
+          const result = Reflect.apply(value, target, args)
+          return result.then(answer => {
+            if (harness.dropReclaimResponse === args[0]) {
+              harness.dropReclaimResponse = null
+              throw new Error('synthetic lost response')
+            }
+            return answer
+          })
+        }
         calls.push([String(property), args])
         return Reflect.apply(value, target, args)
       }
@@ -75,12 +90,13 @@ function realBinding(platform) {
     if (platform === 'corebluetooth' && harness.stageFirstState !== null) {
       await central.stageAdapterState(harness.stageFirstState, true)
     }
-    return spyCentral(central, calls)
+    return spyCentral(central, calls, harness)
   }
   const harness = {
     calls,
     opened,
     productionRequests,
+    dropReclaimResponse: null,
     stageFirstState: 'powered-on',
     binding: {
       diagnostics: bound.diagnostics,
@@ -90,7 +106,15 @@ function realBinding(platform) {
         productionRequests.push(options)
         return openSynthetic(
           options.owner,
-          options.pairingGeneration === true ? { pairingGeneration: true } : undefined
+          {
+            ...(options.pairingGeneration === true ? { pairingGeneration: true } : {}),
+            ...(options.failureEvidenceDirectory === undefined
+              ? {}
+              : { failureEvidenceDirectory: options.failureEvidenceDirectory, failureEvidenceMaxBytes: options.failureEvidenceMaxBytes }),
+            ...(options.terminalEvidenceDirectory === undefined
+              ? {}
+              : { terminalEvidenceDirectory: options.terminalEvidenceDirectory, terminalEvidenceMaxBytes: options.terminalEvidenceMaxBytes })
+          }
         )
       },
       async listAdapters() {
@@ -109,7 +133,8 @@ async function openBackend(platform, options = {}) {
     now: () => performance.now(),
     radio: 'synthetic',
     binding: harness.binding,
-    hostPlatform: HOST_PLATFORM[platform]
+    hostPlatform: HOST_PLATFORM[platform],
+    ...(options.terminalEvidenceStore === undefined ? {} : { terminalEvidenceStore: options.terminalEvidenceStore })
   })
   const adapters = await provider.listAdapters()
   const backend = await provider.create({ selectedAdapterId: adapters[0].adapterId })

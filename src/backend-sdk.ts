@@ -8,6 +8,7 @@ export * from './backend-contract'
 export { createNativeContinuationControl } from './core/native-continuation-control'
 export type {
   NativeContinuationControl,
+  NativeContinuationControlV1,
   NativeContinuationControlAccess,
   NativeContinuationControlContext,
   NativeContinuationCompleted,

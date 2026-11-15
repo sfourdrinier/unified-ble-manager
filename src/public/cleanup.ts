@@ -12,7 +12,9 @@ import {
   BLE_COMMIT_UNCERTAINTIES,
   BLE_ERROR_CODES,
   BLE_ERROR_DOMAINS,
-  contractError
+  contractError,
+  snapshotPlatformMetadataEntries,
+  snapshotOrderedFailure
 } from '../backend-contract/errors'
 import type { BleCommitUncertainty } from '../backend-contract/errors'
 import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
@@ -37,14 +39,19 @@ export interface PublicSerializableRecord {
   readonly [key: string]: PublicSerializableValue
 }
 
+export type { PlatformMetadataEntry, PlatformMetadataValue } from '../backend-contract/errors'
+
 export interface PublicPlatformErrorDetail {
   readonly domain: string
   readonly code: string
   readonly safeMessage: string
   readonly metadata: PublicSerializableRecord
+  readonly metadataEntries?: readonly import('../backend-contract/errors').PlatformMetadataEntry[]
 }
 
 export interface NormalizedBleError {
+  /** Exact ordered v2 failure, including independent native cleanup evidence, when reported. */
+  readonly orderedFailure?: import('../core/ordered-recording').OrderedRecordingFailure
   readonly code: BleErrorCode
   readonly domain: BleErrorDomain
   readonly operation: string
@@ -152,6 +159,7 @@ export function toPublicNormalizedError(error: NormalizedErrorLike): NormalizedB
     operation: error.operation,
     platform: toPublicPlatformErrorDetail(error.platform),
     retryability: error.retryability,
+    ...(error.orderedFailure === undefined ? {} : { orderedFailure: snapshotOrderedFailure(error) }),
     ...(error.commit === undefined ? {} : { commit: error.commit })
   })
 }
@@ -177,7 +185,15 @@ export function toPublicPlatformErrorDetail(
       domain: platform.domain,
       code: platform.code,
       safeMessage: platform.safeMessage,
-      metadata: toPublicSerializableRecord(platform.metadata)
+      metadata: toPublicSerializableRecord(platform.metadata),
+      ...(Object.hasOwn(platform, 'metadataEntries')
+        ? {
+            metadataEntries: snapshotPlatformMetadataEntries(
+              platform.metadataEntries,
+              'public-cleanup.metadata.entries'
+            )
+          }
+        : {})
     })
   } catch (error) {
     if (error instanceof BackendContractError) throw error

@@ -355,6 +355,10 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
     const trusted = snapshotTrustedSender(this.options.authenticate(event))
     this.options.router.validateRequest(request)
     if (request.kind === 'bootstrap') {
+      // Reject an incompatible offer before retiring a prior renderer on the
+      // same WebContents. A malformed/incompatible newcomer has acquired no
+      // authority and must not trigger cleanup of a valid incumbent.
+      this.options.router.validateBootstrapOffer(request.offer)
       return this.withBootstrapAdmission(event, trusted, request)
     }
     const rendererLease = rendererLeaseForRequest(request)
@@ -586,6 +590,25 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
       renderer.releaseRequired = true
       await this.releaseRendererAuthoritatively(rendererLeaseId, renderer)
       throw error
+    }
+    const recoveryAvailability = await this.options.router.publishPeerFailureRecoveryAvailability(
+      response.bootstrap.rendererLease
+    )
+    this.assertActiveLifecycle()
+    this.assertMainFrame(event)
+    this.assertTrustedSenderCurrent(event, trusted)
+    if (
+      event.sender.isDestroyed?.() === true ||
+      renderer.destroyed ||
+      renderer.releaseRequired ||
+      renderer.lifecycle !== 'active' ||
+      !this.rendererBindingIsCurrent(renderer) ||
+      recoveryAvailability !== 'delivered'
+    ) {
+      renderer.destroyed = event.sender.isDestroyed?.() === true
+      renderer.releaseRequired = true
+      await this.releaseRendererAuthoritatively(rendererLeaseId, renderer)
+      throw contractError('lifecycle.invalid-state', 'ipc', 'electron-main-binding.bootstrap-recovery-availability')
     }
     return response
   }

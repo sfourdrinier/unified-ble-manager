@@ -119,6 +119,13 @@ export interface BleManagerCreateOptions {
   readonly background?: {
     readonly continuation?: unknown
   }
+  /** Opt-in bounds for source-native durable terminal evidence. */
+  readonly terminalEvidence?: {
+    /** Upper bound for one canonical terminal record. */
+    readonly maximumCanonicalBytes: number
+    /** Host durable capacity shared by all live and recovered terminal records. */
+    readonly maximumDurableBytes: number
+  }
 }
 
 export interface NormalizedBackgroundOptions {
@@ -148,7 +155,15 @@ export function normalizeBleManagerCreateOptions(
     return Object.freeze({})
   }
   assertPlainRecord(options, 'options')
-  const allowedKeys = new Set(['instanceId', 'adapterId', 'diagnostics', 'restoration', 'randomBytes', 'background'])
+  const allowedKeys = new Set([
+    'instanceId',
+    'adapterId',
+    'diagnostics',
+    'restoration',
+    'randomBytes',
+    'background',
+    'terminalEvidence'
+  ])
   if (Object.keys(options).some(key => !allowedKeys.has(key))) {
     throw contractError('argument.invalid', 'core', 'options.unknown-key')
   }
@@ -163,6 +178,24 @@ export function normalizeBleManagerCreateOptions(
   }
   if (options.randomBytes !== undefined && typeof options.randomBytes !== 'function') {
     throw contractError('argument.invalid', 'core', 'options.randomBytes')
+  }
+  if (options.terminalEvidence !== undefined) {
+    if (
+      !isPlainRecord(options.terminalEvidence) ||
+      Object.keys(options.terminalEvidence).some(
+        key => key !== 'maximumCanonicalBytes' && key !== 'maximumDurableBytes'
+      ) ||
+      !Number.isSafeInteger(options.terminalEvidence.maximumCanonicalBytes) ||
+      options.terminalEvidence.maximumCanonicalBytes < 1
+    ) {
+      throw contractError('argument.invalid', 'core', 'options.terminal-evidence.maximum-canonical-bytes')
+    }
+    if (
+      !Number.isSafeInteger(options.terminalEvidence.maximumDurableBytes) ||
+      options.terminalEvidence.maximumDurableBytes < options.terminalEvidence.maximumCanonicalBytes
+    ) {
+      throw contractError('argument.invalid', 'core', 'options.terminal-evidence.maximum-durable-bytes')
+    }
   }
   if (options.diagnostics !== undefined) {
     assertPlainRecord(options.diagnostics, 'options.diagnostics')

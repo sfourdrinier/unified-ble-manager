@@ -1,7 +1,13 @@
 // __tests__/package-surface/fixtures/public-surface.ts
 
 import type { WebContents } from 'electron'
-import type { PeerDirectoryBackend, PeerReference as BackendPeerReference } from 'unified-ble-manager/backend-sdk'
+import type {
+  PeerDirectoryBackend,
+  PeerReference as BackendPeerReference,
+  PlatformErrorDetail,
+  SerializableRecord
+} from 'unified-ble-manager/backend-sdk'
+import type { NativeContinuationControlV1 } from 'unified-ble-manager/backend-sdk'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- fixture verifies these are importable from application root
 import type {
   BlePeer,
@@ -13,6 +19,8 @@ import type {
   GattCharacteristic,
   GattDescriptor,
   GattSubscription,
+  GattSubscriptionValue,
+  GattValueEvent,
   GattPathSelector,
   GattWriteOptions,
   GattSubscribeOptions,
@@ -20,6 +28,7 @@ import type {
   BleManagerCreateOptions,
   BackgroundContinuationDeclaration,
   ContinuationRecordingConfiguration,
+  ContinuationRecordingController,
   ContinuationLinkConfiguration,
   ContinuationSetupStep,
   StreamPreset,
@@ -30,8 +39,67 @@ import type {
   BleDiscoveryInfo,
   BleAdapter,
   AdapterReadinessOptions,
-  BleDiagnostics
+  BleDiagnostics,
+  DiscoveryLossCountersV1,
+  GattOrderedStream,
+  NotificationProvenance,
+  BleDiagnosticWarning,
+  PublicStreamPeerSourceLossNotice,
+  OrderedRecordingBatch,
+  OrderedRecordingRecoveryHandle,
+  ContinuationRecordingFailure,
+  ContinuationRecordingStatus
 } from 'unified-ble-manager'
+// A 5.2.1 consumer may keep this exact runtime-failure projection in its own
+// public type. Patch releases must not widen the established field.
+declare const currentRecordingStatus: ContinuationRecordingStatus
+const legacyRuntimeFailure: (ContinuationRecordingFailure & { readonly persisted: false }) | null =
+  currentRecordingStatus.runtimeFailure
+void legacyRuntimeFailure
+const legacyCollectionFailure:
+  | (ContinuationRecordingFailure & {
+      readonly persisted: boolean
+      readonly persistenceFailure?: ContinuationRecordingFailure
+      readonly knownRecordedLoss?: { readonly items: number; readonly bytes?: number }
+    })
+  | null = currentRecordingStatus.collectionFailure
+void legacyCollectionFailure
+// Backend implementations compiled against 5.2.1 require owned bytes in
+// platform metadata. Wire portability is normalized before this SDK boundary.
+type LegacyPlatformErrorDetail = Readonly<{
+  domain: string
+  code: string
+  safeMessage: string
+  metadata: SerializableRecord
+}>
+declare const currentPlatformErrorDetail: PlatformErrorDetail
+const legacyPlatformErrorDetail: LegacyPlatformErrorDetail = currentPlatformErrorDetail
+void legacyPlatformErrorDetail
+// A 5.2.1 consumer could construct and forward these documented public values
+// without an ingress-provenance field. The runtime continues to normalize a
+// missing backend provenance to `unknown`, so that source shape must remain
+// assignable in the patch line.
+const legacyGattValueEvent: GattValueEvent = {
+  value: Uint8Array.of(1),
+  delivery: 'notification',
+  observedAtMonotonicMs: 0,
+  sequence: 0
+}
+const legacyGattSubscriptionValue: GattSubscriptionValue = legacyGattValueEvent
+// These assignments model 5.2.1 structural implementers. New opt-in helpers
+// must not make a patch release reject existing values.
+declare const legacyRecordingController: Pick<
+  ContinuationRecordingController,
+  'status' | 'prepare' | 'acknowledge' | 'stop' | 'clear'
+>
+const compatibleRecordingController: ContinuationRecordingController = legacyRecordingController
+declare const legacyDiagnostics: Omit<BleDiagnostics, 'warnings'>
+const compatibleDiagnostics: BleDiagnostics = legacyDiagnostics
+declare const legacyGattDatabase: Omit<
+  GattDatabase,
+  'reserveOrderedRecordingStart' | 'reserveOrderedRecordingMarker' | 'reserveOrderedRecordingReclaim' | 'subscribeOrdered'
+>
+const compatibleGattDatabase: GattDatabase = legacyGattDatabase
 const recordingConfiguration: ContinuationRecordingConfiguration = {
   id: 'session-1',
   maxBytes: 1048576,
@@ -58,6 +126,10 @@ const durableContinuation: BackgroundContinuationDeclaration = {
   setup: [continuationSetup]
 }
 observe<BackgroundContinuationDeclaration>(durableContinuation)
+observe(legacyGattSubscriptionValue)
+observe(compatibleRecordingController)
+observe(compatibleDiagnostics)
+observe(compatibleGattDatabase)
 import type {
   BleConnectionControls,
   BleControlObservationMetadata,
@@ -103,7 +175,14 @@ type _RootImportCheck = BlePeer &
   GattCharacteristic &
   OperationOptions &
   BleManagerCreateOptions &
-  StreamPreset
+  StreamPreset &
+  DiscoveryLossCountersV1 &
+  GattOrderedStream &
+  NotificationProvenance &
+  BleDiagnosticWarning &
+  PublicStreamPeerSourceLossNotice &
+  OrderedRecordingBatch &
+  OrderedRecordingRecoveryHandle
 declare const _rootCheck: _RootImportCheck
 void _rootCheck
 declare const publicPeer: BlePeer
@@ -112,8 +191,10 @@ void publicPeer.sources
 void publicPeer.lastAdvertisement
 declare const backendReference: BackendPeerReference
 declare const backendPeers: PeerDirectoryBackend<string>
+declare const backendV1Control: NativeContinuationControlV1
 void backendReference
 void backendPeers
+void backendV1Control
 declare const connectionIntent: ConnectionIntent
 declare const connectOptions: ConnectOptions
 declare const retryPolicy: RetryPolicy

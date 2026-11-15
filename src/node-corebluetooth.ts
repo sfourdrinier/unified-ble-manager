@@ -10,10 +10,10 @@ import {
   createDesktopCoreBleManager,
   createDesktopCoreProcessHost,
   createDesktopCoreProvider,
+  type DesktopCoreBleManager,
   type DesktopCoreManagerOptions,
   type DesktopCoreProviderOptions
 } from './node-desktop-manager'
-import type { BleManager } from './public/ble-manager'
 
 export {
   COREBLUETOOTH_BACKEND_ID,
@@ -23,7 +23,16 @@ export {
 } from './backends/desktop/platform-identity'
 export * from './desktop-rust-core-exports'
 export type { NodeBleManagerAppOptions } from './node-host-manager'
-export type { DesktopCoreManagerOptions, DesktopCoreProviderOptions } from './node-desktop-manager'
+export type {
+  DesktopCoreManagerOptions,
+  DesktopCoreProviderOptions,
+  DesktopCoreBleManager,
+  DesktopFailureEvidenceStoreOptions,
+  DesktopTerminalEvidenceStoreOptions,
+  NodeTerminalEvidenceRecovery,
+  NodeTerminalEvidenceRecoveryRecord,
+  NodeTerminalEvidenceRecoveryValue
+} from './node-desktop-manager'
 
 export type CoreBluetoothBleManagerAppOptions = DesktopCoreManagerOptions
 export type NativeCoreBluetoothProviderOptions = DesktopCoreProviderOptions
@@ -36,7 +45,7 @@ export function createCoreBluetoothProcessHost(options: DesktopCoreManagerOption
 /** One-call Node CoreBluetooth manager over the shared Rust core. Does not fall back to another backend. */
 export async function createCoreBluetoothBleManager(
   options: CoreBluetoothBleManagerAppOptions = {}
-): Promise<BleManager> {
+): Promise<DesktopCoreBleManager> {
   return createDesktopCoreBleManager('corebluetooth', options)
 }
 

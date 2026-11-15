@@ -7,14 +7,19 @@
 #include "../include/OwnedBinaryPayloadStore.hpp"
 #include "../include/BoundedNativeEventBuffer.hpp"
 #include "../include/AndroidJsiEventIngressLedger.hpp"
+#include "../include/GenerationInstallGate.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -205,7 +210,7 @@ void testVersionNegotiation() {
 }
 
 void testBondedPeerSnapshotsAndConnectionIntent() {
-  static_assert(protocol::kAbiVersion == 7U);
+  static_assert(protocol::kAbiVersion == 8U);
   protocol::NativeProtocolV2Codec codec;
   const auto validCommand = protocol::ProtocolRecord{
       .kind = protocol::RecordKind::command,
@@ -654,6 +659,41 @@ void testTerminalAndRichAdvertisementParity() {
   assert(
       codec.encode(codec.decode(codec.encode(notificationEvent))) == codec.encode(notificationEvent));
 
+  const protocol::ProtocolRecord lossEvent{
+      .kind = protocol::RecordKind::event,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("native-loss-1:8")),
+          field(3U, std::string("notificationLoss")),
+          field(4U, attachment()),
+          field(5U, std::uint64_t{8U}),
+          field(6U, std::uint64_t{21U}),
+          field(9U, characteristic("characteristic-occurrence-1")),
+          field(10U, correlation(1U)),
+          field(11U, std::string("subscription-1")),
+          field(18U, std::uint64_t{3U}),
+          field(19U, std::uint64_t{100U}),
+      },
+  };
+  assert(codec.encode(codec.decode(codec.encode(lossEvent))) == codec.encode(lossEvent));
+  auto incompleteLoss = lossEvent;
+  incompleteLoss.fields.pop_back();
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(incompleteLoss); });
+  auto terminatedEvent = lossEvent;
+  terminatedEvent.fields[2] = field(3U, std::string("notificationTerminated"));
+  terminatedEvent.fields.pop_back();
+  terminatedEvent.fields.pop_back();
+  terminatedEvent.fields.push_back(field(14U, std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::error,
+      .fields = {field(1U, std::string("gattFailure")), field(2U, std::string("android")),
+                 field(3U, std::string("gatt.notification.source")), field(4U, std::string("notRetryable")),
+                 field(5U, std::string("android")), field(6U, std::string("NOTIFICATION_DELIVERY_UNCERTAIN")),
+                 field(7U, std::string("Notification subscription terminated")), field(8U, std::int64_t{133})},
+  })));
+  assert(codec.encode(codec.decode(codec.encode(terminatedEvent))) == codec.encode(terminatedEvent));
+  terminatedEvent.fields.pop_back();
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(terminatedEvent); });
+
   // The defect itself, pinned: a payload minted under its own correlation is
   // refused, however well formed the rest of the event is.
   auto foreignNotificationEvent = notificationEvent;
@@ -717,6 +757,23 @@ void testTerminalAndRichAdvertisementParity() {
           field(6U, binary("read-result", 3U, "opaque-operation-4")),
       },
   };
+  for (const std::string constraint : {"preferNotification", "preferIndication", "requireNotification", "requireIndication"}) {
+    const protocol::ProtocolRecord command{
+        .kind = protocol::RecordKind::command,
+        .fields = {field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, correlation(1U)),
+                   field(3U, std::string("subscribe")), field(4U, characteristic("characteristic-occurrence-1")),
+                   field(7U, std::string("subscription-1")), field(22U, constraint)},
+    };
+    assert(codec.encode(codec.decode(codec.encode(command))) == codec.encode(command));
+  }
+  const protocol::ProtocolRecord invalidConstraint{
+      .kind = protocol::RecordKind::command,
+      .fields = {field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, correlation(1U)),
+                 field(3U, std::string("subscribe")), field(4U, characteristic("characteristic-occurrence-1")),
+                 field(7U, std::string("subscription-1")), field(22U, std::string("unknown"))},
+  };
+  expectFailure(protocol::ProtocolFailure::invalidEnumValue, [&] { codec.validate(invalidConstraint); });
+
   const protocol::ProtocolRecord unsubscribeResult{
       .kind = protocol::RecordKind::result,
       .fields = {
@@ -1048,22 +1105,29 @@ void testOperationCapacityRejectsBeforeCommandBinaryCopyAndCallerRelease() {
   }
 
   const auto input = runtime.retainNativeBytes("opaque-operation-1025", {9U, 8U, 7U});
+  bool admitted = true;
+  const protocol::ProtocolRecord retryCommand{
+      .kind = protocol::RecordKind::command,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, correlation(1025U)),
+          field(3U, std::string("write")),
+          field(4U, characteristic("characteristic-occurrence-1")),
+          field(6U, binary(input.ownerToken, input.byteLength, input.operationCorrelation)),
+          field(13U, std::string("withResponse")),
+      },
+  };
   expectFailure(protocol::ProtocolFailure::payloadTooLarge, [&] {
-    runtime.registerCommand(
-        {.kind = protocol::RecordKind::command,
-         .fields = {
-             field(1U, std::uint64_t{protocol::kProtocolVersion}),
-             field(2U, correlation(1025U)),
-             field(3U, std::string("write")),
-             field(4U, characteristic("characteristic-occurrence-1")),
-             field(6U, binary(input.ownerToken, input.byteLength, input.operationCorrelation)),
-             field(13U, std::string("withResponse")),
-         }},
-        true);
+    runtime.registerCommand(retryCommand, true, &admitted);
   });
+  assert(!admitted);
   assert(runtime.retainedBinaryPayloads() == 1U);
   assert(runtime.retainedBinaryBytes() == 3U);
-  assert(runtime.releaseBinary(input));
+  const auto first = runtime.commandFor(1U, "opaque-operation-1");
+  assert(first.has_value() && runtime.rejectCommandDispatch(*first));
+  runtime.registerCommand(retryCommand, true, &admitted);
+  assert(admitted && runtime.commandFor(1025U, "opaque-operation-1025").has_value());
+  assert(runtime.rejectCommandDispatch(retryCommand));
   assert(runtime.retainedBinaryPayloads() == 0U);
   assert(runtime.retainedBinaryBytes() == 0U);
   runtime.close(identity);
@@ -1129,9 +1193,11 @@ void testRejectedAndroidDispatchReleasesRegisteredCommandBinary() {
   assert(runtime.activeScanCommand().has_value());
   auto overlappingScanCommand = scanCommand;
   overlappingScanCommand.fields[1U] = field(2U, correlation(3U));
+  bool admitted = false;
   expectFailure(protocol::ProtocolFailure::alreadyTerminal, [&] {
-    runtime.registerCommand(overlappingScanCommand, true);
+    runtime.registerCommand(overlappingScanCommand, true, &admitted);
   });
+  assert(admitted);
   assert(runtime.activeScanCommand().has_value());
   assert(runtime.commandFor(2U, "opaque-operation-2").has_value());
   assert(!runtime.commandFor(3U, "opaque-operation-3").has_value());
@@ -1233,6 +1299,43 @@ void testActiveScanOwnerReleasesOnlyAfterPhysicalTeardown() {
   runtime.registerCommand(scanCommand(8U, "scanStart"), true);
   assert(runtime.activeScanCommand().has_value());
   runtime.close(identity);
+
+  // Android acknowledges physical cleanup by exact scan identity. A delayed
+  // stop terminal must not retire a replacement already admitted afterwards.
+  protocol::NativeProtocolControlRuntime lanes(protocol::NativeEpochAllocation::androidScanLanes);
+  static_cast<void>(lanes.handshake(
+      identity, "lane-owner", nativeProtocolRange(), abiVersionRange(), controlSurfaceVersionRange(),
+      {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+  auto laneStart = scanCommand(1U, "scanStart");
+  auto laneStartCorrelation = correlation(1U);
+  laneStartCorrelation->fields[2U] = field(3U, std::string("rn-android-scan-1"));
+  laneStart.fields[1U] = field(2U, laneStartCorrelation);
+  auto laneStop = scanCommand(2U, "scanStop");
+  auto laneStopCorrelation = correlation(2U);
+  laneStopCorrelation->fields[2U] = field(3U, std::string("rn-android-operation-2"));
+  laneStop.fields[1U] = field(2U, laneStopCorrelation);
+  lanes.registerCommand(laneStart, true);
+  lanes.registerCommand(laneStop, true);
+  assert(lanes.retireActiveScan(1U, "rn-android-scan-1"));
+  auto replacement = scanCommand(3U, "scanStart");
+  auto replacementCorrelation = correlation(3U);
+  replacementCorrelation->fields[2U] = field(3U, std::string("rn-android-scan-3"));
+  replacement.fields[1U] = field(2U, replacementCorrelation);
+  lanes.registerCommand(replacement, true);
+  auto lateStop = result(2U, "accepted", "succeeded");
+  auto lateTerminal = std::make_shared<protocol::ProtocolRecord>(terminal(2U, "succeeded"));
+  lateTerminal->fields[0U] = field(1U, laneStopCorrelation);
+  lateStop.fields[2U] = field(3U, lateTerminal);
+  assert(lanes.settleResult(lateStop));
+  assert(lanes.activeScanCommand().has_value());
+  assert(lanes.cancel({identity, 2U, "rn-android-operation-2"}) == protocol::NativeCancellationState::alreadyTerminal);
+  expectFailure(protocol::ProtocolFailure::invalidCorrelation, [&] {
+    static_cast<void>(lanes.cancel({identity, 2U, "rn-android-scan-2"}));
+  });
+  assert(!lanes.retireActiveScan(1U, "rn-android-scan-1"));
+  assert(lanes.activeScanCommand().has_value());
+  assert(lanes.retireActiveScan(3U, "rn-android-scan-3"));
+  lanes.close(identity);
 }
 
 void testPendingSubscriptionRoutingAndLateOutputRelease() {
@@ -1435,6 +1538,188 @@ void testAndroidDispatcherResultsCarryTheNegotiatedVersion() {
 
 }
 
+void testQueuedRustCoreRecoveryInstallCannotOverwriteCurrentGeneration() {
+  protocol::GenerationInstallGate gate;
+  const auto first = gate.replace(41);
+  const auto second = gate.replace(41);
+  assert(!gate.isCurrent(first));
+  assert(gate.isCurrent(second));
+
+  // These lambdas model queued CallInvoker callbacks.  They use the exact
+  // production admission component, so executing them out of order proves an
+  // old callback cannot overwrite the newer installed HostObject.
+  std::uint64_t installed = 0U;
+  const auto install = [&gate, &installed](const protocol::GenerationInstallGate::Ticket& ticket) {
+    if (gate.isCurrent(ticket)) installed = ticket.generation;
+  };
+  install(second);
+  install(first);
+  assert(installed == second.generation);
+
+  assert(gate.invalidateWhenIdle(41, [] {}));
+  install(second);
+  assert(installed == second.generation);
+
+  const auto otherOwner = gate.replace(42);
+  assert(gate.isCurrent(otherOwner));
+  assert(!gate.isCurrent(second));
+}
+
+void testRustCoreRecoveryInstallAndInvalidationAreAtomic() {
+  protocol::GenerationInstallGate gate;
+  const auto ticket = gate.replace(71);
+  std::mutex barrierMutex;
+  std::condition_variable barrier;
+  bool admitted = false;
+  bool allowWrite = false;
+  bool deactivated = false;
+  bool invalidated = false;
+  std::uint64_t installed = 0U;
+
+  std::thread queued([&] {
+    const bool wrote = gate.withCurrent(ticket, [&] {
+      {
+        std::scoped_lock lock(barrierMutex);
+        admitted = true;
+      }
+      barrier.notify_all();
+      std::unique_lock lock(barrierMutex);
+      barrier.wait(lock, [&] { return allowWrite; });
+      installed = ticket.generation;
+    });
+    assert(wrote);
+  });
+
+  {
+    std::unique_lock lock(barrierMutex);
+    barrier.wait(lock, [&] { return admitted; });
+  }
+  std::thread invalidator([&] {
+    assert(gate.invalidateWhenIdle(71, [&] {
+      {
+        std::scoped_lock lock(barrierMutex);
+        deactivated = true;
+      }
+      barrier.notify_all();
+    }));
+    {
+      std::scoped_lock lock(barrierMutex);
+      invalidated = true;
+    }
+    barrier.notify_all();
+  });
+
+  // Teardown fences reads while this admitted write is still pending, and it
+  // cannot complete until that write has returned.  This is the former
+  // check-to-write window, made deterministic without a JavaScript runtime.
+  {
+    std::unique_lock lock(barrierMutex);
+    barrier.wait(lock, [&] { return deactivated; });
+    assert(!invalidated);
+    allowWrite = true;
+  }
+  barrier.notify_all();
+  queued.join();
+  invalidator.join();
+  assert(invalidated);
+  assert(installed == ticket.generation);
+
+  // Once invalidation returns, the delayed stale callback cannot publish.
+  installed = 0U;
+  assert(!gate.withCurrent(ticket, [&] { installed = ticket.generation; }));
+  assert(installed == 0U);
+}
+
+void testRustCoreRecoveryReplacementWaitsForAdmittedInstall() {
+  protocol::GenerationInstallGate gate;
+  const auto first = gate.replace(72);
+  std::mutex barrierMutex;
+  std::condition_variable barrier;
+  bool admitted = false;
+  bool allowWrite = false;
+  bool replaced = false;
+  std::optional<protocol::GenerationInstallGate::Ticket> second;
+  std::uint64_t installed = 0U;
+
+  std::thread queued([&] {
+    assert(gate.withCurrent(first, [&] {
+      {
+        std::scoped_lock lock(barrierMutex);
+        admitted = true;
+      }
+      barrier.notify_all();
+      std::unique_lock lock(barrierMutex);
+      barrier.wait(lock, [&] { return allowWrite; });
+      installed = first.generation;
+    }));
+  });
+  {
+    std::unique_lock lock(barrierMutex);
+    barrier.wait(lock, [&] { return admitted; });
+  }
+  std::thread replacer([&] {
+    const auto replacement = gate.replace(72);
+    {
+      std::scoped_lock lock(barrierMutex);
+      second = replacement;
+      replaced = true;
+    }
+    barrier.notify_all();
+  });
+  // replace() marks the first ticket stale before it waits for its admitted
+  // write. Once that is observable, force unrelated map growth while this
+  // same-owner transition is suspended. This catches retaining an
+  // unordered_map iterator across a condition-variable wait.
+  for (std::size_t attempt = 0U; attempt < 1'000'000U && gate.isCurrent(first); ++attempt) {
+    std::this_thread::yield();
+  }
+  assert(!gate.isCurrent(first));
+  for (std::int32_t owner = 1'000; owner < 6'000; ++owner) {
+    static_cast<void>(gate.replace(owner));
+  }
+  {
+    std::unique_lock lock(barrierMutex);
+    // The replacement marks G1 stale but cannot move the state map forward
+    // until the previously admitted global write is finished.
+    assert(!replaced);
+    allowWrite = true;
+  }
+  barrier.notify_all();
+  queued.join();
+  replacer.join();
+  assert(second.has_value());
+  assert(installed == first.generation);
+  assert(!gate.isCurrent(first));
+  assert(gate.isCurrent(*second));
+  installed = 0U;
+  assert(!gate.withCurrent(first, [&] { installed = first.generation; }));
+  assert(gate.withCurrent(*second, [&] { installed = second->generation; }));
+  assert(installed == second->generation);
+}
+
+void testRustCoreRecoveryRejectsSameThreadLifecycleReentry() {
+  protocol::GenerationInstallGate gate;
+  const auto ticket = gate.replace(73);
+  bool replacementRejected = false;
+  bool teardownRejected = false;
+  assert(gate.withCurrent(ticket, [&] {
+    try {
+      static_cast<void>(gate.replace(73));
+    } catch (const std::logic_error&) {
+      replacementRejected = true;
+    }
+    try {
+      static_cast<void>(gate.invalidateWhenIdle(73, [] {}));
+    } catch (const std::logic_error&) {
+      teardownRejected = true;
+    }
+  }));
+  assert(replacementRejected);
+  assert(teardownRejected);
+  assert(gate.isCurrent(ticket));
+  assert(gate.invalidateWhenIdle(73, [] {}));
+}
+
 } // namespace
 
 int main() {
@@ -1458,5 +1743,9 @@ int main() {
   testRuntimeRestorationAuthorityAppendAndAdoption();
   testAndroidIngressOrdinalAllocatorExhaustsWithoutWrapOrReuse();
   testAndroidDispatcherResultsCarryTheNegotiatedVersion();
+  testQueuedRustCoreRecoveryInstallCannotOverwriteCurrentGeneration();
+  testRustCoreRecoveryInstallAndInvalidationAreAtomic();
+  testRustCoreRecoveryReplacementWaitsForAdmittedInstall();
+  testRustCoreRecoveryRejectsSameThreadLifecycleReentry();
   return 0;
 }

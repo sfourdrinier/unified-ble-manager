@@ -3,6 +3,19 @@
 export { CoreBoundedStream } from './bounded-stream'
 export type { CoreStreamPushResult, CoreStreamTerminalReason } from './bounded-stream'
 export { AggregateStreamQuota } from './aggregate-stream-quota'
+export {
+  TerminalEvidenceAdmission,
+  TerminalEvidenceRecordTooLargeError,
+  type TerminalEvidenceAppendResult,
+  type TerminalEvidenceBytes,
+  type TerminalEvidenceCommit,
+  type TerminalEvidenceProducer,
+  type TerminalEvidenceRefusal,
+  type TerminalEvidenceReservation,
+  type TerminalEvidenceReservationRequest,
+  type TerminalEvidenceRecord,
+  type TerminalEvidenceSink
+} from './terminal-evidence'
 export { DEFAULT_CORE_MAXIMUM_VALUE_BYTES, UnifiedBleCore } from './unified-ble-core'
 export { CoreConnection, CoreGattDatabase } from './core-gatt-handles'
 export type { CoreScanSession, UnifiedBleCoreOptions } from './unified-ble-core'

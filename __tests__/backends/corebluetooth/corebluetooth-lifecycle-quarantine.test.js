@@ -170,10 +170,10 @@ describe('CoreBluetooth late-operation quarantine', () => {
       const subscription = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
       const nativeStopNotify = boundary.stopNotify.bind(boundary)
       let stopNotifyCalls = 0
-      boundary.stopNotify = async address => {
+      boundary.stopNotify = async (address, claim) => {
         stopNotifyCalls += 1
         await stopGate.promise
-        return nativeStopNotify(address)
+        return nativeStopNotify(address, claim)
       }
 
       const removal = subscription.remove()
@@ -437,12 +437,12 @@ describe('CoreBluetooth late-operation quarantine', () => {
       await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
       const nativeStopNotify = boundary.stopNotify.bind(boundary)
       let stopNotifyCalls = 0
-      boundary.stopNotify = async address => {
+      boundary.stopNotify = async (address, claim) => {
         stopNotifyCalls += 1
         if (stopNotifyCalls === 1) {
           throw new Error('The disconnect notification cleanup failed')
         }
-        return nativeStopNotify(address)
+        return nativeStopNotify(address, claim)
       }
 
       boundary.forceDisconnect('native-polar-h10')
@@ -530,18 +530,18 @@ describe('CoreBluetooth late-operation quarantine', () => {
       const database = await backend.gatt.discover(lease.connection, operation())
       const characteristic = (await database.snapshot()).characteristics[0].path
       const nativeStartNotify = boundary.startNotify.bind(boundary)
-      boundary.startNotify = async (address, onValue) => {
+      boundary.startNotify = async (address, onValue, claim) => {
         await startGate.promise
-        return nativeStartNotify(address, onValue)
+        return nativeStartNotify(address, onValue, claim)
       }
       const nativeStopNotify = boundary.stopNotify.bind(boundary)
       let stopNotifyCalls = 0
-      boundary.stopNotify = async address => {
+      boundary.stopNotify = async (address, claim) => {
         stopNotifyCalls += 1
         if (stopNotifyCalls === 1) {
           await stopGate.promise
         }
-        return nativeStopNotify(address)
+        return nativeStopNotify(address, claim)
       }
 
       const dispatch = backend.gatt.subscribe(characteristic, {
@@ -585,12 +585,12 @@ describe('CoreBluetooth late-operation quarantine', () => {
     await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
     const nativeStopNotify = boundary.stopNotify.bind(boundary)
     let stopNotifyCalls = 0
-    boundary.stopNotify = async address => {
+    boundary.stopNotify = async (address, claim) => {
       stopNotifyCalls += 1
       if (stopNotifyCalls === 1) {
         throw new Error('The synchronous notification cleanup failed')
       }
-      return nativeStopNotify(address)
+      return nativeStopNotify(address, claim)
     }
 
     const lostState = { availability: 'unavailable', authorization: 'granted', power: 'on', safeReason: 'lost' }
@@ -627,16 +627,16 @@ describe('CoreBluetooth late-operation quarantine', () => {
       const database = await backend.gatt.discover(lease.connection, operation())
       const characteristic = (await database.snapshot()).characteristics[0].path
       const nativeStartNotify = boundary.startNotify.bind(boundary)
-      boundary.startNotify = async (address, onValue) => {
+      boundary.startNotify = async (address, onValue, claim) => {
         await startGate.promise
-        return nativeStartNotify(address, onValue)
+        return nativeStartNotify(address, onValue, claim)
       }
       const nativeStopNotify = boundary.stopNotify.bind(boundary)
       let stopNotifyCalls = 0
-      boundary.stopNotify = async address => {
+      boundary.stopNotify = async (address, claim) => {
         stopNotifyCalls += 1
         if (stopNotifyCalls === 1) {
-          return nativeStopNotify(address)
+          return nativeStopNotify(address, claim)
         }
         throw new Error('late notification rollback failed')
       }
@@ -685,9 +685,9 @@ describe('CoreBluetooth late-operation quarantine', () => {
         const characteristic = (await database.snapshot()).characteristics[0].path
         const startGate = deferred()
         const nativeStartNotify = boundary.startNotify.bind(boundary)
-        boundary.startNotify = async (address, onValue) => {
+        boundary.startNotify = async (address, onValue, claim) => {
           await startGate.promise
-          await nativeStartNotify(address, onValue)
+          await nativeStartNotify(address, onValue, claim)
         }
         const controller = new AbortController()
         const publicOperation = operation(

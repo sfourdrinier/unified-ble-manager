@@ -1,4 +1,4 @@
-//! Rust half of wire revision `ubm-mobile-wire/2` (the TS half is
+//! Rust half of wire revision `ubm-mobile-wire/3` (the TS half is
 //! `src/backends/reactnative/rust-core-wire.ts`; golden vectors bind the
 //! two, see `docs/MOBILE_RUST_WIRE.md`).
 //!
@@ -19,7 +19,9 @@ use ubm_core::contracts::{BleErrorCode, BleErrorDomain, MAX_OPERATION_BYTES};
 use ubm_desktop::{DesktopError, PlatformDetail, PlatformValue};
 
 /// Wire revision this crate speaks.
-pub const WIRE_REVISION: &str = "ubm-mobile-wire/2";
+pub const WIRE_REVISION: &str = "ubm-mobile-wire/3";
+/// Experimental exact connection release revision, not advertised to clients.
+pub const EXACT_CONNECTION_WIRE_REVISION: &str = "ubm-mobile-wire/4";
 /// Bound on any JSON text crossing the native boundary, in UTF-8 bytes.
 pub const MAX_WIRE_TEXT_BYTES: usize = 1 << 20;
 /// Longest padded base64 text that can encode `MAX_OPERATION_BYTES`.
@@ -47,7 +49,16 @@ pub use ubm_desktop::continuation_outbox::encode_base64;
 
 /// Strict RFC 4648 decoding is shared with the native continuation boundary.
 pub fn decode_base64(text: &str, path: &str) -> Result<Vec<u8>, DesktopError> {
-    ubm_desktop::continuation_outbox::decode_base64(text, MAX_OPERATION_BYTES as usize).map_err(
+    decode_base64_bounded(text, path, MAX_OPERATION_BYTES as usize)
+}
+
+/// Strict RFC 4648 decoding with a caller-provided decoded-byte bound.
+pub fn decode_base64_bounded(
+    text: &str,
+    path: &str,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, DesktopError> {
+    ubm_desktop::continuation_outbox::decode_base64(text, maximum_bytes).map_err(
         |error| match error {
             ubm_desktop::continuation_outbox::Base64Error::Invalid => invalid(path),
             ubm_desktop::continuation_outbox::Base64Error::TooLarge => too_large(path),
@@ -140,6 +151,16 @@ impl Args {
             .ok_or_else(|| invalid(&self.path(key)))
     }
 
+    /// Canonical decimal `u64` identity, preserving values beyond JS safe integers.
+    pub fn decimal_u64(&self, key: &str) -> Result<u64, DesktopError> {
+        let value = self.string(key)?;
+        let parsed = value.parse::<u64>().map_err(|_| invalid(&self.path(key)))?;
+        if parsed.to_string() != value {
+            return Err(invalid(&self.path(key)));
+        }
+        Ok(parsed)
+    }
+
     /// Safe non-negative integer or null/absent.
     pub fn opt_integer(&self, key: &str, max: u64) -> Result<Option<u64>, DesktopError> {
         match self.get(key) {
@@ -214,6 +235,24 @@ impl Args {
                 op: format!("{}.{key}", self.op),
                 fields: fields.clone(),
             }),
+            _ => Err(invalid(&self.path(key))),
+        }
+    }
+
+    /// Array of nested object arguments, bounded before allocation.
+    pub fn objects(&self, key: &str, max: usize) -> Result<Vec<Args>, DesktopError> {
+        match self.get(key) {
+            Some(Value::Array(values)) if values.len() <= max => values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| match value {
+                    Value::Object(fields) => Ok(Args {
+                        op: format!("{}.{key}.{index}", self.op),
+                        fields: fields.clone(),
+                    }),
+                    _ => Err(invalid(&self.path(key))),
+                })
+                .collect(),
             _ => Err(invalid(&self.path(key))),
         }
     }
@@ -369,6 +408,21 @@ mod tests {
     }
 
     #[test]
+    fn bounded_base64_decode_refuses_bytes_above_the_reservation() {
+        let text = encode_base64(&[0xa5, 0x5a]);
+        assert_eq!(
+            decode_base64_bounded(&text, "t", 1)
+                .err()
+                .map(|error| error.code_str()),
+            Some("bytes.too-large")
+        );
+        assert_eq!(
+            decode_base64_bounded(&text, "t", 2).unwrap(),
+            vec![0xa5, 0x5a]
+        );
+    }
+
+    #[test]
     fn args_are_exact_and_integers_safe() {
         let args = parse_args("x", r#"{"a":1,"b":1.5,"c":9007199254740992,"d":-1}"#)
             .ok()
@@ -384,5 +438,21 @@ mod tests {
             parse_args("x", &oversize).err().map(|e| e.code_str()),
             Some("bytes.too-large")
         );
+    }
+
+    #[test]
+    fn decimal_identity_is_canonical_and_preserves_unsigned_range() {
+        for (input, expected) in [
+            ("0", 0),
+            ("9007199254740993", 9_007_199_254_740_993),
+            ("18446744073709551615", u64::MAX),
+        ] {
+            let args = parse_args("ordered", &format!("{{\"id\":\"{input}\"}}")).unwrap();
+            assert_eq!(args.decimal_u64("id").unwrap(), expected);
+        }
+        for input in ["", "01", "+1", "-1", "18446744073709551616"] {
+            let args = parse_args("ordered", &format!("{{\"id\":\"{input}\"}}")).unwrap();
+            assert!(args.decimal_u64("id").is_err());
+        }
     }
 }

@@ -13,6 +13,7 @@ command -v javac >/dev/null 2>&1 || { echo "NO JDK: javac missing (recorded limi
 command -v java >/dev/null 2>&1 || { echo "NO JDK: java missing (recorded limitation)"; exit 1; }
 
 echo "--- jni: production guards (L1 safe-Rust + L2 doc names)"
+python3 -B "$ROOT/bindings/test_guard_wiring.py"
 python3 "$ROOT/bindings/guard_wiring.py"
 
 echo "--- jni: Rust gates"

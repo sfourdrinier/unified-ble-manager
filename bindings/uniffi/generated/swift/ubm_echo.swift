@@ -949,9 +949,35 @@ public func FfiConverterTypeEchoSession_lower(_ value: EchoSession) -> UInt64 {
 
 public protocol MobileCoreHostProtocol: AnyObject, Sendable {
 
+    func acknowledgeNotificationFailureSpoolGlobalV2(captureOrdinal: UInt64)  -> String
+
+    func acknowledgeNotificationFailureSpoolGlobalV3(captureOrdinal: UInt64, sourceSequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure)  -> String
+
+    func acknowledgeNotificationFailureSpoolGlobalV4(captureOrdinal: UInt64, sourceSequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure)  -> String
+
+    func acknowledgeNotificationFailureSpoolV1(sequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure)  -> String
+
+    func appendNotificationFailureV1(sequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure)  -> String
+
+    func claimNotificationFailureSpoolConfigurationAuthorityV3()  -> MobileNotificationFailureSpoolConfigurationAuthority?
+
+    func claimScanFailureRecoveryConfigurationAuthorityV1()  -> MobileScanFailureRecoveryConfigurationAuthority?
+
     func complete(requestId: UInt64, completion: MobileRadioCompletion)  -> String
 
+    func configureNotificationFailureSpoolV1(recordingId: String)  -> String
+
+    func configureNotificationFailureSpoolV2(recordingId: String, maxBytes: String, maxRecords: String)  -> String
+
+    func confirmNotificationFailureSpoolAcknowledgementRetirementV4(captureOrdinal: UInt64, sourceSequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure, retirementCapability: String)  -> String
+
     func continuationAcknowledgeClaim(claimToken: String, completion: MobileInvokeCompletion)
+
+    func continuationAcknowledgePeerFailureRecovery(recoveryRecord: String, completion: MobileInvokeCompletion)
+
+    func continuationAcknowledgeRetainedClaimV1(claimToken: String, completion: MobileInvokeCompletion)
+
+    func continuationAcknowledgeRetainedClaimV2(claimToken: String, completion: MobileInvokeCompletion)
 
     func continuationCancelDeclaration(reservationToken: String)  -> String
 
@@ -965,19 +991,57 @@ public protocol MobileCoreHostProtocol: AnyObject, Sendable {
 
     func continuationExecute(peerId: String, declarationJson: String, completion: MobileInvokeCompletion)
 
+    func continuationLegacyEvidencePage(claimToken: String, afterOrdinal: UInt64, maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)
+
+    func continuationLegacyEvidenceRetire(claimToken: String, ordinal: UInt64, completion: MobileInvokeCompletion)
+
     func continuationPrepareClaim(maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)
+
+    func continuationPrepareClaimVersioned(version: UInt32, maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)
+
+    func continuationPrepareRetainedClaimV1(maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)
+
+    func continuationReadPeerFailureRecovery(recoveryRecord: String, offset: String, completion: MobileInvokeCompletion)
 
     func continuationRecordingControl(operation: String, id: String, token: String, maxItems: UInt32, maxBytes: UInt32)  -> String
 
     func continuationReserveDeclaration(declarationJson: String)  -> String
 
+    func continuationRetireClaimReceipt(claimToken: String, completion: MobileInvokeCompletion)
+
     func continuationSeedDeclaration(declarationJson: String)  -> String
 
     func ingest(ingress: MobileRadioIngress)  -> String
 
+    func ingestNotificationFailureV1(sequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure)  -> String
+
+    func notificationFailureIngressVersion(offered: UInt32)  -> UInt32
+
+    func notificationFailureSpoolPageGlobalV2(afterCaptureOrdinal: UInt64, maxItems: UInt32)  -> String
+
+    func notificationFailureSpoolPageV1(instance: MobileInstance, epoch: UInt64, afterSequence: UInt64, maxItems: UInt32)  -> String
+
+    func notificationFailureSpoolPendingRetirementsV4(maxItems: UInt32)  -> String
+
+    func notificationFailureSpoolResumeGlobalV2()  -> String
+
+    func notificationFailureSpoolResumeSequenceV1(instance: MobileInstance, epoch: UInt64)  -> String
+
     func openSession(owner: String, expectedWireRevision: String) throws  -> MobileCoreSession
 
+    func retireNotificationFailureSpoolAcknowledgementV3(captureOrdinal: UInt64, sourceSequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure)  -> String
+
     func shutdown()  -> String
+
+    func terminalEvidenceRecoveryAcknowledge(handle: String)  -> String
+
+    func terminalEvidenceRecoveryList(leaseId: String, maxItems: UInt32, maxBytes: UInt64)  -> String
+
+    func terminalEvidenceRecoveryListWithStatus(leaseId: String, maxItems: UInt32, maxBytes: UInt64)  -> String
+
+    func terminalEvidenceRecoveryOpenSelected()  -> String
+
+    func terminalEvidenceRecoveryRead(handle: String, offset: String, maxBytes: UInt32)  -> String
 
 }
 open class MobileCoreHost: MobileCoreHostProtocol, @unchecked Sendable {
@@ -1033,6 +1097,88 @@ open class MobileCoreHost: MobileCoreHostProtocol, @unchecked Sendable {
 
 
 
+open func acknowledgeNotificationFailureSpoolGlobalV2(captureOrdinal: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(captureOrdinal),uniffiCallStatus
+    )
+})
+}
+
+open func acknowledgeNotificationFailureSpoolGlobalV3(captureOrdinal: UInt64, sourceSequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(captureOrdinal),
+        FfiConverterUInt64.lower(sourceSequence),
+        FfiConverterTypeMobileInstance_lower(instance),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterTypeMobilePlatformFailure_lower(failure),uniffiCallStatus
+    )
+})
+}
+
+open func acknowledgeNotificationFailureSpoolGlobalV4(captureOrdinal: UInt64, sourceSequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(captureOrdinal),
+        FfiConverterUInt64.lower(sourceSequence),
+        FfiConverterTypeMobileInstance_lower(instance),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterTypeMobilePlatformFailure_lower(failure),uniffiCallStatus
+    )
+})
+}
+
+open func acknowledgeNotificationFailureSpoolV1(sequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_acknowledge_notification_failure_spool_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(sequence),
+        FfiConverterTypeMobileInstance_lower(instance),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterTypeMobilePlatformFailure_lower(failure),uniffiCallStatus
+    )
+})
+}
+
+open func appendNotificationFailureV1(sequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_append_notification_failure_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(sequence),
+        FfiConverterTypeMobileInstance_lower(instance),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterTypeMobilePlatformFailure_lower(failure),uniffiCallStatus
+    )
+})
+}
+
+open func claimNotificationFailureSpoolConfigurationAuthorityV3() -> MobileNotificationFailureSpoolConfigurationAuthority?  {
+    return try!  FfiConverterOptionTypeMobileNotificationFailureSpoolConfigurationAuthority.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func claimScanFailureRecoveryConfigurationAuthorityV1() -> MobileScanFailureRecoveryConfigurationAuthority?  {
+    return try!  FfiConverterOptionTypeMobileScanFailureRecoveryConfigurationAuthority.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
 open func complete(requestId: UInt64, completion: MobileRadioCompletion) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1044,9 +1190,76 @@ open func complete(requestId: UInt64, completion: MobileRadioCompletion) -> Stri
 })
 }
 
+open func configureNotificationFailureSpoolV1(recordingId: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recordingId),uniffiCallStatus
+    )
+})
+}
+
+open func configureNotificationFailureSpoolV2(recordingId: String, maxBytes: String, maxRecords: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_configure_notification_failure_spool_v2(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recordingId),
+        FfiConverterString.lower(maxBytes),
+        FfiConverterString.lower(maxRecords),uniffiCallStatus
+    )
+})
+}
+
+open func confirmNotificationFailureSpoolAcknowledgementRetirementV4(captureOrdinal: UInt64, sourceSequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure, retirementCapability: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(captureOrdinal),
+        FfiConverterUInt64.lower(sourceSequence),
+        FfiConverterTypeMobileInstance_lower(instance),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterTypeMobilePlatformFailure_lower(failure),
+        FfiConverterString.lower(retirementCapability),uniffiCallStatus
+    )
+})
+}
+
 open func continuationAcknowledgeClaim(claimToken: String, completion: MobileInvokeCompletion)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(claimToken),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
+open func continuationAcknowledgePeerFailureRecovery(recoveryRecord: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recoveryRecord),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
+open func continuationAcknowledgeRetainedClaimV1(claimToken: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(claimToken),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
+open func continuationAcknowledgeRetainedClaimV2(claimToken: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_retained_claim_v2(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(claimToken),
         FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
@@ -1114,12 +1327,70 @@ open func continuationExecute(peerId: String, declarationJson: String, completio
 }
 }
 
+open func continuationLegacyEvidencePage(claimToken: String, afterOrdinal: UInt64, maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_page(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(claimToken),
+        FfiConverterUInt64.lower(afterOrdinal),
+        FfiConverterUInt32.lower(maxItems),
+        FfiConverterUInt32.lower(maxBytes),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
+open func continuationLegacyEvidenceRetire(claimToken: String, ordinal: UInt64, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_legacy_evidence_retire(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(claimToken),
+        FfiConverterUInt64.lower(ordinal),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
 open func continuationPrepareClaim(maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim(
             self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(maxItems),
         FfiConverterUInt32.lower(maxBytes),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
+open func continuationPrepareClaimVersioned(version: UInt32, maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim_versioned(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(version),
+        FfiConverterUInt32.lower(maxItems),
+        FfiConverterUInt32.lower(maxBytes),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
+open func continuationPrepareRetainedClaimV1(maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_retained_claim_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(maxItems),
+        FfiConverterUInt32.lower(maxBytes),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
+open func continuationReadPeerFailureRecovery(recoveryRecord: String, offset: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_read_peer_failure_recovery(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recoveryRecord),
+        FfiConverterString.lower(offset),
         FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
     )
 }
@@ -1149,6 +1420,16 @@ open func continuationReserveDeclaration(declarationJson: String) -> String  {
 })
 }
 
+open func continuationRetireClaimReceipt(claimToken: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_retire_claim_receipt(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(claimToken),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
 open func continuationSeedDeclaration(declarationJson: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1169,6 +1450,83 @@ open func ingest(ingress: MobileRadioIngress) -> String  {
 })
 }
 
+open func ingestNotificationFailureV1(sequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest_notification_failure_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(sequence),
+        FfiConverterTypeMobileInstance_lower(instance),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterTypeMobilePlatformFailure_lower(failure),uniffiCallStatus
+    )
+})
+}
+
+open func notificationFailureIngressVersion(offered: UInt32) -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_ingress_version(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(offered),uniffiCallStatus
+    )
+})
+}
+
+open func notificationFailureSpoolPageGlobalV2(afterCaptureOrdinal: UInt64, maxItems: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_global_v2(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(afterCaptureOrdinal),
+        FfiConverterUInt32.lower(maxItems),uniffiCallStatus
+    )
+})
+}
+
+open func notificationFailureSpoolPageV1(instance: MobileInstance, epoch: UInt64, afterSequence: UInt64, maxItems: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_page_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMobileInstance_lower(instance),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterUInt64.lower(afterSequence),
+        FfiConverterUInt32.lower(maxItems),uniffiCallStatus
+    )
+})
+}
+
+open func notificationFailureSpoolPendingRetirementsV4(maxItems: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_pending_retirements_v4(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(maxItems),uniffiCallStatus
+    )
+})
+}
+
+open func notificationFailureSpoolResumeGlobalV2() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_global_v2(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func notificationFailureSpoolResumeSequenceV1(instance: MobileInstance, epoch: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_notification_failure_spool_resume_sequence_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMobileInstance_lower(instance),
+        FfiConverterUInt64.lower(epoch),uniffiCallStatus
+    )
+})
+}
+
 open func openSession(owner: String, expectedWireRevision: String)throws  -> MobileCoreSession  {
     return try  FfiConverterTypeMobileCoreSession_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
         uniffiCallStatus in
@@ -1180,11 +1538,80 @@ open func openSession(owner: String, expectedWireRevision: String)throws  -> Mob
 })
 }
 
+open func retireNotificationFailureSpoolAcknowledgementV3(captureOrdinal: UInt64, sourceSequence: UInt64, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(captureOrdinal),
+        FfiConverterUInt64.lower(sourceSequence),
+        FfiConverterTypeMobileInstance_lower(instance),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterTypeMobilePlatformFailure_lower(failure),uniffiCallStatus
+    )
+})
+}
+
 open func shutdown() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func terminalEvidenceRecoveryAcknowledge(handle: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_acknowledge(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(handle),uniffiCallStatus
+    )
+})
+}
+
+open func terminalEvidenceRecoveryList(leaseId: String, maxItems: UInt32, maxBytes: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(leaseId),
+        FfiConverterUInt32.lower(maxItems),
+        FfiConverterUInt64.lower(maxBytes),uniffiCallStatus
+    )
+})
+}
+
+open func terminalEvidenceRecoveryListWithStatus(leaseId: String, maxItems: UInt32, maxBytes: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_list_with_status(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(leaseId),
+        FfiConverterUInt32.lower(maxItems),
+        FfiConverterUInt64.lower(maxBytes),uniffiCallStatus
+    )
+})
+}
+
+open func terminalEvidenceRecoveryOpenSelected() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_open_selected(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func terminalEvidenceRecoveryRead(handle: String, offset: String, maxBytes: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_terminal_evidence_recovery_read(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(handle),
+        FfiConverterString.lower(offset),
+        FfiConverterUInt32.lower(maxBytes),uniffiCallStatus
     )
 })
 }
@@ -1247,7 +1674,19 @@ public protocol MobileCoreSessionProtocol: AnyObject, Sendable {
 
     func invoke(op: String, argsJson: String, completion: MobileInvokeCompletion)
 
+    func negotiateScanEndVersion(offeredJson: String) throws  -> String
+
+    func negotiateScanEndVersionQualified(offeredJson: String) throws  -> String
+
+    func orderedRecordingContext(id: String, completion: MobileInvokeCompletion)
+
+    func orderedRecordingReceiptControl(operation: String, id: String, completion: MobileInvokeCompletion)
+
     func sessionId()  -> UInt64
+
+    func startOrderedRecording(handle: String, recordingId: String, maxBytes: String, maxRecords: String, declarationJson: String, budgetMs: UInt64, completion: MobileInvokeCompletion)
+
+    func stopOrderedRecording(id: String, completion: MobileInvokeCompletion)
 
 }
 open class MobileCoreSession: MobileCoreSessionProtocol, @unchecked Sendable {
@@ -1334,6 +1773,47 @@ open func invoke(op: String, argsJson: String, completion: MobileInvokeCompletio
 }
 }
 
+open func negotiateScanEndVersion(offeredJson: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(offeredJson),uniffiCallStatus
+    )
+})
+}
+
+open func negotiateScanEndVersionQualified(offeredJson: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_negotiate_scan_end_version_qualified(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(offeredJson),uniffiCallStatus
+    )
+})
+}
+
+open func orderedRecordingContext(id: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_context(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
+open func orderedRecordingReceiptControl(operation: String, id: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_ordered_recording_receipt_control(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(operation),
+        FfiConverterString.lower(id),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
 open func sessionId() -> UInt64  {
     return try!  FfiConverterUInt64.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1341,6 +1821,31 @@ open func sessionId() -> UInt64  {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
+}
+
+open func startOrderedRecording(handle: String, recordingId: String, maxBytes: String, maxRecords: String, declarationJson: String, budgetMs: UInt64, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_start_ordered_recording(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(handle),
+        FfiConverterString.lower(recordingId),
+        FfiConverterString.lower(maxBytes),
+        FfiConverterString.lower(maxRecords),
+        FfiConverterString.lower(declarationJson),
+        FfiConverterUInt64.lower(budgetMs),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+
+open func stopOrderedRecording(id: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_stop_ordered_recording(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
 }
 
 
@@ -1386,6 +1891,891 @@ public func FfiConverterTypeMobileCoreSession_lift(_ handle: UInt64) throws -> M
 #endif
 public func FfiConverterTypeMobileCoreSession_lower(_ value: MobileCoreSession) -> UInt64 {
     return FfiConverterTypeMobileCoreSession.lower(value)
+}
+
+
+
+
+
+
+public protocol MobileNotificationFailureSpoolConfigurationAuthorityProtocol: AnyObject, Sendable {
+
+    func configureV1(recordingId: String)  -> String
+
+    func configureV2(recordingId: String, maxBytes: String, maxRecords: String)  -> String
+
+}
+open class MobileNotificationFailureSpoolConfigurationAuthority: MobileNotificationFailureSpoolConfigurationAuthorityProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_ubm5_uniffi_echo_fn_clone_mobilenotificationfailurespoolconfigurationauthority(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilenotificationfailurespoolconfigurationauthority(handle, $0) }
+    }
+
+
+
+
+open func configureV1(recordingId: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recordingId),uniffiCallStatus
+    )
+})
+}
+
+open func configureV2(recordingId: String, maxBytes: String, maxRecords: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recordingId),
+        FfiConverterString.lower(maxBytes),
+        FfiConverterString.lower(maxRecords),uniffiCallStatus
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MobileNotificationFailureSpoolConfigurationAuthority
+
+    public static func lift(_ handle: UInt64) throws -> MobileNotificationFailureSpoolConfigurationAuthority {
+        return MobileNotificationFailureSpoolConfigurationAuthority(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MobileNotificationFailureSpoolConfigurationAuthority) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileNotificationFailureSpoolConfigurationAuthority {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MobileNotificationFailureSpoolConfigurationAuthority, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority_lift(_ handle: UInt64) throws -> MobileNotificationFailureSpoolConfigurationAuthority {
+    return try FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority_lower(_ value: MobileNotificationFailureSpoolConfigurationAuthority) -> UInt64 {
+    return FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.lower(value)
+}
+
+
+
+
+
+
+public protocol MobileScanFailureCleanupReceiptProtocol: AnyObject, Sendable {
+
+    func retire() throws
+
+}
+open class MobileScanFailureCleanupReceipt: MobileScanFailureCleanupReceiptProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurecleanupreceipt(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurecleanupreceipt(handle, $0) }
+    }
+
+
+
+
+open func retire()throws   {try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurecleanupreceipt_retire(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureCleanupReceipt: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MobileScanFailureCleanupReceipt
+
+    public static func lift(_ handle: UInt64) throws -> MobileScanFailureCleanupReceipt {
+        return MobileScanFailureCleanupReceipt(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MobileScanFailureCleanupReceipt) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureCleanupReceipt {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MobileScanFailureCleanupReceipt, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureCleanupReceipt_lift(_ handle: UInt64) throws -> MobileScanFailureCleanupReceipt {
+    return try FfiConverterTypeMobileScanFailureCleanupReceipt.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureCleanupReceipt_lower(_ value: MobileScanFailureCleanupReceipt) -> UInt64 {
+    return FfiConverterTypeMobileScanFailureCleanupReceipt.lower(value)
+}
+
+
+
+
+
+
+public protocol MobileScanFailureRecoveryProtocol: AnyObject, Sendable {
+
+    func owners()  -> [MobileScanFailureRecoveryOwner]
+
+    func pendingCleanupReceipts() throws  -> [MobileScanFailureCleanupReceipt]
+
+}
+open class MobileScanFailureRecovery: MobileScanFailureRecoveryProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecovery(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecovery(handle, $0) }
+    }
+
+
+
+
+open func owners() -> [MobileScanFailureRecoveryOwner]  {
+    return try!  FfiConverterSequenceTypeMobileScanFailureRecoveryOwner.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_owners(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func pendingCleanupReceipts()throws  -> [MobileScanFailureCleanupReceipt]  {
+    return try  FfiConverterSequenceTypeMobileScanFailureCleanupReceipt.lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecovery_pending_cleanup_receipts(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureRecovery: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MobileScanFailureRecovery
+
+    public static func lift(_ handle: UInt64) throws -> MobileScanFailureRecovery {
+        return MobileScanFailureRecovery(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MobileScanFailureRecovery) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureRecovery {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MobileScanFailureRecovery, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecovery_lift(_ handle: UInt64) throws -> MobileScanFailureRecovery {
+    return try FfiConverterTypeMobileScanFailureRecovery.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecovery_lower(_ value: MobileScanFailureRecovery) -> UInt64 {
+    return FfiConverterTypeMobileScanFailureRecovery.lower(value)
+}
+
+
+
+
+
+
+public protocol MobileScanFailureRecoveryConfigurationAuthorityProtocol: AnyObject, Sendable {
+
+    func attachRecordingV1(recordingId: String)  -> String
+
+    func attachRecordingV2(recordingId: String) throws  -> MobileScanFailureRecovery
+
+}
+open class MobileScanFailureRecoveryConfigurationAuthority: MobileScanFailureRecoveryConfigurationAuthorityProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryconfigurationauthority(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryconfigurationauthority(handle, $0) }
+    }
+
+
+
+
+open func attachRecordingV1(recordingId: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recordingId),uniffiCallStatus
+    )
+})
+}
+
+open func attachRecordingV2(recordingId: String)throws  -> MobileScanFailureRecovery  {
+    return try  FfiConverterTypeMobileScanFailureRecovery_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recordingId),uniffiCallStatus
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MobileScanFailureRecoveryConfigurationAuthority
+
+    public static func lift(_ handle: UInt64) throws -> MobileScanFailureRecoveryConfigurationAuthority {
+        return MobileScanFailureRecoveryConfigurationAuthority(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MobileScanFailureRecoveryConfigurationAuthority) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureRecoveryConfigurationAuthority {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MobileScanFailureRecoveryConfigurationAuthority, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority_lift(_ handle: UInt64) throws -> MobileScanFailureRecoveryConfigurationAuthority {
+    return try FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority_lower(_ value: MobileScanFailureRecoveryConfigurationAuthority) -> UInt64 {
+    return FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.lower(value)
+}
+
+
+
+
+
+
+public protocol MobileScanFailureRecoveryHeadProtocol: AnyObject, Sendable {
+
+    func acknowledge() throws
+
+    func finalize() throws  -> MobileScanFailureCleanupReceipt
+
+    func info()  -> MobileScanFailureRecoveryHeadInfo
+
+    func read(offset: String) throws  -> MobileScanFailureRecoveryPage
+
+    func release() throws
+
+    func retire() throws
+
+}
+open class MobileScanFailureRecoveryHead: MobileScanFailureRecoveryHeadProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryhead(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryhead(handle, $0) }
+    }
+
+
+
+
+open func acknowledge()throws   {try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_acknowledge(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+open func finalize()throws  -> MobileScanFailureCleanupReceipt  {
+    return try  FfiConverterTypeMobileScanFailureCleanupReceipt_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_finalize(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func info() -> MobileScanFailureRecoveryHeadInfo  {
+    return try!  FfiConverterTypeMobileScanFailureRecoveryHeadInfo_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_info(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func read(offset: String)throws  -> MobileScanFailureRecoveryPage  {
+    return try  FfiConverterTypeMobileScanFailureRecoveryPage_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_read(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(offset),uniffiCallStatus
+    )
+})
+}
+
+open func release()throws   {try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_release(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+open func retire()throws   {try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryhead_retire(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureRecoveryHead: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MobileScanFailureRecoveryHead
+
+    public static func lift(_ handle: UInt64) throws -> MobileScanFailureRecoveryHead {
+        return MobileScanFailureRecoveryHead(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MobileScanFailureRecoveryHead) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureRecoveryHead {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MobileScanFailureRecoveryHead, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryHead_lift(_ handle: UInt64) throws -> MobileScanFailureRecoveryHead {
+    return try FfiConverterTypeMobileScanFailureRecoveryHead.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryHead_lower(_ value: MobileScanFailureRecoveryHead) -> UInt64 {
+    return FfiConverterTypeMobileScanFailureRecoveryHead.lower(value)
+}
+
+
+
+
+
+
+public protocol MobileScanFailureRecoveryOwnerProtocol: AnyObject, Sendable {
+
+    func head(memberIndex: UInt64) throws  -> MobileScanFailureRecoveryHead?
+
+    func info() throws  -> MobileScanFailureRecoveryOwnerInfo
+
+    func member(index: UInt64) throws  -> MobileScanFailureMember
+
+    func rawFinalize() throws  -> MobileScanFailureCleanupReceipt
+
+    func rawInfo() throws  -> MobileScanFailureRawInfo
+
+    func rawMember(index: UInt64) throws  -> MobileScanFailureMember
+
+    func rawRelease() throws
+
+    func rawRetire() throws
+
+    func rawToken(index: UInt64, offset: String, maxBytes: UInt32) throws  -> MobileScanFailureRawToken
+
+}
+open class MobileScanFailureRecoveryOwner: MobileScanFailureRecoveryOwnerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_ubm5_uniffi_echo_fn_clone_mobilescanfailurerecoveryowner(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilescanfailurerecoveryowner(handle, $0) }
+    }
+
+
+
+
+open func head(memberIndex: UInt64)throws  -> MobileScanFailureRecoveryHead?  {
+    return try  FfiConverterOptionTypeMobileScanFailureRecoveryHead.lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_head(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(memberIndex),uniffiCallStatus
+    )
+})
+}
+
+open func info()throws  -> MobileScanFailureRecoveryOwnerInfo  {
+    return try  FfiConverterTypeMobileScanFailureRecoveryOwnerInfo_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_info(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func member(index: UInt64)throws  -> MobileScanFailureMember  {
+    return try  FfiConverterTypeMobileScanFailureMember_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_member(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(index),uniffiCallStatus
+    )
+})
+}
+
+open func rawFinalize()throws  -> MobileScanFailureCleanupReceipt  {
+    return try  FfiConverterTypeMobileScanFailureCleanupReceipt_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_finalize(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func rawInfo()throws  -> MobileScanFailureRawInfo  {
+    return try  FfiConverterTypeMobileScanFailureRawInfo_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_info(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func rawMember(index: UInt64)throws  -> MobileScanFailureMember  {
+    return try  FfiConverterTypeMobileScanFailureMember_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_member(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(index),uniffiCallStatus
+    )
+})
+}
+
+open func rawRelease()throws   {try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_release(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+open func rawRetire()throws   {try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_retire(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+open func rawToken(index: UInt64, offset: String, maxBytes: UInt32)throws  -> MobileScanFailureRawToken  {
+    return try  FfiConverterTypeMobileScanFailureRawToken_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilescanfailurerecoveryowner_raw_token(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(index),
+        FfiConverterString.lower(offset),
+        FfiConverterUInt32.lower(maxBytes),uniffiCallStatus
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureRecoveryOwner: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MobileScanFailureRecoveryOwner
+
+    public static func lift(_ handle: UInt64) throws -> MobileScanFailureRecoveryOwner {
+        return MobileScanFailureRecoveryOwner(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MobileScanFailureRecoveryOwner) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureRecoveryOwner {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MobileScanFailureRecoveryOwner, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryOwner_lift(_ handle: UInt64) throws -> MobileScanFailureRecoveryOwner {
+    return try FfiConverterTypeMobileScanFailureRecoveryOwner.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryOwner_lower(_ value: MobileScanFailureRecoveryOwner) -> UInt64 {
+    return FfiConverterTypeMobileScanFailureRecoveryOwner.lower(value)
 }
 
 
@@ -2097,6 +3487,64 @@ public func FfiConverterTypeMobileGattService_lower(_ value: MobileGattService) 
 }
 
 
+public struct MobileGattSnapshotIdentity: Equatable, Hashable {
+    public var owner: String
+    public var attachment: UInt64
+    public var revision: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(owner: String, attachment: UInt64, revision: UInt64) {
+        self.owner = owner
+        self.attachment = attachment
+        self.revision = revision
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileGattSnapshotIdentity: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileGattSnapshotIdentity: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGattSnapshotIdentity {
+        return
+            try MobileGattSnapshotIdentity(
+                owner: FfiConverterString.read(from: &buf),
+                attachment: FfiConverterUInt64.read(from: &buf),
+                revision: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileGattSnapshotIdentity, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.owner, into: &buf)
+        FfiConverterUInt64.write(value.attachment, into: &buf)
+        FfiConverterUInt64.write(value.revision, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattSnapshotIdentity_lift(_ buf: RustBuffer) throws -> MobileGattSnapshotIdentity {
+    return try FfiConverterTypeMobileGattSnapshotIdentity.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattSnapshotIdentity_lower(_ value: MobileGattSnapshotIdentity) -> RustBuffer {
+    return FfiConverterTypeMobileGattSnapshotIdentity.lower(value)
+}
+
+
 public struct MobileInstance: Equatable, Hashable {
     public var peerId: String
     public var serviceUuid: String
@@ -2217,6 +3665,522 @@ public func FfiConverterTypeMobileManufacturerData_lower(_ value: MobileManufact
 }
 
 
+public struct MobileOrderedActivation: Equatable, Hashable {
+    public var instance: MobileInstance
+    public var connectionGeneration: String
+    public var sourceGeneration: MobileOrderedGeneration
+    public var groupId: UInt64
+    public var member: MobileOrderedRegistration
+    public var activationEpoch: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(instance: MobileInstance, connectionGeneration: String, sourceGeneration: MobileOrderedGeneration, groupId: UInt64, member: MobileOrderedRegistration, activationEpoch: UInt64) {
+        self.instance = instance
+        self.connectionGeneration = connectionGeneration
+        self.sourceGeneration = sourceGeneration
+        self.groupId = groupId
+        self.member = member
+        self.activationEpoch = activationEpoch
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedActivation: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedActivation: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedActivation {
+        return
+            try MobileOrderedActivation(
+                instance: FfiConverterTypeMobileInstance.read(from: &buf),
+                connectionGeneration: FfiConverterString.read(from: &buf),
+                sourceGeneration: FfiConverterTypeMobileOrderedGeneration.read(from: &buf),
+                groupId: FfiConverterUInt64.read(from: &buf),
+                member: FfiConverterTypeMobileOrderedRegistration.read(from: &buf),
+                activationEpoch: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileOrderedActivation, into buf: inout [UInt8]) {
+        FfiConverterTypeMobileInstance.write(value.instance, into: &buf)
+        FfiConverterString.write(value.connectionGeneration, into: &buf)
+        FfiConverterTypeMobileOrderedGeneration.write(value.sourceGeneration, into: &buf)
+        FfiConverterUInt64.write(value.groupId, into: &buf)
+        FfiConverterTypeMobileOrderedRegistration.write(value.member, into: &buf)
+        FfiConverterUInt64.write(value.activationEpoch, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedActivation_lift(_ buf: RustBuffer) throws -> MobileOrderedActivation {
+    return try FfiConverterTypeMobileOrderedActivation.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedActivation_lower(_ value: MobileOrderedActivation) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedActivation.lower(value)
+}
+
+
+public struct MobileOrderedFailureV2: Equatable, Hashable {
+    public var kind: String
+    public var gattStatus: Int32?
+    public var nativeDomain: String?
+    public var nativeCode: Int64?
+    public var nativeName: String?
+    public var detail: String
+    public var dispatched: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kind: String, gattStatus: Int32?, nativeDomain: String?, nativeCode: Int64?, nativeName: String?, detail: String, dispatched: Bool) {
+        self.kind = kind
+        self.gattStatus = gattStatus
+        self.nativeDomain = nativeDomain
+        self.nativeCode = nativeCode
+        self.nativeName = nativeName
+        self.detail = detail
+        self.dispatched = dispatched
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedFailureV2: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedFailureV2: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedFailureV2 {
+        return
+            try MobileOrderedFailureV2(
+                kind: FfiConverterString.read(from: &buf),
+                gattStatus: FfiConverterOptionInt32.read(from: &buf),
+                nativeDomain: FfiConverterOptionString.read(from: &buf),
+                nativeCode: FfiConverterOptionInt64.read(from: &buf),
+                nativeName: FfiConverterOptionString.read(from: &buf),
+                detail: FfiConverterString.read(from: &buf),
+                dispatched: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileOrderedFailureV2, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterOptionInt32.write(value.gattStatus, into: &buf)
+        FfiConverterOptionString.write(value.nativeDomain, into: &buf)
+        FfiConverterOptionInt64.write(value.nativeCode, into: &buf)
+        FfiConverterOptionString.write(value.nativeName, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
+        FfiConverterBool.write(value.dispatched, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedFailureV2_lift(_ buf: RustBuffer) throws -> MobileOrderedFailureV2 {
+    return try FfiConverterTypeMobileOrderedFailureV2.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedFailureV2_lower(_ value: MobileOrderedFailureV2) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedFailureV2.lower(value)
+}
+
+
+public struct MobileOrderedMarkerWriteStatus: Equatable, Hashable {
+    public var admission: MobileOrderedMarkerAdmission
+    public var write: MobileOrderedMarkerWriteState
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(admission: MobileOrderedMarkerAdmission, write: MobileOrderedMarkerWriteState) {
+        self.admission = admission
+        self.write = write
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedMarkerWriteStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedMarkerWriteStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedMarkerWriteStatus {
+        return
+            try MobileOrderedMarkerWriteStatus(
+                admission: FfiConverterTypeMobileOrderedMarkerAdmission.read(from: &buf),
+                write: FfiConverterTypeMobileOrderedMarkerWriteState.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileOrderedMarkerWriteStatus, into buf: inout [UInt8]) {
+        FfiConverterTypeMobileOrderedMarkerAdmission.write(value.admission, into: &buf)
+        FfiConverterTypeMobileOrderedMarkerWriteState.write(value.write, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedMarkerWriteStatus_lift(_ buf: RustBuffer) throws -> MobileOrderedMarkerWriteStatus {
+    return try FfiConverterTypeMobileOrderedMarkerWriteStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedMarkerWriteStatus_lower(_ value: MobileOrderedMarkerWriteStatus) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedMarkerWriteStatus.lower(value)
+}
+
+
+public struct MobileOrderedMember: Equatable, Hashable {
+    public var memberId: UInt64
+    public var instance: MobileInstance
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(memberId: UInt64, instance: MobileInstance) {
+        self.memberId = memberId
+        self.instance = instance
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedMember: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedMember: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedMember {
+        return
+            try MobileOrderedMember(
+                memberId: FfiConverterUInt64.read(from: &buf),
+                instance: FfiConverterTypeMobileInstance.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileOrderedMember, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.memberId, into: &buf)
+        FfiConverterTypeMobileInstance.write(value.instance, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedMember_lift(_ buf: RustBuffer) throws -> MobileOrderedMember {
+    return try FfiConverterTypeMobileOrderedMember.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedMember_lower(_ value: MobileOrderedMember) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedMember.lower(value)
+}
+
+
+public struct MobileOrderedOpenIdentity: Equatable, Hashable {
+    public var version: UInt32
+    public var ownerIncarnation: String
+    public var slot: UInt32
+    public var slotGeneration: UInt64
+    public var originalRequestId: UInt64
+    public var nativeGroupId: UInt64
+    public var peerId: String
+    public var spec: MobileOrderedOpenSpec
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(version: UInt32, ownerIncarnation: String, slot: UInt32, slotGeneration: UInt64, originalRequestId: UInt64, nativeGroupId: UInt64, peerId: String, spec: MobileOrderedOpenSpec) {
+        self.version = version
+        self.ownerIncarnation = ownerIncarnation
+        self.slot = slot
+        self.slotGeneration = slotGeneration
+        self.originalRequestId = originalRequestId
+        self.nativeGroupId = nativeGroupId
+        self.peerId = peerId
+        self.spec = spec
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedOpenIdentity: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedOpenIdentity: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedOpenIdentity {
+        return
+            try MobileOrderedOpenIdentity(
+                version: FfiConverterUInt32.read(from: &buf),
+                ownerIncarnation: FfiConverterString.read(from: &buf),
+                slot: FfiConverterUInt32.read(from: &buf),
+                slotGeneration: FfiConverterUInt64.read(from: &buf),
+                originalRequestId: FfiConverterUInt64.read(from: &buf),
+                nativeGroupId: FfiConverterUInt64.read(from: &buf),
+                peerId: FfiConverterString.read(from: &buf),
+                spec: FfiConverterTypeMobileOrderedOpenSpec.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileOrderedOpenIdentity, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.version, into: &buf)
+        FfiConverterString.write(value.ownerIncarnation, into: &buf)
+        FfiConverterUInt32.write(value.slot, into: &buf)
+        FfiConverterUInt64.write(value.slotGeneration, into: &buf)
+        FfiConverterUInt64.write(value.originalRequestId, into: &buf)
+        FfiConverterUInt64.write(value.nativeGroupId, into: &buf)
+        FfiConverterString.write(value.peerId, into: &buf)
+        FfiConverterTypeMobileOrderedOpenSpec.write(value.spec, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenIdentity_lift(_ buf: RustBuffer) throws -> MobileOrderedOpenIdentity {
+    return try FfiConverterTypeMobileOrderedOpenIdentity.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenIdentity_lower(_ value: MobileOrderedOpenIdentity) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedOpenIdentity.lower(value)
+}
+
+
+public struct MobileOrderedOpenSpec: Equatable, Hashable {
+    public var connectionGeneration: String
+    public var databaseGeneration: String
+    public var snapshotIdentity: MobileGattSnapshotIdentity
+    public var members: [MobileOrderedMember]
+    public var itemCapacity: UInt32
+    public var byteCapacity: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(connectionGeneration: String, databaseGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity, members: [MobileOrderedMember], itemCapacity: UInt32, byteCapacity: UInt32) {
+        self.connectionGeneration = connectionGeneration
+        self.databaseGeneration = databaseGeneration
+        self.snapshotIdentity = snapshotIdentity
+        self.members = members
+        self.itemCapacity = itemCapacity
+        self.byteCapacity = byteCapacity
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedOpenSpec: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedOpenSpec: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedOpenSpec {
+        return
+            try MobileOrderedOpenSpec(
+                connectionGeneration: FfiConverterString.read(from: &buf),
+                databaseGeneration: FfiConverterString.read(from: &buf),
+                snapshotIdentity: FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf),
+                members: FfiConverterSequenceTypeMobileOrderedMember.read(from: &buf),
+                itemCapacity: FfiConverterUInt32.read(from: &buf),
+                byteCapacity: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileOrderedOpenSpec, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.connectionGeneration, into: &buf)
+        FfiConverterString.write(value.databaseGeneration, into: &buf)
+        FfiConverterTypeMobileGattSnapshotIdentity.write(value.snapshotIdentity, into: &buf)
+        FfiConverterSequenceTypeMobileOrderedMember.write(value.members, into: &buf)
+        FfiConverterUInt32.write(value.itemCapacity, into: &buf)
+        FfiConverterUInt32.write(value.byteCapacity, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenSpec_lift(_ buf: RustBuffer) throws -> MobileOrderedOpenSpec {
+    return try FfiConverterTypeMobileOrderedOpenSpec.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenSpec_lower(_ value: MobileOrderedOpenSpec) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedOpenSpec.lower(value)
+}
+
+
+public struct MobileOrderedRegistration: Equatable, Hashable {
+    public var memberId: UInt64
+    public var sourceMember: UInt64
+    public var epoch: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(memberId: UInt64, sourceMember: UInt64, epoch: UInt64) {
+        self.memberId = memberId
+        self.sourceMember = sourceMember
+        self.epoch = epoch
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedRegistration: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedRegistration: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedRegistration {
+        return
+            try MobileOrderedRegistration(
+                memberId: FfiConverterUInt64.read(from: &buf),
+                sourceMember: FfiConverterUInt64.read(from: &buf),
+                epoch: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileOrderedRegistration, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.memberId, into: &buf)
+        FfiConverterUInt64.write(value.sourceMember, into: &buf)
+        FfiConverterUInt64.write(value.epoch, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedRegistration_lift(_ buf: RustBuffer) throws -> MobileOrderedRegistration {
+    return try FfiConverterTypeMobileOrderedRegistration.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedRegistration_lower(_ value: MobileOrderedRegistration) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedRegistration.lower(value)
+}
+
+
+public struct MobileOrderedSlotIdentity: Equatable, Hashable {
+    public var ownerIncarnation: String
+    public var slot: UInt32
+    public var slotGeneration: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ownerIncarnation: String, slot: UInt32, slotGeneration: UInt64) {
+        self.ownerIncarnation = ownerIncarnation
+        self.slot = slot
+        self.slotGeneration = slotGeneration
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedSlotIdentity: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedSlotIdentity: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedSlotIdentity {
+        return
+            try MobileOrderedSlotIdentity(
+                ownerIncarnation: FfiConverterString.read(from: &buf),
+                slot: FfiConverterUInt32.read(from: &buf),
+                slotGeneration: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileOrderedSlotIdentity, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.ownerIncarnation, into: &buf)
+        FfiConverterUInt32.write(value.slot, into: &buf)
+        FfiConverterUInt64.write(value.slotGeneration, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedSlotIdentity_lift(_ buf: RustBuffer) throws -> MobileOrderedSlotIdentity {
+    return try FfiConverterTypeMobileOrderedSlotIdentity.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedSlotIdentity_lower(_ value: MobileOrderedSlotIdentity) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedSlotIdentity.lower(value)
+}
+
+
 public struct MobilePeerName: Equatable, Hashable {
     public var peerId: String
     public var name: String?
@@ -2268,6 +4232,76 @@ public func FfiConverterTypeMobilePeerName_lift(_ buf: RustBuffer) throws -> Mob
 #endif
 public func FfiConverterTypeMobilePeerName_lower(_ value: MobilePeerName) -> RustBuffer {
     return FfiConverterTypeMobilePeerName.lower(value)
+}
+
+
+public struct MobilePlatformFailure: Equatable, Hashable {
+    public var kind: String
+    public var gattStatus: Int32?
+    public var nativeDomain: String?
+    public var nativeCode: Int64?
+    public var detail: String
+    public var dispatched: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kind: String, gattStatus: Int32?, nativeDomain: String?, nativeCode: Int64?, detail: String, dispatched: Bool) {
+        self.kind = kind
+        self.gattStatus = gattStatus
+        self.nativeDomain = nativeDomain
+        self.nativeCode = nativeCode
+        self.detail = detail
+        self.dispatched = dispatched
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobilePlatformFailure: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobilePlatformFailure: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobilePlatformFailure {
+        return
+            try MobilePlatformFailure(
+                kind: FfiConverterString.read(from: &buf),
+                gattStatus: FfiConverterOptionInt32.read(from: &buf),
+                nativeDomain: FfiConverterOptionString.read(from: &buf),
+                nativeCode: FfiConverterOptionInt64.read(from: &buf),
+                detail: FfiConverterString.read(from: &buf),
+                dispatched: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobilePlatformFailure, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterOptionInt32.write(value.gattStatus, into: &buf)
+        FfiConverterOptionString.write(value.nativeDomain, into: &buf)
+        FfiConverterOptionInt64.write(value.nativeCode, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
+        FfiConverterBool.write(value.dispatched, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobilePlatformFailure_lift(_ buf: RustBuffer) throws -> MobilePlatformFailure {
+    return try FfiConverterTypeMobilePlatformFailure.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobilePlatformFailure_lower(_ value: MobilePlatformFailure) -> RustBuffer {
+    return FfiConverterTypeMobilePlatformFailure.lower(value)
 }
 
 
@@ -2326,6 +4360,390 @@ public func FfiConverterTypeMobileRestoredPeer_lift(_ buf: RustBuffer) throws ->
 #endif
 public func FfiConverterTypeMobileRestoredPeer_lower(_ value: MobileRestoredPeer) -> RustBuffer {
     return FfiConverterTypeMobileRestoredPeer.lower(value)
+}
+
+
+public struct MobileScanFailureIdentity: Equatable, Hashable {
+    public var host: Data
+    public var scan: Data
+    public var start: Data
+    public var sourceGeneration: Data
+    public var occurrence: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(host: Data, scan: Data, start: Data, sourceGeneration: Data, occurrence: Data) {
+        self.host = host
+        self.scan = scan
+        self.start = start
+        self.sourceGeneration = sourceGeneration
+        self.occurrence = occurrence
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileScanFailureIdentity: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureIdentity: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureIdentity {
+        return
+            try MobileScanFailureIdentity(
+                host: FfiConverterData.read(from: &buf),
+                scan: FfiConverterData.read(from: &buf),
+                start: FfiConverterData.read(from: &buf),
+                sourceGeneration: FfiConverterData.read(from: &buf),
+                occurrence: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileScanFailureIdentity, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.host, into: &buf)
+        FfiConverterData.write(value.scan, into: &buf)
+        FfiConverterData.write(value.start, into: &buf)
+        FfiConverterData.write(value.sourceGeneration, into: &buf)
+        FfiConverterData.write(value.occurrence, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureIdentity_lift(_ buf: RustBuffer) throws -> MobileScanFailureIdentity {
+    return try FfiConverterTypeMobileScanFailureIdentity.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureIdentity_lower(_ value: MobileScanFailureIdentity) -> RustBuffer {
+    return FfiConverterTypeMobileScanFailureIdentity.lower(value)
+}
+
+
+public struct MobileScanFailureMember: Equatable, Hashable {
+    public var recipient: Data
+    public var delivery: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(recipient: Data, delivery: Data) {
+        self.recipient = recipient
+        self.delivery = delivery
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileScanFailureMember: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureMember: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureMember {
+        return
+            try MobileScanFailureMember(
+                recipient: FfiConverterData.read(from: &buf),
+                delivery: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileScanFailureMember, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.recipient, into: &buf)
+        FfiConverterData.write(value.delivery, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureMember_lift(_ buf: RustBuffer) throws -> MobileScanFailureMember {
+    return try FfiConverterTypeMobileScanFailureMember.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureMember_lower(_ value: MobileScanFailureMember) -> RustBuffer {
+    return FfiConverterTypeMobileScanFailureMember.lower(value)
+}
+
+
+public struct MobileScanFailureRawInfo: Equatable, Hashable {
+    public var identity: MobileScanFailureIdentity
+    public var memberCount: UInt64
+    public var tokenCount: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(identity: MobileScanFailureIdentity, memberCount: UInt64, tokenCount: UInt64) {
+        self.identity = identity
+        self.memberCount = memberCount
+        self.tokenCount = tokenCount
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileScanFailureRawInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureRawInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureRawInfo {
+        return
+            try MobileScanFailureRawInfo(
+                identity: FfiConverterTypeMobileScanFailureIdentity.read(from: &buf),
+                memberCount: FfiConverterUInt64.read(from: &buf),
+                tokenCount: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileScanFailureRawInfo, into buf: inout [UInt8]) {
+        FfiConverterTypeMobileScanFailureIdentity.write(value.identity, into: &buf)
+        FfiConverterUInt64.write(value.memberCount, into: &buf)
+        FfiConverterUInt64.write(value.tokenCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRawInfo_lift(_ buf: RustBuffer) throws -> MobileScanFailureRawInfo {
+    return try FfiConverterTypeMobileScanFailureRawInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRawInfo_lower(_ value: MobileScanFailureRawInfo) -> RustBuffer {
+    return FfiConverterTypeMobileScanFailureRawInfo.lower(value)
+}
+
+
+public struct MobileScanFailureRecoveryHeadInfo: Equatable, Hashable {
+    public var `protocol`: UInt32
+    public var representation: String
+    public var identity: MobileScanFailureIdentity
+    public var member: MobileScanFailureMember
+    public var encodedLength: String
+    public var chunkBytes: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(`protocol`: UInt32, representation: String, identity: MobileScanFailureIdentity, member: MobileScanFailureMember, encodedLength: String, chunkBytes: UInt32) {
+        self.`protocol` = `protocol`
+        self.representation = representation
+        self.identity = identity
+        self.member = member
+        self.encodedLength = encodedLength
+        self.chunkBytes = chunkBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileScanFailureRecoveryHeadInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureRecoveryHeadInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureRecoveryHeadInfo {
+        return
+            try MobileScanFailureRecoveryHeadInfo(
+                protocol: FfiConverterUInt32.read(from: &buf),
+                representation: FfiConverterString.read(from: &buf),
+                identity: FfiConverterTypeMobileScanFailureIdentity.read(from: &buf),
+                member: FfiConverterTypeMobileScanFailureMember.read(from: &buf),
+                encodedLength: FfiConverterString.read(from: &buf),
+                chunkBytes: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileScanFailureRecoveryHeadInfo, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.`protocol`, into: &buf)
+        FfiConverterString.write(value.representation, into: &buf)
+        FfiConverterTypeMobileScanFailureIdentity.write(value.identity, into: &buf)
+        FfiConverterTypeMobileScanFailureMember.write(value.member, into: &buf)
+        FfiConverterString.write(value.encodedLength, into: &buf)
+        FfiConverterUInt32.write(value.chunkBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryHeadInfo_lift(_ buf: RustBuffer) throws -> MobileScanFailureRecoveryHeadInfo {
+    return try FfiConverterTypeMobileScanFailureRecoveryHeadInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryHeadInfo_lower(_ value: MobileScanFailureRecoveryHeadInfo) -> RustBuffer {
+    return FfiConverterTypeMobileScanFailureRecoveryHeadInfo.lower(value)
+}
+
+
+public struct MobileScanFailureRecoveryOwnerInfo: Equatable, Hashable {
+    public var ownerId: String
+    public var prepared: Bool
+    public var producerFinished: Bool
+    public var rawRetired: Bool
+    public var rawReleased: Bool
+    public var memberCount: UInt64
+    public var released: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ownerId: String, prepared: Bool, producerFinished: Bool, rawRetired: Bool, rawReleased: Bool, memberCount: UInt64, released: Bool) {
+        self.ownerId = ownerId
+        self.prepared = prepared
+        self.producerFinished = producerFinished
+        self.rawRetired = rawRetired
+        self.rawReleased = rawReleased
+        self.memberCount = memberCount
+        self.released = released
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileScanFailureRecoveryOwnerInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureRecoveryOwnerInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureRecoveryOwnerInfo {
+        return
+            try MobileScanFailureRecoveryOwnerInfo(
+                ownerId: FfiConverterString.read(from: &buf),
+                prepared: FfiConverterBool.read(from: &buf),
+                producerFinished: FfiConverterBool.read(from: &buf),
+                rawRetired: FfiConverterBool.read(from: &buf),
+                rawReleased: FfiConverterBool.read(from: &buf),
+                memberCount: FfiConverterUInt64.read(from: &buf),
+                released: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileScanFailureRecoveryOwnerInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.ownerId, into: &buf)
+        FfiConverterBool.write(value.prepared, into: &buf)
+        FfiConverterBool.write(value.producerFinished, into: &buf)
+        FfiConverterBool.write(value.rawRetired, into: &buf)
+        FfiConverterBool.write(value.rawReleased, into: &buf)
+        FfiConverterUInt64.write(value.memberCount, into: &buf)
+        FfiConverterBool.write(value.released, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryOwnerInfo_lift(_ buf: RustBuffer) throws -> MobileScanFailureRecoveryOwnerInfo {
+    return try FfiConverterTypeMobileScanFailureRecoveryOwnerInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryOwnerInfo_lower(_ value: MobileScanFailureRecoveryOwnerInfo) -> RustBuffer {
+    return FfiConverterTypeMobileScanFailureRecoveryOwnerInfo.lower(value)
+}
+
+
+public struct MobileScanFailureRecoveryPage: Equatable, Hashable {
+    public var offset: String
+    public var nextOffset: String
+    public var bytes: Data
+    public var done: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(offset: String, nextOffset: String, bytes: Data, done: Bool) {
+        self.offset = offset
+        self.nextOffset = nextOffset
+        self.bytes = bytes
+        self.done = done
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileScanFailureRecoveryPage: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureRecoveryPage: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureRecoveryPage {
+        return
+            try MobileScanFailureRecoveryPage(
+                offset: FfiConverterString.read(from: &buf),
+                nextOffset: FfiConverterString.read(from: &buf),
+                bytes: FfiConverterData.read(from: &buf),
+                done: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileScanFailureRecoveryPage, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.offset, into: &buf)
+        FfiConverterString.write(value.nextOffset, into: &buf)
+        FfiConverterData.write(value.bytes, into: &buf)
+        FfiConverterBool.write(value.done, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryPage_lift(_ buf: RustBuffer) throws -> MobileScanFailureRecoveryPage {
+    return try FfiConverterTypeMobileScanFailureRecoveryPage.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRecoveryPage_lower(_ value: MobileScanFailureRecoveryPage) -> RustBuffer {
+    return FfiConverterTypeMobileScanFailureRecoveryPage.lower(value)
 }
 
 
@@ -2531,6 +4949,1525 @@ public func FfiConverterTypeMobileCoreError_lower(_ value: MobileCoreError) -> R
 
 
 
+public enum MobileGraphAuthorityStatus: Equatable, Hashable {
+
+    case pending
+    case notCreated
+    case opened(authorityId: UInt64
+    )
+    case closed(authorityId: UInt64
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileGraphAuthorityStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileGraphAuthorityStatus: FfiConverterRustBuffer {
+    typealias SwiftType = MobileGraphAuthorityStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGraphAuthorityStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .pending
+
+        case 2: return .notCreated
+
+        case 3: return .opened(authorityId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 4: return .closed(authorityId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileGraphAuthorityStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .pending:
+            writeInt(&buf, Int32(1))
+
+
+        case .notCreated:
+            writeInt(&buf, Int32(2))
+
+
+        case let .opened(authorityId):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(authorityId, into: &buf)
+
+
+        case let .closed(authorityId):
+            writeInt(&buf, Int32(4))
+            FfiConverterUInt64.write(authorityId, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGraphAuthorityStatus_lift(_ buf: RustBuffer) throws -> MobileGraphAuthorityStatus {
+    return try FfiConverterTypeMobileGraphAuthorityStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGraphAuthorityStatus_lower(_ value: MobileGraphAuthorityStatus) -> RustBuffer {
+    return FfiConverterTypeMobileGraphAuthorityStatus.lower(value)
+}
+
+
+
+
+public enum MobileGraphPermitState: Equatable, Hashable {
+
+    case acquired
+    case stale
+    case busy
+    case committed
+    case released
+    case forgotten
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileGraphPermitState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileGraphPermitState: FfiConverterRustBuffer {
+    typealias SwiftType = MobileGraphPermitState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGraphPermitState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .acquired
+
+        case 2: return .stale
+
+        case 3: return .busy
+
+        case 4: return .committed
+
+        case 5: return .released
+
+        case 6: return .forgotten
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileGraphPermitState, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .acquired:
+            writeInt(&buf, Int32(1))
+
+
+        case .stale:
+            writeInt(&buf, Int32(2))
+
+
+        case .busy:
+            writeInt(&buf, Int32(3))
+
+
+        case .committed:
+            writeInt(&buf, Int32(4))
+
+
+        case .released:
+            writeInt(&buf, Int32(5))
+
+
+        case .forgotten:
+            writeInt(&buf, Int32(6))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGraphPermitState_lift(_ buf: RustBuffer) throws -> MobileGraphPermitState {
+    return try FfiConverterTypeMobileGraphPermitState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGraphPermitState_lower(_ value: MobileGraphPermitState) -> RustBuffer {
+    return FfiConverterTypeMobileGraphPermitState.lower(value)
+}
+
+
+
+
+public enum MobileGraphReserveStatus: Equatable, Hashable {
+
+    case pending
+    case notCreated
+    case issued(receiptId: UInt64
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileGraphReserveStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileGraphReserveStatus: FfiConverterRustBuffer {
+    typealias SwiftType = MobileGraphReserveStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGraphReserveStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .pending
+
+        case 2: return .notCreated
+
+        case 3: return .issued(receiptId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileGraphReserveStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .pending:
+            writeInt(&buf, Int32(1))
+
+
+        case .notCreated:
+            writeInt(&buf, Int32(2))
+
+
+        case let .issued(receiptId):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(receiptId, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGraphReserveStatus_lift(_ buf: RustBuffer) throws -> MobileGraphReserveStatus {
+    return try FfiConverterTypeMobileGraphReserveStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGraphReserveStatus_lower(_ value: MobileGraphReserveStatus) -> RustBuffer {
+    return FfiConverterTypeMobileGraphReserveStatus.lower(value)
+}
+
+
+
+
+public enum MobileOrderedEnableStatus: Equatable, Hashable {
+
+    case pending
+    case enabled(delivery: String
+    )
+    case released(failure: MobilePlatformFailure?
+    )
+    case uncertain(failure: MobilePlatformFailure
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedEnableStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedEnableStatus: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedEnableStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedEnableStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .pending
+
+        case 2: return .enabled(delivery: try FfiConverterString.read(from: &buf)
+        )
+
+        case 3: return .released(failure: try FfiConverterOptionTypeMobilePlatformFailure.read(from: &buf)
+        )
+
+        case 4: return .uncertain(failure: try FfiConverterTypeMobilePlatformFailure.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedEnableStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .pending:
+            writeInt(&buf, Int32(1))
+
+
+        case let .enabled(delivery):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(delivery, into: &buf)
+
+
+        case let .released(failure):
+            writeInt(&buf, Int32(3))
+            FfiConverterOptionTypeMobilePlatformFailure.write(failure, into: &buf)
+
+
+        case let .uncertain(failure):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeMobilePlatformFailure.write(failure, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedEnableStatus_lift(_ buf: RustBuffer) throws -> MobileOrderedEnableStatus {
+    return try FfiConverterTypeMobileOrderedEnableStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedEnableStatus_lower(_ value: MobileOrderedEnableStatus) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedEnableStatus.lower(value)
+}
+
+
+
+
+public enum MobileOrderedGeneration: Equatable, Hashable {
+
+    case counter(value: UInt64
+    )
+    case opaque(value: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedGeneration: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedGeneration: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedGeneration
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedGeneration {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .counter(value: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 2: return .opaque(value: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedGeneration, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .counter(value):
+            writeInt(&buf, Int32(1))
+            FfiConverterUInt64.write(value, into: &buf)
+
+
+        case let .opaque(value):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(value, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedGeneration_lift(_ buf: RustBuffer) throws -> MobileOrderedGeneration {
+    return try FfiConverterTypeMobileOrderedGeneration.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedGeneration_lower(_ value: MobileOrderedGeneration) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedGeneration.lower(value)
+}
+
+
+
+
+public enum MobileOrderedIndeterminateReason: Equatable, Hashable {
+
+    case failure(failure: MobileOrderedFailureV2
+    )
+    case reason(reason: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedIndeterminateReason: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedIndeterminateReason: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedIndeterminateReason
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedIndeterminateReason {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .failure(failure: try FfiConverterTypeMobileOrderedFailureV2.read(from: &buf)
+        )
+
+        case 2: return .reason(reason: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedIndeterminateReason, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .failure(failure):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeMobileOrderedFailureV2.write(failure, into: &buf)
+
+
+        case let .reason(reason):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(reason, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedIndeterminateReason_lift(_ buf: RustBuffer) throws -> MobileOrderedIndeterminateReason {
+    return try FfiConverterTypeMobileOrderedIndeterminateReason.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedIndeterminateReason_lower(_ value: MobileOrderedIndeterminateReason) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedIndeterminateReason.lower(value)
+}
+
+
+
+
+public enum MobileOrderedMarkerAdmission: Equatable, Hashable {
+
+    case pending
+    case notAdmitted
+    case admitted(ordinal: UInt64
+    )
+    case rejected(failure: MobilePlatformFailure
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedMarkerAdmission: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedMarkerAdmission: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedMarkerAdmission
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedMarkerAdmission {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .pending
+
+        case 2: return .notAdmitted
+
+        case 3: return .admitted(ordinal: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 4: return .rejected(failure: try FfiConverterTypeMobilePlatformFailure.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedMarkerAdmission, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .pending:
+            writeInt(&buf, Int32(1))
+
+
+        case .notAdmitted:
+            writeInt(&buf, Int32(2))
+
+
+        case let .admitted(ordinal):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(ordinal, into: &buf)
+
+
+        case let .rejected(failure):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeMobilePlatformFailure.write(failure, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedMarkerAdmission_lift(_ buf: RustBuffer) throws -> MobileOrderedMarkerAdmission {
+    return try FfiConverterTypeMobileOrderedMarkerAdmission.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedMarkerAdmission_lower(_ value: MobileOrderedMarkerAdmission) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedMarkerAdmission.lower(value)
+}
+
+
+
+
+public enum MobileOrderedMarkerWriteState: Equatable, Hashable {
+
+    case initiating
+    case notStarted(failure: MobilePlatformFailure?
+    )
+    case started(failure: MobilePlatformFailure?
+    )
+    case settled(failure: MobilePlatformFailure?
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedMarkerWriteState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedMarkerWriteState: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedMarkerWriteState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedMarkerWriteState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .initiating
+
+        case 2: return .notStarted(failure: try FfiConverterOptionTypeMobilePlatformFailure.read(from: &buf)
+        )
+
+        case 3: return .started(failure: try FfiConverterOptionTypeMobilePlatformFailure.read(from: &buf)
+        )
+
+        case 4: return .settled(failure: try FfiConverterOptionTypeMobilePlatformFailure.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedMarkerWriteState, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .initiating:
+            writeInt(&buf, Int32(1))
+
+
+        case let .notStarted(failure):
+            writeInt(&buf, Int32(2))
+            FfiConverterOptionTypeMobilePlatformFailure.write(failure, into: &buf)
+
+
+        case let .started(failure):
+            writeInt(&buf, Int32(3))
+            FfiConverterOptionTypeMobilePlatformFailure.write(failure, into: &buf)
+
+
+        case let .settled(failure):
+            writeInt(&buf, Int32(4))
+            FfiConverterOptionTypeMobilePlatformFailure.write(failure, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedMarkerWriteState_lift(_ buf: RustBuffer) throws -> MobileOrderedMarkerWriteState {
+    return try FfiConverterTypeMobileOrderedMarkerWriteState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedMarkerWriteState_lower(_ value: MobileOrderedMarkerWriteState) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedMarkerWriteState.lower(value)
+}
+
+
+
+
+public enum MobileOrderedOpenCompletion: Equatable, Hashable {
+
+    case result(slotIdentity: MobileOrderedSlotIdentity, outcome: MobileOrderedOpenOutcome
+    )
+    case retired(slotIdentity: MobileOrderedSlotIdentity
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedOpenCompletion: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedOpenCompletion: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedOpenCompletion
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedOpenCompletion {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .result(slotIdentity: try FfiConverterTypeMobileOrderedSlotIdentity.read(from: &buf), outcome: try FfiConverterTypeMobileOrderedOpenOutcome.read(from: &buf)
+        )
+
+        case 2: return .retired(slotIdentity: try FfiConverterTypeMobileOrderedSlotIdentity.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedOpenCompletion, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .result(slotIdentity,outcome):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeMobileOrderedSlotIdentity.write(slotIdentity, into: &buf)
+            FfiConverterTypeMobileOrderedOpenOutcome.write(outcome, into: &buf)
+
+
+        case let .retired(slotIdentity):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeMobileOrderedSlotIdentity.write(slotIdentity, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenCompletion_lift(_ buf: RustBuffer) throws -> MobileOrderedOpenCompletion {
+    return try FfiConverterTypeMobileOrderedOpenCompletion.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenCompletion_lower(_ value: MobileOrderedOpenCompletion) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedOpenCompletion.lower(value)
+}
+
+
+
+
+public enum MobileOrderedOpenOutcome: Equatable, Hashable {
+
+    case pending
+    case opened(sourceGeneration: MobileOrderedGeneration, members: [MobileOrderedRegistration]
+    )
+    case failed(originalFailure: MobileOrderedFailureV2, ownership: MobileOrderedOwnershipV2
+    )
+    case indeterminate(originalFailureOrReason: MobileOrderedIndeterminateReason
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedOpenOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedOpenOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedOpenOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedOpenOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .pending
+
+        case 2: return .opened(sourceGeneration: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), members: try FfiConverterSequenceTypeMobileOrderedRegistration.read(from: &buf)
+        )
+
+        case 3: return .failed(originalFailure: try FfiConverterTypeMobileOrderedFailureV2.read(from: &buf), ownership: try FfiConverterTypeMobileOrderedOwnershipV2.read(from: &buf)
+        )
+
+        case 4: return .indeterminate(originalFailureOrReason: try FfiConverterTypeMobileOrderedIndeterminateReason.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedOpenOutcome, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .pending:
+            writeInt(&buf, Int32(1))
+
+
+        case let .opened(sourceGeneration,members):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeMobileOrderedGeneration.write(sourceGeneration, into: &buf)
+            FfiConverterSequenceTypeMobileOrderedRegistration.write(members, into: &buf)
+
+
+        case let .failed(originalFailure,ownership):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeMobileOrderedFailureV2.write(originalFailure, into: &buf)
+            FfiConverterTypeMobileOrderedOwnershipV2.write(ownership, into: &buf)
+
+
+        case let .indeterminate(originalFailureOrReason):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeMobileOrderedIndeterminateReason.write(originalFailureOrReason, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenOutcome_lift(_ buf: RustBuffer) throws -> MobileOrderedOpenOutcome {
+    return try FfiConverterTypeMobileOrderedOpenOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenOutcome_lower(_ value: MobileOrderedOpenOutcome) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedOpenOutcome.lower(value)
+}
+
+
+
+
+public enum MobileOrderedOpenOwnership: Equatable, Hashable {
+
+    case notCreated
+    case created(generation: MobileOrderedGeneration, members: [MobileOrderedRegistration]
+    )
+    case indeterminate(recoveryKey: UInt64
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedOpenOwnership: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedOpenOwnership: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedOpenOwnership
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedOpenOwnership {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .notCreated
+
+        case 2: return .created(generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), members: try FfiConverterSequenceTypeMobileOrderedRegistration.read(from: &buf)
+        )
+
+        case 3: return .indeterminate(recoveryKey: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedOpenOwnership, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .notCreated:
+            writeInt(&buf, Int32(1))
+
+
+        case let .created(generation,members):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterSequenceTypeMobileOrderedRegistration.write(members, into: &buf)
+
+
+        case let .indeterminate(recoveryKey):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(recoveryKey, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenOwnership_lift(_ buf: RustBuffer) throws -> MobileOrderedOpenOwnership {
+    return try FfiConverterTypeMobileOrderedOpenOwnership.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOpenOwnership_lower(_ value: MobileOrderedOpenOwnership) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedOpenOwnership.lower(value)
+}
+
+
+
+
+public enum MobileOrderedOwnershipV2: Equatable, Hashable {
+
+    case notCreated
+    case created(sourceGeneration: MobileOrderedGeneration, members: [MobileOrderedRegistration]
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedOwnershipV2: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedOwnershipV2: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedOwnershipV2
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedOwnershipV2 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .notCreated
+
+        case 2: return .created(sourceGeneration: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), members: try FfiConverterSequenceTypeMobileOrderedRegistration.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedOwnershipV2, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .notCreated:
+            writeInt(&buf, Int32(1))
+
+
+        case let .created(sourceGeneration,members):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeMobileOrderedGeneration.write(sourceGeneration, into: &buf)
+            FfiConverterSequenceTypeMobileOrderedRegistration.write(members, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOwnershipV2_lift(_ buf: RustBuffer) throws -> MobileOrderedOwnershipV2 {
+    return try FfiConverterTypeMobileOrderedOwnershipV2.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedOwnershipV2_lower(_ value: MobileOrderedOwnershipV2) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedOwnershipV2.lower(value)
+}
+
+
+
+
+public enum MobileOrderedRecord: Equatable, Hashable {
+
+    case value(member: MobileOrderedRegistration, ordinal: UInt64, value: Data, delivery: String, provenance: String
+    )
+    case loss(scope: String, memberId: UInt64?, unit: String, count: UInt64?, byteCount: UInt64?
+    )
+    case fence(member: MobileOrderedRegistration, uncertainTail: Bool
+    )
+    case barrier(barrierId: UInt64, uncertainTail: Bool
+    )
+    case marker(markerId: UInt64, ordinal: UInt64
+    )
+    case terminal(reason: String, uncertainTail: Bool, nativeDomain: String?, nativeCode: String?, failureMember: MobileOrderedRegistration?, rejected: MobileOrderedRejected?
+    )
+    case bridgeFailure(code: String, detail: String
+    )
+    case sourceFailed(uncertainTail: Bool, failure: MobilePlatformFailure, nativeDomain: String?, nativeCode: String?, failureMember: MobileOrderedRegistration?, rejected: MobileOrderedRejected?
+    )
+    case subsequentSourceFailure(failure: MobilePlatformFailure
+    )
+    case failureObservationsOmitted
+    case subsequentSourceFailureV2(failure: MobilePlatformFailure, instance: MobileInstance, sourceGeneration: String, sourceMember: UInt64, epoch: UInt64, batchId: UInt64, recordIndex: UInt32
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedRecord: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedRecord
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedRecord {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .value(member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf), ordinal: try FfiConverterUInt64.read(from: &buf), value: try FfiConverterData.read(from: &buf), delivery: try FfiConverterString.read(from: &buf), provenance: try FfiConverterString.read(from: &buf)
+        )
+
+        case 2: return .loss(scope: try FfiConverterString.read(from: &buf), memberId: try FfiConverterOptionUInt64.read(from: &buf), unit: try FfiConverterString.read(from: &buf), count: try FfiConverterOptionUInt64.read(from: &buf), byteCount: try FfiConverterOptionUInt64.read(from: &buf)
+        )
+
+        case 3: return .fence(member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf), uncertainTail: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 4: return .barrier(barrierId: try FfiConverterUInt64.read(from: &buf), uncertainTail: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 5: return .marker(markerId: try FfiConverterUInt64.read(from: &buf), ordinal: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 6: return .terminal(reason: try FfiConverterString.read(from: &buf), uncertainTail: try FfiConverterBool.read(from: &buf), nativeDomain: try FfiConverterOptionString.read(from: &buf), nativeCode: try FfiConverterOptionString.read(from: &buf), failureMember: try FfiConverterOptionTypeMobileOrderedRegistration.read(from: &buf), rejected: try FfiConverterOptionTypeMobileOrderedRejected.read(from: &buf)
+        )
+
+        case 7: return .bridgeFailure(code: try FfiConverterString.read(from: &buf), detail: try FfiConverterString.read(from: &buf)
+        )
+
+        case 8: return .sourceFailed(uncertainTail: try FfiConverterBool.read(from: &buf), failure: try FfiConverterTypeMobilePlatformFailure.read(from: &buf), nativeDomain: try FfiConverterOptionString.read(from: &buf), nativeCode: try FfiConverterOptionString.read(from: &buf), failureMember: try FfiConverterOptionTypeMobileOrderedRegistration.read(from: &buf), rejected: try FfiConverterOptionTypeMobileOrderedRejected.read(from: &buf)
+        )
+
+        case 9: return .subsequentSourceFailure(failure: try FfiConverterTypeMobilePlatformFailure.read(from: &buf)
+        )
+
+        case 10: return .failureObservationsOmitted
+
+        case 11: return .subsequentSourceFailureV2(failure: try FfiConverterTypeMobilePlatformFailure.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), sourceGeneration: try FfiConverterString.read(from: &buf), sourceMember: try FfiConverterUInt64.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), batchId: try FfiConverterUInt64.read(from: &buf), recordIndex: try FfiConverterUInt32.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedRecord, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .value(member,ordinal,value,delivery,provenance):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+            FfiConverterUInt64.write(ordinal, into: &buf)
+            FfiConverterData.write(value, into: &buf)
+            FfiConverterString.write(delivery, into: &buf)
+            FfiConverterString.write(provenance, into: &buf)
+
+
+        case let .loss(scope,memberId,unit,count,byteCount):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(scope, into: &buf)
+            FfiConverterOptionUInt64.write(memberId, into: &buf)
+            FfiConverterString.write(unit, into: &buf)
+            FfiConverterOptionUInt64.write(count, into: &buf)
+            FfiConverterOptionUInt64.write(byteCount, into: &buf)
+
+
+        case let .fence(member,uncertainTail):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+            FfiConverterBool.write(uncertainTail, into: &buf)
+
+
+        case let .barrier(barrierId,uncertainTail):
+            writeInt(&buf, Int32(4))
+            FfiConverterUInt64.write(barrierId, into: &buf)
+            FfiConverterBool.write(uncertainTail, into: &buf)
+
+
+        case let .marker(markerId,ordinal):
+            writeInt(&buf, Int32(5))
+            FfiConverterUInt64.write(markerId, into: &buf)
+            FfiConverterUInt64.write(ordinal, into: &buf)
+
+
+        case let .terminal(reason,uncertainTail,nativeDomain,nativeCode,failureMember,rejected):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(reason, into: &buf)
+            FfiConverterBool.write(uncertainTail, into: &buf)
+            FfiConverterOptionString.write(nativeDomain, into: &buf)
+            FfiConverterOptionString.write(nativeCode, into: &buf)
+            FfiConverterOptionTypeMobileOrderedRegistration.write(failureMember, into: &buf)
+            FfiConverterOptionTypeMobileOrderedRejected.write(rejected, into: &buf)
+
+
+        case let .bridgeFailure(code,detail):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(code, into: &buf)
+            FfiConverterString.write(detail, into: &buf)
+
+
+        case let .sourceFailed(uncertainTail,failure,nativeDomain,nativeCode,failureMember,rejected):
+            writeInt(&buf, Int32(8))
+            FfiConverterBool.write(uncertainTail, into: &buf)
+            FfiConverterTypeMobilePlatformFailure.write(failure, into: &buf)
+            FfiConverterOptionString.write(nativeDomain, into: &buf)
+            FfiConverterOptionString.write(nativeCode, into: &buf)
+            FfiConverterOptionTypeMobileOrderedRegistration.write(failureMember, into: &buf)
+            FfiConverterOptionTypeMobileOrderedRejected.write(rejected, into: &buf)
+
+
+        case let .subsequentSourceFailure(failure):
+            writeInt(&buf, Int32(9))
+            FfiConverterTypeMobilePlatformFailure.write(failure, into: &buf)
+
+
+        case .failureObservationsOmitted:
+            writeInt(&buf, Int32(10))
+
+
+        case let .subsequentSourceFailureV2(failure,instance,sourceGeneration,sourceMember,epoch,batchId,recordIndex):
+            writeInt(&buf, Int32(11))
+            FfiConverterTypeMobilePlatformFailure.write(failure, into: &buf)
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            FfiConverterString.write(sourceGeneration, into: &buf)
+            FfiConverterUInt64.write(sourceMember, into: &buf)
+            FfiConverterUInt64.write(epoch, into: &buf)
+            FfiConverterUInt64.write(batchId, into: &buf)
+            FfiConverterUInt32.write(recordIndex, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedRecord_lift(_ buf: RustBuffer) throws -> MobileOrderedRecord {
+    return try FfiConverterTypeMobileOrderedRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedRecord_lower(_ value: MobileOrderedRecord) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedRecord.lower(value)
+}
+
+
+
+
+public enum MobileOrderedRejected: Equatable, Hashable {
+
+    case value(member: MobileOrderedRegistration, byteCount: UInt64
+    )
+    case loss(scope: String, memberId: UInt64?, unit: String, count: UInt64?, byteCount: UInt64?
+    )
+    case fence(member: MobileOrderedRegistration
+    )
+    case barrier(barrierId: UInt64
+    )
+    case marker(markerId: UInt64
+    )
+    case unmapped
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOrderedRejected: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOrderedRejected: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedRejected
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOrderedRejected {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .value(member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf), byteCount: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 2: return .loss(scope: try FfiConverterString.read(from: &buf), memberId: try FfiConverterOptionUInt64.read(from: &buf), unit: try FfiConverterString.read(from: &buf), count: try FfiConverterOptionUInt64.read(from: &buf), byteCount: try FfiConverterOptionUInt64.read(from: &buf)
+        )
+
+        case 3: return .fence(member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf)
+        )
+
+        case 4: return .barrier(barrierId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 5: return .marker(markerId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 6: return .unmapped
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOrderedRejected, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .value(member,byteCount):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+            FfiConverterUInt64.write(byteCount, into: &buf)
+
+
+        case let .loss(scope,memberId,unit,count,byteCount):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(scope, into: &buf)
+            FfiConverterOptionUInt64.write(memberId, into: &buf)
+            FfiConverterString.write(unit, into: &buf)
+            FfiConverterOptionUInt64.write(count, into: &buf)
+            FfiConverterOptionUInt64.write(byteCount, into: &buf)
+
+
+        case let .fence(member):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+
+
+        case let .barrier(barrierId):
+            writeInt(&buf, Int32(4))
+            FfiConverterUInt64.write(barrierId, into: &buf)
+
+
+        case let .marker(markerId):
+            writeInt(&buf, Int32(5))
+            FfiConverterUInt64.write(markerId, into: &buf)
+
+
+        case .unmapped:
+            writeInt(&buf, Int32(6))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedRejected_lift(_ buf: RustBuffer) throws -> MobileOrderedRejected {
+    return try FfiConverterTypeMobileOrderedRejected.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOrderedRejected_lower(_ value: MobileOrderedRejected) -> RustBuffer {
+    return FfiConverterTypeMobileOrderedRejected.lower(value)
+}
+
+
+
+
+public enum MobileOwnerOutstandingClass: Equatable, Hashable {
+
+    case attachments
+    case reservations
+    case nativeWork
+    case callbacks
+    case cleanup
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOwnerOutstandingClass: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOwnerOutstandingClass: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOwnerOutstandingClass
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOwnerOutstandingClass {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .attachments
+
+        case 2: return .reservations
+
+        case 3: return .nativeWork
+
+        case 4: return .callbacks
+
+        case 5: return .cleanup
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOwnerOutstandingClass, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .attachments:
+            writeInt(&buf, Int32(1))
+
+
+        case .reservations:
+            writeInt(&buf, Int32(2))
+
+
+        case .nativeWork:
+            writeInt(&buf, Int32(3))
+
+
+        case .callbacks:
+            writeInt(&buf, Int32(4))
+
+
+        case .cleanup:
+            writeInt(&buf, Int32(5))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOwnerOutstandingClass_lift(_ buf: RustBuffer) throws -> MobileOwnerOutstandingClass {
+    return try FfiConverterTypeMobileOwnerOutstandingClass.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOwnerOutstandingClass_lower(_ value: MobileOwnerOutstandingClass) -> RustBuffer {
+    return FfiConverterTypeMobileOwnerOutstandingClass.lower(value)
+}
+
+
+
+
+public enum MobileOwnerRejection: Equatable, Hashable {
+
+    case wrongOwner
+    case conflictingRetirement
+    case malformed
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOwnerRejection: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOwnerRejection: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOwnerRejection
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOwnerRejection {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .wrongOwner
+
+        case 2: return .conflictingRetirement
+
+        case 3: return .malformed
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOwnerRejection, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .wrongOwner:
+            writeInt(&buf, Int32(1))
+
+
+        case .conflictingRetirement:
+            writeInt(&buf, Int32(2))
+
+
+        case .malformed:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOwnerRejection_lift(_ buf: RustBuffer) throws -> MobileOwnerRejection {
+    return try FfiConverterTypeMobileOwnerRejection.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOwnerRejection_lower(_ value: MobileOwnerRejection) -> RustBuffer {
+    return FfiConverterTypeMobileOwnerRejection.lower(value)
+}
+
+
+
+
+public enum MobileOwnerRetirementState: Equatable, Hashable {
+
+    case fencedPending(outstandingClasses: [MobileOwnerOutstandingClass], failures: [MobileOrderedFailureV2]
+    )
+    case quiescent
+    case rejected(reason: MobileOwnerRejection
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileOwnerRetirementState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileOwnerRetirementState: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOwnerRetirementState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileOwnerRetirementState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .fencedPending(outstandingClasses: try FfiConverterSequenceTypeMobileOwnerOutstandingClass.read(from: &buf), failures: try FfiConverterSequenceTypeMobileOrderedFailureV2.read(from: &buf)
+        )
+
+        case 2: return .quiescent
+
+        case 3: return .rejected(reason: try FfiConverterTypeMobileOwnerRejection.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileOwnerRetirementState, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .fencedPending(outstandingClasses,failures):
+            writeInt(&buf, Int32(1))
+            FfiConverterSequenceTypeMobileOwnerOutstandingClass.write(outstandingClasses, into: &buf)
+            FfiConverterSequenceTypeMobileOrderedFailureV2.write(failures, into: &buf)
+
+
+        case .quiescent:
+            writeInt(&buf, Int32(2))
+
+
+        case let .rejected(reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeMobileOwnerRejection.write(reason, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOwnerRetirementState_lift(_ buf: RustBuffer) throws -> MobileOwnerRetirementState {
+    return try FfiConverterTypeMobileOwnerRetirementState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileOwnerRetirementState_lower(_ value: MobileOwnerRetirementState) -> RustBuffer {
+    return FfiConverterTypeMobileOwnerRetirementState.lower(value)
+}
+
+
+
+
 public enum MobileRadioCompletion: Equatable, Hashable {
 
     case unit
@@ -2542,7 +6479,45 @@ public enum MobileRadioCompletion: Equatable, Hashable {
     )
     case discovered(services: [MobileGattService]
     )
+    case discoveredScoped(services: [MobileGattService], identity: MobileGattSnapshotIdentity
+    )
     case notifyEnabled(delivery: String
+    )
+    case orderedEnableReleased(kind: String, gattStatus: Int32?, nativeDomain: String?, nativeCode: Int64?, detail: String, dispatched: Bool
+    )
+    case orderedEnableStatus(status: MobileOrderedEnableStatus
+    )
+    case orderedGraphPermitReserved(permitId: UInt64
+    )
+    case orderedGraphAuthorityReserved(receiptId: UInt64
+    )
+    case orderedGraphReserveStatus(status: MobileGraphReserveStatus
+    )
+    case orderedGraphAuthorityOpened(authorityId: UInt64
+    )
+    case orderedGraphAuthorityStatus(status: MobileGraphAuthorityStatus
+    )
+    case orderedGraphPermit(state: MobileGraphPermitState
+    )
+    case orderedGraphPermitInvalidated(failure: MobilePlatformFailure
+    )
+    case orderedGraphPermitNotAcquired(failure: MobilePlatformFailure
+    )
+    case orderedMarkerWriteStatus(status: MobileOrderedMarkerWriteStatus
+    )
+    case orderedOpenResultV2(slotIdentity: MobileOrderedSlotIdentity, outcome: MobileOrderedOpenOutcome
+    )
+    case orderedOpenRetiredV2(slotIdentity: MobileOrderedSlotIdentity
+    )
+    case orderedOpened(generation: MobileOrderedGeneration, members: [MobileOrderedRegistration]
+    )
+    case orderedOpenFailed(failure: MobilePlatformFailure, ownership: MobileOrderedOpenOwnership
+    )
+    case orderedRegistered(member: MobileOrderedRegistration
+    )
+    case orderedClaim(generation: MobileOrderedGeneration, member: MobileOrderedRegistration
+    )
+    case orderedRecords(batchId: UInt64?, records: [MobileOrderedRecord]
     )
     case mtu(mtu: UInt16?
     )
@@ -2575,6 +6550,8 @@ public enum MobileRadioCompletion: Equatable, Hashable {
     case closed(failures: [MobileCloseFailure]
     )
     case failed(kind: String, gattStatus: Int32?, nativeDomain: String?, nativeCode: Int64?, detail: String, dispatched: Bool
+    )
+    case ownerRetirement(ownerIncarnation: String, retirementId: String, state: MobileOwnerRetirementState
     )
 
 
@@ -2611,55 +6588,115 @@ public struct FfiConverterTypeMobileRadioCompletion: FfiConverterRustBuffer {
         case 5: return .discovered(services: try FfiConverterSequenceTypeMobileGattService.read(from: &buf)
         )
 
-        case 6: return .notifyEnabled(delivery: try FfiConverterString.read(from: &buf)
+        case 6: return .discoveredScoped(services: try FfiConverterSequenceTypeMobileGattService.read(from: &buf), identity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf)
         )
 
-        case 7: return .mtu(mtu: try FfiConverterOptionUInt16.read(from: &buf)
+        case 7: return .notifyEnabled(delivery: try FfiConverterString.read(from: &buf)
         )
 
-        case 8: return .writeLimits(withResponse: try FfiConverterUInt16.read(from: &buf), withoutResponse: try FfiConverterUInt16.read(from: &buf)
+        case 8: return .orderedEnableReleased(kind: try FfiConverterString.read(from: &buf), gattStatus: try FfiConverterOptionInt32.read(from: &buf), nativeDomain: try FfiConverterOptionString.read(from: &buf), nativeCode: try FfiConverterOptionInt64.read(from: &buf), detail: try FfiConverterString.read(from: &buf), dispatched: try FfiConverterBool.read(from: &buf)
         )
 
-        case 9: return .ready(ready: try FfiConverterBool.read(from: &buf)
+        case 9: return .orderedEnableStatus(status: try FfiConverterTypeMobileOrderedEnableStatus.read(from: &buf)
         )
 
-        case 10: return .rssi(rssi: try FfiConverterInt16.read(from: &buf)
+        case 10: return .orderedGraphPermitReserved(permitId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 11: return .accepted(accepted: try FfiConverterBool.read(from: &buf)
+        case 11: return .orderedGraphAuthorityReserved(receiptId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 12: return .phy(tx: try FfiConverterString.read(from: &buf), rx: try FfiConverterString.read(from: &buf)
+        case 12: return .orderedGraphReserveStatus(status: try FfiConverterTypeMobileGraphReserveStatus.read(from: &buf)
         )
 
-        case 13: return .phyRequest(accepted: try FfiConverterBool.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
+        case 13: return .orderedGraphAuthorityOpened(authorityId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 14: return .security(state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
+        case 14: return .orderedGraphAuthorityStatus(status: try FfiConverterTypeMobileGraphAuthorityStatus.read(from: &buf)
         )
 
-        case 15: return .bondedPeers(peers: try FfiConverterSequenceTypeMobilePeerName.read(from: &buf)
+        case 15: return .orderedGraphPermit(state: try FfiConverterTypeMobileGraphPermitState.read(from: &buf)
         )
 
-        case 16: return .connectedPeers(peers: try FfiConverterSequenceTypeMobilePeerName.read(from: &buf)
+        case 16: return .orderedGraphPermitInvalidated(failure: try FfiConverterTypeMobilePlatformFailure.read(from: &buf)
         )
 
-        case 17: return .resolvedPeer(peer: try FfiConverterOptionTypeMobilePeerName.read(from: &buf)
+        case 17: return .orderedGraphPermitNotAcquired(failure: try FfiConverterTypeMobilePlatformFailure.read(from: &buf)
         )
 
-        case 18: return .lease(leaseId: try FfiConverterString.read(from: &buf)
+        case 18: return .orderedMarkerWriteStatus(status: try FfiConverterTypeMobileOrderedMarkerWriteStatus.read(from: &buf)
         )
 
-        case 19: return .companion(associationId: try FfiConverterInt64.read(from: &buf), peerId: try FfiConverterOptionString.read(from: &buf), displayName: try FfiConverterOptionString.read(from: &buf), alreadyAssociated: try FfiConverterBool.read(from: &buf)
+        case 19: return .orderedOpenResultV2(slotIdentity: try FfiConverterTypeMobileOrderedSlotIdentity.read(from: &buf), outcome: try FfiConverterTypeMobileOrderedOpenOutcome.read(from: &buf)
         )
 
-        case 20: return .companionList(records: try FfiConverterSequenceTypeMobileCompanionRecord.read(from: &buf)
+        case 20: return .orderedOpenRetiredV2(slotIdentity: try FfiConverterTypeMobileOrderedSlotIdentity.read(from: &buf)
         )
 
-        case 21: return .closed(failures: try FfiConverterSequenceTypeMobileCloseFailure.read(from: &buf)
+        case 21: return .orderedOpened(generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), members: try FfiConverterSequenceTypeMobileOrderedRegistration.read(from: &buf)
         )
 
-        case 22: return .failed(kind: try FfiConverterString.read(from: &buf), gattStatus: try FfiConverterOptionInt32.read(from: &buf), nativeDomain: try FfiConverterOptionString.read(from: &buf), nativeCode: try FfiConverterOptionInt64.read(from: &buf), detail: try FfiConverterString.read(from: &buf), dispatched: try FfiConverterBool.read(from: &buf)
+        case 22: return .orderedOpenFailed(failure: try FfiConverterTypeMobilePlatformFailure.read(from: &buf), ownership: try FfiConverterTypeMobileOrderedOpenOwnership.read(from: &buf)
+        )
+
+        case 23: return .orderedRegistered(member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf)
+        )
+
+        case 24: return .orderedClaim(generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf)
+        )
+
+        case 25: return .orderedRecords(batchId: try FfiConverterOptionUInt64.read(from: &buf), records: try FfiConverterSequenceTypeMobileOrderedRecord.read(from: &buf)
+        )
+
+        case 26: return .mtu(mtu: try FfiConverterOptionUInt16.read(from: &buf)
+        )
+
+        case 27: return .writeLimits(withResponse: try FfiConverterUInt16.read(from: &buf), withoutResponse: try FfiConverterUInt16.read(from: &buf)
+        )
+
+        case 28: return .ready(ready: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 29: return .rssi(rssi: try FfiConverterInt16.read(from: &buf)
+        )
+
+        case 30: return .accepted(accepted: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 31: return .phy(tx: try FfiConverterString.read(from: &buf), rx: try FfiConverterString.read(from: &buf)
+        )
+
+        case 32: return .phyRequest(accepted: try FfiConverterBool.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
+        )
+
+        case 33: return .security(state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
+        )
+
+        case 34: return .bondedPeers(peers: try FfiConverterSequenceTypeMobilePeerName.read(from: &buf)
+        )
+
+        case 35: return .connectedPeers(peers: try FfiConverterSequenceTypeMobilePeerName.read(from: &buf)
+        )
+
+        case 36: return .resolvedPeer(peer: try FfiConverterOptionTypeMobilePeerName.read(from: &buf)
+        )
+
+        case 37: return .lease(leaseId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 38: return .companion(associationId: try FfiConverterInt64.read(from: &buf), peerId: try FfiConverterOptionString.read(from: &buf), displayName: try FfiConverterOptionString.read(from: &buf), alreadyAssociated: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 39: return .companionList(records: try FfiConverterSequenceTypeMobileCompanionRecord.read(from: &buf)
+        )
+
+        case 40: return .closed(failures: try FfiConverterSequenceTypeMobileCloseFailure.read(from: &buf)
+        )
+
+        case 41: return .failed(kind: try FfiConverterString.read(from: &buf), gattStatus: try FfiConverterOptionInt32.read(from: &buf), nativeDomain: try FfiConverterOptionString.read(from: &buf), nativeCode: try FfiConverterOptionInt64.read(from: &buf), detail: try FfiConverterString.read(from: &buf), dispatched: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 42: return .ownerRetirement(ownerIncarnation: try FfiConverterString.read(from: &buf), retirementId: try FfiConverterString.read(from: &buf), state: try FfiConverterTypeMobileOwnerRetirementState.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2695,77 +6732,183 @@ public struct FfiConverterTypeMobileRadioCompletion: FfiConverterRustBuffer {
             FfiConverterSequenceTypeMobileGattService.write(services, into: &buf)
 
 
-        case let .notifyEnabled(delivery):
+        case let .discoveredScoped(services,identity):
             writeInt(&buf, Int32(6))
+            FfiConverterSequenceTypeMobileGattService.write(services, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(identity, into: &buf)
+
+
+        case let .notifyEnabled(delivery):
+            writeInt(&buf, Int32(7))
             FfiConverterString.write(delivery, into: &buf)
 
 
+        case let .orderedEnableReleased(kind,gattStatus,nativeDomain,nativeCode,detail,dispatched):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(kind, into: &buf)
+            FfiConverterOptionInt32.write(gattStatus, into: &buf)
+            FfiConverterOptionString.write(nativeDomain, into: &buf)
+            FfiConverterOptionInt64.write(nativeCode, into: &buf)
+            FfiConverterString.write(detail, into: &buf)
+            FfiConverterBool.write(dispatched, into: &buf)
+
+
+        case let .orderedEnableStatus(status):
+            writeInt(&buf, Int32(9))
+            FfiConverterTypeMobileOrderedEnableStatus.write(status, into: &buf)
+
+
+        case let .orderedGraphPermitReserved(permitId):
+            writeInt(&buf, Int32(10))
+            FfiConverterUInt64.write(permitId, into: &buf)
+
+
+        case let .orderedGraphAuthorityReserved(receiptId):
+            writeInt(&buf, Int32(11))
+            FfiConverterUInt64.write(receiptId, into: &buf)
+
+
+        case let .orderedGraphReserveStatus(status):
+            writeInt(&buf, Int32(12))
+            FfiConverterTypeMobileGraphReserveStatus.write(status, into: &buf)
+
+
+        case let .orderedGraphAuthorityOpened(authorityId):
+            writeInt(&buf, Int32(13))
+            FfiConverterUInt64.write(authorityId, into: &buf)
+
+
+        case let .orderedGraphAuthorityStatus(status):
+            writeInt(&buf, Int32(14))
+            FfiConverterTypeMobileGraphAuthorityStatus.write(status, into: &buf)
+
+
+        case let .orderedGraphPermit(state):
+            writeInt(&buf, Int32(15))
+            FfiConverterTypeMobileGraphPermitState.write(state, into: &buf)
+
+
+        case let .orderedGraphPermitInvalidated(failure):
+            writeInt(&buf, Int32(16))
+            FfiConverterTypeMobilePlatformFailure.write(failure, into: &buf)
+
+
+        case let .orderedGraphPermitNotAcquired(failure):
+            writeInt(&buf, Int32(17))
+            FfiConverterTypeMobilePlatformFailure.write(failure, into: &buf)
+
+
+        case let .orderedMarkerWriteStatus(status):
+            writeInt(&buf, Int32(18))
+            FfiConverterTypeMobileOrderedMarkerWriteStatus.write(status, into: &buf)
+
+
+        case let .orderedOpenResultV2(slotIdentity,outcome):
+            writeInt(&buf, Int32(19))
+            FfiConverterTypeMobileOrderedSlotIdentity.write(slotIdentity, into: &buf)
+            FfiConverterTypeMobileOrderedOpenOutcome.write(outcome, into: &buf)
+
+
+        case let .orderedOpenRetiredV2(slotIdentity):
+            writeInt(&buf, Int32(20))
+            FfiConverterTypeMobileOrderedSlotIdentity.write(slotIdentity, into: &buf)
+
+
+        case let .orderedOpened(generation,members):
+            writeInt(&buf, Int32(21))
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterSequenceTypeMobileOrderedRegistration.write(members, into: &buf)
+
+
+        case let .orderedOpenFailed(failure,ownership):
+            writeInt(&buf, Int32(22))
+            FfiConverterTypeMobilePlatformFailure.write(failure, into: &buf)
+            FfiConverterTypeMobileOrderedOpenOwnership.write(ownership, into: &buf)
+
+
+        case let .orderedRegistered(member):
+            writeInt(&buf, Int32(23))
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+
+
+        case let .orderedClaim(generation,member):
+            writeInt(&buf, Int32(24))
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+
+
+        case let .orderedRecords(batchId,records):
+            writeInt(&buf, Int32(25))
+            FfiConverterOptionUInt64.write(batchId, into: &buf)
+            FfiConverterSequenceTypeMobileOrderedRecord.write(records, into: &buf)
+
+
         case let .mtu(mtu):
-            writeInt(&buf, Int32(7))
+            writeInt(&buf, Int32(26))
             FfiConverterOptionUInt16.write(mtu, into: &buf)
 
 
         case let .writeLimits(withResponse,withoutResponse):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(27))
             FfiConverterUInt16.write(withResponse, into: &buf)
             FfiConverterUInt16.write(withoutResponse, into: &buf)
 
 
         case let .ready(ready):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(28))
             FfiConverterBool.write(ready, into: &buf)
 
 
         case let .rssi(rssi):
-            writeInt(&buf, Int32(10))
+            writeInt(&buf, Int32(29))
             FfiConverterInt16.write(rssi, into: &buf)
 
 
         case let .accepted(accepted):
-            writeInt(&buf, Int32(11))
+            writeInt(&buf, Int32(30))
             FfiConverterBool.write(accepted, into: &buf)
 
 
         case let .phy(tx,rx):
-            writeInt(&buf, Int32(12))
+            writeInt(&buf, Int32(31))
             FfiConverterString.write(tx, into: &buf)
             FfiConverterString.write(rx, into: &buf)
 
 
         case let .phyRequest(accepted,tx,rx):
-            writeInt(&buf, Int32(13))
+            writeInt(&buf, Int32(32))
             FfiConverterBool.write(accepted, into: &buf)
             FfiConverterOptionString.write(tx, into: &buf)
             FfiConverterOptionString.write(rx, into: &buf)
 
 
         case let .security(state):
-            writeInt(&buf, Int32(14))
+            writeInt(&buf, Int32(33))
             FfiConverterTypeMobileSecurityState.write(state, into: &buf)
 
 
         case let .bondedPeers(peers):
-            writeInt(&buf, Int32(15))
+            writeInt(&buf, Int32(34))
             FfiConverterSequenceTypeMobilePeerName.write(peers, into: &buf)
 
 
         case let .connectedPeers(peers):
-            writeInt(&buf, Int32(16))
+            writeInt(&buf, Int32(35))
             FfiConverterSequenceTypeMobilePeerName.write(peers, into: &buf)
 
 
         case let .resolvedPeer(peer):
-            writeInt(&buf, Int32(17))
+            writeInt(&buf, Int32(36))
             FfiConverterOptionTypeMobilePeerName.write(peer, into: &buf)
 
 
         case let .lease(leaseId):
-            writeInt(&buf, Int32(18))
+            writeInt(&buf, Int32(37))
             FfiConverterString.write(leaseId, into: &buf)
 
 
         case let .companion(associationId,peerId,displayName,alreadyAssociated):
-            writeInt(&buf, Int32(19))
+            writeInt(&buf, Int32(38))
             FfiConverterInt64.write(associationId, into: &buf)
             FfiConverterOptionString.write(peerId, into: &buf)
             FfiConverterOptionString.write(displayName, into: &buf)
@@ -2773,23 +6916,30 @@ public struct FfiConverterTypeMobileRadioCompletion: FfiConverterRustBuffer {
 
 
         case let .companionList(records):
-            writeInt(&buf, Int32(20))
+            writeInt(&buf, Int32(39))
             FfiConverterSequenceTypeMobileCompanionRecord.write(records, into: &buf)
 
 
         case let .closed(failures):
-            writeInt(&buf, Int32(21))
+            writeInt(&buf, Int32(40))
             FfiConverterSequenceTypeMobileCloseFailure.write(failures, into: &buf)
 
 
         case let .failed(kind,gattStatus,nativeDomain,nativeCode,detail,dispatched):
-            writeInt(&buf, Int32(22))
+            writeInt(&buf, Int32(41))
             FfiConverterString.write(kind, into: &buf)
             FfiConverterOptionInt32.write(gattStatus, into: &buf)
             FfiConverterOptionString.write(nativeDomain, into: &buf)
             FfiConverterOptionInt64.write(nativeCode, into: &buf)
             FfiConverterString.write(detail, into: &buf)
             FfiConverterBool.write(dispatched, into: &buf)
+
+
+        case let .ownerRetirement(ownerIncarnation,retirementId,state):
+            writeInt(&buf, Int32(42))
+            FfiConverterString.write(ownerIncarnation, into: &buf)
+            FfiConverterString.write(retirementId, into: &buf)
+            FfiConverterTypeMobileOwnerRetirementState.write(state, into: &buf)
 
         }
     }
@@ -2824,6 +6974,12 @@ public enum MobileRadioIngress: Equatable, Hashable {
     case servicesChanged(peerId: String
     )
     case notification(instance: MobileInstance, epoch: UInt64, value: Data
+    )
+    case notificationSourceFailed(version: UInt32, instance: MobileInstance, epoch: UInt64, failure: MobilePlatformFailure
+    )
+    case orderedWake(generation: MobileOrderedGeneration, groupId: UInt64
+    )
+    case orderedWakeFailure(generation: MobileOrderedGeneration, groupId: UInt64
     )
     case adapterState(snapshot: MobileAdapterSnapshot
     )
@@ -2873,22 +7029,31 @@ public struct FfiConverterTypeMobileRadioIngress: FfiConverterRustBuffer {
         case 5: return .notification(instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), value: try FfiConverterData.read(from: &buf)
         )
 
-        case 6: return .adapterState(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
+        case 6: return .notificationSourceFailed(version: try FfiConverterUInt32.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), failure: try FfiConverterTypeMobilePlatformFailure.read(from: &buf)
         )
 
-        case 7: return .scanFailed(detail: try FfiConverterString.read(from: &buf)
+        case 7: return .orderedWake(generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 8: return .securityChanged(peerId: try FfiConverterString.read(from: &buf), state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
+        case 8: return .orderedWakeFailure(generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 9: return .writeReadiness(peerId: try FfiConverterString.read(from: &buf), ready: try FfiConverterBool.read(from: &buf)
+        case 9: return .adapterState(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
         )
 
-        case 10: return .restored(peers: try FfiConverterSequenceTypeMobileRestoredPeer.read(from: &buf)
+        case 10: return .scanFailed(detail: try FfiConverterString.read(from: &buf)
         )
 
-        case 11: return .dropped(ingressClass: try FfiConverterString.read(from: &buf), detail: try FfiConverterString.read(from: &buf)
+        case 11: return .securityChanged(peerId: try FfiConverterString.read(from: &buf), state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
+        )
+
+        case 12: return .writeReadiness(peerId: try FfiConverterString.read(from: &buf), ready: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 13: return .restored(peers: try FfiConverterSequenceTypeMobileRestoredPeer.read(from: &buf)
+        )
+
+        case 14: return .dropped(ingressClass: try FfiConverterString.read(from: &buf), detail: try FfiConverterString.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2931,35 +7096,55 @@ public struct FfiConverterTypeMobileRadioIngress: FfiConverterRustBuffer {
             FfiConverterData.write(value, into: &buf)
 
 
-        case let .adapterState(snapshot):
+        case let .notificationSourceFailed(version,instance,epoch,failure):
             writeInt(&buf, Int32(6))
+            FfiConverterUInt32.write(version, into: &buf)
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            FfiConverterUInt64.write(epoch, into: &buf)
+            FfiConverterTypeMobilePlatformFailure.write(failure, into: &buf)
+
+
+        case let .orderedWake(generation,groupId):
+            writeInt(&buf, Int32(7))
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+
+
+        case let .orderedWakeFailure(generation,groupId):
+            writeInt(&buf, Int32(8))
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+
+
+        case let .adapterState(snapshot):
+            writeInt(&buf, Int32(9))
             FfiConverterTypeMobileAdapterSnapshot.write(snapshot, into: &buf)
 
 
         case let .scanFailed(detail):
-            writeInt(&buf, Int32(7))
+            writeInt(&buf, Int32(10))
             FfiConverterString.write(detail, into: &buf)
 
 
         case let .securityChanged(peerId,state):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(11))
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterTypeMobileSecurityState.write(state, into: &buf)
 
 
         case let .writeReadiness(peerId,ready):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(12))
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterBool.write(ready, into: &buf)
 
 
         case let .restored(peers):
-            writeInt(&buf, Int32(10))
+            writeInt(&buf, Int32(13))
             FfiConverterSequenceTypeMobileRestoredPeer.write(peers, into: &buf)
 
 
         case let .dropped(ingressClass,detail):
-            writeInt(&buf, Int32(11))
+            writeInt(&buf, Int32(14))
             FfiConverterString.write(ingressClass, into: &buf)
             FfiConverterString.write(detail, into: &buf)
 
@@ -3009,7 +7194,93 @@ public enum MobileRadioRequest: Equatable, Hashable {
     )
     case enableNotifications(id: UInt64, instance: MobileInstance, epoch: UInt64, requested: String?, preferred: String?
     )
-    case disableNotifications(id: UInt64, instance: MobileInstance
+    case orderedEnableNotifications(id: UInt64, activation: MobileOrderedActivation, requested: String?, preferred: String?
+    )
+    case orderedDisableNotifications(id: UInt64, activation: MobileOrderedActivation
+    )
+    case orderedEnableSettlement(id: UInt64, activation: MobileOrderedActivation
+    )
+    case orderedForgetEnableReceipt(id: UInt64, activation: MobileOrderedActivation
+    )
+    case disableNotifications(id: UInt64, instance: MobileInstance, epoch: UInt64
+    )
+    case orderedOpenV2(id: UInt64, identity: MobileOrderedOpenIdentity
+    )
+    case orderedRecoverOpenV2(id: UInt64, identity: MobileOrderedOpenIdentity
+    )
+    case orderedAcknowledgeOpenV2(id: UInt64, identity: MobileOrderedOpenIdentity
+    )
+    case orderedOpen(id: UInt64, groupId: UInt64, connectionGeneration: String, databaseGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity, members: [MobileOrderedMember], itemCapacity: UInt32, byteCapacity: UInt32
+    )
+    case orderedRecoverOpen(id: UInt64, groupId: UInt64, openRequestId: UInt64, peerId: String
+    )
+    case orderedAcknowledgeOpen(id: UInt64, version: UInt32, groupId: UInt64, openRequestId: UInt64, peerId: String
+    )
+    case orderedRegister(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, member: MobileOrderedRegistration
+    )
+    case orderedRetire(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, member: MobileOrderedRegistration
+    )
+    case orderedDrain(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64
+    )
+    case orderedBarrier(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, barrierId: UInt64
+    )
+    case orderedGraphAuthorityReserve(id: UInt64, request: UInt64
+    )
+    case orderedGraphAuthorityReserveStatus(id: UInt64, request: UInt64
+    )
+    case orderedGraphAuthorityReserveFence(id: UInt64, request: UInt64
+    )
+    case orderedGraphAuthorityReserveForget(id: UInt64, request: UInt64
+    )
+    case orderedGraphAuthorityOpen(id: UInt64, receiptId: UInt64
+    )
+    case orderedGraphAuthorityStatus(id: UInt64, receiptId: UInt64
+    )
+    case orderedGraphAuthorityFenceOpen(id: UInt64, receiptId: UInt64
+    )
+    case orderedGraphAuthorityForgetOpen(id: UInt64, receiptId: UInt64
+    )
+    case orderedGraphAuthorityClose(id: UInt64, authorityId: UInt64
+    )
+    case orderedGraphAuthorityForget(id: UInt64, authorityId: UInt64
+    )
+    case orderedGraphPermitReserve(id: UInt64, authorityId: UInt64, request: UInt64, peerId: String, connectionGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity
+    )
+    case orderedGraphPermitReserveStatus(id: UInt64, authorityId: UInt64, request: UInt64, peerId: String, connectionGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity
+    )
+    case orderedGraphPermitReserveFence(id: UInt64, authorityId: UInt64, request: UInt64, peerId: String, connectionGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity
+    )
+    case orderedGraphPermitForgetRequest(id: UInt64, authorityId: UInt64, request: UInt64, peerId: String, connectionGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity
+    )
+    case orderedGraphPermitAcquire(id: UInt64, peerId: String, connectionGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity, authorityId: UInt64, permitId: UInt64
+    )
+    case orderedGraphPermitRelease(id: UInt64, peerId: String, connectionGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity, authorityId: UInt64, permitId: UInt64
+    )
+    case orderedGraphPermitCommit(id: UInt64, peerId: String, connectionGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity, authorityId: UInt64, permitId: UInt64
+    )
+    case orderedGraphPermitForget(id: UInt64, peerId: String, connectionGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity, authorityId: UInt64, permitId: UInt64
+    )
+    case orderedMarkerWrite(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, markerId: UInt64, connectionGeneration: String, snapshotIdentity: MobileGattSnapshotIdentity, instance: MobileInstance, value: Data, withResponse: Bool
+    )
+    case orderedMarkerWriteSettlement(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, markerId: UInt64
+    )
+    case orderedCancelMarkerWrite(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, markerId: UInt64
+    )
+    case orderedForgetMarkerWriteReceipt(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, markerId: UInt64
+    )
+    case orderedAcknowledgeBatch(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, batchId: UInt64
+    )
+    case orderedClose(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64
+    )
+    case orderedSeal(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64
+    )
+    case orderedRetainClaim(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, member: MobileOrderedRegistration
+    )
+    case orderedConfirmCleanup(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64, member: MobileOrderedRegistration
+    )
+    case orderedRemove(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64
+    )
+    case orderedForgetRemovalReceipt(id: UInt64, generation: MobileOrderedGeneration, groupId: UInt64
     )
     case readMtu(id: UInt64, peerId: String
     )
@@ -3058,6 +7329,14 @@ public enum MobileRadioRequest: Equatable, Hashable {
     case stopPresence(id: UInt64, peerId: String
     )
     case close(id: UInt64
+    )
+    case ownerFence(id: UInt64, ownerIncarnation: String, retirementId: String
+    )
+    case ownerStatus(id: UInt64, ownerIncarnation: String, retirementId: String
+    )
+    case orderedDrainV2(id: UInt64, version: UInt32, generation: MobileOrderedGeneration, groupId: UInt64
+    )
+    case orderedAcknowledgeBatchV2(id: UInt64, version: UInt32, generation: MobileOrderedGeneration, groupId: UInt64, batchId: UInt64
     )
 
 
@@ -3113,79 +7392,220 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
         case 11: return .enableNotifications(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), requested: try FfiConverterOptionString.read(from: &buf), preferred: try FfiConverterOptionString.read(from: &buf)
         )
 
-        case 12: return .disableNotifications(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf)
+        case 12: return .orderedEnableNotifications(id: try FfiConverterUInt64.read(from: &buf), activation: try FfiConverterTypeMobileOrderedActivation.read(from: &buf), requested: try FfiConverterOptionString.read(from: &buf), preferred: try FfiConverterOptionString.read(from: &buf)
         )
 
-        case 13: return .readMtu(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 13: return .orderedDisableNotifications(id: try FfiConverterUInt64.read(from: &buf), activation: try FfiConverterTypeMobileOrderedActivation.read(from: &buf)
         )
 
-        case 14: return .readWriteLimits(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 14: return .orderedEnableSettlement(id: try FfiConverterUInt64.read(from: &buf), activation: try FfiConverterTypeMobileOrderedActivation.read(from: &buf)
         )
 
-        case 15: return .readWriteReadiness(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 15: return .orderedForgetEnableReceipt(id: try FfiConverterUInt64.read(from: &buf), activation: try FfiConverterTypeMobileOrderedActivation.read(from: &buf)
         )
 
-        case 16: return .requestMtu(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), mtu: try FfiConverterUInt16.read(from: &buf)
+        case 16: return .disableNotifications(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 17: return .readRssi(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 17: return .orderedOpenV2(id: try FfiConverterUInt64.read(from: &buf), identity: try FfiConverterTypeMobileOrderedOpenIdentity.read(from: &buf)
         )
 
-        case 18: return .requestConnectionPriority(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), priority: try FfiConverterString.read(from: &buf)
+        case 18: return .orderedRecoverOpenV2(id: try FfiConverterUInt64.read(from: &buf), identity: try FfiConverterTypeMobileOrderedOpenIdentity.read(from: &buf)
         )
 
-        case 19: return .requestSubrate(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), mode: try FfiConverterString.read(from: &buf)
+        case 19: return .orderedAcknowledgeOpenV2(id: try FfiConverterUInt64.read(from: &buf), identity: try FfiConverterTypeMobileOrderedOpenIdentity.read(from: &buf)
         )
 
-        case 20: return .readPhy(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 20: return .orderedOpen(id: try FfiConverterUInt64.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), databaseGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf), members: try FfiConverterSequenceTypeMobileOrderedMember.read(from: &buf), itemCapacity: try FfiConverterUInt32.read(from: &buf), byteCapacity: try FfiConverterUInt32.read(from: &buf)
         )
 
-        case 21: return .requestPhy(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
+        case 21: return .orderedRecoverOpen(id: try FfiConverterUInt64.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), openRequestId: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
 
-        case 22: return .securityState(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 22: return .orderedAcknowledgeOpen(id: try FfiConverterUInt64.read(from: &buf), version: try FfiConverterUInt32.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), openRequestId: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
 
-        case 23: return .createBond(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), transport: try FfiConverterString.read(from: &buf)
+        case 23: return .orderedRegister(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf)
         )
 
-        case 24: return .cancelBond(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 24: return .orderedRetire(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf)
         )
 
-        case 25: return .bondedPeers(id: try FfiConverterUInt64.read(from: &buf)
+        case 25: return .orderedDrain(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 26: return .connectedPeers(id: try FfiConverterUInt64.read(from: &buf), services: try FfiConverterSequenceString.read(from: &buf)
+        case 26: return .orderedBarrier(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), barrierId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 27: return .resolvePeer(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 27: return .orderedGraphAuthorityReserve(id: try FfiConverterUInt64.read(from: &buf), request: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 28: return .acquireBackground(id: try FfiConverterUInt64.read(from: &buf), kind: try FfiConverterString.read(from: &buf), reason: try FfiConverterString.read(from: &buf)
+        case 28: return .orderedGraphAuthorityReserveStatus(id: try FfiConverterUInt64.read(from: &buf), request: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 29: return .releaseBackground(id: try FfiConverterUInt64.read(from: &buf), leaseId: try FfiConverterString.read(from: &buf)
+        case 29: return .orderedGraphAuthorityReserveFence(id: try FfiConverterUInt64.read(from: &buf), request: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 30: return .updateBackgroundNotification(id: try FfiConverterUInt64.read(from: &buf), leaseId: try FfiConverterString.read(from: &buf), title: try FfiConverterString.read(from: &buf), body: try FfiConverterOptionString.read(from: &buf)
+        case 30: return .orderedGraphAuthorityReserveForget(id: try FfiConverterUInt64.read(from: &buf), request: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 31: return .associateCompanion(id: try FfiConverterUInt64.read(from: &buf), name: try FfiConverterOptionString.read(from: &buf), serviceUuid: try FfiConverterOptionString.read(from: &buf), filtersJson: try FfiConverterOptionString.read(from: &buf)
+        case 31: return .orderedGraphAuthorityOpen(id: try FfiConverterUInt64.read(from: &buf), receiptId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 32: return .listCompanion(id: try FfiConverterUInt64.read(from: &buf)
+        case 32: return .orderedGraphAuthorityStatus(id: try FfiConverterUInt64.read(from: &buf), receiptId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 33: return .disassociateCompanion(id: try FfiConverterUInt64.read(from: &buf), associationId: try FfiConverterInt64.read(from: &buf)
+        case 33: return .orderedGraphAuthorityFenceOpen(id: try FfiConverterUInt64.read(from: &buf), receiptId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 34: return .observePresence(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 34: return .orderedGraphAuthorityForgetOpen(id: try FfiConverterUInt64.read(from: &buf), receiptId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 35: return .stopPresence(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        case 35: return .orderedGraphAuthorityClose(id: try FfiConverterUInt64.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 36: return .close(id: try FfiConverterUInt64.read(from: &buf)
+        case 36: return .orderedGraphAuthorityForget(id: try FfiConverterUInt64.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 37: return .orderedGraphPermitReserve(id: try FfiConverterUInt64.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf), request: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf)
+        )
+
+        case 38: return .orderedGraphPermitReserveStatus(id: try FfiConverterUInt64.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf), request: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf)
+        )
+
+        case 39: return .orderedGraphPermitReserveFence(id: try FfiConverterUInt64.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf), request: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf)
+        )
+
+        case 40: return .orderedGraphPermitForgetRequest(id: try FfiConverterUInt64.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf), request: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf)
+        )
+
+        case 41: return .orderedGraphPermitAcquire(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf), permitId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 42: return .orderedGraphPermitRelease(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf), permitId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 43: return .orderedGraphPermitCommit(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf), permitId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 44: return .orderedGraphPermitForget(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf), authorityId: try FfiConverterUInt64.read(from: &buf), permitId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 45: return .orderedMarkerWrite(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), markerId: try FfiConverterUInt64.read(from: &buf), connectionGeneration: try FfiConverterString.read(from: &buf), snapshotIdentity: try FfiConverterTypeMobileGattSnapshotIdentity.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), value: try FfiConverterData.read(from: &buf), withResponse: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 46: return .orderedMarkerWriteSettlement(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), markerId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 47: return .orderedCancelMarkerWrite(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), markerId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 48: return .orderedForgetMarkerWriteReceipt(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), markerId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 49: return .orderedAcknowledgeBatch(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), batchId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 50: return .orderedClose(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 51: return .orderedSeal(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 52: return .orderedRetainClaim(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf)
+        )
+
+        case 53: return .orderedConfirmCleanup(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), member: try FfiConverterTypeMobileOrderedRegistration.read(from: &buf)
+        )
+
+        case 54: return .orderedRemove(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 55: return .orderedForgetRemovalReceipt(id: try FfiConverterUInt64.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 56: return .readMtu(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 57: return .readWriteLimits(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 58: return .readWriteReadiness(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 59: return .requestMtu(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), mtu: try FfiConverterUInt16.read(from: &buf)
+        )
+
+        case 60: return .readRssi(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 61: return .requestConnectionPriority(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), priority: try FfiConverterString.read(from: &buf)
+        )
+
+        case 62: return .requestSubrate(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), mode: try FfiConverterString.read(from: &buf)
+        )
+
+        case 63: return .readPhy(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 64: return .requestPhy(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
+        )
+
+        case 65: return .securityState(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 66: return .createBond(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), transport: try FfiConverterString.read(from: &buf)
+        )
+
+        case 67: return .cancelBond(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 68: return .bondedPeers(id: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 69: return .connectedPeers(id: try FfiConverterUInt64.read(from: &buf), services: try FfiConverterSequenceString.read(from: &buf)
+        )
+
+        case 70: return .resolvePeer(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 71: return .acquireBackground(id: try FfiConverterUInt64.read(from: &buf), kind: try FfiConverterString.read(from: &buf), reason: try FfiConverterString.read(from: &buf)
+        )
+
+        case 72: return .releaseBackground(id: try FfiConverterUInt64.read(from: &buf), leaseId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 73: return .updateBackgroundNotification(id: try FfiConverterUInt64.read(from: &buf), leaseId: try FfiConverterString.read(from: &buf), title: try FfiConverterString.read(from: &buf), body: try FfiConverterOptionString.read(from: &buf)
+        )
+
+        case 74: return .associateCompanion(id: try FfiConverterUInt64.read(from: &buf), name: try FfiConverterOptionString.read(from: &buf), serviceUuid: try FfiConverterOptionString.read(from: &buf), filtersJson: try FfiConverterOptionString.read(from: &buf)
+        )
+
+        case 75: return .listCompanion(id: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 76: return .disassociateCompanion(id: try FfiConverterUInt64.read(from: &buf), associationId: try FfiConverterInt64.read(from: &buf)
+        )
+
+        case 77: return .observePresence(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 78: return .stopPresence(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 79: return .close(id: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 80: return .ownerFence(id: try FfiConverterUInt64.read(from: &buf), ownerIncarnation: try FfiConverterString.read(from: &buf), retirementId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 81: return .ownerStatus(id: try FfiConverterUInt64.read(from: &buf), ownerIncarnation: try FfiConverterString.read(from: &buf), retirementId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 82: return .orderedDrainV2(id: try FfiConverterUInt64.read(from: &buf), version: try FfiConverterUInt32.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 83: return .orderedAcknowledgeBatchV2(id: try FfiConverterUInt64.read(from: &buf), version: try FfiConverterUInt32.read(from: &buf), generation: try FfiConverterTypeMobileOrderedGeneration.read(from: &buf), groupId: try FfiConverterUInt64.read(from: &buf), batchId: try FfiConverterUInt64.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3279,65 +7699,399 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
             FfiConverterOptionString.write(preferred, into: &buf)
 
 
-        case let .disableNotifications(id,instance):
+        case let .orderedEnableNotifications(id,activation,requested,preferred):
             writeInt(&buf, Int32(12))
             FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedActivation.write(activation, into: &buf)
+            FfiConverterOptionString.write(requested, into: &buf)
+            FfiConverterOptionString.write(preferred, into: &buf)
+
+
+        case let .orderedDisableNotifications(id,activation):
+            writeInt(&buf, Int32(13))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedActivation.write(activation, into: &buf)
+
+
+        case let .orderedEnableSettlement(id,activation):
+            writeInt(&buf, Int32(14))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedActivation.write(activation, into: &buf)
+
+
+        case let .orderedForgetEnableReceipt(id,activation):
+            writeInt(&buf, Int32(15))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedActivation.write(activation, into: &buf)
+
+
+        case let .disableNotifications(id,instance,epoch):
+            writeInt(&buf, Int32(16))
+            FfiConverterUInt64.write(id, into: &buf)
             FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            FfiConverterUInt64.write(epoch, into: &buf)
+
+
+        case let .orderedOpenV2(id,identity):
+            writeInt(&buf, Int32(17))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedOpenIdentity.write(identity, into: &buf)
+
+
+        case let .orderedRecoverOpenV2(id,identity):
+            writeInt(&buf, Int32(18))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedOpenIdentity.write(identity, into: &buf)
+
+
+        case let .orderedAcknowledgeOpenV2(id,identity):
+            writeInt(&buf, Int32(19))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedOpenIdentity.write(identity, into: &buf)
+
+
+        case let .orderedOpen(id,groupId,connectionGeneration,databaseGeneration,snapshotIdentity,members,itemCapacity,byteCapacity):
+            writeInt(&buf, Int32(20))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterString.write(databaseGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+            FfiConverterSequenceTypeMobileOrderedMember.write(members, into: &buf)
+            FfiConverterUInt32.write(itemCapacity, into: &buf)
+            FfiConverterUInt32.write(byteCapacity, into: &buf)
+
+
+        case let .orderedRecoverOpen(id,groupId,openRequestId,peerId):
+            writeInt(&buf, Int32(21))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterUInt64.write(openRequestId, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+
+
+        case let .orderedAcknowledgeOpen(id,version,groupId,openRequestId,peerId):
+            writeInt(&buf, Int32(22))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt32.write(version, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterUInt64.write(openRequestId, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+
+
+        case let .orderedRegister(id,generation,groupId,member):
+            writeInt(&buf, Int32(23))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+
+
+        case let .orderedRetire(id,generation,groupId,member):
+            writeInt(&buf, Int32(24))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+
+
+        case let .orderedDrain(id,generation,groupId):
+            writeInt(&buf, Int32(25))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+
+
+        case let .orderedBarrier(id,generation,groupId,barrierId):
+            writeInt(&buf, Int32(26))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterUInt64.write(barrierId, into: &buf)
+
+
+        case let .orderedGraphAuthorityReserve(id,request):
+            writeInt(&buf, Int32(27))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(request, into: &buf)
+
+
+        case let .orderedGraphAuthorityReserveStatus(id,request):
+            writeInt(&buf, Int32(28))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(request, into: &buf)
+
+
+        case let .orderedGraphAuthorityReserveFence(id,request):
+            writeInt(&buf, Int32(29))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(request, into: &buf)
+
+
+        case let .orderedGraphAuthorityReserveForget(id,request):
+            writeInt(&buf, Int32(30))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(request, into: &buf)
+
+
+        case let .orderedGraphAuthorityOpen(id,receiptId):
+            writeInt(&buf, Int32(31))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(receiptId, into: &buf)
+
+
+        case let .orderedGraphAuthorityStatus(id,receiptId):
+            writeInt(&buf, Int32(32))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(receiptId, into: &buf)
+
+
+        case let .orderedGraphAuthorityFenceOpen(id,receiptId):
+            writeInt(&buf, Int32(33))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(receiptId, into: &buf)
+
+
+        case let .orderedGraphAuthorityForgetOpen(id,receiptId):
+            writeInt(&buf, Int32(34))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(receiptId, into: &buf)
+
+
+        case let .orderedGraphAuthorityClose(id,authorityId):
+            writeInt(&buf, Int32(35))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+
+
+        case let .orderedGraphAuthorityForget(id,authorityId):
+            writeInt(&buf, Int32(36))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+
+
+        case let .orderedGraphPermitReserve(id,authorityId,request,peerId,connectionGeneration,snapshotIdentity):
+            writeInt(&buf, Int32(37))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+            FfiConverterUInt64.write(request, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+
+
+        case let .orderedGraphPermitReserveStatus(id,authorityId,request,peerId,connectionGeneration,snapshotIdentity):
+            writeInt(&buf, Int32(38))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+            FfiConverterUInt64.write(request, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+
+
+        case let .orderedGraphPermitReserveFence(id,authorityId,request,peerId,connectionGeneration,snapshotIdentity):
+            writeInt(&buf, Int32(39))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+            FfiConverterUInt64.write(request, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+
+
+        case let .orderedGraphPermitForgetRequest(id,authorityId,request,peerId,connectionGeneration,snapshotIdentity):
+            writeInt(&buf, Int32(40))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+            FfiConverterUInt64.write(request, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+
+
+        case let .orderedGraphPermitAcquire(id,peerId,connectionGeneration,snapshotIdentity,authorityId,permitId):
+            writeInt(&buf, Int32(41))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+            FfiConverterUInt64.write(permitId, into: &buf)
+
+
+        case let .orderedGraphPermitRelease(id,peerId,connectionGeneration,snapshotIdentity,authorityId,permitId):
+            writeInt(&buf, Int32(42))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+            FfiConverterUInt64.write(permitId, into: &buf)
+
+
+        case let .orderedGraphPermitCommit(id,peerId,connectionGeneration,snapshotIdentity,authorityId,permitId):
+            writeInt(&buf, Int32(43))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+            FfiConverterUInt64.write(permitId, into: &buf)
+
+
+        case let .orderedGraphPermitForget(id,peerId,connectionGeneration,snapshotIdentity,authorityId,permitId):
+            writeInt(&buf, Int32(44))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+            FfiConverterUInt64.write(authorityId, into: &buf)
+            FfiConverterUInt64.write(permitId, into: &buf)
+
+
+        case let .orderedMarkerWrite(id,generation,groupId,markerId,connectionGeneration,snapshotIdentity,instance,value,withResponse):
+            writeInt(&buf, Int32(45))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterUInt64.write(markerId, into: &buf)
+            FfiConverterString.write(connectionGeneration, into: &buf)
+            FfiConverterTypeMobileGattSnapshotIdentity.write(snapshotIdentity, into: &buf)
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            FfiConverterData.write(value, into: &buf)
+            FfiConverterBool.write(withResponse, into: &buf)
+
+
+        case let .orderedMarkerWriteSettlement(id,generation,groupId,markerId):
+            writeInt(&buf, Int32(46))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterUInt64.write(markerId, into: &buf)
+
+
+        case let .orderedCancelMarkerWrite(id,generation,groupId,markerId):
+            writeInt(&buf, Int32(47))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterUInt64.write(markerId, into: &buf)
+
+
+        case let .orderedForgetMarkerWriteReceipt(id,generation,groupId,markerId):
+            writeInt(&buf, Int32(48))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterUInt64.write(markerId, into: &buf)
+
+
+        case let .orderedAcknowledgeBatch(id,generation,groupId,batchId):
+            writeInt(&buf, Int32(49))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterUInt64.write(batchId, into: &buf)
+
+
+        case let .orderedClose(id,generation,groupId):
+            writeInt(&buf, Int32(50))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+
+
+        case let .orderedSeal(id,generation,groupId):
+            writeInt(&buf, Int32(51))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+
+
+        case let .orderedRetainClaim(id,generation,groupId,member):
+            writeInt(&buf, Int32(52))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+
+
+        case let .orderedConfirmCleanup(id,generation,groupId,member):
+            writeInt(&buf, Int32(53))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterTypeMobileOrderedRegistration.write(member, into: &buf)
+
+
+        case let .orderedRemove(id,generation,groupId):
+            writeInt(&buf, Int32(54))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+
+
+        case let .orderedForgetRemovalReceipt(id,generation,groupId):
+            writeInt(&buf, Int32(55))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
 
 
         case let .readMtu(id,peerId):
-            writeInt(&buf, Int32(13))
+            writeInt(&buf, Int32(56))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .readWriteLimits(id,peerId):
-            writeInt(&buf, Int32(14))
+            writeInt(&buf, Int32(57))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .readWriteReadiness(id,peerId):
-            writeInt(&buf, Int32(15))
+            writeInt(&buf, Int32(58))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .requestMtu(id,peerId,mtu):
-            writeInt(&buf, Int32(16))
+            writeInt(&buf, Int32(59))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterUInt16.write(mtu, into: &buf)
 
 
         case let .readRssi(id,peerId):
-            writeInt(&buf, Int32(17))
+            writeInt(&buf, Int32(60))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .requestConnectionPriority(id,peerId,priority):
-            writeInt(&buf, Int32(18))
+            writeInt(&buf, Int32(61))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterString.write(priority, into: &buf)
 
 
         case let .requestSubrate(id,peerId,mode):
-            writeInt(&buf, Int32(19))
+            writeInt(&buf, Int32(62))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterString.write(mode, into: &buf)
 
 
         case let .readPhy(id,peerId):
-            writeInt(&buf, Int32(20))
+            writeInt(&buf, Int32(63))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .requestPhy(id,peerId,tx,rx):
-            writeInt(&buf, Int32(21))
+            writeInt(&buf, Int32(64))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterOptionString.write(tx, into: &buf)
@@ -3345,56 +8099,56 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
 
 
         case let .securityState(id,peerId):
-            writeInt(&buf, Int32(22))
+            writeInt(&buf, Int32(65))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .createBond(id,peerId,transport):
-            writeInt(&buf, Int32(23))
+            writeInt(&buf, Int32(66))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterString.write(transport, into: &buf)
 
 
         case let .cancelBond(id,peerId):
-            writeInt(&buf, Int32(24))
+            writeInt(&buf, Int32(67))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .bondedPeers(id):
-            writeInt(&buf, Int32(25))
+            writeInt(&buf, Int32(68))
             FfiConverterUInt64.write(id, into: &buf)
 
 
         case let .connectedPeers(id,services):
-            writeInt(&buf, Int32(26))
+            writeInt(&buf, Int32(69))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterSequenceString.write(services, into: &buf)
 
 
         case let .resolvePeer(id,peerId):
-            writeInt(&buf, Int32(27))
+            writeInt(&buf, Int32(70))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .acquireBackground(id,kind,reason):
-            writeInt(&buf, Int32(28))
+            writeInt(&buf, Int32(71))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(kind, into: &buf)
             FfiConverterString.write(reason, into: &buf)
 
 
         case let .releaseBackground(id,leaseId):
-            writeInt(&buf, Int32(29))
+            writeInt(&buf, Int32(72))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(leaseId, into: &buf)
 
 
         case let .updateBackgroundNotification(id,leaseId,title,body):
-            writeInt(&buf, Int32(30))
+            writeInt(&buf, Int32(73))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(leaseId, into: &buf)
             FfiConverterString.write(title, into: &buf)
@@ -3402,7 +8156,7 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
 
 
         case let .associateCompanion(id,name,serviceUuid,filtersJson):
-            writeInt(&buf, Int32(31))
+            writeInt(&buf, Int32(74))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterOptionString.write(name, into: &buf)
             FfiConverterOptionString.write(serviceUuid, into: &buf)
@@ -3410,31 +8164,62 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
 
 
         case let .listCompanion(id):
-            writeInt(&buf, Int32(32))
+            writeInt(&buf, Int32(75))
             FfiConverterUInt64.write(id, into: &buf)
 
 
         case let .disassociateCompanion(id,associationId):
-            writeInt(&buf, Int32(33))
+            writeInt(&buf, Int32(76))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterInt64.write(associationId, into: &buf)
 
 
         case let .observePresence(id,peerId):
-            writeInt(&buf, Int32(34))
+            writeInt(&buf, Int32(77))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .stopPresence(id,peerId):
-            writeInt(&buf, Int32(35))
+            writeInt(&buf, Int32(78))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .close(id):
-            writeInt(&buf, Int32(36))
+            writeInt(&buf, Int32(79))
             FfiConverterUInt64.write(id, into: &buf)
+
+
+        case let .ownerFence(id,ownerIncarnation,retirementId):
+            writeInt(&buf, Int32(80))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(ownerIncarnation, into: &buf)
+            FfiConverterString.write(retirementId, into: &buf)
+
+
+        case let .ownerStatus(id,ownerIncarnation,retirementId):
+            writeInt(&buf, Int32(81))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(ownerIncarnation, into: &buf)
+            FfiConverterString.write(retirementId, into: &buf)
+
+
+        case let .orderedDrainV2(id,version,generation,groupId):
+            writeInt(&buf, Int32(82))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt32.write(version, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+
+
+        case let .orderedAcknowledgeBatchV2(id,version,generation,groupId,batchId):
+            writeInt(&buf, Int32(83))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterUInt32.write(version, into: &buf)
+            FfiConverterTypeMobileOrderedGeneration.write(generation, into: &buf)
+            FfiConverterUInt64.write(groupId, into: &buf)
+            FfiConverterUInt64.write(batchId, into: &buf)
 
         }
     }
@@ -3455,6 +8240,282 @@ public func FfiConverterTypeMobileRadioRequest_lower(_ value: MobileRadioRequest
     return FfiConverterTypeMobileRadioRequest.lower(value)
 }
 
+
+
+
+public enum MobileScanFailureRawToken: Equatable, Hashable {
+
+    case null
+    case bool(value: Bool
+    )
+    case i64(value: Int64
+    )
+    case u64(value: String
+    )
+    case f64Bits(value: String
+    )
+    case text(total: String, bytes: Data
+    )
+    case bytes(total: String, bytes: Data
+    )
+    case map(entries: String
+    )
+    case array(entries: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileScanFailureRawToken: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileScanFailureRawToken: FfiConverterRustBuffer {
+    typealias SwiftType = MobileScanFailureRawToken
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileScanFailureRawToken {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .null
+
+        case 2: return .bool(value: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 3: return .i64(value: try FfiConverterInt64.read(from: &buf)
+        )
+
+        case 4: return .u64(value: try FfiConverterString.read(from: &buf)
+        )
+
+        case 5: return .f64Bits(value: try FfiConverterString.read(from: &buf)
+        )
+
+        case 6: return .text(total: try FfiConverterString.read(from: &buf), bytes: try FfiConverterData.read(from: &buf)
+        )
+
+        case 7: return .bytes(total: try FfiConverterString.read(from: &buf), bytes: try FfiConverterData.read(from: &buf)
+        )
+
+        case 8: return .map(entries: try FfiConverterString.read(from: &buf)
+        )
+
+        case 9: return .array(entries: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileScanFailureRawToken, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .null:
+            writeInt(&buf, Int32(1))
+
+
+        case let .bool(value):
+            writeInt(&buf, Int32(2))
+            FfiConverterBool.write(value, into: &buf)
+
+
+        case let .i64(value):
+            writeInt(&buf, Int32(3))
+            FfiConverterInt64.write(value, into: &buf)
+
+
+        case let .u64(value):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(value, into: &buf)
+
+
+        case let .f64Bits(value):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(value, into: &buf)
+
+
+        case let .text(total,bytes):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(total, into: &buf)
+            FfiConverterData.write(bytes, into: &buf)
+
+
+        case let .bytes(total,bytes):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(total, into: &buf)
+            FfiConverterData.write(bytes, into: &buf)
+
+
+        case let .map(entries):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(entries, into: &buf)
+
+
+        case let .array(entries):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(entries, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRawToken_lift(_ buf: RustBuffer) throws -> MobileScanFailureRawToken {
+    return try FfiConverterTypeMobileScanFailureRawToken.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileScanFailureRawToken_lower(_ value: MobileScanFailureRawToken) -> RustBuffer {
+    return FfiConverterTypeMobileScanFailureRawToken.lower(value)
+}
+
+
+
+
+
+public protocol MobileHostBinding: AnyObject, Sendable {
+
+    func bind(host: MobileCoreHost)  -> Bool
+
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceMobileHostBinding {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceMobileHostBinding = UniffiVTableCallbackInterfaceMobileHostBinding(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceMobileHostBinding.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface MobileHostBinding: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceMobileHostBinding.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface MobileHostBinding: handle missing in uniffiClone")
+            }
+        },
+        bind: { (
+            uniffiHandle: UInt64,
+            host: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> Bool in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceMobileHostBinding.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.bind(
+                     host: try FfiConverterTypeMobileCoreHost_lift(host)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMobileHostBinding> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMobileHostBinding>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitMobileHostBinding() {
+    uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilehostbinding(UniffiCallbackInterfaceMobileHostBinding.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceMobileHostBinding {
+    fileprivate static let handleMap = UniffiHandleMap<MobileHostBinding>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceMobileHostBinding : FfiConverter {
+    typealias SwiftType = MobileHostBinding
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMobileHostBinding_lift(_ handle: UInt64) throws -> MobileHostBinding {
+    return try FfiConverterCallbackInterfaceMobileHostBinding.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMobileHostBinding_lower(_ v: MobileHostBinding) -> UInt64 {
+    return FfiConverterCallbackInterfaceMobileHostBinding.lower(v)
+}
 
 
 
@@ -3596,6 +8657,8 @@ public func FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(_ v: Mobil
 
 public protocol MobilePlatformRadio: AnyObject, Sendable {
 
+    func orderedAdmissionOwner(version: UInt32)  -> String
+
     func submit(request: MobileRadioRequest)
 
     func cancel(requestId: UInt64)
@@ -3624,6 +8687,30 @@ fileprivate struct UniffiCallbackInterfaceMobilePlatformRadio {
             } catch {
                 fatalError("Uniffi callback interface MobilePlatformRadio: handle missing in uniffiClone")
             }
+        },
+        orderedAdmissionOwner: { (
+            uniffiHandle: UInt64,
+            version: UInt32,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceMobilePlatformRadio.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.orderedAdmissionOwner(
+                     version: try FfiConverterUInt32.lift(version)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
         },
         submit: { (
             uniffiHandle: UInt64,
@@ -3986,6 +9073,30 @@ fileprivate struct FfiConverterOptionInt32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
     typealias SwiftType = Int64?
 
@@ -4082,6 +9193,102 @@ fileprivate struct FfiConverterOptionTypeMobileCoreHost: FfiConverterRustBuffer 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeMobileNotificationFailureSpoolConfigurationAuthority: FfiConverterRustBuffer {
+    typealias SwiftType = MobileNotificationFailureSpoolConfigurationAuthority?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMobileNotificationFailureSpoolConfigurationAuthority.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeMobileScanFailureRecoveryConfigurationAuthority: FfiConverterRustBuffer {
+    typealias SwiftType = MobileScanFailureRecoveryConfigurationAuthority?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMobileScanFailureRecoveryConfigurationAuthority.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeMobileScanFailureRecoveryHead: FfiConverterRustBuffer {
+    typealias SwiftType = MobileScanFailureRecoveryHead?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMobileScanFailureRecoveryHead.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMobileScanFailureRecoveryHead.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeMobileOrderedRegistration: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedRegistration?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMobileOrderedRegistration.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMobileOrderedRegistration.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeMobilePeerName: FfiConverterRustBuffer {
     typealias SwiftType = MobilePeerName?
 
@@ -4098,6 +9305,54 @@ fileprivate struct FfiConverterOptionTypeMobilePeerName: FfiConverterRustBuffer 
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeMobilePeerName.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeMobilePlatformFailure: FfiConverterRustBuffer {
+    typealias SwiftType = MobilePlatformFailure?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMobilePlatformFailure.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMobilePlatformFailure.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeMobileOrderedRejected: FfiConverterRustBuffer {
+    typealias SwiftType = MobileOrderedRejected?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMobileOrderedRejected.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMobileOrderedRejected.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -4171,6 +9426,56 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileScanFailureCleanupReceipt: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileScanFailureCleanupReceipt]
+
+    public static func write(_ value: [MobileScanFailureCleanupReceipt], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileScanFailureCleanupReceipt.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileScanFailureCleanupReceipt] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileScanFailureCleanupReceipt]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileScanFailureCleanupReceipt.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileScanFailureRecoveryOwner: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileScanFailureRecoveryOwner]
+
+    public static func write(_ value: [MobileScanFailureRecoveryOwner], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileScanFailureRecoveryOwner.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileScanFailureRecoveryOwner] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileScanFailureRecoveryOwner]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileScanFailureRecoveryOwner.read(from: &buf))
         }
         return seq
     }
@@ -4329,6 +9634,81 @@ fileprivate struct FfiConverterSequenceTypeMobileManufacturerData: FfiConverterR
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeMobileOrderedFailureV2: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileOrderedFailureV2]
+
+    public static func write(_ value: [MobileOrderedFailureV2], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileOrderedFailureV2.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileOrderedFailureV2] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileOrderedFailureV2]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileOrderedFailureV2.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileOrderedMember: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileOrderedMember]
+
+    public static func write(_ value: [MobileOrderedMember], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileOrderedMember.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileOrderedMember] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileOrderedMember]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileOrderedMember.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileOrderedRegistration: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileOrderedRegistration]
+
+    public static func write(_ value: [MobileOrderedRegistration], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileOrderedRegistration.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileOrderedRegistration] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileOrderedRegistration]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileOrderedRegistration.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeMobilePeerName: FfiConverterRustBuffer {
     typealias SwiftType = [MobilePeerName]
 
@@ -4400,12 +9780,69 @@ fileprivate struct FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBu
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileOrderedRecord: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileOrderedRecord]
+
+    public static func write(_ value: [MobileOrderedRecord], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileOrderedRecord.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileOrderedRecord] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileOrderedRecord]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileOrderedRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileOwnerOutstandingClass: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileOwnerOutstandingClass]
+
+    public static func write(_ value: [MobileOwnerOutstandingClass], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileOwnerOutstandingClass.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileOwnerOutstandingClass] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileOwnerOutstandingClass]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileOwnerOutstandingClass.read(from: &buf))
+        }
+        return seq
+    }
+}
 public func mobileBuildIdentityJson() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json(uniffiCallStatus
     )
 })
+}
+public func mobileConfigureTerminalEvidenceMaximumBytes(maximumBytes: UInt64)throws   {try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_configure_terminal_evidence_maximum_bytes(
+        FfiConverterUInt64.lower(maximumBytes),uniffiCallStatus
+    )
+}
 }
 public func mobileContractRevision() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
@@ -4421,6 +9858,13 @@ public func mobileHostCurrent() -> MobileCoreHost?  {
     )
 })
 }
+public func mobileHostHasPendingCleanup() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_host_has_pending_cleanup(uniffiCallStatus
+    )
+})
+}
 public func mobileHostInstall(radio: MobilePlatformRadio, wake: MobileWakeSink, platform: String, owner: String, adapterLabel: String)throws  -> MobileCoreHost  {
     return try  FfiConverterTypeMobileCoreHost_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
         uniffiCallStatus in
@@ -4430,6 +9874,33 @@ public func mobileHostInstall(radio: MobilePlatformRadio, wake: MobileWakeSink, 
         FfiConverterString.lower(platform),
         FfiConverterString.lower(owner),
         FfiConverterString.lower(adapterLabel),uniffiCallStatus
+    )
+})
+}
+public func mobileHostInstallBound(radio: MobilePlatformRadio, wake: MobileWakeSink, binding: MobileHostBinding, platform: String, owner: String, adapterLabel: String)throws  -> MobileCoreHost  {
+    return try  FfiConverterTypeMobileCoreHost_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install_bound(
+        FfiConverterCallbackInterfaceMobilePlatformRadio_lower(radio),
+        FfiConverterCallbackInterfaceMobileWakeSink_lower(wake),
+        FfiConverterCallbackInterfaceMobileHostBinding_lower(binding),
+        FfiConverterString.lower(platform),
+        FfiConverterString.lower(owner),
+        FfiConverterString.lower(adapterLabel),uniffiCallStatus
+    )
+})
+}
+public func mobileHostRetryPendingCleanup() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_host_retry_pending_cleanup(uniffiCallStatus
+    )
+})
+}
+public func mobileOrderedRecordingVersion() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_ordered_recording_version(uniffiCallStatus
     )
 })
 }
@@ -4452,6 +9923,15 @@ public func mobileRecordingControl(operation: String, id: String, token: String,
         FfiConverterUInt32.lower(maxBytes),uniffiCallStatus
     )
 })
+}
+public func mobileRecordingOrderedOffline(operation: String, id: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_ordered_offline(
+        FfiConverterString.lower(operation),
+        FfiConverterString.lower(id),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
 }
 public func mobileWireRevision() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
@@ -4479,19 +9959,37 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json() != 23485) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_configure_terminal_evidence_maximum_bytes() != 43137) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision() != 25256) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current() != 45739) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_has_pending_cleanup() != 58064) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install() != 16863) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install_bound() != 59688) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_retry_pending_cleanup() != 22997) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_ordered_recording_version() != 19889) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory() != 4705) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control() != 47672) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_ordered_offline() != 26936) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision() != 16069) {
@@ -4542,10 +10040,49 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step() != 36705) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v2() != 37394) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v3() != 30989) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_global_v4() != 37680) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_acknowledge_notification_failure_spool_v1() != 9837) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_append_notification_failure_v1() != 9905) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_notification_failure_spool_configuration_authority_v3() != 24997) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_claim_scan_failure_recovery_configuration_authority_v1() != 39577) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete() != 1326) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v1() != 64794) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_configure_notification_failure_spool_v2() != 18154) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_confirm_notification_failure_spool_acknowledgement_retirement_v4() != 5874) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim() != 49070) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_peer_failure_recovery() != 37134) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v1() != 10765) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_retained_claim_v2() != 57379) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration() != 47548) {
@@ -4566,7 +10103,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute() != 53239) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_page() != 60134) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_legacy_evidence_retire() != 61702) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim() != 27863) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim_versioned() != 24695) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_retained_claim_v1() != 1680) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_read_peer_failure_recovery() != 48730) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control() != 50250) {
@@ -4575,16 +10127,58 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration() != 64088) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_retire_claim_receipt() != 3042) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration() != 3468) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest() != 56427) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest_notification_failure_v1() != 61455) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_ingress_version() != 2922) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_global_v2() != 33826) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_page_v1() != 26831) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_pending_retirements_v4() != 22464) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_global_v2() != 39494) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_notification_failure_spool_resume_sequence_v1() != 35225) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session() != 1864) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_retire_notification_failure_spool_acknowledgement_v3() != 837) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown() != 30988) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_acknowledge() != 30563) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list() != 11532) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_list_with_status() != 19706) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_open_selected() != 48296) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_terminal_evidence_recovery_read() != 59315) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json() != 37308) {
@@ -4596,13 +10190,103 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke() != 36422) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version() != 27757) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_negotiate_scan_end_version_qualified() != 5818) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_context() != 40511) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_ordered_recording_receipt_control() != 32329) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id() != 62933) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_start_ordered_recording() != 43192) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_stop_ordered_recording() != 28332) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v1() != 52256) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilenotificationfailurespoolconfigurationauthority_configure_v2() != 53944) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurecleanupreceipt_retire() != 15974) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_owners() != 58165) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecovery_pending_cleanup_receipts() != 45019) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v1() != 60078) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryconfigurationauthority_attach_recording_v2() != 30662) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_acknowledge() != 65058) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_finalize() != 27696) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_info() != 19333) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_read() != 60365) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_release() != 32865) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryhead_retire() != 35437) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_head() != 2101) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_info() != 9650) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_member() != 51370) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_finalize() != 4983) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_info() != 5156) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_member() != 48697) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_release() != 38679) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_retire() != 1583) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilescanfailurerecoveryowner_raw_token() != 40119) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() != 28077) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilehostbinding_bind() != 50465) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobileinvokecompletion_complete() != 48577) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_ordered_admission_owner() != 60539) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_submit() != 31117) {
@@ -4615,6 +10299,7 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
 
+    uniffiCallbackInitMobileHostBinding()
     uniffiCallbackInitMobileInvokeCompletion()
     uniffiCallbackInitMobilePlatformRadio()
     uniffiCallbackInitMobileWakeSink()

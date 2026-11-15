@@ -12,6 +12,7 @@ use std::task::{Context, Poll, Waker};
 #[derive(Debug, Clone)]
 pub struct BtlePlugFutureState<T> {
     reply_msg: Option<T>,
+    completed: bool,
     waker: Option<Waker>,
 }
 
@@ -21,6 +22,7 @@ impl<T> Default for BtlePlugFutureState<T> {
     fn default() -> Self {
         BtlePlugFutureState::<T> {
             reply_msg: None,
+            completed: false,
             waker: None,
         }
     }
@@ -38,16 +40,31 @@ impl<T> BtlePlugFutureState<T> {
     /// - `msg`: Message to set as reply, which will be returned by the
     /// corresponding future.
     pub fn set_reply(&mut self, reply: T) {
-        if self.reply_msg.is_some() {
-            // TODO Can we stop multiple calls to set_reply_msg at compile time?
-            panic!("set_reply_msg called multiple times on the same future.");
+        if !self.try_set_reply(reply) {
+            log::warn!("CoreBluetooth reply arrived after terminal completion");
         }
+    }
 
+    /// The first terminal answer owns completion, including after the reply was polled.
+    pub fn is_completed(&self) -> bool {
+        self.completed
+    }
+
+    pub fn try_set_reply(&mut self, reply: T) -> bool {
+        let (accepted, waker) = self.try_set_reply_deferred(reply);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        accepted
+    }
+
+    pub fn try_set_reply_deferred(&mut self, reply: T) -> (bool, Option<Waker>) {
+        if self.completed {
+            return (false, None);
+        }
+        self.completed = true;
         self.reply_msg = Some(reply);
-
-        if self.waker.is_some() {
-            self.waker.take().unwrap().wake();
-        }
+        (true, self.waker.take())
     }
 }
 
@@ -110,5 +127,46 @@ impl<T> Future for BtlePlugFuture<T> {
             waker_state.waker = Some(cx.waker().clone());
             Poll::Pending
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BtlePlugFuture;
+
+    #[tokio::test]
+    async fn racing_reply_and_abort_resolve_once() {
+        let future = BtlePlugFuture::<u8>::default();
+        let state = future.get_state_clone();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for value in [1, 2] {
+            let state = state.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                state.lock().unwrap().try_set_reply(value)
+            }));
+        }
+        barrier.wait();
+        let value = future.await;
+        let accepted = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(|accepted| *accepted)
+            .count();
+        assert_eq!(accepted, 1);
+        assert!([1, 2].contains(&value));
+        assert!(!state.lock().unwrap().try_set_reply(3));
+    }
+
+    #[tokio::test]
+    async fn terminal_completion_remains_owned_after_poll() {
+        let future = BtlePlugFuture::<u8>::default();
+        let state = future.get_state_clone();
+        assert!(state.lock().unwrap().try_set_reply(1));
+        assert!(!state.lock().unwrap().try_set_reply(2));
+        assert_eq!(future.await, 1);
+        assert!(!state.lock().unwrap().try_set_reply(3));
     }
 }

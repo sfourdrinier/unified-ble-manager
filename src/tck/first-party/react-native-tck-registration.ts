@@ -75,7 +75,7 @@ export interface DeterministicReactNativeAppleTckBoundary extends DeterministicR
 }
 
 interface ReactNativeFirstPartyTckOptions {
-  /** A deterministic `UnifiedBleRustCore` module speaking `ubm-mobile-wire/2`. */
+  /** A deterministic `UnifiedBleRustCore` module speaking `ubm-mobile-wire/3`. */
   readonly native: NativeUnifiedBleRustCore
   readonly now: () => number
   readonly nativePeerId: string

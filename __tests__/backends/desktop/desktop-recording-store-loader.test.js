@@ -66,6 +66,37 @@ test('offline store preserves receivers and never initializes or enumerates radi
     ['status', 'sample']
   ])
 })
+test('offline ordered stop uses the addon receipt offer without opening a radio', async () => {
+  const Base = fixture().loaded.module.ContinuationRecordingStore
+  const receipt = { recording: { version: 2, state: 'finished', error: null }, hostCleanup: { state: 'uncertain' } }
+  class OrderedStore extends Base {
+    async stopOrdered(id) {
+      expect(id).toBe('sample')
+      return JSON.stringify({ ok: true, value: receipt })
+    }
+  }
+  const { loaded } = fixture({
+    ContinuationRecordingStore: OrderedStore,
+    orderedRecordingReceiptVersion() { expect(this).toBe(loaded.module); return 2 }
+  })
+  const { openNativeContinuationRecordings } = require('../../../src/backends/desktop/native-continuation-recording')
+  const controller = await openNativeContinuationRecordings(bindDesktopCore(host, loaded), '/private/app')
+  expect(await controller.stopOrdered('sample')).toEqual(receipt)
+})
+
+test.each([undefined, 1, '2'])('offline loader does not assume v2 for offer %s', async offer => {
+  const stopOrdered = jest.fn()
+  const Base = fixture().loaded.module.ContinuationRecordingStore
+  class OrderedStore extends Base { async stopOrdered(id) { return stopOrdered(id) } }
+  const { loaded } = fixture({
+    ContinuationRecordingStore: OrderedStore,
+    orderedRecordingReceiptVersion: offer === undefined ? undefined : () => offer
+  })
+  const { openNativeContinuationRecordings } = require('../../../src/backends/desktop/native-continuation-recording')
+  const controller = await openNativeContinuationRecordings(bindDesktopCore(host, loaded), '/private/app')
+  await expect(controller.stopOrdered('sample')).rejects.toMatchObject({ code: 'protocol.incompatible' })
+  expect(stopOrdered).not.toHaveBeenCalled()
+})
 test.each(['configureDirectory', 'status', 'prepare', 'acknowledge', 'stop', 'clear'])(
   'offline %s normalizes native promise rejection',
   async method => {
@@ -168,6 +199,46 @@ test('offline configure refuses unknown response fields', async () => {
 })
 
 test.each([
+  'platform-owner-private',
+  'host-protected',
+  'windows-current-user-protected-dacl',
+  'capability.unsupported'
+])('offline configure accepts the explicit scan-recovery storage capability %s', async scanRecoveryStorage => {
+  const Base = fixture().loaded.module.ContinuationRecordingStore
+  const { loaded } = fixture({
+    ContinuationRecordingStore: class extends Base {
+      async configureDirectory() {
+        return JSON.stringify({
+          ok: true,
+          value: { state: 'configured', encrypted: false, scanRecoveryStorage }
+        })
+      }
+    }
+  })
+  await expect(bindDesktopCore(host, loaded).openRecordingStore('/private/app')).resolves.toBeDefined()
+})
+
+test.each(['unknown-storage-protector', 17, null, { toString: () => { throw new Error('must not coerce') } }])(
+  'offline configure rejects invalid scan-recovery storage capability %p',
+  async scanRecoveryStorage => {
+    const Base = fixture().loaded.module.ContinuationRecordingStore
+    const { loaded } = fixture({
+      ContinuationRecordingStore: class extends Base {
+        async configureDirectory() {
+          return JSON.stringify({
+            ok: true,
+            value: { state: 'configured', encrypted: false, scanRecoveryStorage }
+          })
+        }
+      }
+    })
+    await expect(bindDesktopCore(host, loaded).openRecordingStore('/private/app')).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'continuation.recording.configure' }
+    })
+  }
+)
+
+test.each([
   [
     'malformed envelope',
     '{}',
@@ -235,4 +306,71 @@ test.each([
     }
   })
   await expect(bindDesktopCore(host, loaded).openRecordingStore('/private/app')).rejects.toMatchObject({ normalized })
+})
+
+test('offline exact legacy controls require the complete versioned surface and preserve receiver', async () => {
+  const original = fixture()
+  const Base = original.loaded.module.ContinuationRecordingStore
+  class ExactStore extends Base {
+    async legacyRecordingPrepareExact(id, items, bytes) { this.calls.push(['legacy', id, items, bytes]); return '{}' }
+    async legacyRecordingAcknowledgeExact(id, page) { this.calls.push(['ack', id, page]); return '{}' }
+    async legacyRecordingRetireExact(id, page) { this.calls.push(['retire', id, page]); return '{}' }
+    async legacyRecordingConfirmExactRetirement(id, page) { this.calls.push(['confirm', id, page]); return '{}' }
+    async inspectRawRecord(id, source, ordinal, offset, maxBytes) { this.calls.push(['inspect', id, source, ordinal, offset, maxBytes]); return '{}' }
+  }
+  const { loaded } = fixture({ ContinuationRecordingStore: ExactStore })
+  const calls = original.calls
+  const store = await bindDesktopCore(host, loaded).openRecordingStore('/private/app')
+  await store.legacyRecordingPrepareExact('sample', 1, 10)
+  await store.legacyRecordingAcknowledgeExact('sample', '{}')
+  await store.legacyRecordingRetireExact('sample', '{}')
+  await store.legacyRecordingConfirmExactRetirement('sample', '{}')
+  await store.inspectRawRecord('sample', 'records', null, '0', 8)
+  expect(calls.slice(1)).toEqual([['legacy', 'sample', 1, 10], ['ack', 'sample', '{}'], ['retire', 'sample', '{}'], ['confirm', 'sample', '{}'], ['inspect', 'sample', 'records', null, '0', 8]])
+  class IncompleteStore extends Base { async legacyRecordingPrepareExact() { return '{}' } }
+  const incomplete = fixture({ ContinuationRecordingStore: IncompleteStore })
+  expect((await bindDesktopCore(host, incomplete.loaded).openRecordingStore('/private/app')).legacyRecordingPrepareExact).toBeUndefined()
+})
+
+test.each([
+  'legacyRecordingPrepareExact',
+  'legacyRecordingAcknowledgeExact',
+  'legacyRecordingRetireExact',
+  'legacyRecordingConfirmExactRetirement'
+])('offline loader withholds all exact controls when %s is missing', async missing => {
+  const Base = fixture().loaded.module.ContinuationRecordingStore
+  class PartialStore extends Base {
+    async legacyRecordingPrepareExact() { return '{}' }
+    async legacyRecordingAcknowledgeExact() { return '{}' }
+    async legacyRecordingRetireExact() { return '{}' }
+    async legacyRecordingConfirmExactRetirement() { return '{}' }
+  }
+  Object.defineProperty(PartialStore.prototype, missing, { value: undefined })
+  const { loaded } = fixture({ ContinuationRecordingStore: PartialStore })
+  const store = await bindDesktopCore(host, loaded).openRecordingStore('/private/app')
+  for (const method of ['legacyRecordingPrepareExact', 'legacyRecordingAcknowledgeExact', 'legacyRecordingRetireExact', 'legacyRecordingConfirmExactRetirement']) {
+    expect(store[method]).toBeUndefined()
+  }
+  expect(typeof store.prepare).toBe('function')
+  expect(typeof store.acknowledge).toBe('function')
+})
+
+if (process.env.UBM_NAPI_TEST_ADDON) test('real native store exports damaged bytes through loader and desktop wrapper', async () => {
+  const fs = require('node:fs')
+  const os = require('node:os')
+  const path = require('node:path')
+  const { execFileSync } = require('node:child_process')
+  const { openNativeContinuationRecordings } = require('../../../src/backends/desktop/native-continuation-recording')
+  const addon = require(process.env.UBM_NAPI_TEST_ADDON)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-wrapper-raw-'))
+  try {
+    execFileSync('python3', ['-c', `import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executescript("PRAGMA application_id=1430408522; PRAGMA user_version=2; CREATE TABLE records(ordinal INTEGER PRIMARY KEY,body TEXT NOT NULL,bytes INTEGER NOT NULL); INSERT INTO records VALUES(1,CAST(X'ff7b' AS TEXT),3);"); c.close()`, path.join(dir, 'sample.sqlite')])
+    const { loaded } = fixture({ ContinuationRecordingStore: addon.ContinuationRecordingStore })
+    const recordings = await openNativeContinuationRecordings(bindDesktopCore(host, loaded), dir)
+    const chunk = await recordings.inspectRawRecord('sample', 'records', '1', '0', 8)
+    expect(chunk.bytes).toEqual([255, 123])
+    expect(chunk.lengthValid).toBe(false)
+    expect(chunk.lengthFault.kind).toBe('storage.corrupt')
+    expect(chunk.jsonValid).toBe(false)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })

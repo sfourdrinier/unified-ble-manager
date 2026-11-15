@@ -2,7 +2,13 @@
 
 import { contractError } from './errors'
 import { byteLimit, ownBytes } from './primitives'
-import type { OwnedBytes, SerializableRecord, SerializableValue } from './primitives'
+import type {
+  OwnedBytes,
+  PortableSerializableRecord,
+  PortableSerializableValue,
+  SerializableRecord,
+  SerializableValue
+} from './primitives'
 
 export interface SerializableSnapshot {
   readonly value: SerializableRecord
@@ -47,7 +53,7 @@ export function setOwnedSerializableEntry<Value>(
 }
 
 /** Deep-copies a serializable record while measuring its deterministic wire-size budget. */
-export function snapshotSerializableRecord(record: SerializableRecord): SerializableSnapshot {
+export function snapshotSerializableRecord(record: PortableSerializableRecord): SerializableSnapshot {
   const activeObjects = new WeakSet<object>()
   const snapshot = snapshotRecord(record, activeObjects)
   return { value: snapshot.value, byteLength: snapshot.byteLength }
@@ -77,7 +83,7 @@ export function serializableRecordsEqual(left: SerializableRecord, right: Serial
   return true
 }
 
-function snapshotValue(value: SerializableValue, activeObjects: WeakSet<object>): SerializableValueSnapshot {
+function snapshotValue(value: PortableSerializableValue, activeObjects: WeakSet<object>): SerializableValueSnapshot {
   if (value === null) {
     return { value: null, byteLength: 4 }
   }
@@ -121,7 +127,7 @@ function snapshotValue(value: SerializableValue, activeObjects: WeakSet<object>)
   return snapshotRecord(value, activeObjects)
 }
 
-function isSerializableArray(value: SerializableValue): value is readonly SerializableValue[] {
+function isSerializableArray(value: PortableSerializableValue): value is readonly PortableSerializableValue[] {
   return Array.isArray(value)
 }
 
@@ -159,7 +165,7 @@ function serializableValuesEqual(left: SerializableValue, right: SerializableVal
   return serializableRecordsEqual(left, right)
 }
 
-function snapshotRecord(record: SerializableRecord, activeObjects: WeakSet<object>): SerializableSnapshot {
+function snapshotRecord(record: PortableSerializableRecord, activeObjects: WeakSet<object>): SerializableSnapshot {
   if (activeObjects.has(record)) {
     throw contractError('protocol.malformed', 'boundary', 'serializable.snapshot.cycle')
   }

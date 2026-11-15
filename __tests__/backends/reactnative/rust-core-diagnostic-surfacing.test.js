@@ -143,31 +143,69 @@ describe('every diagnostic warning reaches the public diagnostic trace', () => {
 })
 
 describe('a data-loss fact is typed on the stream that lost it, never diagnostic-only', () => {
-  test('advertisement ingress drops accumulate on the scan stream’s drop accounting', async () => {
-    const { native, manager } = await openManager()
-    const scan = await manager.scan(scanOptions())
+  test('advertisement ingress drops reach the explicit public loss-aware scan projection', async () => {
+    const { native, manager, publicManager } = await openManager()
+    const scan = await publicManager.scan()
+    const lossAware = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+    const ordinary = scan.observations[Symbol.asyncIterator]()
+    const loss = lossAware.next()
     native.ingressDrop('advertisement', 2)
     await settle(60)
-    expect((await take(scan.observations)).value).toMatchObject({ kind: 'overflow', droppedItems: 2 })
-    native.ingressDrop('advertisement', 3)
-    await settle(60)
-    expect((await take(scan.observations)).value).toMatchObject({ kind: 'overflow', droppedItems: 5 })
+    expect((await loss).value).toMatchObject({
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'advertisement-ingress',
+      lostRecords: 2
+    })
+    expect((await ordinary.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
     await scan.stop()
     await manager.destroy()
   })
 
-  test('notification ingress drops reach every live subscription’s drop accounting', async () => {
+  test('advertisement ingress loss retains its accepted prefix, fences later values, and stops once', async () => {
+    const { native, manager, publicManager } = await openManager()
+    const scan = await publicManager.scan()
+    const ordinary = scan.observations[Symbol.asyncIterator]()
+    const lossAware = scan.lossAwareEventsV1[Symbol.asyncIterator]()
+
+    native.emitAdvertisement(DEFAULT_PEER, { localName: 'accepted before loss' })
+    await settle(40)
+    native.ingressDrop('advertisement', 1)
+    await settle(60)
+    native.emitAdvertisement(DEFAULT_PEER, { localName: 'must not reach the scan' })
+    await settle(40)
+
+    expect((await ordinary.next()).value).toMatchObject({
+      kind: 'value',
+      value: { localName: 'accepted before loss' }
+    })
+    expect((await lossAware.next()).value).toMatchObject({ kind: 'observed' })
+    expect((await lossAware.next()).value).toMatchObject({
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'advertisement-ingress',
+      lostRecords: 1
+    })
+    expect((await ordinary.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
+    await expect(ordinary.next()).resolves.toMatchObject({ done: true })
+    expect(native.opsInvoked('scan.stop')).toHaveLength(1)
+
+    await scan.stop()
+    expect(native.opsInvoked('scan.stop')).toHaveLength(1)
+    await manager.destroy()
+  })
+
+  test('notification ingress drops fail closed on the legacy subscription iterator', async () => {
     const { native, manager, backend } = await openManager()
     const { subscription } = await connectAndSubscribe(manager, backend)
+    const iterator = subscription.values[Symbol.asyncIterator]()
     native.ingressDrop('notification', 1)
     await settle(60)
-    expect((await take(subscription.values)).value).toMatchObject({ kind: 'overflow', droppedItems: 1 })
-    native.ingressDrop('notification', 4)
-    await settle(60)
-    expect((await take(subscription.values)).value).toMatchObject({ kind: 'overflow', droppedItems: 5 })
-    native.emitNotification(new Uint8Array([9]))
-    await settle(60)
-    expect((await take(subscription.values)).value).toMatchObject({ kind: 'value' })
+    // Host-global loss is a claim-side provenance boundary. The legacy
+    // iterator keeps its stable control vocabulary and reports it when the
+    // subscription source closes, rather than inventing a source-loss item.
+    await subscription.remove()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
     await manager.destroy()
   })
 })

@@ -35,7 +35,8 @@ export function rehydratePublicError(error: unknown): unknown {
     return new BleError(normalized.code, normalized.domain, normalized.operation, {
       platform: toPublicPlatformErrorDetail(normalized.platform),
       retryability: normalized.retryability,
-      commit: normalized.commit ?? null
+      commit: normalized.commit ?? null,
+      ...(normalized.orderedFailure === undefined ? {} : { orderedFailure: normalized.orderedFailure })
     })
   } catch (mappingError) {
     if (!(mappingError instanceof BackendContractError)) throw mappingError

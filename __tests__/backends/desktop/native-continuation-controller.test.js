@@ -81,7 +81,7 @@ test('transport-only controller preserves public bytes and receiver without stor
     }
   }
   const control = createNativeContinuationControl(access)
-  expect(Object.keys(control).sort()).toEqual(['claim', 'execute', 'status'])
+  expect(Object.keys(control).sort()).toEqual(['claim', 'claimRetainedV1', 'execute', 'status'])
   expect(await control.execute(declaration)).toMatchObject({ peerAddress: peer, resubscribed: 1 })
   expect(await control.status()).toMatchObject({ queuedData: 1 })
   central.prepared.batches = ['malformed']
@@ -99,7 +99,7 @@ test('transport-only controller preserves public bytes and receiver without stor
   expect(retained.values[0].value).toBeInstanceOf(Uint8Array)
   expect([...retained.values[0].value]).toEqual([0, 72])
   expect(retained.disposed).toBe(false)
-  expect(retained.disposeFailure).toMatch(/uncertain/)
+  expect(retained.disposeFailure).toContain('continuation acknowledgement uncertain')
   central.ackError = null
   const replay = await control.claim()
   expect([...replay.values[0].value]).toEqual([0, 72])
@@ -193,7 +193,43 @@ test('never acknowledges malformed data, preserves decoded values after uncertai
   const backlog = await controller.claim()
   expect([...backlog.values[0].value]).toEqual([0, 72])
   expect(backlog.disposed).toBe(false)
-  expect(backlog.disposeFailure).toMatch(/uncertain/)
+  expect(backlog.disposeFailure).toContain('continuation acknowledgement uncertain')
+})
+
+test('legacy claim delivers all batches and loss accounting before acknowledging', async () => {
+  const central = new Central()
+  central.prepared.batches = [
+    JSON.stringify({
+      more: true,
+      controlLost: 1,
+      records: [{ t: 'value', ordinal: 1, consumer: 'ubm-continuation-0', valueB64: 'AEg=', delivery: 'notification' }]
+    }),
+    JSON.stringify({
+      more: false,
+      controlLost: 2,
+      records: [{ t: 'stream-end', ordinal: 2, consumer: 'ubm-continuation-0', reason: 'overflow', droppedItems: 3, droppedBytes: 17 }]
+    })
+  ]
+  central.continuationAcknowledgeClaim = async function (token) {
+    this.calls.push(['ack', token])
+    return ok({ disposed: false, afterCutoffLoss: { items: 4, bytes: 20 }, disposeFailure: 'retained tail' })
+  }
+  const backlog = await createNativeContinuationController(central).claim()
+  expect([...backlog.values[0].value]).toEqual([0, 72])
+  expect(backlog.streamEnds).toEqual([
+    { consumer: 'ubm-continuation-0', reason: 'overflow', droppedItems: 3, droppedBytes: 17 }
+  ])
+  expect(backlog).toMatchObject({ controlLost: 2, afterCutoffLoss: { items: 4, bytes: 20 }, disposed: false, disposeFailure: 'retained tail' })
+  expect(central.calls.map(call => call[0])).toEqual(['prepare', 'ack'])
+})
+
+test('legacy claim does not acknowledge a valid prefix followed by an invalid batch', async () => {
+  const central = new Central()
+  const first = JSON.parse(central.prepared.batches[0])
+  first.more = true
+  central.prepared.batches = [JSON.stringify(first), '{invalid']
+  await expect(createNativeContinuationController(central).claim()).rejects.toMatchObject({ code: 'protocol.malformed' })
+  expect(central.calls.map(call => call[0])).toEqual(['prepare'])
 })
 
 test('rejects invalid declarations, missing identity, unsupported strategy and invalid bounds before dispatch', async () => {
@@ -321,4 +357,42 @@ test('a backend missing the native owner is explicitly unsupported and all deskt
     expect(host.createNativeContinuationController).toBe(createNativeContinuationController)
     expect(typeof host.loadDesktopCoreBinding).toBe('function')
   }
+})
+
+test('same-host ordered stop notifies receipt owner only after authoritative cleanup', async () => {
+  const central = new Central()
+  central.orderedRecordingReceiptVersion = () => 2
+  central.continuationConfigureRecordingDirectory = async () => ok({ state: 'configured', encrypted: false })
+  let hostCleanup = { state: 'pending' }
+  central.continuationRecordingStore = () => ({ stopOrdered: async () => ok({ recording: { version: 2, state:'finished', error:null }, hostCleanup }) })
+  const observe = jest.fn().mockRejectedValueOnce(new Error('reclaim failed')).mockResolvedValue(undefined)
+  const controller = createNativeContinuationController(central, observe)
+  const recordings = await controller.recordings('/private/app/recordings')
+  expect((await recordings.stopOrdered('sample')).hostCleanup.state).toBe('pending')
+  expect(observe).not.toHaveBeenCalled()
+  hostCleanup = { state: 'uncertain' }
+  expect((await recordings.stopOrdered('sample')).hostCleanup.state).toBe('uncertain')
+  expect(observe).not.toHaveBeenCalled()
+  hostCleanup = { state: 'released', failures: [] }
+  await expect(recordings.stopOrdered('sample')).rejects.toThrow('reclaim failed')
+  expect((await recordings.stopOrdered('sample')).recording.state).toBe('finished')
+  expect(observe).toHaveBeenCalledTimes(2)
+})
+
+
+test('versioned control only prepares through the distinct retained operation', async () => {
+  const central = new Central()
+  const access = createNativeContinuationControlAccess(central)
+  const old = createNativeContinuationControl(access)
+  await expect(old.claimRetainedV1()).rejects.toMatchObject({ code: 'capability.unsupported' })
+  expect(central.calls).toEqual([])
+  central.continuationPrepareRetainedClaimV1 = central.continuationPrepareClaim
+  central.continuationAcknowledgeRetainedClaimV1 = central.continuationAcknowledgeClaim
+  central.continuationRetireRetainedClaimReceiptV1 = async () => ok({})
+  const control = createNativeContinuationControl(createNativeContinuationControlAccess(central))
+  const prefix = await control.claimRetainedV1()
+  expect(central.calls.map(call => call[0])).toEqual(['prepare'])
+  expect((await prefix.acknowledge()).disposed).toBe(true)
+  await prefix.retireReceipt()
+  expect(central.calls.map(call => call[0])).toEqual(['prepare', 'ack'])
 })

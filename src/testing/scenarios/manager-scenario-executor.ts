@@ -240,8 +240,7 @@ async function adapterLossAndZeroCounterSettlement<
 >(context: ManagerScenarioExecutionContext<Attachment, Identity>): Promise<void> {
   const scan = await context.controller.settle(context.owner.scan(context.controller.scanOptions(4, 128)))
   context.controller.loseAdapter()
-  await context.controller.flush()
-  const terminal = await scan.observations[Symbol.asyncIterator]().next()
+  const terminal = await context.controller.settle(scan.observations[Symbol.asyncIterator]().next())
   requireCondition(!terminal.done && terminal.value.kind === 'terminal', 'adapter loss did not close scan ingress')
 }
 

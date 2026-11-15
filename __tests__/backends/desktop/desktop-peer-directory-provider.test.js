@@ -124,11 +124,13 @@ test('directory lookup acquires no lease; explicit public owners share and relea
     expect(calls('connect')).toHaveLength(1)
     expect(calls('connect')[0][1][0].peerId).toBe(ID)
     expect(await a.release()).toEqual({ state: 'released', failures: [] })
-    expect(calls('disconnect')).toHaveLength(0)
+    // `disconnect` is the native lease-release dispatch. Rust confirms this
+    // first release without a physical disconnect while b still owns the link.
+    expect(calls('disconnect')).toHaveLength(1)
     const gatt = await b.discover()
     expect(await gatt.characteristic(h.HRM_SERVICE, h.HRM_MEASUREMENT).read()).toEqual(new Uint8Array([0x42]))
     expect(await b.release()).toEqual({ state: 'released', failures: [] })
-    expect(calls('disconnect')).toHaveLength(1)
+    expect(calls('disconnect')).toHaveLength(2)
   } finally {
     expect(await manager.destroy()).toEqual({ state: 'released', failures: [] })
   }

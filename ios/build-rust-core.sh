@@ -252,12 +252,40 @@ build_sim_slice() {
     exit 1
   fi
   echo "build-rust-core: merging $# simulator arch(s) into $FAT_LIB"
-  lipo -create "$@" -output "$FAT_LIB"
+  # A singleton simulator target is already a valid archive. Wrapping it with
+  # lipo turns it into a fat Mach-O container, which contradicts the one-arch
+  # XCFramework Info.plist declaration and is rejected by the staging identity.
+  if [ $# -eq 1 ]; then
+    cp "$1" "$FAT_LIB"
+  else
+    lipo -create "$@" -output "$FAT_LIB"
+  fi
   if [ ! -f "$FAT_LIB" ]; then
     echo "build-rust-core: lipo produced no fat archive $FAT_LIB" >&2
     exit 1
   fi
   lipo -info "$FAT_LIB"
+}
+
+# `xcodebuild -create-xcframework -headers` preserves UniFFI's generated
+# filename (`ubm_echoFFI.modulemap`). A framework consumer, however, discovers
+# its Clang module map only at the conventional Headers/module.modulemap path.
+# Stage that standard alias in every declared platform slice before sealing the
+# identity record; do not make downstream applications inject compiler flags.
+stage_consumer_module_maps() {
+  framework="$1"
+  for identifier in ios-arm64 ios-arm64-simulator tvos-arm64 tvos-arm64-simulator; do
+    slice="$framework/$identifier"
+    if [ ! -d "$slice/Headers" ]; then
+      echo "build-rust-core: assembly produced no Headers directory for $identifier" >&2
+      exit 1
+    fi
+    if [ ! -f "$slice/Headers/ubm_echoFFI.modulemap" ]; then
+      echo "build-rust-core: assembly produced no UniFFI module map for $identifier" >&2
+      exit 1
+    fi
+    cp "$HEADERS/ubm_echoFFI.modulemap" "$slice/Headers/module.modulemap"
+  done
 }
 
 build_target "$MATRIX_DEVICE"
@@ -291,6 +319,7 @@ xcodebuild -create-xcframework -output "$FRAMEWORK_DIR" \
   -library "$IOS_SIM_FAT" -headers "$HEADERS" \
   -library "$TVOS_DEVICE_LIB" -headers "$HEADERS" \
   -library "$TVOS_SIM_FAT" -headers "$HEADERS"
+stage_consumer_module_maps "$FRAMEWORK_DIR"
 
 # Post-assembly identity (PR210-18): Info.plist parsed with plutil (never
 # grepped), every slice hashed, the sealed digests recorded; then the

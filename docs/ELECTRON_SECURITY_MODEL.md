@@ -19,8 +19,11 @@ This page is the ownership and threat boundary for Electron. Consumer setup live
 
 - `contextIsolation: true`
 - `nodeIntegration: false`
-- sandbox where the host allows it
+- `sandbox: true`; call `app.enableSandbox()` before Electron is ready
 - no generic `ipcRenderer` on `window`
+- a sandboxed preload may use Electron's preload API only to expose named,
+  typed transport methods; it must not expose a generic IPC transport, addon
+  loader, native store, or recording directory
 - a Content-Security-Policy that does not unlock eval for untrusted pages
 - unpack native addons from ASAR when the host requires it
 - signing and notarization are the application’s release job, not this library’s proof
@@ -33,6 +36,17 @@ This page is the ownership and threat boundary for Electron. Consumer setup live
   requires a new authenticated bootstrap; custom ceremonies remain rejected
   until a data-only challenge protocol exists.
 - Unsupported threat claims (for example “this IPC path is immune to a compromised renderer”) are out of scope.
+
+## Native addon boundary
+
+The Node-API addon is a trusted Node/main-host surface. A secure renderer uses
+the public renderer entrypoint and the authenticated IPC client only. Electron
+does not provide a standard Node-API proof that a loaded addon belongs to main:
+a renderer or preload configured with Node/native-module access has been given
+the embedding application's OS-user authority and is no longer an untrusted
+renderer. UBM therefore does not use mutable JavaScript process globals as a
+security check. Hosts must keep native addon loading and durable recording
+objects in main, and expose only named, caller-bound IPC operations.
 
 ## Shared desktop peer-directory routes
 

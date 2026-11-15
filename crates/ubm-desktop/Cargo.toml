@@ -9,6 +9,8 @@ description = "Host-neutral desktop central radio/executor for UBM 5.0 (HOST-DES
 repository = "https://github.com/sfourdrinier/unified-ble-manager"
 
 [features]
+# Synthetic reclaim model for explicitly opted-in host integration tests only.
+reclaim-test-support = ["btleplug?/reclaim-test-support"]
 # The production btleplug radio (`BtleplugRadio`). Default on for desktop
 # hosts; hosts that bring their own `RadioBoundary` (the mobile Rust owner)
 # build with `default-features = false` and link no btleplug code.
@@ -27,12 +29,16 @@ btleplug = [
 [dependencies]
 # Preserve receipt float bits when journal JSON is decoded and re-emitted.
 serde_json = { version = "1", features = ["float_roundtrip"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "blob"] }
 ubm-core = { path = "../ubm-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 futures-util = { version = "0.3", optional = true }
 btleplug = { version = "0.12", optional = true }
-uuid = { version = "1", default-features = false, features = ["std"], optional = true }
+uuid = { version = "1", default-features = false, features = ["std", "v4"], optional = true }
+getrandom = "0.4.3"
+hmac = "0.12"
+sha2 = "0.10"
+log = "0.4"
 
 # Narrow OS adapters behind `RadioBoundary` for what btleplug 0.12 does not
 # expose (PR210 decision 7). Each is the platform's own API, compiled only
@@ -55,7 +61,17 @@ libc = "0.2"
 # presence watch, and the package-identity (`deployment`) diagnostic.
 # Same `windows` major btleplug 0.12 already links (0.62), so no second copy.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    # The v2 scan-recovery sidecar is bearer material. Windows therefore
+    # provisions and verifies an owner-only protected DACL on the opened file,
+    # rather than trusting the process default DACL.
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_SystemServices",
+] }
 windows-future = { version = "0.3", optional = true }
 windows = { version = "0.62", optional = true, features = [
     "Devices_Bluetooth",
@@ -78,7 +94,6 @@ objc2-core-bluetooth = { version = "0.2.2", default-features = false, features =
 
 [dev-dependencies]
 # The portable controls compile the production operation registry and its logging.
-log = "0.4"
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
 

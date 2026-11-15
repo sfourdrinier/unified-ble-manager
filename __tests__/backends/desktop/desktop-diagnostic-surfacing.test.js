@@ -59,7 +59,7 @@ function interpose(harness) {
             return { ...real, advertisement: rewrite(real.advertisement) }
           }
         }
-        if (property === 'pollNotification') {
+        if (property === 'pollNotification' || property === 'pollNotificationV2') {
           return async (...args) => {
             const real = await Reflect.apply(value, target, args)
             if (control.poll === null || real.kind !== 'value') return real
@@ -182,6 +182,63 @@ test('armed lifecycle failure intercepts a native read already in flight', async
 })
 
 describe('every desktop diagnostic warning reaches the public diagnostic trace', () => {
+  test('an ownerless native source callback reaches the public diagnostics without inventing a connection', async () => {
+    const { manager, control, harness } = await publicManager('corebluetooth')
+    try {
+      control.replace.takeSourceUncertaintyEvent = [
+        {
+          kind: 'source-uncertain',
+          sequence: 1,
+          peerId: 'private-debug-peer',
+          code: 'platform.failure',
+          operation: 'gatt.source',
+          detail: 'native callback had no admitted cycle',
+          platform: JSON.stringify({
+            domain: 'corebluetooth',
+            code: 'unassociated',
+            message: 'callback had no admitted cycle',
+            metadata: { native: 'didDisconnect' }
+          })
+        }
+      ]
+      await eventually(
+        () => traceEvents(manager).includes('diagnostic-warning:gatt.source-uncertain'),
+        'ownerless source uncertainty in the public diagnostic trace'
+      )
+      const record = manager.diagnostics.snapshot().trace.records.find(item => item.event === 'diagnostic-warning:gatt.source-uncertain')
+      expect(record).toMatchObject({ kind: 'attachment', redactedPayload: true })
+      // The provider does not expose this as a connection lifecycle record:
+      // a graph-less native UUID cannot be safely attributed to a live lease.
+      expect(harness.calls.some(([method]) => method === 'disconnect')).toBe(false)
+    } finally {
+      await manager.destroy()
+    }
+  })
+
+  test('ownerless source diagnostics retain repeated facts, report a bounded-stream gap, and tear down cleanly', async () => {
+    const { manager, control } = await publicManager('corebluetooth')
+    try {
+      control.replace.takeSourceUncertaintyEvent = [
+        { kind: 'source-uncertain', sequence: 41, peerId: 'private-peer', code: 'platform.failure', operation: 'gatt.source' },
+        { kind: 'source-uncertain', sequence: 42, peerId: 'private-peer', code: 'platform.failure', operation: 'gatt.source' },
+        { kind: 'lagged', missed: 3 }
+      ]
+      await eventually(
+        () => {
+          const trace = traceEvents(manager)
+          return trace.filter(event => event === 'diagnostic-warning:gatt.source-uncertain').length === 2 &&
+            trace.includes('diagnostic-warning:gatt.source-uncertain-lagged')
+        },
+        'repeated ownerless diagnostics and their explicit overflow record in the public trace'
+      )
+    } finally {
+      // A manager owns the provider listener; destroying it must release that
+      // listener without converting an ownerless diagnostic into a lifecycle
+      // event or retaining a stale peer route.
+      await manager.destroy()
+    }
+  })
+
   test.each([
     [
       'corebluetooth',

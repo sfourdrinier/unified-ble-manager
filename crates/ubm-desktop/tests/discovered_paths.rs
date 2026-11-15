@@ -100,7 +100,8 @@ async fn discovered_central() -> DesktopCentral<FakeRadio> {
             service_data: Vec::new(),
             tx_power_level: None,
             extras: ubm_desktop::AdvertisementExtras::default(),
-        }));
+        }))
+        .expect("synthetic event admission failed");
     central
         .connect("peer-1", "lease-a", OpControl::budget_ms(5000))
         .await
@@ -225,7 +226,8 @@ async fn discovered_paths_requires_discovery() {
             service_data: Vec::new(),
             tx_power_level: None,
             extras: ubm_desktop::AdvertisementExtras::default(),
-        }));
+        }))
+        .expect("synthetic event admission failed");
     central
         .connect("peer-1", "lease-a", OpControl::budget_ms(5000))
         .await
@@ -254,7 +256,8 @@ async fn a_denied_service_stays_in_the_discovered_tree() {
             service_data: Vec::new(),
             tx_power_level: None,
             extras: ubm_desktop::AdvertisementExtras::default(),
-        }));
+        }))
+        .expect("synthetic event admission failed");
     central
         .connect("peer-denied", "lease-a", OpControl::budget_ms(5000))
         .await

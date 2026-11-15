@@ -53,16 +53,18 @@ fail() {
   exit 1
 }
 
-for tool in plutil shasum; do
+for tool in plutil shasum cmp; do
   command -v "$tool" >/dev/null 2>&1 || fail "missing required tool $tool (macOS)"
 done
 
 FRAMEWORK="$DIR/RustCore.xcframework"
 PLIST="$FRAMEWORK/Info.plist"
 IDENTITY="$DIR/build-identity.json"
+CANONICAL_MODULE_MAP="$ROOT/bindings/uniffi/generated/swift/ubm_echoFFI.modulemap"
 [ -d "$FRAMEWORK" ] || fail "missing $FRAMEWORK"
 [ -f "$PLIST" ] || fail "missing $PLIST"
 [ -f "$IDENTITY" ] || fail "missing $IDENTITY"
+[ -f "$CANONICAL_MODULE_MAP" ] || fail "missing canonical generated UniFFI module map $CANONICAL_MODULE_MAP"
 
 # Prints the value at a key path; exits non-zero when the key is absent.
 extract() {
@@ -131,6 +133,15 @@ while [ "$k" -lt "$recorded" ]; do
   [ -f "$archive" ] || fail "missing slice $archive"
   [ "$(sha256_of "$archive")" = "$want_sha" ] || fail "slice $identifier/$library_path sha256 does not match $IDENTITY (substituted or corrupted)"
   [ "$(wc -c < "$archive" | tr -d ' ')" = "$want_bytes" ] || fail "slice $identifier/$library_path size does not match $IDENTITY"
+  headers="$FRAMEWORK/$identifier/Headers"
+  generated_map="$headers/ubm_echoFFI.modulemap"
+  consumer_map="$headers/module.modulemap"
+  [ -f "$generated_map" ] || fail "missing generated UniFFI module map $generated_map"
+  [ -f "$consumer_map" ] || fail "missing discoverable consumer module map $consumer_map"
+  cmp -s "$generated_map" "$CANONICAL_MODULE_MAP" \
+    || fail "generated UniFFI module map $generated_map differs from canonical generated UniFFI module map $CANONICAL_MODULE_MAP"
+  cmp -s "$consumer_map" "$CANONICAL_MODULE_MAP" \
+    || fail "consumer module map $consumer_map differs from canonical generated UniFFI module map $CANONICAL_MODULE_MAP"
   k=$((k + 1))
 done
 

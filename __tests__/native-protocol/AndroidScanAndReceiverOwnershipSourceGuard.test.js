@@ -16,13 +16,13 @@ describe('Android scan and receiver ownership source guards', () => {
 
   test('owns the scan callback before native admission and retains failed compensation', () => {
     const startScan = radio.slice(radio.indexOf('fun startScan('), radio.indexOf('internal fun stopScan()'))
-    const assign = startScan.indexOf('scanCallback = cb')
-    const nativeStart = startScan.indexOf('scanner?.startScan')
+    const assign = startScan.indexOf('scanSessions[owner] = session')
+    const nativeStart = startScan.indexOf('scanner.startScan')
     expect(nativeStart).toBeGreaterThan(-1)
     expect(assign).toBeGreaterThan(-1)
     expect(assign).toBeLessThan(nativeStart)
-    expect(startScan).toContain('if (cleanupFailure == null)')
-    expect(startScan).toContain('scanCallback = null')
+    expect(startScan).toContain('scanSessions.remove(owner, session)')
+    expect(startScan).toContain('error.addSuppressed(stopError)')
     expect(startScan).toMatch(/catch\s*\(/)
     expect(startScan).toMatch(/stopScan\(cb\)/)
     expect(startScan).toMatch(/setDeviceAddress/)
@@ -34,9 +34,13 @@ describe('Android scan and receiver ownership source guards', () => {
       radio.indexOf('internal fun unregisterAdapterStateReceiver()')
     )
     expect(adapter.indexOf('context.registerReceiver')).toBeGreaterThan(-1)
-    expect(adapter.indexOf('adapterStateReceiver = receiver')).toBeGreaterThan(
+    // Android does not report whether a throwing registerReceiver call had a
+    // side effect. Retain the owner before that call so teardown can retry it.
+    expect(adapter.indexOf('adapterStateReceiver = receiver')).toBeLessThan(
       adapter.indexOf('context.registerReceiver')
     )
+    expect(adapter).toContain('adapterReceiverActive = false')
+    expect(adapter).toContain('adapterReceiverAdmissionFailed = true')
 
     const bond = radio.slice(
       radio.indexOf('internal fun registerBondStateReceiver()'),

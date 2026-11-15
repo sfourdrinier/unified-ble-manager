@@ -119,12 +119,144 @@ describe('React Native Android descriptor protocol boundary', () => {
       characteristicOccurrence: characteristic.occurrence
     }
 
-    await boundary.startNotifyWithMode(address, 'indication', () => undefined)
+    await boundary.startNotifyWithMode(
+      address,
+      'indication',
+      () => undefined,
+      undefined,
+      { id: 'mode' },
+      'require-indication'
+    )
 
     const subscribe = runtime.commands.find(command => requiredString(command, 3) === 'subscribe')
     expect(subscribe).toBeDefined()
     expect(requiredString(subscribe, 21)).toBe('indication')
+    expect(requiredString(subscribe, 22)).toBe('requireIndication')
 
+    await boundary.destroy()
+  })
+
+  test('delivers typed source events and ignores a stale release claim', async () => {
+    const runtime = new DescriptorRuntime()
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(new DescriptorControl(), 'source-events')
+    boundary.bindAttachment({
+      attachmentId: 'a',
+      backendInstanceId: 'b',
+      backendGeneration: 'g',
+      adapterId: 'd',
+      adapterGeneration: 'dg'
+    })
+    await boundary.open()
+    await boundary.connect(peerId)
+    const snapshot = await boundary.discover(peerId)
+    const characteristic = snapshot.services[0].characteristics[0]
+    const address = {
+      nativePeerId: peerId,
+      serviceUuid: snapshot.services[0].uuid,
+      serviceOccurrence: snapshot.services[0].occurrence,
+      characteristicUuid: characteristic.uuid,
+      characteristicOccurrence: characteristic.occurrence
+    }
+    const claim = { id: 'current' }
+    const sourceEvents = []
+    await boundary.startNotifyWithMode(
+      address,
+      'notification',
+      () => undefined,
+      event => sourceEvents.push(event),
+      claim
+    )
+    const command = runtime.commands.find(candidate => requiredString(candidate, 3) === 'subscribe')
+    const fields = [
+      field(9, requiredRecord(command, 4)),
+      field(10, requiredRecord(command, 2)),
+      field(11, requiredString(command, 7))
+    ]
+    runtime.emitEvent('notificationLoss', [...fields, field(18, 2), field(19, 7)])
+    runtime.emitEvent('notificationTerminated', [
+      ...fields,
+      field(
+        14,
+        record('error', [
+          field(1, 'gatt-status'),
+          field(2, 'android'),
+          field(3, 'gatt.notification.source'),
+          field(4, 'notRetryable'),
+          field(5, 'android'),
+          field(6, 'NOTIFICATION_DELIVERY_UNCERTAIN'),
+          field(7, 'Notification subscription terminated'),
+          field(8, 133)
+        ])
+      )
+    ])
+    expect(sourceEvents[0]).toEqual({ kind: 'loss', lostItems: 2, lostBytes: 7 })
+    expect(sourceEvents[1]).toMatchObject({
+      kind: 'terminated',
+      error: {
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'gatt.notification.source',
+        retryability: 'never',
+        platform: {
+          domain: 'android',
+          code: 'NOTIFICATION_DELIVERY_UNCERTAIN',
+          safeMessage: 'Notification subscription terminated',
+          metadata: { androidGattStatus: 133 }
+        }
+      }
+    })
+    runtime.emitEvent('notificationTerminated', [
+      ...fields,
+      field(
+        14,
+        record('error', [
+          field(1, 'permission-denied'),
+          field(2, 'android'),
+          field(3, 'gatt.notification.source'),
+          field(4, 'notRetryable'),
+          field(5, 'android'),
+          field(6, 'CALLBACK_FAILED'),
+          field(7, 'Notification subscription terminated')
+        ])
+      )
+    ])
+    expect(sourceEvents[2]).toMatchObject({
+      kind: 'terminated',
+      error: {
+        code: 'permission.denied',
+        domain: 'adapter',
+        platform: { domain: 'android', code: 'CALLBACK_FAILED', metadata: {} }
+      }
+    })
+    runtime.emitEvent('notificationTerminated', [
+      ...fields,
+      field(
+        14,
+        record('error', [
+          field(1, 'gatt-status'),
+          field(2, 'android'),
+          field(3, 'gatt.notification.source'),
+          field(4, 'notRetryable'),
+          field(5, 'android'),
+          field(6, 'NOTIFICATION_DELIVERY_UNCERTAIN'),
+          field(7, 'Notification subscription terminated'),
+          field(8, 19)
+        ])
+      )
+    ])
+    expect(sourceEvents[3]).toMatchObject({
+      kind: 'terminated',
+      error: {
+        code: 'platform.failure',
+        domain: 'platform',
+        platform: { code: 'NOTIFICATION_DELIVERY_UNCERTAIN', metadata: { androidGattStatus: 19 } }
+      }
+    })
+    await boundary.stopNotify(address, { id: 'stale' })
+    expect(runtime.commandKinds.filter(kind => kind === 'unsubscribe')).toHaveLength(0)
+    await boundary.stopNotify(address, claim)
+    expect(runtime.commandKinds.filter(kind => kind === 'unsubscribe')).toHaveLength(1)
     await boundary.destroy()
   })
 
@@ -160,7 +292,11 @@ describe('React Native Android descriptor protocol boundary', () => {
       await boundary.startScan(() => {
         throw new Error('first scan listener failed')
       }, [])
-      await boundary.startScan(scanSecond, [])
+      await expect(boundary.startScan(() => {}, [])).rejects.toMatchObject({ normalized: { code: 'scan.already-active' } })
+      boundary.onScanFailure(() => {
+        throw new Error('first scan failure listener failed')
+      })
+      boundary.onScanFailure(scanSecond)
       await boundary.startNotify(address, () => {
         throw new Error('first notification listener failed')
       })
@@ -175,20 +311,31 @@ describe('React Native Android descriptor protocol boundary', () => {
       boundary.onAdapterState(adapterSecond)
 
       runtime.emitEvent('advertisement', [
-        field(12, record('advertisement', [
-          field(1, peerId),
-          field(2, 1),
-          field(3, 1),
-          field(4, 'descriptor-test'),
-          field(17, [])
-        ]))
+        field(10, requiredRecord(runtime.commands.find(command => requiredString(command, 3) === 'scanStart'), 2)),
+        field(
+          12,
+          record('advertisement', [
+            field(1, peerId),
+            field(2, 1),
+            field(3, 1),
+            field(4, 'descriptor-test'),
+            field(17, [])
+          ])
+        )
+      ])
+      runtime.emitEvent('diagnostic', [
+        field(10, requiredRecord(runtime.commands.find(command => requiredString(command, 3) === 'scanStart'), 2)),
+        field(14, record('error', [field(1, 'scanFailed'), field(2, 'android'), field(3, 'scan'), field(4, 'notRetryable'), field(7, 'scan failed')]))
       ])
       const subscriptions = runtime.commands.filter(command => requiredString(command, 3) === 'subscribe')
       // The payload is retained under the SUBSCRIBE's own nonce, and the event
       // carries that correlation, exactly as the native binding emits it. A
       // double that invents its own correlation models a notification the
       // native codec rejects outright (issue #168).
-      for (const [index, value] of [[0, 4], [1, 5]]) {
+      for (const [index, value] of [
+        [0, 4],
+        [1, 5]
+      ]) {
         const subscribeCommand = subscriptions[index]
         const subscribeCorrelation = requiredRecord(subscribeCommand, 2)
         runtime.emitEvent('notification', [
@@ -196,9 +343,7 @@ describe('React Native Android descriptor protocol boundary', () => {
           field(11, requiredString(subscribeCommand, 7)),
           field(
             13,
-            binaryReferenceRecord(
-              runtime.retain(requiredString(subscribeCorrelation, 3), new Uint8Array([value]))
-            )
+            binaryReferenceRecord(runtime.retain(requiredString(subscribeCorrelation, 3), new Uint8Array([value])))
           )
         ])
       }
@@ -211,7 +356,7 @@ describe('React Native Android descriptor protocol boundary', () => {
       expect(notifySecond).toHaveBeenCalledWith(new Uint8Array([5]))
       expect(disconnectSecond).toHaveBeenCalledTimes(1)
       expect(adapterSecond).toHaveBeenCalledTimes(1)
-      for (const eventKind of ['advertisement', 'notification', 'connectionLost', 'adapterState']) {
+      for (const eventKind of ['advertisement', 'scanFailed', 'notification', 'connectionLost', 'adapterState']) {
         expectConsoleErrorMatching(
           '[ReactNativeAndroidProtocolBoundary.invokeConsumerListener] Consumer listener failed:',
           expect.objectContaining({ metric: 'nativeProtocolConsumerListenerFailure', eventKind })
@@ -354,14 +499,15 @@ class DescriptorControl {
   handshake() {
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 7,
+      abi: 8,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
       eventSchema: 1,
       traceFormat: 1,
       maximumControlRecordBytes: 262144,
-      maximumBinaryPayloadBytes: 524288
+      maximumBinaryPayloadBytes: 524288,
+      scanEventIdentityAvailable: true
     })
   }
 
@@ -427,6 +573,15 @@ class DescriptorRuntime {
 
   setFatalSink(listener) {
     this.fatalListener = listener
+  }
+
+  submitWithAdmission(bytes) {
+    try {
+      this.submit(bytes)
+      return { state: 'submitted' }
+    } catch (error) {
+      return { state: 'notAdmitted', message: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   submit(bytes) {

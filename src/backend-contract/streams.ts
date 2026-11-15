@@ -2,6 +2,7 @@
 
 import type { CleanupRecord, NormalizedBleError } from './errors'
 import type { Capacity, ResourceCount } from './primitives'
+import type { TerminalEvidenceCommit } from './terminal-evidence'
 
 export type OverflowPolicy = 'latest' | 'drop-oldest' | 'drop-newest' | 'error'
 export interface StreamLimits {
@@ -15,6 +16,22 @@ export interface StreamOverflowNotice {
   readonly droppedItems: ResourceCount
   readonly droppedBytes: ResourceCount
   readonly replacedItems: ResourceCount
+}
+/** A host-wide ingress loss; a candidate stream may or may not have lost records. */
+export interface StreamSourceLossNotice {
+  readonly kind: 'source-loss'
+  readonly scope: 'host-global'
+  readonly source: 'notification-ingress' | 'advertisement-ingress'
+  /** Delta since the previous notice for this source, not a per-stream count. */
+  readonly lostRecords: ResourceCount
+}
+/** Loss in one peer's shared notification source; it is not a characteristic count. */
+export interface StreamPeerSourceLossNotice {
+  readonly kind: 'source-loss'
+  readonly scope: 'peer'
+  readonly peerId: string
+  readonly generation: string
+  readonly skippedRecords: string | null
 }
 export interface StreamValue<T> {
   readonly kind: 'value'
@@ -36,6 +53,8 @@ export interface StreamTerminalNotice {
   readonly replacedItems: ResourceCount
   /** Structured cause when the source failed while delivering this stream. */
   readonly error?: NormalizedBleError | null
+  /** Exact canonical terminal evidence committed by a source-native host. */
+  readonly evidence?: TerminalEvidenceCommit
 }
 export type StreamItem<T> = StreamValue<T> | StreamOverflowNotice | StreamTerminalNotice
 export interface BoundedAsyncStreamIterator<T> extends AsyncIterator<StreamItem<T>, undefined, undefined> {

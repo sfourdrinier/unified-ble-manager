@@ -5,8 +5,8 @@ import Foundation
 /// CoreBluetooth reports a read response and a notification through one
 /// `didUpdateValueFor` callback. A read on a notifying characteristic runs and
 /// completes as `readOrNotification`; the value still reaches the subscription;
-/// reads of one characteristic complete in request order, one `readValue` at a
-/// time, and an abandoned read's update never completes a later read.
+/// reads of one characteristic are serialized, and an ambiguous or abandoned
+/// read's physical obligation never completes a later read.
 @main
 enum AppleCoreBluetoothReadNotifyProvenanceHarness {
   typealias Provenance = OwnedCoreBluetoothReadNotifyProvenance
@@ -18,6 +18,10 @@ enum AppleCoreBluetoothReadNotifyProvenanceHarness {
     notificationBeforeReadReplyRace()
     abandonedReadChecks()
     notificationStateAnswerChecks()
+    cancelledNotificationTransitionChecks()
+    invalidatedNotificationCleanupChecks()
+    serviceChangePendingEnableChecks()
+    serviceChangeActiveSubscriptionChecks()
   }
 
   /// Runs the production delegate's state-answer handler, without allocating
@@ -75,6 +79,156 @@ enum AppleCoreBluetoothReadNotifyProvenanceHarness {
       precondition(radio.pendingCancellationCleanup["cancelled-enable"] == nil,
         "the same callback can refuse enable while authoritatively settling its cancelled-enable cleanup")
       precondition(radio.central == nil, "the fixture must not allocate a Bluetooth manager")
+    }
+  }
+
+  static func cancelledNotificationTransitionChecks() {
+    let radio = OwnedCoreBluetoothProtocolRadio(restoreIdentifierKey: nil)
+    let address = CharacteristicAddress(
+      peerIdentifier: "test-peer", serviceUUID: "180d", serviceOccurrence: 0,
+      characteristicUUID: "2a37", characteristicOccurrence: 0
+    )
+    radio.queue.sync {
+      var writes = [Bool]()
+      radio.notificationStateWriter = { _, enabled in writes.append(enabled); return true }
+      for initialEnable in [true, false] {
+        let operation = initialEnable ? "cancel-enable" : "cancel-disable"
+        if !initialEnable { radio.subscriptions[address] = "original" }
+        radio.pendingNotify[address] = PendingNotify(
+          operationIdentifier: operation, subscriptionIdentifier: "original", enabled: initialEnable,
+          completion: { _ in preconditionFailure("cancelled operation must not complete") }
+        )
+        radio.cancelPendingOperation(operation)
+        precondition(writes.isEmpty, "cancellation must wait for the original callback")
+        precondition(!radio.pendingCancellationCleanupRetryScheduled.contains(operation),
+          "waiting for a callback must not create a recurring retry timer")
+        precondition(!radio.notificationTransitionAvailable(for: address), "cleanup blocks a replacement claim")
+        precondition(radio.pendingCancellationCleanup[operation]?.notificationAwaitingCallbacks.contains(address) == true)
+        radio.handleNotificationStateUpdate(address: address, isNotifying: initialEnable, error: nil)
+        precondition(writes == [!initialEnable], "compensation follows the original callback")
+        precondition(radio.pendingCancellationCleanup[operation]?.notificationAwaitingCallbacks.contains(address) == true)
+        // An errored compensation cannot release the owner, even when the state appears correct.
+        radio.handleNotificationStateUpdate(address: address, isNotifying: !initialEnable,
+          error: NSError(domain: "test", code: 1))
+        precondition(writes == [!initialEnable, !initialEnable])
+        precondition(!radio.notificationTransitionAvailable(for: address))
+        radio.handleNotificationStateUpdate(address: address, isNotifying: !initialEnable, error: nil)
+        precondition(radio.pendingCancellationCleanup[operation] == nil)
+        precondition(radio.notificationTransitionAvailable(for: address))
+        if !initialEnable { precondition(radio.subscriptions[address] == "original") }
+        writes.removeAll()
+      }
+      radio.notificationStateWriter = nil
+    }
+  }
+
+  static func invalidatedNotificationCleanupChecks() {
+    let radio = OwnedCoreBluetoothProtocolRadio(restoreIdentifierKey: nil)
+    let address = CharacteristicAddress(
+      peerIdentifier: "peer", serviceUUID: "180d", serviceOccurrence: 0,
+      characteristicUUID: "2a37", characteristicOccurrence: 0
+    )
+    radio.queue.sync {
+      var writes = [Bool]()
+      radio.notificationStateWriter = { _, enabled in writes.append(enabled); return true }
+      radio.pendingNotify[address] = PendingNotify(
+        operationIdentifier: "cancelled", subscriptionIdentifier: "owner", enabled: true,
+        completion: { _ in preconditionFailure("cancelled operation must not complete") }
+      )
+      radio.cancelPendingOperation("cancelled")
+      radio.clearNotificationOwnership(forPeerIdentifier: "peer")
+      precondition(writes.isEmpty, "service change must not race the original transition")
+      precondition(!radio.notificationTransitionAvailable(for: address))
+      let rediscoveredAddress = CharacteristicAddress(
+        peerIdentifier: "peer", serviceUUID: "180d", serviceOccurrence: 1,
+        characteristicUUID: "2a37", characteristicOccurrence: 0
+      )
+      precondition(!radio.notificationTransitionAvailable(for: rediscoveredAddress),
+        "rediscovery may assign the same characteristic a different occurrence")
+      let result = radio.retryCancellationCleanupOnQueue("cancelled")
+      precondition(result["state"] as? String == "retryable")
+      precondition(writes.isEmpty, "an invalidated path must not target a rediscovered characteristic")
+      radio.handleNotificationStateUpdate(address: address, isNotifying: false, error: nil)
+      precondition(radio.pendingCancellationCleanup["cancelled"] != nil,
+        "a callback resolved through a replacement path cannot settle the old owner")
+      radio.pendingCancellationCleanup["cancelled"]?.discoveryPeers.insert("peer")
+      radio.clearCancellationCleanup(forPeerIdentifier: "peer")
+      precondition(radio.pendingCancellationCleanup["cancelled"]?.discoveryPeers.contains("peer") == true,
+        "disconnect must not discard outstanding discovery cleanup")
+      radio.clearDiscoveryCancellationCleanup(forPeerIdentifier: "peer")
+      precondition(radio.pendingCancellationCleanup["cancelled"] == nil)
+      precondition(radio.notificationTransitionAvailable(for: address))
+      radio.notificationStateWriter = nil
+    }
+  }
+
+  static func serviceChangePendingEnableChecks() {
+    let radio = OwnedCoreBluetoothProtocolRadio(restoreIdentifierKey: nil)
+    let address = CharacteristicAddress(
+      peerIdentifier: "peer", serviceUUID: "180d", serviceOccurrence: 0,
+      characteristicUUID: "2a37", characteristicOccurrence: 0
+    )
+    radio.queue.sync {
+      var writes = [Bool]()
+      var answers = [NSError?]()
+      radio.notificationStateWriter = { _, enabled in writes.append(enabled); return true }
+      radio.pendingNotify[address] = PendingNotify(
+        operationIdentifier: "pending-enable", subscriptionIdentifier: "owner", enabled: true,
+        completion: { answers.append($0) }
+      )
+      radio.clearNotificationOwnership(forPeerIdentifier: "peer")
+      precondition(answers.count == 1 && answers[0]?.code == 1027)
+      precondition(writes.isEmpty, "service change must not overlap the pending enable")
+      precondition(radio.pendingNotify[address] == nil)
+      // Cleanup is keyed by the physical transition identity, not the
+      // caller-provided operation ID.  The latter can be reused while a late
+      // CoreBluetooth callback still belongs to this retired transition.
+      precondition(radio.pendingCancellationCleanup.values.contains {
+        $0.notificationAwaitingCallbacks.contains(address)
+      })
+      let replacement = CharacteristicAddress(
+        peerIdentifier: "peer", serviceUUID: "180d", serviceOccurrence: 1,
+        characteristicUUID: "2a37", characteristicOccurrence: 0
+      )
+      precondition(!radio.notificationTransitionAvailable(for: replacement))
+      radio.handleNotificationStateUpdate(address: address, isNotifying: true, error: nil)
+      let cleanupID = radio.pendingCancellationCleanup.first(where: {
+        $0.value.notificationAwaitingCallbacks.contains(address) || $0.value.notificationDesiredStates[address] != nil
+      })?.key
+      precondition(cleanupID != nil && writes.isEmpty,
+        "a late enable must not release invalidated ownership")
+      precondition(radio.retryCancellationCleanupOnQueue(cleanupID!)["state"] as? String == "retryable")
+      radio.clearCancellationCleanup(forPeerIdentifier: "peer")
+      precondition(radio.notificationTransitionAvailable(for: replacement))
+      radio.notificationStateWriter = nil
+    }
+  }
+
+  static func serviceChangeActiveSubscriptionChecks() {
+    let radio = OwnedCoreBluetoothProtocolRadio(restoreIdentifierKey: nil)
+    let address = CharacteristicAddress(
+      peerIdentifier: "peer", serviceUUID: "180d", serviceOccurrence: 0,
+      characteristicUUID: "2a37", characteristicOccurrence: 0
+    )
+    let replacement = CharacteristicAddress(
+      peerIdentifier: "peer", serviceUUID: "180d", serviceOccurrence: 1,
+      characteristicUUID: "2a37", characteristicOccurrence: 0
+    )
+    radio.queue.sync {
+      var writes = [Bool]()
+      radio.notificationStateWriter = { _, enabled in writes.append(enabled); return true }
+      radio.subscriptions[address] = "owner"
+      radio.clearNotificationOwnership(forPeerIdentifier: "peer")
+      precondition(writes.isEmpty, "invalidated service must not receive a stale disable")
+      precondition(radio.subscriptions[address] == nil)
+      precondition(radio.hasPendingCancellationCleanup(for: address))
+      precondition(!radio.notificationTransitionAvailable(for: replacement))
+      radio.handleNotificationStateUpdate(address: replacement, isNotifying: false, error: nil)
+      precondition(!radio.notificationTransitionAvailable(for: replacement),
+        "replacement callback cannot settle the old physical owner")
+      radio.clearCancellationCleanup(forPeerIdentifier: "peer")
+      precondition(radio.notificationTransitionAvailable(for: replacement))
+      radio.notificationStateWriter = nil
     }
   }
 
@@ -146,8 +300,16 @@ enum AppleCoreBluetoothReadNotifyProvenanceHarness {
         hasInstalledSubscription: true, pendingNotifyEnable: false, pendingCancellationCleanup: true,
         hasError: false, hasValue: true
       ),
+      true,
+      "an installed subscription keeps receiving values during compensation"
+    )
+    expect(
+      Provenance.deliversNotification(
+        hasInstalledSubscription: false, pendingNotifyEnable: true, pendingCancellationCleanup: true,
+        hasError: false, hasValue: true
+      ),
       false,
-      "a subscription whose cancellation is being undone receives nothing"
+      "a cancelled enable without an installed owner must not deliver"
     )
   }
 
@@ -172,12 +334,15 @@ enum AppleCoreBluetoothReadNotifyProvenanceHarness {
   /// The Polar H10 ECG race: the PMD control point is subscribed, a read is
   /// issued, and a notification lands just before the read reply. The first
   /// update completes the read as `readOrNotification` and still reaches the
-  /// subscriber; the reply that follows is a plain notification delivery.
+  /// subscriber; the physical read remains owed because the next value could
+  /// still be its reply.
   static func notificationBeforeReadReplyRace() {
     var lane = OwnedCoreBluetoothReadLane<String>()
     expect(lane.admit("read"), true, "the read is issued while notifying")
-    let notificationFirst = lane.answer()
-    expect(notificationFirst.completed, "read", "the notification that arrived first completes the read")
+    let notificationFirst = lane.answerAmbiguously()
+    expect(notificationFirst, "read", "the notification that arrived first completes the read")
+    expect(lane.updateOwed, true, "an ambiguous value does not discharge the physical read")
+    expect(lane.admit("later"), false, "a later physical read cannot be issued")
     expect(
       Provenance.readProvenance(
         isNotifying: true, hasInstalledSubscription: true, pendingNotifyChange: false, pendingCancellationCleanup: false
@@ -193,15 +358,13 @@ enum AppleCoreBluetoothReadNotifyProvenanceHarness {
       true,
       "the notification value is not withheld from the subscriber"
     )
-    let replyAfter = lane.answer()
-    expect(replyAfter.completed, nil, "the late read reply completes no read")
     expect(
       Provenance.deliversNotification(
         hasInstalledSubscription: true, pendingNotifyEnable: false, pendingCancellationCleanup: false,
         hasError: false, hasValue: true
       ),
       true,
-      "the late read reply is delivered to the subscriber, never dropped"
+      "a subsequent value is delivered to the subscriber, never dropped"
     )
   }
 

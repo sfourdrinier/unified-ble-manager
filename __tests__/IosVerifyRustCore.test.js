@@ -47,6 +47,14 @@ function stage(dir, libraries = APPLE_DECLARED_LIBRARIES) {
     const content = Buffer.from(`!<arch>\nslice ${library.libraryIdentifier}\n`)
     fs.mkdirSync(path.join(framework, library.libraryIdentifier), { recursive: true })
     fs.writeFileSync(path.join(framework, library.libraryIdentifier, LIB), content)
+    // The staged framework is what a Swift consumer discovers, so mirror the
+    // conventional Headers/module.modulemap layout produced by build-rust-core.
+    const headers = path.join(framework, library.libraryIdentifier, 'Headers')
+    fs.mkdirSync(headers, { recursive: true })
+    fs.writeFileSync(path.join(headers, 'ubm_echoFFI.h'), '// synthetic header\n')
+    const moduleMap = fs.readFileSync(path.join(root, 'bindings', 'uniffi', 'generated', 'swift', 'ubm_echoFFI.modulemap'))
+    fs.writeFileSync(path.join(headers, 'ubm_echoFFI.modulemap'), moduleMap)
+    fs.writeFileSync(path.join(headers, 'module.modulemap'), moduleMap)
     return { ...library, libraryPath: LIB, sha256: sha256(content), bytes: content.length }
   })
   fs.writeFileSync(
@@ -102,6 +110,27 @@ describe('verify-rust-core.sh against a synthetic staging (macOS plutil)', () =>
     expect(result.stderr).toBe('')
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('OK 4 slices')
+  })
+
+  test('a substituted conventional module map fails', () => {
+    if (!executesHere()) return
+    const framework = stage(dir)
+    fs.appendFileSync(path.join(framework, 'ios-arm64', 'Headers', 'module.modulemap'), '// tampered\n')
+    const result = verify(dir)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('consumer module map')
+  })
+
+  test('a coherent substitution of both staged module maps fails', () => {
+    if (!executesHere()) return
+    const framework = stage(dir)
+    const headers = path.join(framework, 'ios-arm64', 'Headers')
+    const replacement = 'module ubm_echoFFI {\n  header "replacement.h"\n  export *\n}\n'
+    fs.writeFileSync(path.join(headers, 'ubm_echoFFI.modulemap'), replacement)
+    fs.writeFileSync(path.join(headers, 'module.modulemap'), replacement)
+    const result = verify(dir)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('canonical generated UniFFI module map')
   })
 
   test('an omitted simulator slice fails (the old grep counted lines, not slices)', () => {
