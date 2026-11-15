@@ -5,25 +5,43 @@ test('lost reservation response retries same key and never duplicates the write'
   const keys = []
   let attempts = 0
   const transport = {
-    reserve: jest.fn(async key => { keys.push(key); if (++attempts === 1) throw new Error('lost reserve response'); return '0' }),
+    reserve: jest.fn(async key => {
+      keys.push(key)
+      if (++attempts === 1) throw new Error('lost reserve response')
+      return '0'
+    }),
     start: jest.fn(async () => ({ state: 'pending' })),
     status: jest.fn(async () => ({ state: 'admitted', ordinal: '4', write: { state: 'settled', error: null } })),
     cancel: jest.fn(async () => ({ state: 'not-admitted', error: null })),
     forget: jest.fn(async () => {})
   }
-  const handle = createOrderedMarkerReservations(transport, target => target, () => 0, () => 'unique-key')()
+  const handle = createOrderedMarkerReservations(
+    transport,
+    target => target,
+    () => 0,
+    () => 'unique-key'
+  )()
   const target = {}
-  await expect(handle.start(target, new Uint8Array([1]), 'with-response', controls)).rejects.toThrow('lost reserve response')
+  await expect(handle.start(target, new Uint8Array([1]), 'with-response', controls)).rejects.toThrow(
+    'lost reserve response'
+  )
   expect(await handle.start(target, new Uint8Array([1]), 'with-response', controls)).toEqual({ state: 'pending' })
   expect(keys).toEqual(['unique-key', 'unique-key'])
   expect(transport.start).toHaveBeenCalledTimes(1)
   expect((await handle.status()).state).toBe('admitted')
   await handle.forget()
-  await expect(handle.start(target, new Uint8Array([1]), 'with-response', controls)).rejects.toThrow('lifecycle.invalid-state')
+  await expect(handle.start(target, new Uint8Array([1]), 'with-response', controls)).rejects.toThrow(
+    'lifecycle.invalid-state'
+  )
 })
 test('idle cancellation consumes no native ID and is retained through retry', async () => {
   const transport = { reserve: jest.fn(), start: jest.fn(), status: jest.fn(), cancel: jest.fn(), forget: jest.fn() }
-  const handle = createOrderedMarkerReservations(transport, target => target, () => 0, () => 'key')()
+  const handle = createOrderedMarkerReservations(
+    transport,
+    target => target,
+    () => 0,
+    () => 'key'
+  )()
   expect((await handle.cancel()).state).toBe('not-admitted')
   expect((await handle.start({}, new Uint8Array([1]), 'with-response', controls)).state).toBe('not-admitted')
   await handle.forget()
@@ -32,21 +50,240 @@ test('idle cancellation consumes no native ID and is retained through retry', as
 })
 test('abort while reservation response is pending cancels native ownership before start', async () => {
   let finishReserve
-  const reserved = new Promise(resolve => { finishReserve = resolve })
+  const reserved = new Promise(resolve => {
+    finishReserve = resolve
+  })
   const transport = {
     reserve: jest.fn(() => reserved),
-    start: jest.fn(async () => ({state:'pending'})),
-    status: jest.fn(async () => ({state:'not-admitted',error:null})),
-    cancel: jest.fn(async () => ({state:'not-admitted',error:null})),
+    start: jest.fn(async () => ({ state: 'pending' })),
+    status: jest.fn(async () => ({ state: 'not-admitted', error: null })),
+    cancel: jest.fn(async () => ({ state: 'not-admitted', error: null })),
     forget: jest.fn(async () => {})
   }
-  const handle = createOrderedMarkerReservations(transport, target => target, () => 0, () => 'reservation-key')()
+  const handle = createOrderedMarkerReservations(
+    transport,
+    target => target,
+    () => 0,
+    () => 'reservation-key'
+  )()
   const abort = new AbortController()
-  const pending = handle.start({}, new Uint8Array([3]), 'with-response', {signal:abort.signal, deadline:null})
+  const pending = handle.start({}, new Uint8Array([3]), 'with-response', { signal: abort.signal, deadline: null })
   abort.abort()
   finishReserve('0')
-  expect(await pending).toEqual({state:'not-admitted',error:null})
+  expect(await pending).toEqual({ state: 'not-admitted', error: null })
   expect(transport.cancel).toHaveBeenCalledTimes(1)
   expect(transport.start).not.toHaveBeenCalled()
   await handle.forget()
+})
+
+test('deadline expires pending reservation, retains ownership, and cancels the late id without starting', async () => {
+  jest.useFakeTimers()
+  try {
+    let finishReserve
+    let finishCancel
+    const reserved = new Promise(resolve => {
+      finishReserve = resolve
+    })
+    const cancel = new Promise(resolve => {
+      finishCancel = resolve
+    })
+    const admitted = { state: 'admitted', ordinal: '4', write: { state: 'settled', error: null } }
+    const transport = {
+      reserve: jest.fn(() => reserved),
+      start: jest.fn(),
+      status: jest.fn(async () => admitted),
+      cancel: jest.fn(() => cancel),
+      forget: jest.fn(async () => {})
+    }
+    const make = createOrderedMarkerReservations(
+      transport,
+      target => target,
+      () => 0,
+      () => 'key'
+    )
+    const handle = make()
+    const target = {}
+    const pending = handle.start(target, Uint8Array.from([3]), 'with-response', { signal: null, deadline: 10 })
+    const rejected = expect(pending).rejects.toThrow('operation.timed-out')
+    jest.advanceTimersByTime(10)
+    await rejected
+    await expect(make().start({}, Uint8Array.from([1]), 'with-response', controls)).rejects.toThrow(
+      'lifecycle.invalid-state'
+    )
+    finishReserve('7')
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(transport.cancel).toHaveBeenCalledWith('7')
+    expect(transport.start).not.toHaveBeenCalled()
+    finishCancel(admitted)
+    expect(await handle.status()).toEqual(admitted)
+    await handle.forget()
+    expect(transport.forget).toHaveBeenCalledWith('7')
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+test('deadline expires stalled start without waiting for cancellation and retains the request', async () => {
+  jest.useFakeTimers()
+  try {
+    let finishStart
+    let finishCancel
+    const firstStart = new Promise(resolve => {
+      finishStart = resolve
+    })
+    const cancellation = new Promise(resolve => {
+      finishCancel = resolve
+    })
+    const admitted = { state: 'admitted', ordinal: '9', write: { state: 'settled', error: null } }
+    const transport = {
+      reserve: jest.fn(async () => '5'),
+      start: jest.fn().mockReturnValueOnce(firstStart).mockResolvedValue(admitted),
+      status: jest.fn(async () => admitted),
+      cancel: jest.fn(() => cancellation),
+      forget: jest.fn(async () => {})
+    }
+    const handle = createOrderedMarkerReservations(
+      transport,
+      target => target,
+      () => 0,
+      () => 'key'
+    )()
+    const target = {}
+    const pending = handle.start(target, Uint8Array.from([2]), 'with-response', { signal: null, deadline: 10 })
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    const rejected = expect(pending).rejects.toThrow('operation.timed-out')
+    jest.advanceTimersByTime(10)
+    await rejected
+    expect(transport.cancel).toHaveBeenCalledWith('5')
+    finishStart(admitted)
+    finishCancel(admitted)
+    expect(await handle.status()).toEqual(admitted)
+    expect(await handle.start(target, Uint8Array.from([2]), 'with-response', controls)).toEqual(admitted)
+    expect(transport.reserve).toHaveBeenCalledTimes(1)
+    expect(transport.start).toHaveBeenCalledTimes(1)
+    await expect(handle.start(target, Uint8Array.from([3]), 'with-response', controls)).rejects.toThrow(
+      'argument.invalid'
+    )
+    await handle.forget()
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+test('completed or failed starts clear the deadline without requesting cancellation', async () => {
+  jest.useFakeTimers()
+  try {
+    for (const failure of [false, true]) {
+      const transport = {
+        reserve: jest.fn(async () => '1'),
+        start: jest.fn(async () => {
+          if (failure) throw new Error('transport failure')
+          return { state: 'pending' }
+        }),
+        status: jest.fn(),
+        cancel: jest.fn(),
+        forget: jest.fn(async () => {})
+      }
+      const handle = createOrderedMarkerReservations(
+        transport,
+        target => target,
+        () => 0,
+        () => 'key'
+      )()
+      const pending = handle.start({}, Uint8Array.from([1]), 'with-response', { signal: null, deadline: 10 })
+      if (failure) await expect(pending).rejects.toThrow('transport failure')
+      else await expect(pending).resolves.toEqual({ state: 'pending' })
+      jest.advanceTimersByTime(10)
+      expect(transport.cancel).not.toHaveBeenCalled()
+      await handle.forget()
+    }
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+test('late cancellation failure remains observable after a deadline', async () => {
+  jest.useFakeTimers()
+  try {
+    let finishReserve
+    const reserved = new Promise(resolve => {
+      finishReserve = resolve
+    })
+    const transport = {
+      reserve: jest.fn(() => reserved),
+      start: jest.fn(),
+      status: jest.fn(),
+      cancel: jest.fn(async () => {
+        throw new Error('cancel failed')
+      }),
+      forget: jest.fn(async () => {})
+    }
+    const handle = createOrderedMarkerReservations(
+      transport,
+      target => target,
+      () => 0,
+      () => 'key'
+    )()
+    const pending = handle.start({}, Uint8Array.from([1]), 'with-response', { signal: null, deadline: 10 })
+    const rejected = expect(pending).rejects.toThrow('operation.timed-out')
+    jest.advanceTimersByTime(10)
+    await rejected
+    finishReserve('6')
+    await expect(handle.cancel()).rejects.toThrow('cancel failed')
+    expect(transport.start).not.toHaveBeenCalled()
+    await handle.forget()
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+test('deadline cancellation prevents retries from starting a late reservation', async () => {
+  jest.useFakeTimers()
+  try {
+    let finishReserve
+    let finishCancel
+    const reserved = new Promise(resolve => {
+      finishReserve = resolve
+    })
+    const cancellation = new Promise(resolve => {
+      finishCancel = resolve
+    })
+    const actual = { state: 'not-admitted', error: null }
+    const transport = {
+      reserve: jest.fn(() => reserved),
+      start: jest.fn(async () => ({ state: 'pending' })),
+      status: jest.fn(async () => actual),
+      cancel: jest.fn(() => cancellation),
+      forget: jest.fn(async () => {})
+    }
+    const handle = createOrderedMarkerReservations(
+      transport,
+      target => target,
+      () => 0,
+      () => 'key'
+    )()
+    const target = {}
+    const first = handle.start(target, Uint8Array.from([1]), 'with-response', { signal: null, deadline: 10 })
+    const rejected = expect(first).rejects.toThrow('operation.timed-out')
+    jest.advanceTimersByTime(10)
+    await rejected
+    const retry = handle.start(target, Uint8Array.from([1]), 'with-response', controls)
+    finishReserve('6')
+    for (let i = 0; i < 6; i++) await Promise.resolve()
+    expect(transport.start).not.toHaveBeenCalled()
+    expect(transport.cancel).toHaveBeenCalledTimes(1)
+    expect(transport.cancel).toHaveBeenCalledWith('6')
+    finishCancel(actual)
+    expect(await retry).toEqual(actual)
+    expect(await handle.start(target, Uint8Array.from([1]), 'with-response', controls)).toEqual(actual)
+    expect(transport.start).not.toHaveBeenCalled()
+    expect(transport.reserve).toHaveBeenCalledTimes(1)
+    await handle.forget()
+  } finally {
+    jest.useRealTimers()
+  }
 })

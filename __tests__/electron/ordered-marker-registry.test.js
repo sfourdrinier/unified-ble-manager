@@ -51,6 +51,41 @@ test('renderer revoke releases only unstarted reservations from its lease', asyn
   const unused = registry.reserve('unused', 'one', 'old').markerHandle
   const retained = registry.reserve('retained', 'two', 'new').markerHandle
   registry.retireUnusedForLease('old')
-  await expect(registry.status('unused', unused, false)).rejects.toMatchObject({ normalized: { code: 'ownership.denied' } })
+  await expect(registry.status('unused', unused, false)).rejects.toMatchObject({
+    normalized: { code: 'ownership.denied' }
+  })
   await expect(registry.status('retained', retained, false)).resolves.toMatchObject({ status: { state: 'idle' } })
+})
+
+test('exact startup retry reaches the retained native handle after a lost reservation reply', async () => {
+  const { createOrderedMarkerReservations } = require('../../src/core/ordered-marker-handle')
+  const registry = new ElectronOrderedMarkerRegistry()
+  const reservationFailure = new Error('lost reservation response')
+  const status = { state: 'admitted', ordinal: '7', write: { state: 'settled', error: null } }
+  const transport = {
+    reserve: jest.fn().mockRejectedValueOnce(reservationFailure).mockResolvedValue('0'),
+    start: jest.fn(async () => status),
+    status: jest.fn(async () => status),
+    cancel: jest.fn(async () => ({ state: 'not-admitted', error: null })),
+    forget: jest.fn(async () => {})
+  }
+  const handle = createOrderedMarkerReservations(
+    transport,
+    target => target,
+    () => 0,
+    () => 'same-key'
+  )()
+  const create = jest.fn(() => handle)
+  const target = { characteristicUuid: '2a37' }
+  const options = { signal: null, deadline: null }
+  const id = registry.reserve('group', 'retry-token').markerHandle
+  const start = fingerprint => registry.start('group', id, fingerprint, create, target, Uint8Array.of(1), true, options)
+  await expect(start({ value: 'original' })).rejects.toBe(reservationFailure)
+  await expect(start({ value: 'changed' })).rejects.toMatchObject({ normalized: { code: 'argument.invalid' } })
+  await expect(start({ value: 'original' })).resolves.toMatchObject({ status })
+  await expect(start({ value: 'original' })).resolves.toMatchObject({ status })
+  expect(create).toHaveBeenCalledTimes(1)
+  expect(transport.reserve.mock.calls).toEqual([['same-key'], ['same-key']])
+  expect(transport.start).toHaveBeenCalledTimes(1)
+  await registry.forget('group', id)
 })

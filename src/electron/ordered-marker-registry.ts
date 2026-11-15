@@ -20,7 +20,6 @@ interface Slot {
   pending: Promise<OrderedMarkerWriteStatus> | null
   cancelled: boolean
   started: boolean
-  failure: { readonly error: unknown } | null
 }
 interface Owner {
   readonly slots: Map<string, Slot>
@@ -57,8 +56,7 @@ export class ElectronOrderedMarkerRegistry {
       fingerprint: null,
       pending: null,
       cancelled: false,
-      started: false,
-      failure: null
+      started: false
     })
     return { markerHandle: id }
   }
@@ -92,25 +90,16 @@ export class ElectronOrderedMarkerRegistry {
     if (slot.fingerprint !== null && !serializableRecordsEqual(slot.fingerprint, fingerprint))
       throw contractError('argument.invalid', 'ipc', 'electron.ordered-marker.retry')
     if (slot.pending !== null) return orderedWireRecord({ statusFormat: 'public', status: await slot.pending })
-    if (slot.failure !== null) throw slot.failure.error
     if (slot.started && slot.handle !== null)
       return orderedWireRecord({ statusFormat: 'public', status: await slot.handle.status() })
     if (slot.handle === null) slot.handle = create()
     slot.fingerprint = fingerprint
-    slot.started = true
-    let work: Promise<OrderedMarkerWriteStatus>
-    try {
-      work = slot.handle.start(target, bytes, withResponse ? 'with-response' : 'without-response', options)
-    } catch (error) {
-      slot.failure = { error }
-      throw error
-    }
+    const work = slot.handle.start(target, bytes, withResponse ? 'with-response' : 'without-response', options)
     slot.pending = work
     try {
-      return orderedWireRecord({ statusFormat: 'public', status: await work })
-    } catch (error) {
-      slot.failure = { error }
-      throw error
+      const status = await work
+      slot.started = true
+      return orderedWireRecord({ statusFormat: 'public', status })
     } finally {
       if (slot.pending === work) slot.pending = null
     }

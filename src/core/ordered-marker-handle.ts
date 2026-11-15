@@ -50,6 +50,7 @@ export function createOrderedMarkerReservations<Target, Selector>(
       }
       return reservation
     }
+    let cancellationRequested = false
     let cancelTask: Promise<{ readonly status: OrderedMarkerWriteStatus } | { readonly error: unknown }> | null = null
     let watchedSignal: AbortSignal | null = null
     let abortListener: (() => void) | null = null
@@ -65,6 +66,7 @@ export function createOrderedMarkerReservations<Target, Selector>(
       return transport.cancel(await reserve())
     }
     const requestCancel = () => {
+      cancellationRequested = true
       if (cancelTask === null)
         cancelTask = cancelNative().then(
           status => ({ status }),
@@ -116,11 +118,45 @@ export function createOrderedMarkerReservations<Target, Selector>(
             watchedSignal.addEventListener('abort', abortListener, { once: true })
           }
         }
-        const id = await reserve()
-        if (watchedSignal?.aborted || (controls.deadline !== null && controls.deadline <= now())) return cancelResult()
-        const result = await transport.start(id, request.selector, request.value, request.mode === 'with-response')
-        if (watchedSignal?.aborted) return cancelResult()
-        return result
+        const currentRequest = request
+        const deadline = controls.deadline
+        let expired = false
+        const run = async () => {
+          const id = await reserve()
+          if (expired) throw contractError('operation.timed-out', 'gatt', 'ordered.marker')
+          if (cancellationRequested) return cancelResult()
+          if (watchedSignal?.aborted || (controls.deadline !== null && controls.deadline <= now()))
+            return cancelResult()
+          const result = await transport.start(
+            id,
+            currentRequest.selector,
+            currentRequest.value,
+            currentRequest.mode === 'with-response'
+          )
+          if (watchedSignal?.aborted) return cancelResult()
+          return result
+        }
+        if (deadline === null) return run()
+        return new Promise((resolveStart, rejectStart) => {
+          const timer = setTimeout(
+            () => {
+              expired = true
+              requestCancel()
+              rejectStart(contractError('operation.timed-out', 'gatt', 'ordered.marker'))
+            },
+            Math.max(0, deadline - now())
+          )
+          run().then(
+            result => {
+              clearTimeout(timer)
+              resolveStart(result)
+            },
+            error => {
+              clearTimeout(timer)
+              rejectStart(error)
+            }
+          )
+        })
       },
       status: async () => {
         if (retired) return { state: 'retired' }
