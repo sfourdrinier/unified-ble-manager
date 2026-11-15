@@ -16353,6 +16353,17 @@ mod tests {
 
     #[test]
     fn conflicting_source_terminal_stage_is_reported_and_does_not_overwrite_evidence() {
+        const CHILD_DIRECTORY: &str = "UBM_NAPI_STAGE_FAILURE_FIXTURE_DIRECTORY";
+        if let Some(directory) = std::env::var_os(CHILD_DIRECTORY) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("fixture runtime");
+            runtime.block_on(conflicting_source_terminal_stage_scenario(
+                &std::path::PathBuf::from(directory),
+            ));
+            return;
+        }
         let directory = std::env::temp_dir().join(format!(
             "ubm-napi-scan-terminal-stage-failure-{}",
             std::time::SystemTime::now()
@@ -16361,14 +16372,23 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&directory).expect("test evidence directory");
-        // Failed retention deliberately leaves native tasks holding the ledger.
-        // Shut down this fixture's runtime before unlinking its files on Windows.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("fixture runtime");
-        runtime.block_on(conflicting_source_terminal_stage_scenario(&directory));
-        drop(runtime);
+        // N-API's process-wide runtime intentionally retains failed evidence.
+        // Only process exit guarantees all native handles are closed on Windows.
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "dispatch::tests::conflicting_source_terminal_stage_is_reported_and_does_not_overwrite_evidence",
+                "--nocapture",
+            ])
+            .env(CHILD_DIRECTORY, &directory)
+            .output()
+            .expect("run retained-evidence child");
+        assert!(
+            output.status.success(),
+            "retained-evidence child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         std::fs::remove_dir_all(directory).expect("remove evidence directory");
     }
 
