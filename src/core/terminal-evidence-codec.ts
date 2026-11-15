@@ -1,3 +1,5 @@
+// src/core/terminal-evidence-codec.ts
+
 import {
   BLE_COMMIT_UNCERTAINTIES,
   BLE_ERROR_CODES,
@@ -8,7 +10,7 @@ import {
 } from '../backend-contract/errors'
 import { parseOrderedRecordingFailure } from './ordered-recording'
 import type { StreamTerminalNotice } from '../backend-contract/streams'
-import type { TerminalEvidenceCommit } from '../backend-contract/terminal-evidence'
+import type { TerminalEvidenceCommit, TerminalEvidenceSource } from '../backend-contract/terminal-evidence'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
@@ -101,15 +103,7 @@ export function decodeTerminalEvidenceError(value: unknown): NormalizedBleError 
 
 /** Reads and validates a committed receipt before restoring the legacy error field. */
 export async function hydrateTerminalEvidence(
-  source: {
-    readonly readTerminalEvidence?: (
-      ref: string,
-      maximumBytes: number
-    ) => Promise<
-      | { readonly kind: 'committed'; readonly canonicalBytes: Readonly<Uint8Array>; readonly digest: string }
-      | { readonly kind: 'missing' | 'unresolved' }
-    >
-  },
+  source: Pick<TerminalEvidenceSource, 'readTerminalEvidence' | 'decodeTerminalEvidence'>,
   notice: StreamTerminalNotice,
   maximumBytes: number
 ): Promise<StreamTerminalNotice> {
@@ -123,7 +117,10 @@ export async function hydrateTerminalEvidence(
     read.digest !== evidence.digest
   )
     throw contractError('protocol.violation', 'stream', 'terminal-evidence.receipt')
-  const decoded = decodeTerminalEvidence(read.canonicalBytes)
+  const decoded =
+    source.decodeTerminalEvidence === undefined
+      ? decodeTerminalEvidence(read.canonicalBytes)
+      : source.decodeTerminalEvidence(read.canonicalBytes, evidence, notice)
   if (!sameScope(decoded.scope, evidence.scope))
     throw contractError('protocol.violation', 'stream', 'terminal-evidence.scope')
   const error = decoded.terminal.error === undefined ? null : decodeTerminalEvidenceError(decoded.terminal.error)

@@ -51,6 +51,17 @@ renderer-supplied values and are opened before scan or subscription activation.
 If the ledger is absent, a requested terminal-evidence scan or subscription
 fails with `capability.unsupported`; the package never silently downgrades it.
 
+Each joined shared-scan lease owns its own reservation scope. Native admission
+binds that scope to the live source before the join succeeds. A source terminal
+is retained separately for each bound scope; the owner's receipt is never
+substituted for a joined lease's receipt. Leaving a joined lease detaches only
+its binding and keeps the owner's physical scan active. A captured terminal
+retains its evidence and cleanup ownership until its own delivery or recovery
+settles.
+Successful explicit owner stop also records `owner-released` through the native
+authority before delivering that terminal to evidence-enabled leases. A source
+terminal captured first keeps its original reason, error and retained bytes.
+
 ```ts
 const manager = await createCoreBluetoothBleManager({
   terminalEvidence: { maximumCanonicalBytes: 4096, maximumDurableBytes: 1_048_576 },

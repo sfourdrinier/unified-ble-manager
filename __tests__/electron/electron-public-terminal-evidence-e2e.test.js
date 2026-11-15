@@ -1,3 +1,4 @@
+// __tests__/electron/electron-public-terminal-evidence-e2e.test.js
 'use strict'
 
 // Native-synthetic Electron end-to-end coverage.  This deliberately uses the
@@ -204,8 +205,13 @@ test.each([
       const observed = h.nextValue(observations, 5000)
       await current.stage.stageAdvertisement({ peerId: 'peer-1', localName: 'native synthetic peer' })
       const peer = (await observed).peer
-      await observations.return?.()
+      const scanTerminal = observations.next()
       await scan.stop()
+      await expect(scanTerminal).resolves.toMatchObject({
+        done: false,
+        value: { kind: 'terminal', reason: 'owner-released' }
+      })
+      await expect(observations.next()).resolves.toMatchObject({ done: true })
 
       const connection = await current.publicManager.connect(peer)
       const database = await connection.discover()
@@ -249,13 +255,22 @@ test.each([
           }
         }
       })
+      await expect(values.next()).resolves.toMatchObject({ done: true })
 
       await subscription.remove()
       await connection.release()
       await current.reload()
+      let status = await current.publicManager.terminalEvidenceRecovery.listWithStatus()
+      for (let attempt = 0; status.busyProducers.length > 0 && attempt < 100; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 10))
+        status = await current.publicManager.terminalEvidenceRecovery.listWithStatus()
+      }
+      expect(status.busyProducers).toEqual([])
       const records = await current.publicManager.terminalEvidenceRecovery.list()
       const record = records.find(candidate => candidate.producer === 'subscription')
+      const scanRecord = records.find(candidate => candidate.producer === 'scan')
       expect(record).toBeDefined()
+      expect(scanRecord).toBeDefined()
       const recovered = await current.publicManager.terminalEvidenceRecovery.read(record.handle, record.byteLength)
       expect(crypto.createHash('sha256').update(recovered.canonicalBytes).digest('hex')).toBe(record.digest)
       expect(JSON.parse(Buffer.from(recovered.canonicalBytes).toString('utf8')).encodingVersion).toBe(encodingVersion)
@@ -267,6 +282,8 @@ test.each([
         }
       })
       await current.publicManager.terminalEvidenceRecovery.acknowledge(record.handle)
+      await current.publicManager.terminalEvidenceRecovery.acknowledge(scanRecord.handle)
+      await expect(current.publicManager.terminalEvidenceRecovery.list()).resolves.toEqual([])
     } finally {
       await current.close()
     }

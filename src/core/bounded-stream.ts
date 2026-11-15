@@ -347,6 +347,36 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
       ...(error === null ? {} : { error })
     })
   }
+
+  /**
+   * Counts an error-policy rejection without publishing its terminal. The
+   * source owner must fence further admission until it publishes the native
+   * receipt (or source failure); accepted FIFO values remain readable meanwhile.
+   */
+  prepareErrorOverflow(byteLength: number): StreamTerminalNotice | null {
+    this.assertByteLength(byteLength)
+    if (
+      this.overflowPolicy !== 'error' ||
+      this.ownerClosed ||
+      this.isTerminal() ||
+      this.canDeliverDirectly() ||
+      this.fits(byteLength)
+    )
+      return null
+    this.droppedItems += 1
+    this.droppedBytes += byteLength
+    return this.previewTerminal('overflow')
+  }
+
+  private canDeliverDirectly(): boolean {
+    return (
+      this.consumers.length > 0 &&
+      this.overflowNotice === null &&
+      this.claimSourceLoss.length === 0 &&
+      this.values.length === 0 &&
+      this.peerLosses.length === 0
+    )
+  }
   private sharedClaimReplacement:
     | (<Successor>(
         claim: CoreStreamClaim<Value>,
@@ -944,13 +974,7 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     if (this.isTerminal()) {
       return this.pushResult(false, true)
     }
-    if (
-      this.consumers.length > 0 &&
-      this.overflowNotice === null &&
-      this.claimSourceLoss.length === 0 &&
-      this.values.length === 0 &&
-      this.peerLosses.length === 0
-    ) {
+    if (this.canDeliverDirectly()) {
       const consumer = this.consumers.shift()
       if (consumer === undefined) {
         throw contractError('lifecycle.invariant-violation', 'stream', 'bounded-stream.consumer')
@@ -989,26 +1013,30 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
    */
   observeSourceLosses(notices: readonly (StreamSourceLossNotice | StreamPeerSourceLossNotice)[]): void {
     if (this.isTerminal() || notices.length === 0) return
+    const failure = this.retainSourceLosses(notices)
+    if (failure !== null) this.finishWithReason('source-failed', failure)
+  }
+
+  /** Retain the source loss but defer its terminal until the owner has native evidence. */
+  prepareSourceLossTerminal(notice: StreamSourceLossNotice | StreamPeerSourceLossNotice): StreamTerminalNotice | null {
+    if (this.ownerClosed || this.isTerminal()) return null
+    const failure = this.retainSourceLosses([notice])
+    return this.previewTerminal(failure === null ? 'overflow' : 'source-failed', failure)
+  }
+
+  private retainSourceLosses(notices: readonly SourceLossNotice[]): NormalizedBleError | null {
     for (const notice of notices) {
       const retained = snapshotSourceLossNotice(notice)
       const bytes = utf8ByteLength(JSON.stringify(retained))
       if (this.retainedBytes() + bytes > this.limits.byteCapacity) {
-        this.finishWithReason(
-          'source-failed',
-          contractError('stream.quota', 'stream', 'bounded-stream.source-loss-control').normalized
-        )
-        return
+        return contractError('stream.quota', 'stream', 'bounded-stream.source-loss-control').normalized
       }
       const view = new RetainedSourceLossView(bytes)
       try {
         this.trackRetainedView(view)
       } catch (error) {
         if (!(error instanceof BackendContractError) || error.normalized.code !== 'stream.quota') throw error
-        this.finishWithReason(
-          'source-failed',
-          contractError('stream.quota', 'stream', 'bounded-stream.source-loss-control').normalized
-        )
-        return
+        return contractError('stream.quota', 'stream', 'bounded-stream.source-loss-control').normalized
       }
       this.sourceLossRetentions.push(view)
       this.sourceLossDetails.push(retained)
@@ -1022,6 +1050,7 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
       for (const observer of [...this.sourceLossObservers]) observer(retained)
     }
     this.flushPendingConsumers()
+    return null
   }
 
   /**

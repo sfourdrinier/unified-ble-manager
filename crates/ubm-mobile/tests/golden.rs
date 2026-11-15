@@ -824,6 +824,61 @@ async fn generate() -> String {
     )
     .await;
 
+    // Joined scan scopes are independently reserved by the caller and bound to
+    // this live membership. Record both the successful control and an absent
+    // binding refusal from the actual native session.
+    let joined_scope = json!({"managerId":"golden","operationId":"joined-scan","incarnation":"1"});
+    let joined_reservation = r
+        .invoke(
+            &evidence_session,
+            "reserve joined scan evidence",
+            "terminal-evidence.reserve",
+            json!({"producer":"scan","maximumBytes":4096,"formatVersion":1,"scope":joined_scope}),
+        )
+        .await;
+    assert_eq!(joined_reservation["ok"], true);
+    let scan_start = r
+        .invoke(
+            &evidence_session,
+            "start joined evidence scan",
+            "scan.start",
+            json!({"serviceUuids":[],"duplicatePolicy":"all","operationId":"joined-scan-start"}),
+        )
+        .await;
+    let membership = scan_start["value"]["operationId"]
+        .as_str()
+        .expect("scan membership");
+    let attached = r.invoke(
+        &evidence_session, "attach joined scan evidence", "scan.evidence.attach",
+        json!({"operationId":"joined-evidence-attach","membership":membership,"terminalEvidenceScope":joined_scope}),
+    ).await;
+    assert_eq!(attached["ok"], true);
+    let duplicate = r.invoke(
+        &evidence_session, "refuse duplicate joined scan evidence", "scan.evidence.attach",
+        json!({"operationId":"joined-evidence-duplicate","membership":membership,"terminalEvidenceScope":joined_scope}),
+    ).await;
+    assert_eq!(duplicate["ok"], false);
+    let detached = r.invoke(
+        &evidence_session, "detach joined scan evidence", "scan.evidence.detach",
+        json!({"operationId":"joined-evidence-detach","membership":membership,"terminalEvidenceScope":joined_scope,
+          "terminal":{"reason":"overflow","droppedItems":1,"droppedBytes":42,"replacedItems":0}}),
+    ).await;
+    assert_eq!(detached["ok"], true);
+    let absent = r.invoke(
+        &evidence_session, "refuse absent joined scan evidence", "scan.evidence.detach",
+        json!({"operationId":"joined-evidence-absent","membership":membership,"terminalEvidenceScope":joined_scope}),
+    ).await;
+    assert_eq!(absent["ok"], false);
+    let stopped = r
+        .invoke(
+            &evidence_session,
+            "stop joined evidence scan",
+            "scan.stop",
+            json!({"operationId":membership}),
+        )
+        .await;
+    assert_eq!(stopped["ok"], true);
+
     // Apple: this golden flow observes a live restoration event. Open the
     // claimant before ingress; pre-session restoration is exercised through
     // the durable peers.restored/claim path in the session tests. This host's

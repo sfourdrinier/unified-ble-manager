@@ -136,6 +136,154 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     }
   })
 
+  test('concurrent joined stops share one native evidence detach', async () => {
+    const { native, backend } = await openBackend()
+    const invoke = native.invoke.bind(native)
+    let releaseDetach
+    const gate = new Promise(resolve => {
+      releaseDetach = resolve
+    })
+    let detaches = 0
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      if (args[1] === 'scan.evidence.attach') return JSON.stringify({ ok: true, value: {} })
+      if (args[1] === 'scan.evidence.detach') {
+        detaches += 1
+        await gate
+        const session = [...native.sessions.values()][0]
+        const scope = JSON.parse(args[2]).terminalEvidenceScope
+        native.push(session, {
+          t: 'scan-evidence-detached',
+          operationId: 's1-scan-1',
+          reason: 'owner-released',
+          evidence: {
+            producer: 'scan',
+            kind: 'committed',
+            ref: 'detached',
+            byteLength: 1,
+            digest: '0'.repeat(64),
+            formatVersion: 1,
+            durability: 'committed',
+            scope
+          }
+        })
+        return JSON.stringify({ ok: true, value: {} })
+      }
+      return invoke(...args)
+    })
+    const client = opaqueId('client', 'client', 'test')
+    const owner = await backend.scanner.start(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }), client)
+    const joined = await backend.scanner.join(owner.leaseId, owner.shareToken, client, {
+      managerId: 'manager',
+      operationId: 'joined',
+      incarnation: '1'
+    })
+    const first = joined.stop()
+    const second = joined.stop()
+    await settle(20)
+    expect(detaches).toBe(1)
+    releaseDetach()
+    expect((await first).state).toBe('released')
+    expect((await second).state).toBe('released')
+    expect((await owner.stop()).state).toBe('released')
+    await backend.destroy()
+  })
+
+  test.each(['drain-failure', 'control-loss'])('joined stop settles without dropping its evidence after %s', async failure => {
+    const { native, backend } = await openBackend()
+    const invoke = native.invoke.bind(native)
+    let enteredDetach
+    const entered = new Promise(resolve => { enteredDetach = resolve })
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      if (args[1] === 'scan.evidence.attach') return JSON.stringify({ ok: true, value: {} })
+      if (args[1] === 'scan.evidence.detach') {
+        enteredDetach()
+        return JSON.stringify({ ok: true, value: {} })
+      }
+      return invoke(...args)
+    })
+    const client = opaqueId('client', 'client', 'test')
+    const owner = await backend.scanner.start(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }), client)
+    const scope = { managerId: 'manager', operationId: 'joined', incarnation: '1' }
+    const joined = await backend.scanner.join(owner.leaseId, owner.shareToken, client, scope)
+    const stopping = joined.stop()
+    await entered
+    if (failure === 'drain-failure') backend.drainFailed(new Error('drain parsing failed'))
+    else backend.reconcileControlLoss()
+    expect((await stopping).state).toBe('release-failed')
+    expect([...backend.scanGroups.values()][0].consumers.has(String(joined.leaseId))).toBe(true)
+    const session = [...native.sessions.values()][0]
+    native.push(session, {
+      t: 'scan-evidence-detached', operationId: 's1-scan-1', reason: 'owner-released',
+      evidence: { producer: 'scan', kind: 'committed', ref: 'recovered', byteLength: 1, digest: '0'.repeat(64), formatVersion: 1, durability: 'committed', scope }
+    })
+    await settle(80)
+    expect((await joined.stop()).state).toBe('released')
+    expect((await owner.stop()).state).toBe('released')
+    expect((await backend.destroy()).state).toBe('released')
+  })
+
+  test('joined evidence staging failure wakes only its scope and keeps cleanup pending', async () => {
+    const { native, backend } = await openBackend()
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      if (args[1] === 'scan.evidence.attach') return JSON.stringify({ ok: true, value: {} })
+      return invoke(...args)
+    })
+    const client = opaqueId('client', 'client', 'test')
+    const owner = await backend.scanner.start(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }), client)
+    const scope = { managerId: 'manager', operationId: 'joined', incarnation: '1' }
+    const joined = await backend.scanner.join(owner.leaseId, owner.shareToken, client, scope)
+    const session = [...native.sessions.values()][0]
+    native.push(session, {
+      t: 'scan-evidence-stage-failure',
+      bindingOnly: false,
+      operationId: 's1-scan-1',
+      scope,
+      error: {
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'terminal-evidence-recovery',
+        detail: null,
+        platform: null
+      }
+    })
+    const terminal = await joined.observations[Symbol.asyncIterator]().next()
+    expect(terminal.value).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: { code: 'platform.failure' }
+    })
+    expect(
+      require('../src/core/terminal-evidence-stage-failure').isTerminalEvidenceStageFailure(terminal.value.error)
+    ).toBe(true)
+    const countersBefore = native.opsInvoked('counters.describe').length
+    expect((await joined.stop()).state).toBe('release-failed')
+    expect(native.opsInvoked('counters.describe').length).toBeGreaterThan(countersBefore)
+    native.endScans('operation-timed-out')
+    const ownerTerminal = await owner.observations[Symbol.asyncIterator]().next()
+    expect(ownerTerminal.value).toMatchObject({ kind: 'terminal', reason: 'operation-timed-out' })
+    expect((await owner.stop()).state).toBe('release-failed')
+    native.push(session, {
+      t: 'scan-end',
+      operationId: 's1-scan-1',
+      reason: 'operation-timed-out',
+      evidence: {
+        producer: 'scan',
+        kind: 'committed',
+        ref: 'recovered',
+        byteLength: 1,
+        digest: '0'.repeat(64),
+        formatVersion: 1,
+        durability: 'committed',
+        scope
+      }
+    })
+    await settle(80)
+    expect((await joined.stop()).state).toBe('released')
+    expect((await owner.stop()).state).toBe('released')
+    await backend.destroy()
+  })
+
   test('replays an exact native expiry drained before scan.start returns its membership', async () => {
     const { native, backend } = await openBackend()
     const invoke = native.invoke.bind(native)

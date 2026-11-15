@@ -149,6 +149,49 @@ likewise be treated according to its retained evidence receipt.
 
 ## Retained terminal-evidence recovery (React Native)
 
+Joined scan leases bind their independently reserved scope through the private
+`scan.evidence.attach` operation before admission succeeds. Its arguments are
+`membership`, `terminalEvidenceScope` and the control `operationId`;
+`scan.evidence.detach` has the same shape. Both return an empty object. The scope
+contains `managerId`, `operationId`, `incarnation` and the optional lossless
+`scopeUtf16leBase64` sidecar. Detachment affects only the joined lease, while a
+captured terminal keeps its native evidence ownership.
+
+If native staging or commit fails, the bounded drain reports
+`scan-evidence-stage-failure` with `ordinal`, the native membership in
+`operationId`, the exact `scope`, a boolean `bindingOnly` and a standard
+structured wire `error`. A binding-only failure leaves the physical scan live.
+This is
+a storage-failure observation, not a committed source-terminal receipt. Native
+retains the exact source terminal as debt; existing reconciliation/recovery can
+retry it without substituting another lease's scope or dropping its bytes.
+
+Successful joined detachment delivers `scan-evidence-detached` with the committed
+`evidence` receipt. The retained canonical payload remains an ordinary
+`scan-end` with reason `owner-released`; the drain envelope ends only that lease
+and never reports that the shared physical source ended.
+
+`scan.evidence.detach` and `scan.stop` also accept an optional `terminal`
+snapshot for a local overflow: `reason: 'overflow'`, `droppedItems`,
+`droppedBytes` and `replacedItems`. Counts are nonnegative safe integers.
+Advertisement ingress loss additionally carries the separate
+`sourceLoss: {scope: 'host-global', source: 'advertisement-ingress', lostRecords}`;
+that global count is never copied into a per-stream drop counter. If retaining
+the loss notice exhausts the stream's control budget, the snapshot instead
+contains `reason: 'source-failed'` and the exact normalized error
+`{code: 'stream.quota', domain: 'stream', operation: 'bounded-stream.source-loss-control', retryability: 'never', platform: null}`.
+The committed local failure drains as `scan-evidence-local-end`, with `ordinal`,
+`operationId`, `reason`, `bindingOnly` and its `evidence` receipt. An attach never
+accepts a terminal snapshot. Native validates the complete payload before
+changing source membership or touching the radio.
+
+Native retained bytes use the producer's `scan-end` or `stream-end` payload.
+The React Native backend explicitly decodes that format when the shared core
+hydrates a receipt; it does not rewrite saved bytes or change their digest.
+Receipt identity, length, digest and scope remain checked before delivery.
+Subscription invalidation uses the live provider's established reason, and
+public loss counts retain local queue loss in addition to native source loss.
+
 `createReactNativeContinuationRecordings()` exposes
 `terminalEvidenceRecovery` for recovering terminal evidence retained by the
 process-owned mobile host after JavaScript or the application process restarts.

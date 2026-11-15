@@ -733,6 +733,55 @@
       "op": "terminal-evidence.release"
     },
     {
+      "args": "{\"formatVersion\":1,\"maximumBytes\":4096,\"producer\":\"scan\",\"scope\":{\"incarnation\":\"1\",\"managerId\":\"golden\",\"operationId\":\"joined-scan\"}}",
+      "envelope": "{\"ok\":true,\"value\":{\"maximumBytes\":4096,\"reservationId\":\"0000000000000000000000000000000000000000000000000000000000000000\"}}",
+      "expect": "value",
+      "name": "reserve joined scan evidence",
+      "op": "terminal-evidence.reserve"
+    },
+    {
+      "args": "{\"admission\":1,\"duplicatePolicy\":\"all\",\"operationId\":\"joined-scan-start\",\"serviceUuids\":[]}",
+      "envelope": "{\"ok\":true,\"value\":{\"operationId\":\"s1-scan-1\"}}",
+      "expect": "value",
+      "name": "start joined evidence scan",
+      "op": "scan.start"
+    },
+    {
+      "args": "{\"admission\":2,\"membership\":\"s1-scan-1\",\"operationId\":\"joined-evidence-attach\",\"terminalEvidenceScope\":{\"incarnation\":\"1\",\"managerId\":\"golden\",\"operationId\":\"joined-scan\"}}",
+      "envelope": "{\"ok\":true,\"value\":{}}",
+      "expect": "value",
+      "name": "attach joined scan evidence",
+      "op": "scan.evidence.attach"
+    },
+    {
+      "args": "{\"admission\":3,\"membership\":\"s1-scan-1\",\"operationId\":\"joined-evidence-duplicate\",\"terminalEvidenceScope\":{\"incarnation\":\"1\",\"managerId\":\"golden\",\"operationId\":\"joined-scan\"}}",
+      "envelope": "{\"commit\":null,\"error\":{\"code\":\"lifecycle.invalid-state\",\"detail\":null,\"domain\":\"scan\",\"operation\":\"scan.evidence.attach\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "refuse duplicate joined scan evidence",
+      "op": "scan.evidence.attach"
+    },
+    {
+      "args": "{\"admission\":4,\"membership\":\"s1-scan-1\",\"operationId\":\"joined-evidence-detach\",\"terminal\":{\"droppedBytes\":42,\"droppedItems\":1,\"reason\":\"overflow\",\"replacedItems\":0},\"terminalEvidenceScope\":{\"incarnation\":\"1\",\"managerId\":\"golden\",\"operationId\":\"joined-scan\"}}",
+      "envelope": "{\"ok\":true,\"value\":{}}",
+      "expect": "value",
+      "name": "detach joined scan evidence",
+      "op": "scan.evidence.detach"
+    },
+    {
+      "args": "{\"admission\":5,\"membership\":\"s1-scan-1\",\"operationId\":\"joined-evidence-absent\",\"terminalEvidenceScope\":{\"incarnation\":\"1\",\"managerId\":\"golden\",\"operationId\":\"joined-scan\"}}",
+      "envelope": "{\"commit\":null,\"error\":{\"code\":\"lifecycle.invalid-state\",\"detail\":null,\"domain\":\"scan\",\"operation\":\"scan.evidence.detach\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "refuse absent joined scan evidence",
+      "op": "scan.evidence.detach"
+    },
+    {
+      "args": "{\"operationId\":\"s1-scan-1\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}",
+      "expect": "value",
+      "name": "stop joined evidence scan",
+      "op": "scan.stop"
+    },
+    {
       "args": "{\"maxPeers\":1023}",
       "envelope": "{\"ok\":true,\"value\":{\"peers\":[{\"bond\":\"unknown\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":null,\"name\":\"Polar H10\",\"peerId\":\"5B7C1A2E-0000-4000-8000-000000000001\",\"reachability\":\"unknown\",\"rssi\":null,\"source\":\"restored\"}]}}",
       "expect": "value",

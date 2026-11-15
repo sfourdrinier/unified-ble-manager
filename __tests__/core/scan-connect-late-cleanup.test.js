@@ -1,3 +1,4 @@
+// __tests__/core/scan-connect-late-cleanup.test.js
 const { attachBleBackend, createBleManager, createManagerOwnershipAuthority } = require('../../src/manager/ble-manager')
 const { DEFAULT_BLE_MANAGER_OPTIONS } = require('../../src/manager/ble-manager')
 const { contractError } = require('../../src/backend-contract/errors')
@@ -270,6 +271,42 @@ const acquisitions = [
 ]
 
 describe('pending scan/connect acquisition ownership', () => {
+  test('forwards a joined scan reservation scope and releases it when native admission refuses', async () => {
+    const release = jest.fn(async () => {})
+    const reserve = jest.fn(async request => ({ maximumBytes: request.maximumBytes, release }))
+    const join = jest.fn(async () => {
+      throw contractError('ownership.denied', 'scan', 'test.scan-join')
+    })
+    const { fixture, manager } = await createOwningFixture(
+      { terminalEvidence: { maximumCanonicalBytes: 512 } },
+      backend => {
+        backend.scanner.reserveTerminalEvidence = reserve
+        backend.scanner.join = join
+      }
+    )
+    const options = {
+      ...scanOptions(),
+      sharing: {
+        mode: 'join',
+        sharedLeaseId: opaqueId('shared-scan', 'lease', 'deterministic:shared-scan'),
+        token: opaqueId('shared-token', 'scan-share-token', 'deterministic:shared-token')
+      }
+    }
+    await expect(settle(fixture.controller, manager.scan(options))).rejects.toMatchObject({
+      normalized: { code: 'ownership.denied', operation: 'test.scan-join' }
+    })
+    expect(reserve).toHaveBeenCalledTimes(1)
+    expect(join).toHaveBeenCalledWith(
+      options.sharing.sharedLeaseId,
+      options.sharing.token,
+      manager.core.construction.clientId,
+      reserve.mock.calls[0][0].scope
+    )
+    await flushMicrotasks()
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(manager.core.aggregateQuota.streams.size).toBe(0)
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
+  })
   test('terminal-evidence reservation rejection releases every pre-admission scan stream', async () => {
     const reserve = jest.fn(async () => {
       throw contractError('platform.failure', 'stream', 'test.scan-terminal-evidence.reserve')

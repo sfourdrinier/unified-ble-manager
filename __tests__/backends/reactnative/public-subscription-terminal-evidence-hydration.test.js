@@ -1,3 +1,4 @@
+// __tests__/backends/reactnative/public-subscription-terminal-evidence-hydration.test.js
 jest.mock('react-native', () => ({
   Platform: { OS: 'android', Version: 34 },
   TurboModuleRegistry: { get: () => null },
@@ -9,7 +10,6 @@ const { createHash } = require('node:crypto')
 const { createReactNativeApplicationHost } = require('../../../src/react-native-app-manager')
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
 const { createReactNativeRustCoreBinding } = require('../../../src/backends/reactnative/react-native-rust-core-binding')
-const { encodeTerminalEvidence } = require('../../../src/core/terminal-evidence-codec')
 const {
   DeterministicRustCoreNative,
   DEFAULT_PEER
@@ -39,23 +39,8 @@ test('public RN subscription hydrates committed native evidence after Services C
     const consumer = [...session.consumers.keys()][0]
     const nativeLease = [...session.leases.values()][0]
     const [reservationId, reservation] = [...native.terminalEvidenceReservations.entries()][0]
-    const originalError = {
-      code: 'platform.failure',
-      domain: 'platform',
-      operation: 'gatt.subscribe',
-      retryability: 'never',
-      platform: null
-    }
-    const canonicalBytes = encodeTerminalEvidence(
-      {
-        kind: 'terminal',
-        reason: 'service-changed',
-        droppedItems: 0,
-        droppedBytes: 0,
-        replacedItems: 0,
-        error: originalError
-      },
-      reservation.scope
+    const canonicalBytes = Buffer.from(
+      JSON.stringify({ t: 'stream-end', consumer, reason: 'invalidated', droppedItems: 0, droppedBytes: 0 })
     )
     const digest = createHash('sha256').update(canonicalBytes).digest('hex')
     const committed = JSON.parse(
@@ -88,8 +73,7 @@ test('public RN subscription hydrates committed native evidence after Services C
     await settle(100)
     expect((await subscription.values[Symbol.asyncIterator]().next()).value).toMatchObject({
       kind: 'terminal',
-      reason: 'service-changed',
-      error: originalError
+      reason: 'service-changed'
     })
     expect(native.opsInvoked('terminal-evidence.read')).toEqual([
       { ref: committed.value.ref, maximumBytes: terminalEvidence.maximumCanonicalBytes }

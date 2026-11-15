@@ -1235,6 +1235,17 @@ interface ScanConsumer {
   /** Observations the core handed over malformed while this consumer was live (cumulative). */
   malformedDropped: number
   removeAbort: () => void
+  evidenceAttached: boolean
+  localStopPending: boolean
+  pendingLocalTerminal: import('../../backend-contract/streams').StreamTerminalNotice | null
+  skipLocalFailureCleanup: boolean
+}
+
+function terminalReservationKey(
+  producer: 'scan' | 'subscription',
+  scope: NonNullable<OwnerScanOptions<string, string>['terminalEvidenceScope']>
+): string {
+  return `${producer}\u0000${scope.managerId}\u0000${scope.operationId}\u0000${scope.incarnation}`
 }
 
 interface ScanGroup {
@@ -1378,6 +1389,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private readonly occurrenceNumerals = new Map<string, number>()
   private readonly ticketsByCorrelation = new Map<string, string>()
   private readonly terminalReservationIds = new Map<string, string>()
+  private readonly recoveredSourceReservations = new Set<string>()
   /** Trusted recovery-owner claims captured at staging/recovery, never IPC input. */
   private readonly terminalEvidenceAcknowledgements = new Map<
     string,
@@ -1503,8 +1515,9 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       join: (
         sharedLeaseId: LeaseId<string, string>,
         shareToken: ScanShareToken<string, string>,
-        clientId: ClientId<string, string>
-      ) => this.joinScan(sharedLeaseId, shareToken, clientId)
+        clientId: ClientId<string, string>,
+        scope?: OwnerScanOptions<string, string>['terminalEvidenceScope']
+      ) => this.joinScan(sharedLeaseId, shareToken, clientId, scope)
     })
     const connections: ConnectionBackend<string> = {
       connect: (peerId: PeerId<string>, clientId: ClientId<string, string>, options: ConnectionOptions) =>
@@ -2270,7 +2283,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         if (this.destroyed || this.coreEventsClosed) return
         const terminal = await this.central.takeScanTerminalEvent()
         if (terminal === null || terminal === undefined) break
-        if (terminal.kind === 'stage-failed') this.failScanTerminalEvidenceStage(terminal)
+        if ((terminal.kind === 'terminal' || terminal.kind === 'stage-failed') && this.scanGroup === null) break
+        if (terminal.kind === 'stage-failed') await this.applyScanTerminal(terminal)
         else if (terminal.kind === 'lagged') this.reconcileScan(terminal.missed ?? null)
         else await this.applyScanTerminal(terminal)
       }
@@ -2903,7 +2917,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     ) {
       throw contractError('protocol.malformed', 'core', this.op('terminal-evidence.reserve'))
     }
-    const reservationKey = `${request.producer}\u0000${request.scope.managerId}\u0000${request.scope.operationId}\u0000${request.scope.incarnation}`
+    const reservationKey = terminalReservationKey(request.producer, request.scope)
     this.terminalReservationIds.set(reservationKey, reserved.reservationId)
     if (this.hostKind !== 'desktop-native') {
       try {
@@ -2983,7 +2997,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       },
       release: async (): Promise<void> => {
         if (released) return
-        await release.call(this.central, reserved.reservationId)
+        if (!this.recoveredSourceReservations.delete(reserved.reservationId)) {
+          try {
+            await release.call(this.central, reserved.reservationId)
+          } catch (error) {
+            if (!this.recoveredSourceReservations.delete(reserved.reservationId)) throw error
+          }
+          this.recoveredSourceReservations.delete(reserved.reservationId)
+        }
         this.terminalReservationIds.delete(reservationKey)
         released = true
       }
@@ -3002,7 +3023,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.stage'))
     if (scope === null)
       throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.stage'))
-    const key = `${producer}\u0000${scope.managerId}\u0000${scope.operationId}\u0000${scope.incarnation}`
+    const key = terminalReservationKey(producer, scope)
     const reservationId = this.terminalReservationIds.get(key)
     if (reservationId === undefined)
       throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.stage'))
@@ -3021,7 +3042,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.bind-recipient'))
     if (scope === null)
       throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.bind-recipient'))
-    const key = `${producer}\u0000${scope.managerId}\u0000${scope.operationId}\u0000${scope.incarnation}`
+    const key = terminalReservationKey(producer, scope)
     const reservationId = this.terminalReservationIds.get(key)
     if (reservationId === undefined)
       throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.bind-recipient'))
@@ -3049,6 +3070,9 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     if (commit === undefined)
       throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.recover-commit'))
     try {
+      const retry = this.central.retryFailedScanEvidence?.(recipient)
+      const failure = retry?.failures[0]
+      if (failure !== undefined) throw desktopRustCoreError(new Error(failure), this.op('terminal-evidence.scan-retry'))
       const groups = await Promise.all(
         (['scan', 'subscription'] as const).map(producer =>
           recover.call(this.central, { producer, recipient, leaseId })
@@ -3128,6 +3152,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     if (recover === undefined)
       throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.recover-status'))
     try {
+      const retry = this.central.retryFailedScanEvidence?.(recipient)
+      const scanRetryPending = (retry?.failures.length ?? 0) > 0
+      for (const failure of retry?.failures ?? [])
+        this.noteBackgroundFailure('scan-terminal-retry-pending', new Error(failure))
       const groups = await Promise.all(
         (['scan', 'subscription'] as const).map(async producer => ({
           producer,
@@ -3142,10 +3170,11 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         reference: string
       }[]
       const busyProducers: ('scan' | 'subscription')[] = []
+      if (scanRetryPending) busyProducers.push('scan')
       for (const { producer, page } of groups) {
         if (typeof page.busy !== 'boolean')
           throw contractError('protocol.malformed', 'restoration', this.op('terminal-evidence.recover-status'))
-        if (page.busy) busyProducers.push(producer)
+        if (page.busy && !busyProducers.includes(producer)) busyProducers.push(producer)
         for (const record of page.entries) {
           if (
             (record.state !== 'staged' && record.state !== 'committed') ||
@@ -3267,6 +3296,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       reservationId: claims.reservationId,
       leaseId: claims.leaseId
     })
+    if ([...this.terminalReservationIds.values()].includes(claims.reservationId))
+      this.recoveredSourceReservations.add(claims.reservationId)
     this.terminalEvidenceAcknowledgements.delete(reference)
   }
 
@@ -3280,7 +3311,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     if (pending == null) return undefined
     if (scope === null || typeof pending.reservationId !== 'string' || typeof pending.pendingToken !== 'string')
       throw contractError('protocol.malformed', 'core', `${operation}.terminal-evidence-pending`)
-    const key = `${producer}\u0000${scope.managerId}\u0000${scope.operationId}\u0000${scope.incarnation}`
+    const key = terminalReservationKey(producer, scope)
     if (this.terminalReservationIds.get(key) !== pending.reservationId)
       throw contractError('protocol.violation', 'stream', `${operation}.terminal-evidence-reservation`)
     const commit = this.central.commitTerminalEvidence
@@ -3397,7 +3428,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private async joinScan(
     sharedLeaseId: LeaseId<string, string>,
     shareToken: ScanShareToken<string, string>,
-    _clientId: ClientId<string, string>
+    _clientId: ClientId<string, string>,
+    scope?: OwnerScanOptions<string, string>['terminalEvidenceScope']
   ): Promise<ScanLease<string, string>> {
     const operation = this.op('scan.join')
     this.assertOperational(operation)
@@ -3418,7 +3450,24 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const leaseId = this.identifiers.leaseId(
       LEGACY_DESKTOP_NAMES[this.profile.platform].scanLease(this.mintScanOrdinal())
     )
-    const consumer = this.addScanConsumer(group, leaseId, owner.options, owner.filter)
+    if (scope !== undefined) {
+      const attach = this.central.attachJoinedScanEvidence
+      if (attach === undefined) throw contractError('capability.unsupported', 'scan', `${operation}.terminal-evidence`)
+      const scopeUtf16le = terminalEvidenceScopeUtf16le('scan', scope)
+      attach.call(this.central, {
+        operationId: group.coreOperationId,
+        scope,
+        ...(scopeUtf16le === undefined ? {} : { scopeUtf16le }),
+        terminalOperation: this.op('scan.terminated')
+      })
+    }
+    const { terminalEvidenceScope: _ownerScope, ...joinedOptions } = owner.options
+    const consumer = this.addScanConsumer(
+      group,
+      leaseId,
+      { ...joinedOptions, ...(scope === undefined ? {} : { terminalEvidenceScope: scope }) },
+      owner.filter
+    )
     return this.scanLease(group, consumer)
   }
 
@@ -3438,7 +3487,11 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       ),
       seenPeers: new Set(),
       malformedDropped: 0,
-      removeAbort: () => undefined
+      removeAbort: () => undefined,
+      evidenceAttached: options.terminalEvidenceScope !== undefined,
+      localStopPending: false,
+      pendingLocalTerminal: null,
+      skipLocalFailureCleanup: false
     }
     group.consumers.set(String(leaseId), consumer)
     const signal = options.signal
@@ -3467,6 +3520,51 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     })
   }
 
+  private commitJoinedLocalTerminal(
+    group: ScanGroup,
+    scope: NonNullable<OwnerScanOptions<string, string>['terminalEvidenceScope']>,
+    terminal: import('../../backend-contract/streams').StreamTerminalNotice,
+    ownerLease = false
+  ): TerminalEvidenceCommit {
+    if (terminal.reason !== 'overflow' && terminal.reason !== 'owner-released')
+      throw contractError('argument.invalid', 'scan', this.op('scan.local-terminal'))
+    const detach = this.central.detachJoinedScanEvidence
+    if (detach === undefined) throw contractError('capability.unsupported', 'scan', this.op('scan.detach-evidence'))
+    const scopeUtf16le = terminalEvidenceScopeUtf16le('scan', scope)
+    const receipt = detach.call(this.central, {
+      operationId: group.coreOperationId,
+      scope,
+      ...(ownerLease ? { ownerLease: true } : {}),
+      ...(scopeUtf16le === undefined ? {} : { scopeUtf16le }),
+      localTerminal: {
+        reason: terminal.reason,
+        droppedItems: String(terminal.droppedItems),
+        droppedBytes: String(terminal.droppedBytes),
+        replacedItems: String(terminal.replacedItems)
+      }
+    })
+    const canonical = encodeTerminalEvidence(terminal, scope)
+    const digest = createHash('sha256').update(canonical).digest('hex')
+    if (
+      receipt.producer !== 'scan' ||
+      receipt.ref.length === 0 ||
+      receipt.byteLength !== String(canonical.byteLength) ||
+      receipt.digest !== digest ||
+      receipt.formatVersion !== 1 ||
+      receipt.durability !== 'committed'
+    )
+      throw contractError('protocol.violation', 'stream', this.op('scan.detach-evidence-receipt'))
+    return Object.freeze({
+      producer: 'scan',
+      ref: receipt.ref,
+      byteLength: canonical.byteLength,
+      digest,
+      formatVersion: 1,
+      durability: 'committed',
+      scope
+    })
+  }
+
   /**
    * A joined consumer leaves on its own; the owner's stop ends the one core
    * scan and every consumer with it (the legacy share semantics). The scan
@@ -3475,8 +3573,59 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private async stopScanConsumer(group: ScanGroup, consumer: ScanConsumer): Promise<CleanupRecord> {
     consumer.removeAbort()
     if (consumer.leaseId !== group.ownerLeaseId) {
+      if (consumer.skipLocalFailureCleanup) {
+        consumer.skipLocalFailureCleanup = false
+        return Object.freeze({
+          state: 'release-failed',
+          failures: Object.freeze([
+            {
+              resourceKind: 'scan',
+              error: contractError('lifecycle.invalid-state', 'cleanup', this.op('scan.local-terminal-pending'))
+                .normalized
+            }
+          ])
+        })
+      }
+      const scope = consumer.options.terminalEvidenceScope
+      let evidence: TerminalEvidenceCommit | undefined
+      if (scope !== undefined && consumer.localStopPending && consumer.stream.isTerminal()) {
+        const scopeUtf16le = terminalEvidenceScopeUtf16le('scan', scope)
+        if (
+          this.central.joinedScanLocalDebt?.({
+            operationId: group.coreOperationId,
+            scope,
+            ...(scopeUtf16le === undefined ? {} : { scopeUtf16le })
+          }) === false
+        ) {
+          consumer.evidenceAttached = false
+          consumer.localStopPending = false
+        }
+      }
+      if (scope !== undefined && consumer.evidenceAttached) {
+        try {
+          const terminal = consumer.pendingLocalTerminal ?? consumer.stream.previewTerminal('owner-released')
+          if (terminal === null) throw contractError('lifecycle.invalid-state', 'scan', this.op('scan.local-terminal'))
+          evidence = this.commitJoinedLocalTerminal(group, scope, terminal)
+          consumer.evidenceAttached = false
+          consumer.localStopPending = false
+        } catch (error) {
+          const scopeUtf16le = terminalEvidenceScopeUtf16le('scan', scope)
+          consumer.localStopPending =
+            this.central.joinedScanLocalDebt?.({
+              operationId: group.coreOperationId,
+              scope,
+              ...(scopeUtf16le === undefined ? {} : { scopeUtf16le })
+            }) === true
+          return Object.freeze({
+            state: 'release-failed',
+            failures: Object.freeze([
+              { resourceKind: 'scan', error: desktopRustCoreError(error, this.op('scan.detach-evidence')).normalized }
+            ])
+          })
+        }
+      }
       group.consumers.delete(String(consumer.leaseId))
-      if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
+      if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released', null, evidence)
       return Object.freeze({ state: 'released', failures: Object.freeze([]) })
     }
     if (group.stopResult === null) {
@@ -3501,8 +3650,55 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         failures: Object.freeze([{ resourceKind: 'scan', error: normalized }])
       })
     }
+    if (
+      [...group.consumers.values()].some(
+        current =>
+          current.pendingLocalTerminal === null &&
+          !current.localStopPending &&
+          current.options.terminalEvidenceScope !== undefined
+      )
+    ) {
+      await this.settleCoreEvents()
+      if (this.scanGroup !== group) return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+      group.stopResult = null
+      return Object.freeze({
+        state: 'release-failed',
+        failures: Object.freeze([
+          {
+            resourceKind: 'scan',
+            error: contractError('lifecycle.invalid-state', 'scan', this.op('scan.stop-terminal-pending')).normalized
+          }
+        ])
+      })
+    }
+    for (const current of group.consumers.values()) {
+      if (current.localStopPending) continue
+      if (!current.evidenceAttached || current.options.terminalEvidenceScope === undefined) continue
+      const scope = current.options.terminalEvidenceScope
+      try {
+        const detach = this.central.detachJoinedScanEvidence
+        if (detach === undefined) throw contractError('capability.unsupported', 'scan', this.op('scan.detach-evidence'))
+        const scopeUtf16le = terminalEvidenceScopeUtf16le('scan', scope)
+        detach.call(this.central, {
+          operationId: group.coreOperationId,
+          scope,
+          sourceStopped: true,
+          ...(scopeUtf16le === undefined ? {} : { scopeUtf16le })
+        })
+        current.evidenceAttached = false
+      } catch (error) {
+        group.stopResult = null
+        return Object.freeze({
+          state: 'release-failed',
+          failures: Object.freeze([
+            { resourceKind: 'scan', error: desktopRustCoreError(error, this.op('scan.detach-evidence')).normalized }
+          ])
+        })
+      }
+    }
     group.state = 'stopped'
     for (const current of group.consumers.values()) {
+      if (current.localStopPending) continue
       current.removeAbort()
       if (!current.stream.isTerminal()) current.stream.finishWithReason('owner-released')
     }
@@ -3648,8 +3844,45 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         if (consumer.seenPeers.has(nativePeerId)) continue
         consumer.seenPeers.add(nativePeerId)
       }
-      const push = consumer.stream.emit(matched, ADVERTISEMENT_BYTES)
-      if (push.terminated && consumer.leaseId !== group.ownerLeaseId) {
+      const scope = consumer.options.terminalEvidenceScope
+      if (consumer.pendingLocalTerminal !== null) continue
+      if (scope !== undefined && consumer.evidenceAttached) {
+        const terminal = consumer.stream.prepareErrorOverflow(ADVERTISEMENT_BYTES)
+        if (terminal !== null) {
+          consumer.pendingLocalTerminal = terminal
+          try {
+            const evidence = this.commitJoinedLocalTerminal(
+              group,
+              scope,
+              terminal,
+              consumer.leaseId === group.ownerLeaseId
+            )
+            consumer.evidenceAttached = false
+            if (consumer.leaseId !== group.ownerLeaseId) group.consumers.delete(String(consumer.leaseId))
+            consumer.stream.finishWithReason('overflow', null, evidence)
+          } catch (error) {
+            const scopeUtf16le = terminalEvidenceScopeUtf16le('scan', scope)
+            consumer.localStopPending =
+              this.central.joinedScanLocalDebt?.({
+                operationId: group.coreOperationId,
+                scope,
+                ...(scopeUtf16le === undefined ? {} : { scopeUtf16le })
+              }) === true
+            if (consumer.localStopPending) {
+              consumer.skipLocalFailureCleanup = true
+              consumer.stream.finishWithReason(
+                'source-failed',
+                markTerminalEvidenceStageFailure(desktopRustCoreError(error, this.op('scan.local-terminal')).normalized)
+              )
+            } else {
+              this.noteBackgroundFailure('scan-overflow-terminal-pending', error)
+            }
+          }
+          continue
+        }
+      }
+      const pushed = consumer.stream.emit(matched, ADVERTISEMENT_BYTES)
+      if (pushed.terminated && consumer.leaseId !== group.ownerLeaseId) {
         group.consumers.delete(String(consumer.leaseId))
       }
     }
@@ -4450,7 +4683,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       this.failCoreEventSource('scan-terminal-events-closed')
       return
     }
-    if (event.kind !== 'terminal') {
+    if (event.kind !== 'terminal' && event.kind !== 'stage-failed') {
       this.noteDiagnostic(`scan-terminal-events-${event.kind}`, 'the core scan-terminal stream closed', {
         missed: event.missed ?? null
       })
@@ -4470,55 +4703,73 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             metadata: Object.freeze({})
           }).normalized
         : null
-    const reason = error === null ? 'closed' : 'source-failed'
-    const evidence = await this.commitPendingTerminalEvidence(
-      event.terminalEvidence,
-      'scan',
-      owner?.options.terminalEvidenceScope ?? null,
-      Object.freeze({
-        kind: 'terminal',
-        reason,
-        droppedItems: resourceCount(0),
-        droppedBytes: resourceCount(0),
-        replacedItems: resourceCount(0),
-        ...(error === null ? {} : { error })
-      }),
-      this.op('scan.terminated')
-    )
+    const reason = event.requestedStop === true ? 'owner-released' : error === null ? 'closed' : 'source-failed'
+    const terminal: import('../../backend-contract/streams').StreamTerminalNotice = Object.freeze({
+      kind: 'terminal',
+      reason,
+      droppedItems: resourceCount(0),
+      droppedBytes: resourceCount(0),
+      replacedItems: resourceCount(0),
+      ...(error === null ? {} : { error })
+    })
     for (const consumer of group.consumers.values()) {
+      if (consumer.localStopPending || (consumer.pendingLocalTerminal !== null && !consumer.evidenceAttached)) continue
       consumer.removeAbort()
-      consumer.stream.closeWithReason(reason, error, consumer === owner ? evidence : undefined)
-    }
-    group.consumers.clear()
-  }
-
-  /**
-   * A source terminal reached native dispatch, but its required durable stage
-   * failed. This is a scan-local source failure: do not turn it into the
-   * generic lag reconciliation path, which would erase the actual storage
-   * refusal and report a fabricated missed-terminal cause.
-   */
-  private failScanTerminalEvidenceStage(event: DesktopRustCoreScanTerminalEvent): void {
-    const group = this.scanGroup
-    if (group === null || group.state !== 'active') {
-      this.noteDiagnostic(
-        'scan-terminal-evidence-stage-without-group',
-        'the core reported a terminal evidence stage failure without its scan group'
-      )
-      return
-    }
-    if (typeof event.stageFailure !== 'string' || event.stageFailure.length === 0) {
-      this.failCoreEventSource('scan-terminal-evidence-stage-malformed')
-      return
-    }
-    const normalized = markTerminalEvidenceStageFailure(
-      desktopRustCoreError(new Error(event.stageFailure), this.op('scan.terminal-evidence-stage')).normalized
-    )
-    this.scanGroup = null
-    group.state = 'stopped'
-    for (const consumer of group.consumers.values()) {
-      consumer.removeAbort()
-      consumer.stream.closeWithReason('source-failed', normalized)
+      consumer.evidenceAttached = false
+      const scope = consumer.options.terminalEvidenceScope ?? null
+      const reservationKey = scope === null ? null : terminalReservationKey('scan', scope)
+      const pending =
+        consumer === owner
+          ? event.terminalEvidence
+          : event.joinedTerminalEvidence?.find(
+              item => reservationKey !== null && item.reservationId === this.terminalReservationIds.get(reservationKey)
+            )
+      try {
+        if (scope !== null && pending == null && !(consumer === owner && event.kind === 'stage-failed'))
+          throw contractError('protocol.violation', 'stream', this.op('scan.terminal-evidence-missing'))
+        const stageFailure =
+          consumer === owner
+            ? event.stageFailure
+            : pending != null && 'stageFailure' in pending
+              ? pending.stageFailure
+              : undefined
+        if (stageFailure != null) {
+          if (typeof stageFailure !== 'string' || stageFailure.length === 0)
+            throw contractError('protocol.malformed', 'stream', this.op('scan.terminal-evidence-stage'))
+          const failure = markTerminalEvidenceStageFailure(
+            desktopRustCoreError(new Error(stageFailure), this.op('scan.terminal-evidence-stage')).normalized
+          )
+          consumer.stream.closeWithReason('source-failed', failure)
+          continue
+        }
+        const evidence = await this.commitPendingTerminalEvidence(
+          pending,
+          'scan',
+          scope,
+          terminal,
+          this.op('scan.terminated')
+        )
+        if (pending != null && evidence === undefined)
+          throw contractError('platform.failure', 'stream', this.op('scan.terminal-evidence-commit'))
+        consumer.stream.closeWithReason(reason, error, evidence)
+      } catch (failure) {
+        if (pending != null) {
+          try {
+            const release = this.central.releaseScanTerminalToRecovery
+            if (release === undefined)
+              throw contractError('capability.unsupported', 'stream', this.op('scan.terminal-evidence-recovery'))
+            release.call(this.central, pending.pendingToken)
+          } catch (releaseFailure) {
+            this.noteBackgroundFailure('scan-terminal-recovery-handoff-failed', releaseFailure)
+          }
+        }
+        consumer.stream.closeWithReason(
+          'source-failed',
+          markTerminalEvidenceStageFailure(
+            desktopRustCoreError(failure, this.op('scan.terminal-evidence-commit')).normalized
+          )
+        )
+      }
     }
     group.consumers.clear()
   }

@@ -550,9 +550,10 @@ class ReactNativeRustCoreManager {
   }
 
   hydrateSubscriptionTerminalEvidence(stream: BoundedAsyncStream<unknown>): void {
-    if (this.options.terminalEvidence === undefined || !hasTerminalEvidenceHydrator(stream)) return
+    const evidenceOptions = this.options.terminalEvidence
+    if (evidenceOptions === undefined || !hasTerminalEvidenceHydrator(stream)) return
     stream.setTerminalEvidenceHydrator(notice =>
-      hydrateTerminalEvidence(this.backend.gatt, notice, this.options.terminalEvidence!.maximumCanonicalBytes)
+      hydrateTerminalEvidence(this.backend.gatt, notice, evidenceOptions.maximumCanonicalBytes)
     )
   }
 
@@ -710,8 +711,6 @@ class ReactNativeRustCoreManager {
       | { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
       | undefined
     if (this.options.terminalEvidence !== undefined) {
-      if (options.sharing.mode !== 'owner')
-        throw contractError('capability.unsupported', 'scan', 'rust-core-manager.scan.terminal-evidence.join')
       const reserve = this.backend.scanner.reserveTerminalEvidence
       if (reserve === undefined)
         throw contractError('capability.unsupported', 'scan', 'rust-core-manager.scan.terminal-evidence')
@@ -758,7 +757,12 @@ class ReactNativeRustCoreManager {
               },
               this.options.clientId
             )
-          : await this.backend.scanner.join(options.sharing.sharedLeaseId, options.sharing.token, this.options.clientId)
+          : await this.backend.scanner.join(
+              options.sharing.sharedLeaseId,
+              options.sharing.token,
+              this.options.clientId,
+              terminalEvidenceScope
+            )
     } catch (error) {
       if (terminalEvidence !== undefined && this.acquisitionTerminalEvidence.has(terminalEvidence)) {
         try {
@@ -846,6 +850,16 @@ class ReactNativeRustCoreManager {
       }
       throw failure
     }
+    const evidenceOptions = this.options.terminalEvidence
+    if (
+      terminalEvidence !== undefined &&
+      evidenceOptions !== undefined &&
+      hasTerminalEvidenceHydrator(lease.observations)
+    ) {
+      lease.observations.setTerminalEvidenceHydrator(notice =>
+        hydrateTerminalEvidence(this.backend.scanner, notice, evidenceOptions.maximumCanonicalBytes)
+      )
+    }
     let physicalReleaseConfirmed = false
     let terminalEvidenceDrained = false
     let terminalEvidenceReleased = terminalEvidence === undefined
@@ -882,9 +896,30 @@ class ReactNativeRustCoreManager {
     if (terminalEvidence !== undefined && hasRetainedValuesDrain(lease.observations)) {
       lease.observations.onRetainedValuesDrained(() => {
         terminalEvidenceDrained = true
-        // The stream callback cannot await cleanup. Record a retryable debt
-        // rather than clearing the source-native bytes or losing the failure.
-        releaseTerminalEvidence().catch(() => undefined)
+        // A staging failure can end the stream while native still owns the
+        // reservation. Stop first; only its successful receipt permits release.
+        Promise.resolve()
+          .then(() => stopOnce())
+          .then(record => {
+            if (record.state !== 'released') {
+              this.diagnosticWarnings.push(
+                Object.freeze({
+                  code: 'terminal-evidence-stop-failed',
+                  detail: Object.freeze({ code: record.failures[0]?.error.code ?? null })
+                })
+              )
+              if (this.diagnosticWarnings.length > 256) this.diagnosticWarnings.shift()
+            }
+          })
+          .catch(error => {
+            this.diagnosticWarnings.push(
+              Object.freeze({
+                code: 'terminal-evidence-stop-failed',
+                detail: Object.freeze({ code: asBackendError(error, 'rust-core-manager.scan.stop').normalized.code })
+              })
+            )
+            if (this.diagnosticWarnings.length > 256) this.diagnosticWarnings.shift()
+          })
       })
     }
     // The scan stays tracked until the owner confirms release: a failed stop

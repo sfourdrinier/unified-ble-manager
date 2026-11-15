@@ -1,3 +1,4 @@
+// bindings/napi/src/dispatch.rs
 //! F01 N-API dispatch: packed Node/desktop consumers execute BLE work in
 //! the candidate Rust runtime.
 //!
@@ -4150,16 +4151,59 @@ pub struct ScanTerminalEventInfo {
     #[napi(js_name = "operationId")]
     pub operation_id: Option<String>,
     pub aborted: Option<bool>,
+    #[napi(js_name = "requestedStop")]
+    pub requested_stop: Option<bool>,
     pub detail: Option<String>,
     /// A retained source terminal awaiting JavaScript's canonical commit.
     #[napi(js_name = "terminalEvidence")]
     pub terminal_evidence: Option<TerminalEvidencePendingInfo>,
+    #[napi(js_name = "joinedTerminalEvidence")]
+    pub joined_terminal_evidence: Option<Vec<JoinedScanTerminalEvidenceInfo>>,
     /// Private, authenticated source-stage failure wire. A normal dispatch
     /// failure still rejects; only an already-observed scan terminal may use
     /// this explicit discriminator.
     #[napi(js_name = "stageFailure")]
     pub stage_failure: Option<String>,
     pub missed: Option<i64>,
+}
+
+#[napi(object)]
+pub struct JoinedScanTerminalEvidenceInfo {
+    pub scope: TerminalEvidenceScopeInput,
+    #[napi(js_name = "reservationId")]
+    pub reservation_id: String,
+    #[napi(js_name = "pendingToken")]
+    pub pending_token: String,
+    #[napi(js_name = "stageFailure")]
+    pub stage_failure: Option<String>,
+}
+
+#[napi(object)]
+pub struct JoinedScanEvidenceOptions {
+    #[napi(js_name = "operationId")]
+    pub operation_id: String,
+    pub scope: TerminalEvidenceScopeInput,
+    #[napi(js_name = "scopeUtf16le")]
+    pub scope_utf16le: Option<Buffer>,
+    #[napi(js_name = "terminalOperation")]
+    pub terminal_operation: Option<String>,
+    #[napi(js_name = "sourceStopped")]
+    pub source_stopped: Option<bool>,
+    #[napi(js_name = "localTerminal")]
+    pub local_terminal: Option<LocalScanTerminalInput>,
+    #[napi(js_name = "ownerLease")]
+    pub owner_lease: Option<bool>,
+}
+
+#[napi(object)]
+pub struct LocalScanTerminalInput {
+    pub reason: String,
+    #[napi(js_name = "droppedItems")]
+    pub dropped_items: String,
+    #[napi(js_name = "droppedBytes")]
+    pub dropped_bytes: String,
+    #[napi(js_name = "replacedItems")]
+    pub replaced_items: String,
 }
 
 #[derive(Clone)]
@@ -4170,6 +4214,26 @@ struct TerminalEvidenceBinding {
     terminal_operation: Option<String>,
 }
 
+#[derive(Default)]
+struct JoinedScanEvidence {
+    operation_id: Option<String>,
+    ended: bool,
+    bindings: HashMap<String, TerminalEvidenceBinding>,
+    local_debts: HashMap<String, LocalScanDebt>,
+    failures: HashMap<String, String>,
+}
+
+#[derive(Clone)]
+struct LocalScanDebt {
+    binding: TerminalEvidenceBinding,
+    canonical: Vec<u8>,
+}
+
+#[napi(object)]
+pub struct ScanEvidenceRetryInfo {
+    pub failures: Vec<String>,
+}
+
 /// Synchronously retains an exact evidence-bound scan terminal before a
 /// bounded broadcast receiver can report it as lagged. The desktop central
 /// admits one scan, so this contains at most its still-unacknowledged terminal.
@@ -4178,6 +4242,7 @@ struct ScanTerminalRetention {
     ledger:
         Arc<StdMutex<Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>>>,
     bindings: Arc<StdMutex<HashMap<String, TerminalEvidenceBinding>>>,
+    joined: Arc<StdMutex<JoinedScanEvidence>>,
     pending: Arc<StdMutex<VecDeque<ScanTerminalEvent>>>,
     retained: Arc<StdMutex<HashSet<(String, u64)>>>,
     failures: Arc<StdMutex<HashMap<(String, u64), DispatchError>>>,
@@ -4190,6 +4255,7 @@ impl ScanTerminalRetention {
         Self {
             ledger: Arc::new(StdMutex::new(ledger)),
             bindings: Arc::new(StdMutex::new(HashMap::new())),
+            joined: Arc::new(StdMutex::new(JoinedScanEvidence::default())),
             pending: Arc::new(StdMutex::new(VecDeque::new())),
             retained: Arc::new(StdMutex::new(HashSet::new())),
             failures: Arc::new(StdMutex::new(HashMap::new())),
@@ -4200,10 +4266,12 @@ impl ScanTerminalRetention {
         // Retention is the last pre-JavaScript durable handoff. The project
         // policy for internal poison is to recover the protected state, not
         // turn an already-admitted terminal into an invisible loss.
+        let mut joined = self.joined.lock().unwrap_or_else(PoisonError::into_inner);
+        if joined.operation_id.as_deref() == Some(event.operation_id.as_str()) {
+            joined.ended = true;
+        }
         let bindings = self.bindings.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(binding) = bindings.get(event.operation_id.as_str()).cloned() else {
-            return;
-        };
+        let binding = bindings.get(event.operation_id.as_str()).cloned();
         drop(bindings);
         let key = (event.operation_id.as_str().to_owned(), event.sequence);
         let ledger = self
@@ -4211,6 +4279,49 @@ impl ScanTerminalRetention {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        let mut joined_failures = Vec::new();
+        if joined.operation_id.as_deref() == Some(event.operation_id.as_str()) {
+            for (id, binding) in &joined.bindings {
+                let stage = match (
+                    ledger.as_ref(),
+                    binding.recipient.as_deref(),
+                    binding.terminal_operation.as_deref(),
+                ) {
+                    (Some(ledger), Some(recipient), Some(operation)) => ledger
+                        .stage(
+                            id,
+                            recipient,
+                            &canonical_scan_terminal_bytes(binding, &event, operation),
+                        )
+                        .map_err(|error| {
+                            terminal_evidence_error(error, "dispatch.scan-terminal-stage")
+                        }),
+                    _ => Err(DispatchError::new(
+                        BleErrorCode::LifecycleInvalidState.as_str(),
+                        BleErrorDomain::Stream.as_str(),
+                        "dispatch.scan-terminal-stage",
+                        "scan terminal evidence binding is incomplete",
+                    )),
+                };
+                if let Err(error) = stage {
+                    joined_failures.push((id.clone(), error.wire_message()));
+                }
+            }
+        }
+        joined.failures.extend(joined_failures);
+        let has_joined = !joined.bindings.is_empty()
+            && joined.operation_id.as_deref() == Some(event.operation_id.as_str());
+        drop(joined);
+        let Some(binding) = binding else {
+            if has_joined {
+                let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut retained = self.retained.lock().unwrap_or_else(PoisonError::into_inner);
+                if key.1 == 0 || retained.insert(key) {
+                    pending.push_back(event);
+                }
+            }
+            return;
+        };
         let stage = match (
             ledger.as_ref(),
             binding.recipient.as_deref(),
@@ -4233,12 +4344,11 @@ impl ScanTerminalRetention {
             self.failures
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .insert(key, error);
-            return;
+                .insert(key.clone(), error);
         }
         let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         let mut retained = self.retained.lock().unwrap_or_else(PoisonError::into_inner);
-        if !retained.insert(key) {
+        if key.1 != 0 && !retained.insert(key) {
             return;
         }
         pending.push_back(event);
@@ -4248,7 +4358,8 @@ impl ScanTerminalRetention {
         self.failures
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(&(event.operation_id.as_str().to_owned(), event.sequence))
+            .get(&(event.operation_id.as_str().to_owned(), event.sequence))
+            .cloned()
     }
 }
 
@@ -4281,7 +4392,7 @@ fn canonical_scan_terminal_bytes(
         &binding.scope.operation_id,
     ));
     json.push_str("},\"terminal\":{\"droppedBytes\":0,\"droppedItems\":0");
-    if event.aborted {
+    if event.aborted && event.sequence != 0 {
         json.push_str(
             ",\"error\":{\"code\":\"scan.start-failed\",\"domain\":\"scan\",\"operation\":",
         );
@@ -4291,13 +4402,122 @@ fn canonical_scan_terminal_bytes(
         json.push_str("},\"retryability\":\"never\"}");
     }
     json.push_str(",\"kind\":\"terminal\",\"reason\":");
-    json.push_str(if event.aborted {
+    json.push_str(if event.sequence == 0 {
+        "\"owner-released\""
+    } else if event.aborted {
         "\"source-failed\""
     } else {
         "\"closed\""
     });
     json.push_str(",\"replacedItems\":0}}");
     json.into_bytes()
+}
+
+fn commit_joined_release(
+    ledger: &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger,
+    debt: &LocalScanDebt,
+) -> Result<TerminalEvidenceReceiptInfo> {
+    const OP: &str = "dispatch.scan-detach-evidence";
+    let binding = &debt.binding;
+    let recipient = binding.recipient.as_deref().ok_or_else(|| {
+        to_napi(DispatchError::new(
+            BleErrorCode::LifecycleInvalidState.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            OP,
+            "missing recipient",
+        ))
+    })?;
+    ledger
+        .stage(&binding.reservation_id, recipient, &debt.canonical)
+        .map_err(|error| to_napi(terminal_evidence_error(error, OP)))?;
+    let digest: [u8; 32] = Sha256::digest(&debt.canonical).into();
+    let committed = ledger
+        .commit(&binding.reservation_id, &debt.canonical, digest)
+        .map_err(|error| to_napi(terminal_evidence_error(error, OP)))?;
+    Ok(TerminalEvidenceReceiptInfo {
+        producer: binding.scope.producer.clone(),
+        reference: committed.reference,
+        byte_length: committed.byte_length.to_string(),
+        digest: terminal_digest_hex(committed.digest),
+        format_version: u32::from(committed.format_version),
+        durability: "committed".to_owned(),
+        scope: TerminalEvidenceScopeInput {
+            manager_id: binding.scope.manager_id.clone(),
+            operation_id: binding.scope.operation_id.clone(),
+            incarnation: binding.scope.incarnation.clone(),
+        },
+        scope_utf16le: binding.scope.scope_utf16le.clone().map(Buffer::from),
+    })
+}
+
+fn canonical_joined_local_terminal(
+    binding: &TerminalEvidenceBinding,
+    operation_id: &str,
+    local: Option<&LocalScanTerminalInput>,
+) -> Result<Vec<u8>> {
+    const OP: &str = "dispatch.scan-detach-evidence";
+    let operation = binding.terminal_operation.as_deref().ok_or_else(|| {
+        to_napi(DispatchError::new(
+            BleErrorCode::LifecycleInvalidState.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            OP,
+            "missing terminal operation",
+        ))
+    })?;
+    let event = ScanTerminalEvent {
+        sequence: 0,
+        operation_id: OperationId::new(operation_id.to_owned())
+            .map_err(|error| to_napi(error.into()))?,
+        aborted: false,
+        detail: String::new(),
+    };
+    let base = canonical_scan_terminal_bytes(binding, &event, operation);
+    let Some(local) = local else {
+        return Ok(base);
+    };
+    let parse = |value: &str| -> Result<u64> {
+        let parsed = value
+            .parse::<u64>()
+            .ok()
+            .filter(|number| number.to_string() == value && *number <= 9_007_199_254_740_991)
+            .ok_or_else(|| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::ArgumentInvalid.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "invalid local terminal counters",
+                ))
+            })?;
+        Ok(parsed)
+    };
+    if local.reason != "overflow" && local.reason != "owner-released" {
+        return Err(to_napi(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            OP,
+            "invalid local terminal reason",
+        )));
+    }
+    let text = String::from_utf8(base).map_err(|_| {
+        to_napi(DispatchError::new(
+            BleErrorCode::PlatformFailure.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            OP,
+            "invalid canonical scope",
+        ))
+    })?;
+    let prefix = text
+        .split_once(",\"terminal\":")
+        .map(|(prefix, _)| prefix)
+        .ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::PlatformFailure.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "invalid canonical terminal",
+            ))
+        })?;
+    Ok(format!("{prefix},\"terminal\":{{\"droppedBytes\":{},\"droppedItems\":{},\"kind\":\"terminal\",\"reason\":\"{}\",\"replacedItems\":{}}}}}", parse(&local.dropped_bytes)?, parse(&local.dropped_items)?, local.reason, parse(&local.replaced_items)?).into_bytes())
 }
 
 fn canonical_subscription_source_failure_bytes(
@@ -5200,6 +5420,7 @@ pub struct UbmCentral {
     /// Source bindings are established only after the preactivation attach
     /// succeeds. They remain until their terminal is durably committed.
     scan_terminal_evidence: Arc<StdMutex<HashMap<String, TerminalEvidenceBinding>>>,
+    joined_scan_evidence: Arc<StdMutex<JoinedScanEvidence>>,
     pending_scan_terminals: Arc<StdMutex<VecDeque<ScanTerminalEvent>>>,
     retained_scan_terminal_sequences: Arc<StdMutex<HashSet<(String, u64)>>>,
     scan_terminal_failures: Arc<StdMutex<HashMap<(String, u64), DispatchError>>>,
@@ -5409,6 +5630,7 @@ impl EventWaker {
         let retention = ScanTerminalRetention {
             ledger: Arc::clone(&retention.ledger),
             bindings: Arc::clone(&retention.bindings),
+            joined: Arc::clone(&retention.joined),
             pending: Arc::clone(&retention.pending),
             retained: Arc::clone(&retention.retained),
             failures: Arc::clone(&retention.failures),
@@ -5711,6 +5933,7 @@ impl UbmCentral {
         Self {
             terminal_evidence: Arc::clone(&retention.ledger),
             scan_terminal_evidence: retention.bindings,
+            joined_scan_evidence: retention.joined,
             pending_scan_terminals: retention.pending,
             retained_scan_terminal_sequences: retention.retained,
             scan_terminal_failures: retention.failures,
@@ -6226,6 +6449,35 @@ impl UbmCentral {
     #[napi(catch_unwind)]
     pub async fn release_terminal_evidence(&self, reservation_id: String) -> Result<()> {
         const OP: &str = "dispatch.terminal-evidence.release";
+        {
+            let joined = self
+                .joined_scan_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let owners = self
+                .scan_terminal_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let failures = self
+                .scan_terminal_failures
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let owner_failed = owners.iter().any(|(id, binding)| {
+                binding.reservation_id == reservation_id
+                    && failures.keys().any(|(operation, _)| operation == id)
+            });
+            if owner_failed
+                || joined.failures.contains_key(&reservation_id)
+                || joined.local_debts.contains_key(&reservation_id)
+            {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "scan terminal stage remains pending recovery",
+                )));
+            }
+        }
         let ledger = self.terminal_evidence().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
@@ -6238,6 +6490,140 @@ impl UbmCentral {
             .abandon(&reservation_id)
             .map(|_| ())
             .map_err(|error| to_napi(terminal_evidence_error(error, OP)))
+    }
+
+    /// Retry only failed source stages when a trusted recovery client explicitly asks.
+    #[napi(catch_unwind)]
+    pub fn retry_failed_scan_evidence(&self, recipient: String) -> Result<ScanEvidenceRetryInfo> {
+        const OP: &str = "dispatch.scan-terminal-retry-stage";
+        let ledger = self.terminal_evidence().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "terminal ledger unavailable",
+            ))
+        })?;
+        let mut retry_failures = Vec::new();
+        {
+            let mut joined = self
+                .joined_scan_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let ids: Vec<String> = joined
+                .local_debts
+                .iter()
+                .filter_map(|(id, debt)| {
+                    (debt.binding.recipient.as_deref() == Some(recipient.as_str()))
+                        .then(|| id.clone())
+                })
+                .collect();
+            for id in ids {
+                let debt = joined.local_debts.get(&id).expect("local debt exists");
+                match ledger
+                    .stage(&id, &recipient, &debt.canonical)
+                    .and_then(|()| ledger.abandon(&id))
+                {
+                    Ok(_) => {
+                        joined.local_debts.remove(&id);
+                    }
+                    Err(error) => {
+                        retry_failures.push(terminal_evidence_error(error, OP).wire_message())
+                    }
+                }
+            }
+        }
+        let mut pending = self
+            .pending_scan_terminals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(event) = pending.front().cloned() else {
+            return Ok(ScanEvidenceRetryInfo {
+                failures: retry_failures,
+            });
+        };
+        let mut joined = self
+            .joined_scan_evidence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut owners = self
+            .scan_terminal_evidence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut failures = self
+            .scan_terminal_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let key = (event.operation_id.as_str().to_owned(), event.sequence);
+        if failures.contains_key(&key) {
+            if let Some(binding) = owners.get(event.operation_id.as_str()) {
+                if binding.recipient.as_deref() == Some(recipient.as_str()) {
+                    let operation = binding.terminal_operation.as_deref().ok_or_else(|| {
+                        to_napi(DispatchError::new(
+                            BleErrorCode::LifecycleInvalidState.as_str(),
+                            BleErrorDomain::Stream.as_str(),
+                            OP,
+                            "missing terminal operation",
+                        ))
+                    })?;
+                    match ledger
+                        .stage(
+                            &binding.reservation_id,
+                            &recipient,
+                            &canonical_scan_terminal_bytes(binding, &event, operation),
+                        )
+                        .and_then(|()| ledger.abandon(&binding.reservation_id))
+                    {
+                        Ok(_) => {
+                            owners.remove(event.operation_id.as_str());
+                            failures.remove(&key);
+                        }
+                        Err(error) => {
+                            retry_failures.push(terminal_evidence_error(error, OP).wire_message())
+                        }
+                    }
+                }
+            }
+        }
+        let ids: Vec<String> = joined.failures.keys().cloned().collect();
+        for id in ids {
+            let Some(binding) = joined.bindings.get(&id) else {
+                continue;
+            };
+            if binding.recipient.as_deref() != Some(recipient.as_str()) {
+                continue;
+            }
+            let operation = binding.terminal_operation.as_deref().ok_or_else(|| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "missing terminal operation",
+                ))
+            })?;
+            match ledger
+                .stage(
+                    &id,
+                    &recipient,
+                    &canonical_scan_terminal_bytes(binding, &event, operation),
+                )
+                .and_then(|()| ledger.abandon(&id))
+            {
+                Ok(_) => {
+                    joined.bindings.remove(&id);
+                    joined.failures.remove(&id);
+                }
+                Err(error) => {
+                    retry_failures.push(terminal_evidence_error(error, OP).wire_message())
+                }
+            }
+        }
+        if !owners.contains_key(event.operation_id.as_str()) && joined.bindings.is_empty() {
+            pending.pop_front();
+        }
+        Ok(ScanEvidenceRetryInfo {
+            failures: retry_failures,
+        })
     }
 
     /// Retire committed terminal evidence after the authorized recovery
@@ -7295,8 +7681,10 @@ impl UbmCentral {
             sequence: None,
             operation_id: None,
             aborted: None,
+            requested_stop: None,
             detail: None,
             terminal_evidence: None,
+            joined_terminal_evidence: None,
             stage_failure: None,
             missed,
         };
@@ -7343,22 +7731,58 @@ impl UbmCentral {
                 }
             }
         };
+        let joined_info = {
+            let joined = self
+                .joined_scan_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if joined.operation_id.as_deref() == Some(event.operation_id.as_str()) {
+                joined
+                    .bindings
+                    .values()
+                    .map(|binding| JoinedScanTerminalEvidenceInfo {
+                        scope: TerminalEvidenceScopeInput {
+                            manager_id: binding.scope.manager_id.clone(),
+                            operation_id: binding.scope.operation_id.clone(),
+                            incarnation: binding.scope.incarnation.clone(),
+                        },
+                        reservation_id: binding.reservation_id.clone(),
+                        pending_token: format!(
+                            "scan-joined:{}:{}:{}",
+                            event.operation_id.as_str(),
+                            event.sequence,
+                            binding.reservation_id
+                        ),
+                        stage_failure: joined.failures.get(&binding.reservation_id).cloned(),
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        };
         if let Some(error) = (ScanTerminalRetention {
             ledger: self.terminal_evidence.clone(),
             bindings: Arc::clone(&self.scan_terminal_evidence),
+            joined: Arc::clone(&self.joined_scan_evidence),
             pending: Arc::clone(&self.pending_scan_terminals),
             retained: Arc::clone(&self.retained_scan_terminal_sequences),
             failures: Arc::clone(&self.scan_terminal_failures),
         })
         .take_failure(&event)
         {
+            self.pending_scan_terminals
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push_front(event.clone());
             return Ok(Some(ScanTerminalEventInfo {
                 kind: "stage-failed".to_owned(),
                 sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
                 operation_id: Some(event.operation_id.as_str().to_owned()),
                 aborted: Some(event.aborted),
+                requested_stop: Some(event.sequence == 0),
                 detail: Some(event.detail),
                 terminal_evidence: None,
+                joined_terminal_evidence: Some(joined_info),
                 stage_failure: Some(error.wire_message()),
                 missed: None,
             }));
@@ -7372,7 +7796,7 @@ impl UbmCentral {
         // A destructive broadcast receive must not become an acknowledgement:
         // the exact terminal remains first until its JS canonical commit is
         // confirmed with the token below.
-        if binding.is_some() {
+        if binding.is_some() || !joined_info.is_empty() {
             self.pending_scan_terminals
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -7383,11 +7807,13 @@ impl UbmCentral {
             sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
             operation_id: Some(event.operation_id.as_str().to_owned()),
             aborted: Some(event.aborted),
+            requested_stop: Some(event.sequence == 0),
             detail: Some(event.detail),
             terminal_evidence: binding.map(|binding| TerminalEvidencePendingInfo {
                 reservation_id: binding.reservation_id,
                 pending_token: format!("scan:{}:{}", event.operation_id.as_str(), event.sequence),
             }),
+            joined_terminal_evidence: Some(joined_info),
             stage_failure: None,
             missed: None,
         }))
@@ -7442,6 +7868,38 @@ impl UbmCentral {
             return Ok(());
         };
         let expected = format!("scan:{}:{}", event.operation_id.as_str(), event.sequence);
+        let joined_prefix = format!(
+            "scan-joined:{}:{}:",
+            event.operation_id.as_str(),
+            event.sequence
+        );
+        if let Some(reservation_id) = options.pending_token.strip_prefix(&joined_prefix) {
+            let mut joined = self
+                .joined_scan_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if joined.failures.contains_key(reservation_id)
+                || joined.bindings.remove(reservation_id).is_none()
+            {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::OwnershipDenied.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "joined terminal evidence token is not pending",
+                )));
+            }
+            let remaining = !joined.bindings.is_empty();
+            drop(joined);
+            let has_owner = self
+                .scan_terminal_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(event.operation_id.as_str());
+            if !remaining && !has_owner {
+                pending.pop_front();
+            }
+            return Ok(());
+        }
         if options.pending_token != expected {
             return Err(to_napi(DispatchError::new(
                 BleErrorCode::OwnershipDenied.as_str(),
@@ -7452,7 +7910,15 @@ impl UbmCentral {
         }
         let operation_id = event.operation_id.as_str().to_owned();
         let sequence = event.sequence;
-        pending.pop_front();
+        let has_joined = !self
+            .joined_scan_evidence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .bindings
+            .is_empty();
+        if !has_joined {
+            pending.pop_front();
+        }
         drop(pending);
         self.scan_terminal_failures
             .lock()
@@ -7462,6 +7928,100 @@ impl UbmCentral {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&operation_id);
+        Ok(())
+    }
+
+    /// Relinquish live delivery after failure; durable staged or committed rows stay in recovery.
+    #[napi(catch_unwind)]
+    pub fn release_scan_terminal_to_recovery(&self, pending_token: String) -> Result<()> {
+        const OP: &str = "dispatch.scan-terminal-to-recovery";
+        let mut pending = self
+            .pending_scan_terminals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let event = pending.front().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "no terminal is pending",
+            ))
+        })?;
+        let operation_id = event.operation_id.as_str().to_owned();
+        let owner = format!("scan:{}:{}", operation_id, event.sequence);
+        let prefix = format!("scan-joined:{}:{}:", operation_id, event.sequence);
+        if pending_token == owner {
+            if self
+                .scan_terminal_failures
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(&(operation_id.clone(), event.sequence))
+            {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "owner terminal has not staged",
+                )));
+            }
+            if self
+                .scan_terminal_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&operation_id)
+                .is_none()
+            {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::OwnershipDenied.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "owner terminal is not pending",
+                )));
+            }
+        } else if let Some(reservation) = pending_token.strip_prefix(&prefix) {
+            let mut joined = self
+                .joined_scan_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if joined.failures.contains_key(reservation) {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "joined terminal has not staged",
+                )));
+            }
+            if joined.bindings.remove(reservation).is_none() {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::OwnershipDenied.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    OP,
+                    "joined terminal is not pending",
+                )));
+            }
+            joined.failures.remove(reservation);
+        } else {
+            return Err(to_napi(DispatchError::new(
+                BleErrorCode::OwnershipDenied.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "invalid terminal token",
+            )));
+        }
+        let has_owner = self
+            .scan_terminal_evidence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&operation_id);
+        let has_joined = !self
+            .joined_scan_evidence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .bindings
+            .is_empty();
+        if !has_owner && !has_joined {
+            pending.pop_front();
+        }
         Ok(())
     }
 
@@ -7642,33 +8202,245 @@ impl UbmCentral {
         let service_uuids = options.service_uuids.unwrap_or_default();
         let refs: Vec<&str> = service_uuids.iter().map(String::as_str).collect();
         bump(&self.counters.scan_start);
-        let session = self
+        let bindings = Arc::clone(&self.scan_terminal_evidence);
+        let joined = Arc::clone(&self.joined_scan_evidence);
+        let admitted_id = Arc::new(StdMutex::new(None::<String>));
+        let admitted_for_hook = Arc::clone(&admitted_id);
+        let result = self
             .central
-            .start_scan_platform(
+            .start_scan_platform_with_admission(
                 &options.owner,
                 &refs,
                 duplicates,
                 options.local_name_prefix.as_deref(),
                 windows,
                 ctl,
+                move |id| {
+                    let mut joined = joined.lock().unwrap_or_else(PoisonError::into_inner);
+                    if !joined.bindings.is_empty() || !joined.local_debts.is_empty() {
+                        return Err(DesktopError::new(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Stream,
+                            "scan.start",
+                        )
+                        .with_detail("joined scan terminal evidence remains pending"));
+                    }
+                    joined.operation_id = Some(id.as_str().to_owned());
+                    joined.ended = false;
+                    joined.failures.clear();
+                    *admitted_for_hook
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(id.as_str().to_owned());
+                    if let Some(binding) = terminal_evidence {
+                        bindings
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(id.as_str().to_owned(), binding);
+                    }
+                    Ok(())
+                },
             )
-            .await
-            .map_err(fail)?;
-        if let Some(binding) = terminal_evidence {
-            self.scan_terminal_evidence
-                .lock()
-                .map_err(|_| {
-                    to_napi(DispatchError::new(
-                        BleErrorCode::LifecycleInvalidState.as_str(),
-                        BleErrorDomain::Stream.as_str(),
-                        "dispatch.scan-start",
-                        "terminal evidence binding lock failed",
-                    ))
-                })?
-                .insert(session.operation_id().as_str().to_owned(), binding);
-        }
+            .await;
+        let session = match result {
+            Ok(session) => session,
+            Err(error) => {
+                if let Some(id) = admitted_id
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                {
+                    let mut joined = self
+                        .joined_scan_evidence
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    if joined.operation_id.as_deref() == Some(id.as_str()) && !joined.ended {
+                        joined.ended = true;
+                        self.scan_terminal_evidence
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .remove(&id);
+                    }
+                }
+                return Err(fail(error));
+            }
+        };
         Ok(ScanSessionInfo {
             operation_id: session.operation_id().as_str().to_owned(),
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn attach_joined_scan_evidence(&self, options: JoinedScanEvidenceOptions) -> Result<()> {
+        const OP: &str = "dispatch.scan-join-evidence";
+        let binding = self
+            .attach_terminal_evidence_scope(
+                "scan",
+                Some(&options.scope),
+                options.scope_utf16le.as_ref(),
+                OP,
+            )
+            .map_err(to_napi)?;
+        let binding = self
+            .configure_terminal_evidence(binding, options.terminal_operation.as_deref(), OP)
+            .map_err(to_napi)?
+            .expect("scope supplied");
+        self.central
+            .with_operational_scan(&options.operation_id, || {
+                let mut joined = self
+                    .joined_scan_evidence
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if joined.operation_id.as_deref() != Some(options.operation_id.as_str())
+                    || joined.ended
+                    || joined.bindings.contains_key(&binding.reservation_id)
+                {
+                    return Err(to_napi(DispatchError::new(
+                        BleErrorCode::LifecycleInvalidState.as_str(),
+                        BleErrorDomain::Scan.as_str(),
+                        OP,
+                        "scan is terminal or evidence is already attached",
+                    )));
+                }
+                joined
+                    .bindings
+                    .insert(binding.reservation_id.clone(), binding);
+                Ok(())
+            })
+            .unwrap_or_else(|| {
+                Err(to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Scan.as_str(),
+                    OP,
+                    "scan is not operational",
+                )))
+            })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn joined_scan_local_debt(&self, options: JoinedScanEvidenceOptions) -> Result<bool> {
+        let scope = Self::terminal_evidence_scope_from_input(
+            "scan",
+            &options.scope,
+            options.scope_utf16le.as_ref(),
+            "dispatch.scan-local-debt",
+        )
+        .map_err(to_napi)?;
+        let joined = self
+            .joined_scan_evidence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Ok(
+            joined.operation_id.as_deref() == Some(options.operation_id.as_str())
+                && joined
+                    .local_debts
+                    .values()
+                    .any(|debt| debt.binding.scope == scope),
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub fn detach_joined_scan_evidence(
+        &self,
+        options: JoinedScanEvidenceOptions,
+    ) -> Result<TerminalEvidenceReceiptInfo> {
+        const OP: &str = "dispatch.scan-detach-evidence";
+        let scope = Self::terminal_evidence_scope_from_input(
+            "scan",
+            &options.scope,
+            options.scope_utf16le.as_ref(),
+            OP,
+        )
+        .map_err(to_napi)?;
+        let ledger = self.terminal_evidence().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "terminal ledger unavailable",
+            ))
+        })?;
+        {
+            let mut joined = self
+                .joined_scan_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if joined.operation_id.as_deref() == Some(options.operation_id.as_str()) {
+                let debt = joined
+                    .local_debts
+                    .iter()
+                    .find_map(|(id, debt)| (debt.binding.scope == scope).then(|| id.clone()));
+                if let Some(id) = debt {
+                    let debt = joined.local_debts.get(&id).expect("debt exists").clone();
+                    let receipt = commit_joined_release(&ledger, &debt)?;
+                    joined.local_debts.remove(&id);
+                    return Ok(receipt);
+                }
+            }
+        }
+        let detach = || {
+            let mut joined = self
+                .joined_scan_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let mut owners = self
+                .scan_terminal_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let binding = if options.owner_lease == Some(true) {
+                owners
+                    .get(&options.operation_id)
+                    .filter(|binding| binding.scope == scope)
+                    .cloned()
+            } else {
+                joined
+                    .bindings
+                    .values()
+                    .find(|binding| binding.scope == scope)
+                    .cloned()
+            };
+            if joined.operation_id.as_deref() != Some(options.operation_id.as_str())
+                || joined.ended
+                || binding.is_none()
+            {
+                return Err(to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Scan.as_str(),
+                    OP,
+                    "scan evidence is terminal or not attached",
+                )));
+            }
+            let binding = binding.expect("checked");
+            let id = binding.reservation_id.clone();
+            let canonical = canonical_joined_local_terminal(
+                &binding,
+                &options.operation_id,
+                options.local_terminal.as_ref(),
+            )?;
+            if options.owner_lease == Some(true) {
+                owners.remove(&options.operation_id);
+            } else {
+                joined.bindings.remove(&id);
+            }
+            let debt = LocalScanDebt { binding, canonical };
+            joined.local_debts.insert(id.clone(), debt.clone());
+            let receipt = commit_joined_release(&ledger, &debt)?;
+            joined.local_debts.remove(&id);
+            Ok(receipt)
+        };
+        let outcome = if options.source_stopped == Some(true) {
+            self.central
+                .with_stopped_scan(&options.operation_id, detach)
+        } else {
+            self.central
+                .with_operational_scan(&options.operation_id, detach)
+        };
+        outcome.unwrap_or_else(|| {
+            Err(to_napi(DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Scan.as_str(),
+                OP,
+                "scan source is terminal or changing",
+            )))
         })
     }
 
@@ -7689,11 +8461,51 @@ impl UbmCentral {
             .map_err(to_napi)?;
         let id = OperationId::new(operation_id).map_err(|error| to_napi(error.into()))?;
         bump(&self.counters.scan_stop);
-        self.central
-            .stop_scan(&id, ctl)
-            .await
-            .map(scan_stop_wire)
-            .map_err(fail)
+        let result = self.central.stop_scan(&id, ctl).await.map_err(fail)?;
+        let stage_requested = self
+            .central
+            .with_stopped_scan(id.as_str(), || {
+                let mut joined = self
+                    .joined_scan_evidence
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if joined.operation_id.as_deref() != Some(id.as_str()) || joined.ended {
+                    return false;
+                }
+                joined.ended = true;
+                !joined.bindings.is_empty()
+                    || self
+                        .scan_terminal_evidence
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .contains_key(id.as_str())
+            })
+            .ok_or_else(|| {
+                to_napi(DispatchError::new(
+                    BleErrorCode::LifecycleInvalidState.as_str(),
+                    BleErrorDomain::Scan.as_str(),
+                    "dispatch.scan-stop",
+                    "scan terminal or adapter reset is still settling",
+                ))
+            })?;
+        if stage_requested {
+            (ScanTerminalRetention {
+                ledger: self.terminal_evidence.clone(),
+                bindings: Arc::clone(&self.scan_terminal_evidence),
+                joined: Arc::clone(&self.joined_scan_evidence),
+                pending: Arc::clone(&self.pending_scan_terminals),
+                retained: Arc::clone(&self.retained_scan_terminal_sequences),
+                failures: Arc::clone(&self.scan_terminal_failures),
+            })
+            .retain(ScanTerminalEvent {
+                sequence: 0,
+                operation_id: id,
+                aborted: false,
+                detail: String::new(),
+            });
+            self.waker.wake();
+        }
+        Ok(scan_stop_wire(result))
     }
 
     /// Take one queued observation (`null` when the queue is empty).
@@ -10289,6 +11101,20 @@ impl UbmCentral {
         self.continuation.engine.stop_recovery();
         let report = self.central.shutdown().await;
         if report.is_released() {
+            let joined = self
+                .joined_scan_evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let failures = self
+                .scan_terminal_failures
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if !joined.failures.is_empty() || !joined.local_debts.is_empty() || !failures.is_empty()
+            {
+                return Ok(CloseReportInfo { state: "release-failed".into(), failures: vec![CloseFailureInfo { resource_kind: "scan".into(), error: DispatchError::new(BleErrorCode::LifecycleInvalidState.as_str(), BleErrorDomain::Cleanup.as_str(), "dispatch.close.scan-terminal-pending", "scan terminal evidence remains pending; retry recovery before shutdown").wire_message() }] });
+            }
+            drop(failures);
+            drop(joined);
             self.terminal_evidence
                 .lock()
                 .map_err(|_| Error::from_reason("terminal evidence lifecycle interrupted"))?
@@ -15059,7 +15885,7 @@ mod tests {
                 pairing_generation: None,
                 platform: Some("bluez".to_owned()),
                 terminal_evidence_directory: Some(directory.display().to_string()),
-                terminal_evidence_max_bytes: Some("1024".to_owned()),
+                terminal_evidence_max_bytes: Some("4096".to_owned()),
             }),
         )
         .await
@@ -15106,6 +15932,102 @@ mod tests {
             })
             .await
             .expect("scan starts");
+        let joined_scope = || TerminalEvidenceScopeInput {
+            manager_id: "manager".to_owned(),
+            operation_id: "joined-terminal".to_owned(),
+            incarnation: "2".to_owned(),
+        };
+        let joined_reservation = central
+            .reserve_terminal_evidence(TerminalEvidenceReserveOptions {
+                producer: "scan".to_owned(),
+                maximum_bytes: "1024".to_owned(),
+                format_version: 1,
+                scope_utf16le: None,
+                scope: joined_scope(),
+            })
+            .await
+            .expect("reserve joined scope");
+        central
+            .bind_terminal_evidence_recipient(
+                joined_reservation.reservation_id.clone(),
+                "trusted-recipient".to_owned(),
+            )
+            .await
+            .expect("bind joined recipient");
+        central
+            .attach_joined_scan_evidence(JoinedScanEvidenceOptions {
+                operation_id: scan.operation_id.clone(),
+                scope: joined_scope(),
+                scope_utf16le: None,
+                terminal_operation: Some("desktop-rust-core.scan.terminated".to_owned()),
+                source_stopped: None,
+                local_terminal: None,
+                owner_lease: None,
+            })
+            .expect("attach joined scope");
+        assert!(central
+            .attach_joined_scan_evidence(JoinedScanEvidenceOptions {
+                operation_id: scan.operation_id.clone(),
+                scope: TerminalEvidenceScopeInput {
+                    manager_id: "manager".to_owned(),
+                    operation_id: "forged".to_owned(),
+                    incarnation: "1".to_owned()
+                },
+                scope_utf16le: None,
+                terminal_operation: Some("desktop-rust-core.scan.terminated".to_owned()),
+                source_stopped: None,
+                local_terminal: None,
+                owner_lease: None,
+            })
+            .is_err());
+        let detached_scope = || TerminalEvidenceScopeInput {
+            manager_id: "manager".to_owned(),
+            operation_id: "detached".to_owned(),
+            incarnation: "3".to_owned(),
+        };
+        let detached = central
+            .reserve_terminal_evidence(TerminalEvidenceReserveOptions {
+                producer: "scan".to_owned(),
+                maximum_bytes: "1024".to_owned(),
+                format_version: 1,
+                scope_utf16le: None,
+                scope: detached_scope(),
+            })
+            .await
+            .expect("reserve detached");
+        central
+            .bind_terminal_evidence_recipient(
+                detached.reservation_id.clone(),
+                "trusted-recipient".to_owned(),
+            )
+            .await
+            .expect("bind detached");
+        central
+            .attach_joined_scan_evidence(JoinedScanEvidenceOptions {
+                operation_id: scan.operation_id.clone(),
+                scope: detached_scope(),
+                scope_utf16le: None,
+                terminal_operation: Some("desktop-rust-core.scan.terminated".to_owned()),
+                source_stopped: None,
+                local_terminal: None,
+                owner_lease: None,
+            })
+            .expect("attach detached");
+        central
+            .detach_joined_scan_evidence(JoinedScanEvidenceOptions {
+                operation_id: scan.operation_id.clone(),
+                scope: detached_scope(),
+                scope_utf16le: None,
+                terminal_operation: None,
+                source_stopped: None,
+                local_terminal: None,
+                owner_lease: None,
+            })
+            .expect("detach joined");
+        central
+            .release_terminal_evidence(detached.reservation_id.clone())
+            .await
+            .expect("release detached reservation");
         central
             .stage_scan_terminated(true, "radio ended".to_owned())
             .await
@@ -15125,6 +16047,51 @@ mod tests {
             Some(scan.operation_id.as_str())
         );
         let pending = event.terminal_evidence.expect("retained pending evidence");
+        let mut joined = event.joined_terminal_evidence.expect("joined evidence");
+        assert_eq!(joined.len(), 1);
+        let detached_row = central
+            .terminal_evidence()
+            .as_ref()
+            .expect("ledger")
+            .staged("scan", "trusted-recipient")
+            .expect("staged rows")
+            .into_iter()
+            .find(|row| row.reservation_id == detached.reservation_id)
+            .expect("detached terminal remains recoverable");
+        let detached_text = String::from_utf8(detached_row.canonical_bytes).expect("UTF-8");
+        assert!(detached_text.contains("owner-released"));
+        assert!(!detached_text.contains("radio ended"));
+        let joined_pending = joined.pop().expect("joined receipt");
+        assert_eq!(
+            joined_pending.reservation_id,
+            joined_reservation.reservation_id
+        );
+        let joined_bytes = central
+            .terminal_evidence()
+            .as_ref()
+            .expect("ledger")
+            .staged("scan", "trusted-recipient")
+            .expect("staged joined")
+            .into_iter()
+            .find(|record| record.reservation_id == joined_pending.reservation_id)
+            .expect("joined reservation staged")
+            .canonical_bytes;
+        assert!(String::from_utf8(joined_bytes.clone())
+            .expect("utf8")
+            .contains("joined-terminal"));
+        central
+            .commit_terminal_evidence(TerminalEvidenceCommitOptions {
+                reservation_id: joined_pending.reservation_id,
+                digest: terminal_digest_hex(Sha256::digest(&joined_bytes).into()),
+                canonical_bytes: Buffer::from(joined_bytes),
+            })
+            .await
+            .expect("commit joined");
+        central
+            .acknowledge_terminal_evidence(TerminalEvidenceAcknowledgeOptions {
+                pending_token: joined_pending.pending_token,
+            })
+            .expect("ack joined");
         assert_eq!(pending.reservation_id, reservation.reservation_id);
         let bytes = central
             .terminal_evidence()
@@ -15186,6 +16153,98 @@ mod tests {
         );
         central.close().await.expect("close");
         std::fs::remove_dir_all(directory).expect("remove evidence directory");
+    }
+
+    #[tokio::test]
+    async fn requested_scan_stop_stages_each_attached_scope_before_return() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-stop-terminal-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let central = UbmCentral::open_synthetic(
+            "stop-terminal".into(),
+            Some(SyntheticOptions {
+                pairing_generation: None,
+                platform: Some("bluez".into()),
+                terminal_evidence_directory: Some(directory.display().to_string()),
+                terminal_evidence_max_bytes: Some("4096".into()),
+            }),
+        )
+        .await
+        .unwrap();
+        let scope = |name: &str| TerminalEvidenceScopeInput {
+            manager_id: "manager".into(),
+            operation_id: name.into(),
+            incarnation: "1".into(),
+        };
+        for name in ["owner", "joined"] {
+            let reservation = central
+                .reserve_terminal_evidence(TerminalEvidenceReserveOptions {
+                    producer: "scan".into(),
+                    maximum_bytes: "1024".into(),
+                    format_version: 1,
+                    scope: scope(name),
+                    scope_utf16le: None,
+                })
+                .await
+                .unwrap();
+            central
+                .bind_terminal_evidence_recipient(reservation.reservation_id, "recipient".into())
+                .await
+                .unwrap();
+        }
+        let scan = central
+            .start_scan(ScanOptions {
+                owner: "owner".into(),
+                service_uuids: None,
+                duplicate_policy: None,
+                local_name_prefix: None,
+                winrt_scanning_mode: None,
+                winrt_allow_extended_advertisements: None,
+                timeout_ms: None,
+                ticket: None,
+                terminal_evidence_scope: Some(scope("owner")),
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: Some("desktop-rust-core.scan.terminated".into()),
+            })
+            .await
+            .unwrap();
+        central
+            .attach_joined_scan_evidence(JoinedScanEvidenceOptions {
+                operation_id: scan.operation_id.clone(),
+                scope: scope("joined"),
+                scope_utf16le: None,
+                terminal_operation: Some("desktop-rust-core.scan.terminated".into()),
+                source_stopped: None,
+                local_terminal: None,
+                owner_lease: None,
+            })
+            .unwrap();
+        assert_eq!(
+            central.stop_scan(scan.operation_id, None).await.unwrap(),
+            "stopped"
+        );
+        let rows = central
+            .terminal_evidence()
+            .unwrap()
+            .staged("scan", "recipient")
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert!(String::from_utf8(row.canonical_bytes)
+                .unwrap()
+                .contains("owner-released"));
+        }
+        let event = central.take_scan_terminal_event().await.unwrap().unwrap();
+        assert_eq!(event.requested_stop, Some(true));
+        assert!(event.terminal_evidence.is_some());
+        assert_eq!(event.joined_terminal_evidence.unwrap().len(), 1);
+        central.close().await.unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
@@ -15404,7 +16463,29 @@ mod tests {
             .expect("staged evidence remains readable");
         assert_eq!(staged.len(), 1);
         assert_eq!(staged[0].canonical_bytes, earlier);
-        central.close().await.expect("close");
+        let pending = central
+            .pending_scan_terminals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(
+            pending.front().expect("source terminal retained").detail,
+            "must not overwrite"
+        );
+        drop(pending);
+        assert!(central
+            .release_terminal_evidence(reservation.reservation_id)
+            .await
+            .is_err());
+        assert!(!central
+            .retry_failed_scan_evidence("trusted-recipient".to_owned())
+            .expect("retry status")
+            .failures
+            .is_empty());
+        assert_eq!(
+            central.close().await.expect("close report").state,
+            "release-failed"
+        );
+        assert!(central.terminal_evidence().is_some());
         drop(central);
         std::fs::remove_dir_all(directory).expect("remove evidence directory");
     }

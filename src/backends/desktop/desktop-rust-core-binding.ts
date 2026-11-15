@@ -1,3 +1,4 @@
+// src/backends/desktop/desktop-rust-core-binding.ts
 import { utf8ByteLength } from '../../backend-contract/serializable'
 import { snapshotPlatformMetadataEntries, type PlatformMetadataEntry } from '../../backend-contract/errors'
 // src/backends/desktop/desktop-rust-core-binding.ts
@@ -170,6 +171,7 @@ export interface DesktopRustCoreScanTerminalEvent {
   readonly sequence?: number | null
   readonly operationId?: string | null
   readonly aborted?: boolean | null
+  readonly requestedStop?: boolean | null
   readonly detail?: string | null
   /** Private N-API stage-failure error wire, valid only with `stage-failed`. */
   readonly stageFailure?: string | null
@@ -179,6 +181,14 @@ export interface DesktopRustCoreScanTerminalEvent {
     readonly reservationId: string
     readonly pendingToken: string
   } | null
+  readonly joinedTerminalEvidence?:
+    | readonly {
+        readonly scope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
+        readonly reservationId: string
+        readonly pendingToken: string
+        readonly stageFailure?: string | null
+      }[]
+    | null
 }
 
 /** One row of the core's capability registration for a desktop OS. */
@@ -877,6 +887,39 @@ export interface DesktopRustCoreCentral {
     } & DesktopRustCoreControl
   ): Promise<{ operationId: string }>
   stopScan(operationId: string, options?: DesktopRustCoreControl): Promise<'stopped' | 'not-active'>
+  attachJoinedScanEvidence?(options: {
+    readonly operationId: string
+    readonly scope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
+    readonly scopeUtf16le?: Uint8Array
+    readonly terminalOperation: string
+  }): void
+  detachJoinedScanEvidence?(options: {
+    readonly operationId: string
+    readonly scope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
+    readonly scopeUtf16le?: Uint8Array
+    readonly sourceStopped?: boolean
+    readonly ownerLease?: boolean
+    readonly localTerminal?: {
+      readonly reason: 'overflow' | 'owner-released'
+      readonly droppedItems: string
+      readonly droppedBytes: string
+      readonly replacedItems: string
+    }
+  }): {
+    readonly producer: string
+    readonly ref: string
+    readonly byteLength: string
+    readonly digest: string
+    readonly formatVersion: number
+    readonly durability: string
+  }
+  joinedScanLocalDebt?(options: {
+    readonly operationId: string
+    readonly scope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
+    readonly scopeUtf16le?: Uint8Array
+  }): boolean
+  retryFailedScanEvidence?(recipient: string): { readonly failures: readonly string[] }
+  releaseScanTerminalToRecovery?(pendingToken: string): void
   /** The live scan's next observation with its scan id and age (`null` when none waits). */
   takeScanObservation(): Promise<DesktopRustCoreScanObservation | null>
   connect(options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl): Promise<{

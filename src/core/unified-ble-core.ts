@@ -1595,7 +1595,12 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       }
       return this.backend.scanner.start(ownerOptions, this.construction.clientId)
     }
-    return this.backend.scanner.join(options.sharing.sharedLeaseId, options.sharing.token, this.construction.clientId)
+    return this.backend.scanner.join(
+      options.sharing.sharedLeaseId,
+      options.sharing.token,
+      this.construction.clientId,
+      terminalEvidenceScope ?? undefined
+    )
   }
 
   private adoptScan(

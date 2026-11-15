@@ -1,3 +1,4 @@
+// crates/ubm-mobile/src/host.rs
 //! [`MobileHost`]: the process-owned mobile radio owner.
 //!
 //! One platform radio and one [`DesktopCentral<ForeignRadio>`] per process,
@@ -470,6 +471,8 @@ pub(crate) struct ScanMember {
     pub device_addresses: Vec<String>,
     /// Reservation scope held by the JS core until this scan's terminal is drained.
     pub terminal_evidence_scope: Option<ScanTerminalEvidenceScope>,
+    pub joined_terminal_evidence_scopes: Vec<ScanTerminalEvidenceScope>,
+    pub evidence_binding_only: bool,
     pub deadline: Option<tokio::time::Instant>,
     /// Independent of the admission operation, which settles after start.
     pub expiry_cancel: OpTicket,
@@ -1824,6 +1827,78 @@ impl HostInner {
         Ok(())
     }
 
+    pub(crate) fn bind_joined_scan_evidence(
+        &self,
+        session_id: u64,
+        membership: &str,
+        scope: ScanTerminalEvidenceScope,
+        attach: bool,
+        local_terminal: Option<Value>,
+    ) -> Result<(), DesktopError> {
+        if attach {
+            self.verify_scan_terminal_evidence_scope(Some(&scope))
+                .map_err(crate::session::terminal_evidence_error)?;
+        }
+        let mut ingress = lock(&self.scan_ingress);
+        let mut members = lock(&self.scan_members);
+        let member = members
+            .get_mut(&session_id)
+            .filter(|member| member.membership == membership)
+            .ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Scan,
+                    "scan.evidence.binding",
+                )
+            })?;
+        if ingress.generation.is_none() || ingress.failed_generation == ingress.generation {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Scan,
+                "scan.evidence.binding",
+            ));
+        }
+        if attach {
+            if member.terminal_evidence_scope.as_ref() == Some(&scope)
+                || member.joined_terminal_evidence_scopes.contains(&scope)
+            {
+                return Err(DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Scan,
+                    "scan.evidence.attach",
+                ));
+            }
+            member.joined_terminal_evidence_scopes.push(scope);
+        } else {
+            let index = member
+                .joined_terminal_evidence_scopes
+                .iter()
+                .position(|item| item == &scope)
+                .ok_or_else(|| {
+                    DesktopError::new(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Scan,
+                        "scan.evidence.detach",
+                    )
+                })?;
+            member.joined_terminal_evidence_scopes.remove(index);
+            let mut detached = member.clone();
+            detached.terminal_evidence_scope = Some(scope);
+            detached.joined_terminal_evidence_scopes.clear();
+            detached.evidence_binding_only = true;
+            *ingress.pending_by_session.entry(session_id).or_default() += 1;
+            drop(members);
+            drop(ingress);
+            let mut record =
+                local_terminal.unwrap_or_else(|| serde_json::json!({"reason":"owner-released"}));
+            record["t"] = Value::from("scan-end");
+            record["operationId"] = Value::from(membership);
+            self.publish_scan_terminal_or_retain(session_id, detached, record, false);
+            self.finish_scan_ingress(session_id);
+        }
+        Ok(())
+    }
+
     /// Subscription activation has the same precondition as scan activation,
     /// but its producer namespace is deliberately distinct so a scan slot
     /// cannot authorize a notification terminal.
@@ -1856,7 +1931,36 @@ impl HostInner {
         session_id: u64,
         member: ScanMember,
         mut record: Value,
+        failure_reported: bool,
     ) {
+        if !member.joined_terminal_evidence_scopes.is_empty() {
+            // Keep the destination and its outbox alive until every captured
+            // binding has either published or acquired its own native debt.
+            *lock(&self.scan_ingress)
+                .pending_by_session
+                .entry(session_id)
+                .or_default() += 1;
+            let mut owner = member.clone();
+            owner.joined_terminal_evidence_scopes.clear();
+            for scope in &member.joined_terminal_evidence_scopes {
+                let mut joined = owner.clone();
+                joined.terminal_evidence_scope = Some(scope.clone());
+                let joined_record = if record.get("droppedItems").is_some() {
+                    serde_json::json!({"t":"scan-end", "operationId":member.membership, "reason":"owner-released"})
+                } else {
+                    record.clone()
+                };
+                self.publish_scan_terminal_or_retain(
+                    session_id,
+                    joined,
+                    joined_record,
+                    failure_reported,
+                );
+            }
+            self.publish_scan_terminal_or_retain(session_id, owner, record, failure_reported);
+            self.finish_scan_ingress(session_id);
+            return;
+        }
         if let Some(scope) = &member.terminal_evidence_scope {
             let stage = (|| {
                 let recipient = self.terminal_evidence_recipient.clone();
@@ -1877,7 +1981,14 @@ impl HostInner {
                 })?;
                 ledger.stage(&reservation.reservation_id, &recipient, &canonical)
             })();
-            if stage.is_err() {
+            if let Err(problem) = stage {
+                if let Some(session) = self.scan_session(session_id).filter(|_| !failure_reported) {
+                    session.outbox.push_control_before_seal(serde_json::json!({
+                        "t": "scan-evidence-stage-failure", "operationId": member.membership,
+                        "scope": terminal_evidence_scope_value(scope), "bindingOnly": member.evidence_binding_only,
+                        "error": wire::error_object(&terminal_recovery_error(problem))
+                    }));
+                }
                 lock(&self.scan_terminal_evidence_debts).push(ScanTerminalEvidenceDebt {
                     session_id,
                     member,
@@ -1894,7 +2005,17 @@ impl HostInner {
                     .insert("evidence".to_owned(), evidence);
             }
             Ok(None) => {}
-            Err(_) => {
+            Err(problem) => {
+                if let (Some(scope), Some(session)) = (
+                    &member.terminal_evidence_scope,
+                    self.scan_session(session_id).filter(|_| !failure_reported),
+                ) {
+                    session.outbox.push_control_before_seal(serde_json::json!({
+                        "t": "scan-evidence-stage-failure", "operationId": member.membership,
+                        "scope": terminal_evidence_scope_value(scope), "bindingOnly": member.evidence_binding_only,
+                        "error": wire::error_object(&terminal_recovery_error(problem))
+                    }));
+                }
                 lock(&self.scan_terminal_evidence_debts).push(ScanTerminalEvidenceDebt {
                     session_id,
                     member,
@@ -1904,6 +2025,23 @@ impl HostInner {
             }
         }
         if let Some(session) = self.scan_session(session_id) {
+            let local_failure = record.get("reason") == Some(&Value::from("source-failed"))
+                && record.get("sourceLoss").is_some();
+            if local_failure {
+                record["t"] = Value::from("scan-evidence-local-end");
+                record["bindingOnly"] = Value::Bool(member.evidence_binding_only);
+            } else if member.evidence_binding_only {
+                record["t"] = Value::from("scan-evidence-detached");
+            }
+            if let Some(object) = record.as_object_mut() {
+                object.remove("droppedItems");
+                object.remove("droppedBytes");
+                object.remove("replacedItems");
+                object.remove("sourceLoss");
+                if local_failure {
+                    object.remove("error");
+                }
+            }
             session.outbox.push_control_before_seal(record);
         }
         self.forget_retired_scan_session_if_settled(session_id);
@@ -1914,7 +2052,7 @@ impl HostInner {
     pub(crate) fn retry_scan_terminal_evidence_debts(&self) {
         let debts = std::mem::take(&mut *lock(&self.scan_terminal_evidence_debts));
         for debt in debts {
-            self.publish_scan_terminal_or_retain(debt.session_id, debt.member, debt.record);
+            self.publish_scan_terminal_or_retain(debt.session_id, debt.member, debt.record, true);
         }
     }
 
@@ -4972,7 +5110,7 @@ impl HostInner {
                     ("operationId", Value::from(member.membership.as_str())),
                     ("reason", Value::from(reason)),
                 ]);
-                self.publish_scan_terminal_or_retain(session_id, member, record);
+                self.publish_scan_terminal_or_retain(session_id, member, record, false);
             }
         }
     }
@@ -5005,7 +5143,7 @@ impl HostInner {
                 } else {
                     serde_json::json!({"t":"scan-end", "operationId":member.membership,"reason":"source-failed"})
                 };
-                self.publish_scan_terminal_or_retain(session_id, member, record);
+                self.publish_scan_terminal_or_retain(session_id, member, record, false);
             }
         }
     }
@@ -5693,6 +5831,17 @@ impl HostInner {
         membership: &str,
         ctl: OpControl,
     ) -> Result<(), DesktopError> {
+        self.leave_scan_with_terminal(session_id, membership, ctl, None)
+            .await
+    }
+
+    pub(crate) async fn leave_scan_with_terminal(
+        &self,
+        session_id: u64,
+        membership: &str,
+        ctl: OpControl,
+        local_terminal: Option<Value>,
+    ) -> Result<(), DesktopError> {
         let mut share = self.scan.lock().await;
         let last = {
             let members = lock(&self.scan_members);
@@ -5702,27 +5851,80 @@ impl HostInner {
             {
                 return Ok(());
             }
+            if local_terminal.is_some()
+                && members
+                    .get(&session_id)
+                    .is_some_and(|member| member.terminal_evidence_scope.is_none())
+            {
+                return Err(DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Scan,
+                    "scan.stop",
+                )
+                .with_detail("local terminal requires a reserved owner scope"));
+            }
             members.len() == 1
         };
         if last && let Some(physical) = &share.physical {
             let operation = physical.operation.clone();
             self.central.stop_scan(&operation, ctl).await?;
             share.physical = None;
-            lock(&self.scan_ingress).generation = None;
         }
         let removed = {
+            let mut ingress = lock(&self.scan_ingress);
             let mut members = lock(&self.scan_members);
+            if ingress.generation.is_some()
+                && ingress.failed_generation == ingress.generation
+                && members.get(&session_id).is_some_and(|member| {
+                    member.terminal_evidence_scope.is_some()
+                        || !member.joined_terminal_evidence_scopes.is_empty()
+                })
+            {
+                return Err(DesktopError::new(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Scan,
+                    "scan.stop",
+                )
+                .with_detail("captured scan terminal is pending"));
+            }
+            if last {
+                ingress.generation = None;
+            }
             if members
                 .get(&session_id)
                 .is_some_and(|member| member.membership == membership)
             {
-                members.remove(&session_id)
+                let removed = members.remove(&session_id);
+                if removed.as_ref().is_some_and(|member| {
+                    member.terminal_evidence_scope.is_some()
+                        || !member.joined_terminal_evidence_scopes.is_empty()
+                }) {
+                    *ingress.pending_by_session.entry(session_id).or_default() += 1;
+                }
+                removed
             } else {
                 None
             }
         };
         if let Some(member) = removed {
-            member.expiry_cancel.request_cancel();
+            if member.terminal_evidence_scope.is_some()
+                || !member.joined_terminal_evidence_scopes.is_empty()
+            {
+                if let Some(mut record) = local_terminal {
+                    member.expiry_cancel.request_cancel();
+                    if let Some(session) = self.scan_session(session_id) {
+                        session.clear_scan(&member.membership);
+                    }
+                    record["t"] = Value::from("scan-end");
+                    record["operationId"] = Value::from(membership);
+                    self.publish_scan_terminal_or_retain(session_id, member, record, false);
+                } else {
+                    self.end_scan_members(vec![(session_id, member)], "owner-released");
+                }
+                self.finish_scan_ingress(session_id);
+            } else {
+                member.expiry_cancel.request_cancel();
+            }
         }
         Ok(())
     }
@@ -11353,6 +11555,770 @@ mod signal_tests {
                 .expect("shutdown record")["state"],
             "released"
         );
+    }
+
+    #[tokio::test]
+    async fn joined_scan_detach_failure_recovers_without_ending_owner() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let Some(directory) = recording_test_directory("joined-scan-detach-failure") else {
+            return;
+        };
+        let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(262_144);
+        let registry = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
+        registry.configure_directory(&directory).unwrap();
+        let radio = Scripted::polar();
+        let wake = Arc::new(Wakes::default());
+        let host = Arc::new(
+            super::MobileHost::open_with_recording_registry(
+                Arc::clone(&radio) as Arc<dyn super::PlatformRadio>,
+                wake as Arc<dyn super::WakeSink>,
+                super::HostOptions {
+                    platform: crate::MobilePlatform::Android,
+                    owner: "joined-evidence".into(),
+                    adapter_label: "scripted".into(),
+                },
+                tokio::runtime::Handle::current(),
+                registry,
+            )
+            .await
+            .unwrap(),
+        );
+        radio.bind_host(&host);
+        let session = host.open_session("joined-evidence").unwrap();
+        session.negotiate_scan_end_version("[1,2]").unwrap();
+        let ledger = host.inner.terminal_evidence_ledger().unwrap();
+        for operation in ["owner", "joined", "detached"] {
+            ledger
+                .reserve(
+                    &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: "scan".into(),
+                        manager_id: "manager".into(),
+                        operation_id: operation.into(),
+                        incarnation: "1".into(),
+                        scope_utf16le: None,
+                    },
+                    65_536,
+                )
+                .unwrap();
+        }
+        let started = ok(&call(&session, "scan.start", &json!({
+            "serviceUuids":[], "duplicatePolicy":"all", "operationId":"start", "terminalEvidenceScope": {"managerId":"manager","operationId":"owner","incarnation":"1"}
+        }).to_string()).await);
+        let membership = started["operationId"].as_str().unwrap();
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-joined", "terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        host.fail_next_scan_terminal_evidence_commit_for_test();
+        ok(&call(&session, "scan.evidence.detach", &json!({"membership":membership,"operationId":"detach-joined","terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        let failures = drain_until(&session, |records| {
+            records
+                .iter()
+                .any(|record| record["t"] == "scan-evidence-stage-failure")
+        })
+        .await;
+        let failure = failures
+            .iter()
+            .find(|record| record["t"] == "scan-evidence-stage-failure")
+            .unwrap();
+        assert_eq!(failure["bindingOnly"], true);
+        assert_eq!(host.pending_scan_terminal_evidence_debts_for_test(), 1);
+        assert!(
+            super::lock(&host.inner.scan_members)
+                .get(&session.id())
+                .unwrap()
+                .joined_terminal_evidence_scopes
+                .is_empty()
+        );
+        ok(&call(&session, "counters.describe", "{}").await);
+        let records = drain_until(&session, |records| {
+            records
+                .iter()
+                .any(|record| record["t"] == "scan-evidence-detached")
+        })
+        .await;
+        let receipt = records
+            .iter()
+            .find(|record| record["t"] == "scan-evidence-detached")
+            .unwrap();
+        assert_eq!(receipt["evidence"]["scope"]["operationId"], "joined");
+        let (bytes, _) = ledger
+            .read(receipt["evidence"]["ref"].as_str().unwrap(), 65_536)
+            .unwrap();
+        let canonical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(canonical["t"], "scan-end");
+        assert_eq!(canonical["reason"], "owner-released");
+        assert!(super::lock(&host.inner.scan_members).contains_key(&session.id()));
+        let _ = host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn joined_scan_ingress_loss_quota_preserves_global_fact() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let Some(directory) = recording_test_directory("joined-scan-ingress-loss") else {
+            return;
+        };
+        let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(262_144);
+        let registry = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
+        registry.configure_directory(&directory).unwrap();
+        let radio = Scripted::polar();
+        let wake = Arc::new(Wakes::default());
+        let host = Arc::new(
+            super::MobileHost::open_with_recording_registry(
+                Arc::clone(&radio) as Arc<dyn super::PlatformRadio>,
+                wake as Arc<dyn super::WakeSink>,
+                super::HostOptions {
+                    platform: crate::MobilePlatform::Android,
+                    owner: "joined-evidence".into(),
+                    adapter_label: "scripted".into(),
+                },
+                tokio::runtime::Handle::current(),
+                registry,
+            )
+            .await
+            .unwrap(),
+        );
+        radio.bind_host(&host);
+        let session = host.open_session("joined-evidence").unwrap();
+        session.negotiate_scan_end_version("[1,2]").unwrap();
+        let ledger = host.inner.terminal_evidence_ledger().unwrap();
+        for operation in ["owner", "joined", "detached"] {
+            ledger
+                .reserve(
+                    &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: "scan".into(),
+                        manager_id: "manager".into(),
+                        operation_id: operation.into(),
+                        incarnation: "1".into(),
+                        scope_utf16le: None,
+                    },
+                    65_536,
+                )
+                .unwrap();
+        }
+        let started = ok(&call(&session, "scan.start", &json!({
+            "serviceUuids":[], "duplicatePolicy":"all", "operationId":"start", "terminalEvidenceScope": {"managerId":"manager","operationId":"owner","incarnation":"1"}
+        }).to_string()).await);
+        let membership = started["operationId"].as_str().unwrap();
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-joined", "terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        host.fail_next_scan_terminal_evidence_commit_for_test();
+        ok(&call(&session, "scan.evidence.detach", &json!({"membership":membership,"operationId":"detach-joined","terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"},"terminal":{"reason":"source-failed","droppedItems":0,"droppedBytes":0,"replacedItems":0,"sourceLoss":{"scope":"host-global","source":"advertisement-ingress","lostRecords":7},"error":{"code":"stream.quota","domain":"stream","operation":"bounded-stream.source-loss-control","retryability":"never","platform":null}}}).to_string()).await);
+        let failures = drain_until(&session, |records| {
+            records
+                .iter()
+                .any(|record| record["t"] == "scan-evidence-stage-failure")
+        })
+        .await;
+        let failure = failures
+            .iter()
+            .find(|record| record["t"] == "scan-evidence-stage-failure")
+            .unwrap();
+        assert_eq!(failure["bindingOnly"], true);
+        assert_eq!(host.pending_scan_terminal_evidence_debts_for_test(), 1);
+        ok(&call(&session, "counters.describe", "{}").await);
+        let records = drain_until(&session, |records| {
+            records
+                .iter()
+                .any(|record| record["t"] == "scan-evidence-local-end")
+        })
+        .await;
+        let receipt = records
+            .iter()
+            .find(|record| record["t"] == "scan-evidence-local-end")
+            .unwrap();
+        assert_eq!(receipt["evidence"]["scope"]["operationId"], "joined");
+        let (bytes, _) = ledger
+            .read(receipt["evidence"]["ref"].as_str().unwrap(), 65_536)
+            .unwrap();
+        let canonical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(canonical["t"], "scan-end");
+        assert_eq!(canonical["reason"], "source-failed");
+        assert_eq!(canonical["droppedItems"], 0);
+        assert_eq!(canonical["droppedBytes"], 0);
+        assert_eq!(canonical["sourceLoss"]["scope"], "host-global");
+        assert_eq!(canonical["sourceLoss"]["lostRecords"], 7);
+        assert_eq!(canonical["error"]["code"], "stream.quota");
+        assert_eq!(canonical["replacedItems"], 0);
+        assert!(super::lock(&host.inner.scan_members).contains_key(&session.id()));
+        let _ = host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn joined_scan_overflow_preserves_exact_detach_terminal() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let Some(directory) = recording_test_directory("joined-scan-detach-overflow") else {
+            return;
+        };
+        let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(262_144);
+        let registry = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
+        registry.configure_directory(&directory).unwrap();
+        let radio = Scripted::polar();
+        let wake = Arc::new(Wakes::default());
+        let host = Arc::new(
+            super::MobileHost::open_with_recording_registry(
+                Arc::clone(&radio) as Arc<dyn super::PlatformRadio>,
+                wake as Arc<dyn super::WakeSink>,
+                super::HostOptions {
+                    platform: crate::MobilePlatform::Android,
+                    owner: "joined-evidence".into(),
+                    adapter_label: "scripted".into(),
+                },
+                tokio::runtime::Handle::current(),
+                registry,
+            )
+            .await
+            .unwrap(),
+        );
+        radio.bind_host(&host);
+        let session = host.open_session("joined-evidence").unwrap();
+        session.negotiate_scan_end_version("[1,2]").unwrap();
+        let ledger = host.inner.terminal_evidence_ledger().unwrap();
+        for operation in ["owner", "joined", "detached"] {
+            ledger
+                .reserve(
+                    &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: "scan".into(),
+                        manager_id: "manager".into(),
+                        operation_id: operation.into(),
+                        incarnation: "1".into(),
+                        scope_utf16le: None,
+                    },
+                    65_536,
+                )
+                .unwrap();
+        }
+        let started = ok(&call(&session, "scan.start", &json!({
+            "serviceUuids":[], "duplicatePolicy":"all", "operationId":"start", "terminalEvidenceScope": {"managerId":"manager","operationId":"owner","incarnation":"1"}
+        }).to_string()).await);
+        let membership = started["operationId"].as_str().unwrap();
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-joined", "terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        host.fail_next_scan_terminal_evidence_commit_for_test();
+        ok(&call(&session, "scan.evidence.detach", &json!({"membership":membership,"operationId":"detach-joined","terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"},"terminal":{"reason":"overflow","droppedItems":1,"droppedBytes":42,"replacedItems":0}}).to_string()).await);
+        let failures = drain_until(&session, |records| {
+            records
+                .iter()
+                .any(|record| record["t"] == "scan-evidence-stage-failure")
+        })
+        .await;
+        let failure = failures
+            .iter()
+            .find(|record| record["t"] == "scan-evidence-stage-failure")
+            .unwrap();
+        assert_eq!(failure["bindingOnly"], true);
+        assert_eq!(host.pending_scan_terminal_evidence_debts_for_test(), 1);
+        ok(&call(&session, "counters.describe", "{}").await);
+        let records = drain_until(&session, |records| {
+            records
+                .iter()
+                .any(|record| record["t"] == "scan-evidence-detached")
+        })
+        .await;
+        let receipt = records
+            .iter()
+            .find(|record| record["t"] == "scan-evidence-detached")
+            .unwrap();
+        assert_eq!(receipt["evidence"]["scope"]["operationId"], "joined");
+        let (bytes, _) = ledger
+            .read(receipt["evidence"]["ref"].as_str().unwrap(), 65_536)
+            .unwrap();
+        let canonical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(canonical["t"], "scan-end");
+        assert_eq!(canonical["reason"], "overflow");
+        assert_eq!(canonical["droppedItems"], 1);
+        assert_eq!(canonical["droppedBytes"], 42);
+        assert_eq!(canonical["replacedItems"], 0);
+        assert!(super::lock(&host.inner.scan_members).contains_key(&session.id()));
+        let _ = host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn joined_scan_detach_commits_terminal_and_keeps_owner() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let Some(directory) = recording_test_directory("joined-scan-detach-stop") else {
+            return;
+        };
+        let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(262_144);
+        let registry = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
+        registry.configure_directory(&directory).unwrap();
+        let radio = Scripted::polar();
+        let wake = Arc::new(Wakes::default());
+        let host = Arc::new(
+            super::MobileHost::open_with_recording_registry(
+                Arc::clone(&radio) as Arc<dyn super::PlatformRadio>,
+                wake as Arc<dyn super::WakeSink>,
+                super::HostOptions {
+                    platform: crate::MobilePlatform::Android,
+                    owner: "joined-evidence".into(),
+                    adapter_label: "scripted".into(),
+                },
+                tokio::runtime::Handle::current(),
+                registry,
+            )
+            .await
+            .unwrap(),
+        );
+        radio.bind_host(&host);
+        let session = host.open_session("joined-evidence").unwrap();
+        session.negotiate_scan_end_version("[1,2]").unwrap();
+        let ledger = host.inner.terminal_evidence_ledger().unwrap();
+        for operation in ["owner", "joined", "detached"] {
+            ledger
+                .reserve(
+                    &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: "scan".into(),
+                        manager_id: "manager".into(),
+                        operation_id: operation.into(),
+                        incarnation: "1".into(),
+                        scope_utf16le: None,
+                    },
+                    65_536,
+                )
+                .unwrap();
+        }
+        let started = ok(&call(&session, "scan.start", &json!({
+            "serviceUuids":[], "duplicatePolicy":"all", "operationId":"start", "terminalEvidenceScope": {"managerId":"manager","operationId":"owner","incarnation":"1"}
+        }).to_string()).await);
+        let membership = started["operationId"].as_str().unwrap();
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-joined", "terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        ok(&call(&session, "scan.evidence.detach", &json!({"membership":membership,"operationId":"detach-joined","terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        let records = drain_until(&session, |records| {
+            records
+                .iter()
+                .any(|record| record["t"] == "scan-evidence-detached")
+        })
+        .await;
+        let receipt = records
+            .iter()
+            .find(|record| record["t"] == "scan-evidence-detached")
+            .unwrap();
+        assert_eq!(receipt["evidence"]["scope"]["operationId"], "joined");
+        let (bytes, _) = ledger
+            .read(receipt["evidence"]["ref"].as_str().unwrap(), 65_536)
+            .unwrap();
+        let canonical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(canonical["t"], "scan-end");
+        assert_eq!(canonical["reason"], "owner-released");
+        assert!(super::lock(&host.inner.scan_members).contains_key(&session.id()));
+        let _ = host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn joined_scan_owner_overflow_preserves_each_actual_terminal() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let Some(directory) = recording_test_directory("joined-scan-owner-overflow") else {
+            return;
+        };
+        let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(262_144);
+        let registry = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
+        registry.configure_directory(&directory).unwrap();
+        let radio = Scripted::polar();
+        let wake = Arc::new(Wakes::default());
+        let host = Arc::new(
+            super::MobileHost::open_with_recording_registry(
+                Arc::clone(&radio) as Arc<dyn super::PlatformRadio>,
+                wake as Arc<dyn super::WakeSink>,
+                super::HostOptions {
+                    platform: crate::MobilePlatform::Android,
+                    owner: "joined-evidence".into(),
+                    adapter_label: "scripted".into(),
+                },
+                tokio::runtime::Handle::current(),
+                registry,
+            )
+            .await
+            .unwrap(),
+        );
+        radio.bind_host(&host);
+        let session = host.open_session("joined-evidence").unwrap();
+        session.negotiate_scan_end_version("[1,2]").unwrap();
+        let ledger = host.inner.terminal_evidence_ledger().unwrap();
+        for operation in ["owner", "joined", "detached"] {
+            ledger
+                .reserve(
+                    &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: "scan".into(),
+                        manager_id: "manager".into(),
+                        operation_id: operation.into(),
+                        incarnation: "1".into(),
+                        scope_utf16le: None,
+                    },
+                    65_536,
+                )
+                .unwrap();
+        }
+        let started = ok(&call(&session, "scan.start", &json!({
+            "serviceUuids":[], "duplicatePolicy":"all", "operationId":"start", "terminalEvidenceScope": {"managerId":"manager","operationId":"owner","incarnation":"1"}
+        }).to_string()).await);
+        let membership = started["operationId"].as_str().unwrap();
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-joined", "terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        let invalid = call(&session, "scan.stop", &json!({"operationId":membership,"terminal":{"reason":"overflow","droppedItems":1,"droppedBytes":-1,"replacedItems":0}}).to_string()).await;
+        let invalid: serde_json::Value = serde_json::from_str(&invalid).unwrap();
+        assert_eq!(invalid["ok"], false);
+        assert!(super::lock(&host.inner.scan_members).contains_key(&session.id()));
+        ok(&call(
+            &session,
+            "scan.stop",
+            &json!({"operationId":membership,"terminal":{"reason":"overflow","droppedItems":1,"droppedBytes":42,"replacedItems":0}}).to_string(),
+        )
+        .await);
+        let records = drain_until(&session, |records| {
+            records
+                .iter()
+                .filter(|record| record["t"] == "scan-end")
+                .count()
+                == 2
+        })
+        .await;
+        for operation in ["owner", "joined"] {
+            let receipt = records
+                .iter()
+                .find(|record| {
+                    record["t"] == "scan-end"
+                        && record["evidence"]["scope"]["operationId"] == operation
+                })
+                .unwrap();
+            let (bytes, _) = ledger
+                .read(receipt["evidence"]["ref"].as_str().unwrap(), 65_536)
+                .unwrap();
+            let canonical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if operation == "owner" {
+                assert_eq!(canonical["reason"], "overflow");
+                assert_eq!(canonical["droppedItems"], 1);
+                assert_eq!(canonical["droppedBytes"], 42);
+                assert_eq!(canonical["replacedItems"], 0);
+            } else {
+                assert_eq!(canonical["reason"], "owner-released");
+            }
+        }
+        let _ = host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn joined_scan_owner_stop_commits_each_terminal() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let Some(directory) = recording_test_directory("joined-scan-owner-stop") else {
+            return;
+        };
+        let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(262_144);
+        let registry = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
+        registry.configure_directory(&directory).unwrap();
+        let radio = Scripted::polar();
+        let wake = Arc::new(Wakes::default());
+        let host = Arc::new(
+            super::MobileHost::open_with_recording_registry(
+                Arc::clone(&radio) as Arc<dyn super::PlatformRadio>,
+                wake as Arc<dyn super::WakeSink>,
+                super::HostOptions {
+                    platform: crate::MobilePlatform::Android,
+                    owner: "joined-evidence".into(),
+                    adapter_label: "scripted".into(),
+                },
+                tokio::runtime::Handle::current(),
+                registry,
+            )
+            .await
+            .unwrap(),
+        );
+        radio.bind_host(&host);
+        let session = host.open_session("joined-evidence").unwrap();
+        session.negotiate_scan_end_version("[1,2]").unwrap();
+        let ledger = host.inner.terminal_evidence_ledger().unwrap();
+        for operation in ["owner", "joined", "detached"] {
+            ledger
+                .reserve(
+                    &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: "scan".into(),
+                        manager_id: "manager".into(),
+                        operation_id: operation.into(),
+                        incarnation: "1".into(),
+                        scope_utf16le: None,
+                    },
+                    65_536,
+                )
+                .unwrap();
+        }
+        let started = ok(&call(&session, "scan.start", &json!({
+            "serviceUuids":[], "duplicatePolicy":"all", "operationId":"start", "terminalEvidenceScope": {"managerId":"manager","operationId":"owner","incarnation":"1"}
+        }).to_string()).await);
+        let membership = started["operationId"].as_str().unwrap();
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-joined", "terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        ok(&call(
+            &session,
+            "scan.stop",
+            &json!({"operationId":membership}).to_string(),
+        )
+        .await);
+        let records = drain_until(&session, |records| {
+            records
+                .iter()
+                .filter(|record| record["t"] == "scan-end")
+                .count()
+                == 2
+        })
+        .await;
+        for operation in ["owner", "joined"] {
+            let receipt = records
+                .iter()
+                .find(|record| {
+                    record["t"] == "scan-end"
+                        && record["evidence"]["scope"]["operationId"] == operation
+                })
+                .unwrap();
+            let (bytes, _) = ledger
+                .read(receipt["evidence"]["ref"].as_str().unwrap(), 65_536)
+                .unwrap();
+            let canonical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(canonical["reason"], "owner-released");
+        }
+        let _ = host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn joined_scan_terminal_scopes_keep_distinct_debts_and_exact_failure() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let Some(directory) = recording_test_directory("joined-scan-terminal-scopes") else {
+            return;
+        };
+        let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(262_144);
+        let registry = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
+        registry.configure_directory(&directory).unwrap();
+        let radio = Scripted::polar();
+        let wake = Arc::new(Wakes::default());
+        let host = Arc::new(
+            super::MobileHost::open_with_recording_registry(
+                Arc::clone(&radio) as Arc<dyn super::PlatformRadio>,
+                wake as Arc<dyn super::WakeSink>,
+                super::HostOptions {
+                    platform: crate::MobilePlatform::Android,
+                    owner: "joined-evidence".into(),
+                    adapter_label: "scripted".into(),
+                },
+                tokio::runtime::Handle::current(),
+                registry,
+            )
+            .await
+            .unwrap(),
+        );
+        radio.bind_host(&host);
+        let session = host.open_session("joined-evidence").unwrap();
+        session.negotiate_scan_end_version("[1,2]").unwrap();
+        let ledger = host.inner.terminal_evidence_ledger().unwrap();
+        for operation in ["owner", "joined", "detached"] {
+            ledger
+                .reserve(
+                    &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: "scan".into(),
+                        manager_id: "manager".into(),
+                        operation_id: operation.into(),
+                        incarnation: "1".into(),
+                        scope_utf16le: None,
+                    },
+                    65_536,
+                )
+                .unwrap();
+        }
+        let scope = |operation: &str| super::ScanTerminalEvidenceScope {
+            manager_id: "manager".into(),
+            operation_id: operation.into(),
+            incarnation: "1".into(),
+            scope_utf16le: None,
+        };
+        let started = ok(&call(&session, "scan.start", &json!({
+            "serviceUuids":[], "duplicatePolicy":"all", "operationId":"start", "terminalEvidenceScope": {"managerId":"manager","operationId":"owner","incarnation":"1"}
+        }).to_string()).await);
+        let membership = started["operationId"].as_str().unwrap();
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-joined", "terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-detached", "terminalEvidenceScope":{"managerId":"manager","operationId":"detached","incarnation":"1"}}).to_string()).await);
+        ok(&call(&session, "scan.evidence.detach", &json!({"membership": membership, "operationId":"detach", "terminalEvidenceScope":{"managerId":"manager","operationId":"detached","incarnation":"1"}}).to_string()).await);
+        assert!(
+            host.inner
+                .bind_joined_scan_evidence(session.id(), membership, scope("forged"), true, None)
+                .is_err()
+        );
+        host.fail_next_scan_terminal_evidence_commit_for_test();
+        assert_eq!(
+            host.ingest(crate::RadioIngress::ScanFailed {
+                detail: "exact joined failure".into()
+            }),
+            crate::IngressStatus::Accepted
+        );
+        let late_detach = call(&session, "scan.evidence.detach", &json!({
+            "membership":membership,"operationId":"late-overflow",
+            "terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"},
+            "terminal":{"reason":"overflow","droppedItems":1,"droppedBytes":42,"replacedItems":0}
+        }).to_string()).await;
+        let late_detach: serde_json::Value = serde_json::from_str(&late_detach).unwrap();
+        assert_eq!(late_detach["ok"], false);
+        let records = drain_until(&session, |records| {
+            records.iter().any(|record| record["t"] == "scan-end")
+        })
+        .await;
+        assert_eq!(host.pending_scan_terminal_evidence_debts_for_test(), 1);
+        let stage_failure = records
+            .iter()
+            .find(|record| record["t"] == "scan-evidence-stage-failure")
+            .expect("scoped failure wakes the consumer");
+        assert_eq!(stage_failure["scope"]["operationId"], "joined");
+        assert_eq!(stage_failure["error"]["code"], "platform.failure");
+        assert!(
+            host.inner
+                .bind_joined_scan_evidence(session.id(), membership, scope("joined"), false, None)
+                .is_err()
+        );
+        ok(&call(&session, "counters.describe", "{}").await);
+        let more = drain_until(&session, |records| {
+            records.iter().any(|record| record["t"] == "scan-end")
+        })
+        .await;
+        let terminals: Vec<_> = records
+            .iter()
+            .chain(more.iter())
+            .filter(|record| record["t"] == "scan-end")
+            .collect();
+        assert_eq!(terminals.len(), 2);
+        for operation in ["owner", "joined"] {
+            let receipt = terminals
+                .iter()
+                .find(|record| record["evidence"]["scope"]["operationId"] == operation)
+                .unwrap();
+            let (bytes, _) = ledger
+                .read(receipt["evidence"]["ref"].as_str().unwrap(), 65_536)
+                .unwrap();
+            let canonical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(canonical["reason"], "source-failed");
+            assert_eq!(canonical["error"]["detail"], "exact joined failure");
+        }
+        let _ = host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn joined_scan_all_stage_failures_wake_and_recover() {
+        use crate::test_common::*;
+        use serde_json::json;
+        let Some(directory) = recording_test_directory("joined-scan-all-stage-failures") else {
+            return;
+        };
+        let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(262_144);
+        let registry = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
+        registry.configure_directory(&directory).unwrap();
+        let radio = Scripted::polar();
+        let wake = Arc::new(Wakes::default());
+        let host = Arc::new(
+            super::MobileHost::open_with_recording_registry(
+                Arc::clone(&radio) as Arc<dyn super::PlatformRadio>,
+                wake as Arc<dyn super::WakeSink>,
+                super::HostOptions {
+                    platform: crate::MobilePlatform::Android,
+                    owner: "joined-evidence".into(),
+                    adapter_label: "scripted".into(),
+                },
+                tokio::runtime::Handle::current(),
+                registry,
+            )
+            .await
+            .unwrap(),
+        );
+        radio.bind_host(&host);
+        let session = host.open_session("joined-evidence").unwrap();
+        session.negotiate_scan_end_version("[1,2]").unwrap();
+        let ledger = host.inner.terminal_evidence_ledger().unwrap();
+        for operation in ["owner", "joined", "detached"] {
+            ledger
+                .reserve(
+                    &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                        producer: "scan".into(),
+                        manager_id: "manager".into(),
+                        operation_id: operation.into(),
+                        incarnation: "1".into(),
+                        scope_utf16le: None,
+                    },
+                    65_536,
+                )
+                .unwrap();
+        }
+        let scope = |operation: &str| super::ScanTerminalEvidenceScope {
+            manager_id: "manager".into(),
+            operation_id: operation.into(),
+            incarnation: "1".into(),
+            scope_utf16le: None,
+        };
+        let started = ok(&call(&session, "scan.start", &json!({
+            "serviceUuids":[], "duplicatePolicy":"all", "operationId":"start", "terminalEvidenceScope": {"managerId":"manager","operationId":"owner","incarnation":"1"}
+        }).to_string()).await);
+        let membership = started["operationId"].as_str().unwrap();
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-joined", "terminalEvidenceScope":{"managerId":"manager","operationId":"joined","incarnation":"1"}}).to_string()).await);
+        ok(&call(&session, "scan.evidence.attach", &json!({"membership": membership, "operationId":"attach-detached", "terminalEvidenceScope":{"managerId":"manager","operationId":"detached","incarnation":"1"}}).to_string()).await);
+        ok(&call(&session, "scan.evidence.detach", &json!({"membership": membership, "operationId":"detach", "terminalEvidenceScope":{"managerId":"manager","operationId":"detached","incarnation":"1"}}).to_string()).await);
+        assert!(
+            host.inner
+                .bind_joined_scan_evidence(session.id(), membership, scope("forged"), true, None)
+                .is_err()
+        );
+        host.fail_next_scan_terminal_evidence_commit_for_test();
+        host.fail_next_scan_terminal_evidence_commit_for_test();
+        assert_eq!(
+            host.ingest(crate::RadioIngress::ScanFailed {
+                detail: "exact joined failure".into()
+            }),
+            crate::IngressStatus::Accepted
+        );
+        assert!(
+            host.inner
+                .bind_joined_scan_evidence(session.id(), membership, scope("joined"), false, None)
+                .is_err()
+        );
+        let records = drain_until(&session, |records| {
+            records
+                .iter()
+                .filter(|record| record["t"] == "scan-evidence-stage-failure")
+                .count()
+                == 2
+        })
+        .await;
+        assert_eq!(host.pending_scan_terminal_evidence_debts_for_test(), 2);
+        let stage_failure = records
+            .iter()
+            .find(|record| record["t"] == "scan-evidence-stage-failure")
+            .expect("scoped failure wakes the consumer");
+        assert_eq!(stage_failure["scope"]["operationId"], "joined");
+        assert_eq!(stage_failure["error"]["code"], "platform.failure");
+        assert!(
+            host.inner
+                .bind_joined_scan_evidence(session.id(), membership, scope("joined"), false, None)
+                .is_err()
+        );
+        ok(&call(&session, "counters.describe", "{}").await);
+        let more = drain_until(&session, |records| {
+            records
+                .iter()
+                .filter(|record| record["t"] == "scan-end")
+                .count()
+                == 2
+        })
+        .await;
+        let terminals: Vec<_> = records
+            .iter()
+            .chain(more.iter())
+            .filter(|record| record["t"] == "scan-end")
+            .collect();
+        assert_eq!(terminals.len(), 2);
+        for operation in ["owner", "joined"] {
+            let receipt = terminals
+                .iter()
+                .find(|record| record["evidence"]["scope"]["operationId"] == operation)
+                .unwrap();
+            let (bytes, _) = ledger
+                .read(receipt["evidence"]["ref"].as_str().unwrap(), 65_536)
+                .unwrap();
+            let canonical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(canonical["reason"], "source-failed");
+            assert_eq!(canonical["error"]["detail"], "exact joined failure");
+        }
+        let _ = host.shutdown().await;
     }
 
     #[tokio::test]

@@ -1,10 +1,10 @@
+// __tests__/backends/reactnative/scan-accounting-review-522.test.js
 const { rustCoreHarness, environment, settle, scanOptions } = require('../../../test-support/react-native/rust-core-harness')
 const { createReactNativeBleManagerWithEnvironment } = require('../../../src/react-native-manager')
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
 const { createBleManager, createManagerOwnershipAuthority, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const { opaqueId } = require('../../../src/backend-contract/primitives')
 const { connectToDeterministicPeer } = require('../../../src/tck/runner-public-scenario-support')
-const { encodeTerminalEvidence } = require('../../../src/core/terminal-evidence-codec')
 const { createHash } = require('node:crypto')
 
 async function setup(options = {}) {
@@ -279,7 +279,7 @@ test('shared core separates bounded queue and terminal-evidence accounting until
   const membership = [...session.scans.keys()][0]
   const scope = h.native.opsInvoked('terminal-evidence.reserve')[0].scope
   const error = { code: 'adapter.powered-off', domain: 'adapter', operation: 'scan.start', retryability: 'never', detail: 'failure '.repeat(1000), platform: null }
-  const canonicalBytes = encodeTerminalEvidence({ kind: 'terminal', reason: 'source-failed', droppedItems: 0, droppedBytes: 0, replacedItems: 0, error }, scope)
+  const canonicalBytes = Buffer.from(JSON.stringify({ t: 'scan-end', operationId: membership, startOperationId: h.native.opsInvoked('scan.start')[0].operationId, reason: 'source-failed', version: 2, source: 'adapter', generation: '1', error }))
   const digest = createHash('sha256').update(canonicalBytes).digest('hex')
   const reservationId = [...h.native.terminalEvidenceReservations.keys()][0]
   const committed = JSON.parse(await h.native.invoke(session.id, 'terminal-evidence.commit', JSON.stringify({ reservationId, canonicalBytesBase64: Buffer.from(canonicalBytes).toString('base64'), digest })))
@@ -978,7 +978,7 @@ test('a source failure cannot retain an oversized terminal beyond the aggregate 
     const membership = [...session.scans.keys()][0]
     const scope = h.native.opsInvoked('terminal-evidence.reserve')[0].scope
     const error = { code: 'adapter.powered-off', domain: 'adapter', operation: 'scan.start', retryability: 'never', detail, platform: null }
-    const canonicalBytes = encodeTerminalEvidence({ kind: 'terminal', reason: 'source-failed', droppedItems: 0, droppedBytes: 0, replacedItems: 0, error }, scope)
+    const canonicalBytes = Buffer.from(JSON.stringify({ t: 'scan-end', operationId: membership, startOperationId: h.native.opsInvoked('scan.start')[0].operationId, reason: 'source-failed', version: 2, source: 'adapter', generation: '1', error }))
     const digest = createHash('sha256').update(canonicalBytes).digest('hex')
     const reservationId = [...h.native.terminalEvidenceReservations.keys()][0]
     const committed = JSON.parse(await h.native.invoke(session.id, 'terminal-evidence.commit', JSON.stringify({ reservationId, canonicalBytesBase64: Buffer.from(canonicalBytes).toString('base64'), digest })))
@@ -996,8 +996,7 @@ test('a source failure cannot retain an oversized terminal beyond the aggregate 
         code: 'adapter.powered-off',
         domain: 'adapter',
         operation: 'scan.start',
-        retryability: 'never',
-        platform: null
+        retryability: 'never'
       }
     })
     expect(h.native.opsInvoked('terminal-evidence.read')).toEqual([

@@ -1,3 +1,4 @@
+// __tests__/backends/reactnative/terminal-evidence-factory.test.js
 jest.mock('react-native', () => ({
   Platform: { OS: 'android', Version: 34 },
   TurboModuleRegistry: { get: () => null },
@@ -58,6 +59,286 @@ test.each([
     fixture.native.calls.find(call => call[0] === 'invoke' && call[2] === 'terminal-evidence.release')
   ).toBeDefined()
   await host.manager.destroy()
+})
+
+test('owner retry preserves a joined ingress-loss proof after detach refusal', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence: { maximumCanonicalBytes: 1024, maximumDurableBytes: 8192 }
+  })
+  const owner = await host.manager.scan(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }))
+  const joined = await host.manager.scan(
+    scanOptions({ sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken } })
+  )
+  fixture.native.failNext('scan.evidence.detach', 'platform.failure', 'platform', 'scan.evidence.detach')
+  fixture.native.ingressDrop('advertisement', 9)
+  await settle(100)
+  expect(fixture.native.opsInvoked('scan.stop')).toHaveLength(0)
+  const stop = owner.stop()
+  const joinedTerminal = (await joined.observations[Symbol.asyncIterator]().next()).value
+  const ownerTerminal = (await owner.observations[Symbol.asyncIterator]().next()).value
+  for (const terminal of [ownerTerminal, joinedTerminal]) {
+    expect(terminal).toMatchObject({ reason: 'overflow', droppedItems: 0, evidence: { durability: 'committed' } })
+    const raw = fixture.native.terminalEvidenceCommitted.get(terminal.evidence.ref)
+    expect(JSON.parse(Buffer.from(raw.canonicalBytes).toString('utf8'))).toMatchObject({
+      sourceLoss: { scope: 'host-global', lostRecords: 9 }
+    })
+  }
+  await stop
+  await settle(100)
+  expect((await host.manager.destroy()).state).toBe('released')
+})
+
+test('global advertisement ingress loss gives owner and joined their own proof without inventing stream counts', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence: { maximumCanonicalBytes: 1024, maximumDurableBytes: 8192 }
+  })
+  const owner = await host.manager.scan(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }))
+  const joined = await host.manager.scan(
+    scanOptions({ sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken } })
+  )
+  const ownerLoss = []
+  const joinedLoss = []
+  owner.observations.onSourceLoss(notice => ownerLoss.push(notice))
+  joined.observations.onSourceLoss(notice => joinedLoss.push(notice))
+  fixture.native.ingressDrop('advertisement', 7)
+  const ownerTerminal = (await owner.observations[Symbol.asyncIterator]().next()).value
+  const joinedTerminal = (await joined.observations[Symbol.asyncIterator]().next()).value
+  for (const terminal of [ownerTerminal, joinedTerminal]) {
+    expect(terminal).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0,
+      evidence: { durability: 'committed' }
+    })
+    const raw = fixture.native.terminalEvidenceCommitted.get(terminal.evidence.ref)
+    expect(JSON.parse(Buffer.from(raw.canonicalBytes).toString('utf8'))).toMatchObject({
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0,
+      sourceLoss: { scope: 'host-global', source: 'advertisement-ingress', lostRecords: 7 }
+    })
+  }
+  expect(ownerTerminal.evidence.scope).not.toEqual(joinedTerminal.evidence.scope)
+  expect(ownerLoss).toMatchObject([{ scope: 'host-global', source: 'advertisement-ingress', lostRecords: 7 }])
+  expect(joinedLoss).toMatchObject([{ scope: 'host-global', source: 'advertisement-ingress', lostRecords: 7 }])
+  await settle(80)
+  expect((await host.manager.destroy()).state).toBe('released')
+})
+
+test('scoped owner overflow commits exact loss while joined scope receives source end', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence: { maximumCanonicalBytes: 1024, maximumDurableBytes: 8192 }
+  })
+  const delivery = { itemCapacity: 1, byteCapacity: 65536, reservedControlCapacity: 4, overflowPolicy: 'error' }
+  const owner = await host.manager.scan(scanOptions({ delivery, sharing: { mode: 'owner', allowSharing: true } }))
+  const joined = await host.manager.scan(
+    scanOptions({ delivery, sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken } })
+  )
+  const joinedReader = joined.observations[Symbol.asyncIterator]()
+  for (let index = 0; index < 2; index += 1) {
+    const next = joinedReader.next()
+    fixture.native.emitAdvertisement(DEFAULT_PEER, { localName: `value-${index}` })
+    expect((await next).value.kind).toBe('value')
+    await settle(50)
+  }
+  const ownerReader = owner.observations[Symbol.asyncIterator]()
+  expect((await ownerReader.next()).value.kind).toBe('value')
+  const terminal = (await ownerReader.next()).value
+  expect(terminal).toMatchObject({
+    kind: 'terminal',
+    reason: 'overflow',
+    droppedItems: 1,
+    evidence: { durability: 'committed' }
+  })
+  const canonical = JSON.parse(
+    Buffer.from(fixture.native.terminalEvidenceCommitted.get(terminal.evidence.ref).canonicalBytes).toString('utf8')
+  )
+  expect(canonical).toMatchObject({
+    reason: 'overflow',
+    droppedItems: 1,
+    droppedBytes: terminal.droppedBytes,
+    replacedItems: terminal.replacedItems
+  })
+  expect((await joinedReader.next()).value).toMatchObject({
+    kind: 'terminal',
+    reason: 'owner-released',
+    evidence: { durability: 'committed' }
+  })
+  await settle(80)
+  expect((await host.manager.destroy()).state).toBe('released')
+})
+
+test('scoped joined overflow commits its exact loss while owner continues', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence: { maximumCanonicalBytes: 1024, maximumDurableBytes: 8192 }
+  })
+  const delivery = { itemCapacity: 1, byteCapacity: 65536, reservedControlCapacity: 4, overflowPolicy: 'error' }
+  const owner = await host.manager.scan(scanOptions({ delivery, sharing: { mode: 'owner', allowSharing: true } }))
+  const joined = await host.manager.scan(
+    scanOptions({ delivery, sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken } })
+  )
+  const ownerReader = owner.observations[Symbol.asyncIterator]()
+  for (let index = 0; index < 2; index += 1) {
+    const next = ownerReader.next()
+    fixture.native.emitAdvertisement(DEFAULT_PEER, { localName: `value-${index}` })
+    expect((await next).value.kind).toBe('value')
+    await settle(50)
+  }
+  const joinedReader = joined.observations[Symbol.asyncIterator]()
+  expect((await joinedReader.next()).value.kind).toBe('value')
+  const terminal = (await joinedReader.next()).value
+  expect(terminal).toMatchObject({
+    kind: 'terminal',
+    reason: 'overflow',
+    droppedItems: 1,
+    evidence: { durability: 'committed' }
+  })
+  const committed = fixture.native.terminalEvidenceCommitted.get(terminal.evidence.ref)
+  const canonical = JSON.parse(Buffer.from(committed.canonicalBytes).toString('utf8'))
+  expect(canonical).toMatchObject({
+    reason: 'overflow',
+    droppedItems: 1,
+    droppedBytes: terminal.droppedBytes,
+    replacedItems: terminal.replacedItems
+  })
+  expect([...fixture.native.sessions.values()][0].scans.size).toBe(1)
+  const third = ownerReader.next()
+  fixture.native.emitAdvertisement(DEFAULT_PEER, { localName: 'owner-still-active' })
+  expect((await third).value.kind).toBe('value')
+  await owner.stop()
+  await ownerReader.next()
+  await settle(80)
+  expect((await host.manager.destroy()).state).toBe('released')
+})
+
+test('joined public stop commits its own terminal and preserves the owner scan', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence
+  })
+  const owner = await host.manager.scan(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }))
+  const joined = await host.manager.scan(
+    scanOptions({ sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken } })
+  )
+  const reserves = fixture.native.opsInvoked('terminal-evidence.reserve')
+  const stop = joined.stop()
+  const terminal = await joined.observations[Symbol.asyncIterator]().next()
+  expect(terminal.value).toMatchObject({
+    kind: 'terminal',
+    reason: 'owner-released',
+    evidence: { scope: reserves[1].scope, durability: 'committed' }
+  })
+  const firstStop = await stop
+  await settle(80)
+  expect(firstStop.state === 'released' ? firstStop.state : (await joined.stop()).state).toBe('released')
+  expect([...fixture.native.sessions.values()][0].scans.size).toBe(1)
+  await owner.stop()
+  await owner.observations[Symbol.asyncIterator]().next()
+  await settle(80)
+  expect((await host.manager.destroy()).state).toBe('released')
+})
+
+test('owner stop delivers independently committed terminals to a joined public scan', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence
+  })
+  const owner = await host.manager.scan(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }))
+  const joined = await host.manager.scan(
+    scanOptions({ sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken } })
+  )
+  const reserves = fixture.native.opsInvoked('terminal-evidence.reserve')
+  await owner.stop()
+  const ownerTerminal = await owner.observations[Symbol.asyncIterator]().next()
+  const joinedTerminal = await joined.observations[Symbol.asyncIterator]().next()
+  expect(ownerTerminal.value).toMatchObject({
+    kind: 'terminal',
+    reason: 'owner-released',
+    evidence: { scope: reserves[0].scope, durability: 'committed' }
+  })
+  expect(joinedTerminal.value).toMatchObject({
+    kind: 'terminal',
+    reason: 'owner-released',
+    evidence: { scope: reserves[1].scope, durability: 'committed' }
+  })
+  await settle(80)
+  expect((await joined.stop()).state).toBe('released')
+  expect((await owner.stop()).state).toBe('released')
+  expect((await host.manager.destroy()).state).toBe('released')
+})
+
+test('joined public scan keeps its reservation when native reports staging failure', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const invoke = fixture.native.invoke.bind(fixture.native)
+  const attachArgs = []
+  jest.spyOn(fixture.native, 'invoke').mockImplementation(async (...args) => {
+    if (args[1] === 'scan.evidence.attach') {
+      attachArgs.push(JSON.parse(args[2]))
+      return JSON.stringify({ ok: true, value: {} })
+    }
+    return invoke(...args)
+  })
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence
+  })
+  const owner = await host.manager.scan(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }))
+  const joined = await host.manager.scan(
+    scanOptions({ sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken } })
+  )
+  const reserves = fixture.native.opsInvoked('terminal-evidence.reserve')
+  expect(reserves).toHaveLength(2)
+  expect(reserves[0].scope).not.toEqual(reserves[1].scope)
+  expect(attachArgs[0].terminalEvidenceScope).toEqual(reserves[1].scope)
+  const session = [...fixture.native.sessions.values()][0]
+  fixture.native.push(session, {
+    t: 'scan-evidence-stage-failure',
+    bindingOnly: false,
+    operationId: 's1-scan-1',
+    scope: reserves[1].scope,
+    error: {
+      code: 'platform.failure',
+      domain: 'platform',
+      operation: 'terminal-evidence-recovery',
+      detail: null,
+      platform: null
+    }
+  })
+  const terminal = await joined.observations[Symbol.asyncIterator]().next()
+  expect(terminal.value).toMatchObject({
+    kind: 'terminal',
+    reason: 'source-failed',
+    error: { code: 'platform.failure' }
+  })
+  await settle(80)
+  expect(fixture.native.opsInvoked('terminal-evidence.release')).toHaveLength(0)
+  expect((await joined.stop()).state).toBe('release-failed')
+  expect((await host.manager.destroy()).state).toBe('release-failed')
 })
 
 test('React Native public GATT subscription reserves a scoped terminal-evidence slot before native subscribe', async () => {

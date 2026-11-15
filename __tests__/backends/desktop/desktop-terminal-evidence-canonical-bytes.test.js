@@ -1,3 +1,4 @@
+// __tests__/backends/desktop/desktop-terminal-evidence-canonical-bytes.test.js
 'use strict'
 
 const crypto = require('node:crypto')
@@ -11,12 +12,301 @@ const {
   DESKTOP_RUST_CORE_PROFILES
 } = require('../../../src/backends/desktop/desktop-rust-core-provider')
 const { encodeTerminalEvidence } = require('../../../src/core/terminal-evidence-codec')
+const { decodeTerminalEvidence } = require('../../../src/core/terminal-evidence-codec')
 const { createNodeBleManagerFromProvider } = require('../../../src/node-host-manager')
+const { createDesktopCoreBleManager } = require('../../../src/node-desktop-manager')
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
 
 jest.setTimeout(30000)
 
+async function recoverAfterSourceRelease(stage, recipient, leaseId, count) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const page = await stage.recoverTerminalEvidenceWithStatus({ producer: 'scan', recipient, leaseId })
+    if (!page.busy && page.entries.length === count) return page.entries
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error('native source reservations did not hand off to recovery')
+}
+
+test('public desktop recovery retries a failed native terminal stage while the manager remains alive', async () => {
+  const { spawn } = require('node:child_process')
+  const platform = { darwin: 'corebluetooth', linux: 'bluez', win32: 'winrt' }[process.platform]
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-stage-retry-'))
+  const harness = realBinding(platform)
+  const manager = await createDesktopCoreBleManager(platform, {
+    binding: harness.binding,
+    terminalEvidenceStore: { directory, maxBytes: '4096' },
+    terminalEvidence: { maximumCanonicalBytes: 1024, maximumDurableBytes: 4096 }
+  })
+  let locker
+  let destroyed = false
+  try {
+    const scan = await manager.scan()
+    const next = nextItem(scan.observations[Symbol.asyncIterator](), 5000)
+    locker = spawn(
+      process.execPath,
+      [
+        '-e',
+        "const {DatabaseSync}=require('node:sqlite'); const db=new DatabaseSync(process.argv[1]); db.exec('BEGIN IMMEDIATE'); process.stdout.write('locked\\n'); process.stdin.once('data',()=>{db.exec('ROLLBACK');db.close()})",
+        path.join(directory, 'terminal-evidence-v1.sqlite')
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    )
+    await new Promise((resolve, reject) => {
+      locker.stdout.once('data', resolve)
+      locker.once('error', reject)
+      locker.once('exit', code => reject(new Error(`SQLite locker exited early: ${code}`)))
+    })
+    await harness.opened.at(-1).stageScanTerminated(true, 'original terminal after busy storage')
+    expect(await next).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
+    locker.stdin.end('release')
+    await new Promise(resolve => locker.once('exit', resolve))
+    let page
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      page = await manager.terminalEvidenceRecovery.listWithStatus()
+      if (!page.busyProducers.includes('scan') && page.records.length === 1) break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    expect(page.busyProducers).not.toContain('scan')
+    const rows = page.records
+    expect(rows).toHaveLength(1)
+    const recovered = await manager.terminalEvidenceRecovery.read(rows[0].handle, rows[0].byteLength)
+    expect(decodeTerminalEvidence(recovered.canonicalBytes)).toMatchObject({
+      terminal: {
+        reason: 'source-failed',
+        error: { platform: { safeMessage: 'original terminal after busy storage' } }
+      }
+    })
+    await manager.terminalEvidenceRecovery.acknowledge(rows[0].handle)
+    await expect(scan.stop()).resolves.toMatchObject({ state: 'released' })
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+    destroyed = true
+  } finally {
+    if (locker?.exitCode === null) locker.kill()
+    if (!destroyed) await manager.destroy()
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('node manager gives owner and joined scans independently recoverable native terminal evidence', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-joined-evidence-'))
+  const harness = realBinding('bluez')
+  const now = () => performance.now()
+  const provider = createTestDesktopRustCoreBackendProvider({
+    platform: 'bluez',
+    owner: 'joined-terminal-test',
+    now,
+    radio: 'synthetic',
+    binding: harness.binding,
+    hostPlatform: 'linux',
+    terminalEvidenceStore: { directory, maxBytes: '4096' }
+  })
+  const manager = await createNodeBleManagerFromProvider(provider, DESKTOP_RUST_CORE_PROFILES.bluez.compatibility, {
+    now,
+    terminalEvidence: { maximumCanonicalBytes: 1024, maximumDurableBytes: 4096 }
+  })
+  try {
+    const owner = await manager.scan(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }))
+    const joined = await manager.scan(
+      scanOptions({ sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken } })
+    )
+    const ownerIterator = owner.observations[Symbol.asyncIterator]()
+    const joinedIterator = joined.observations[Symbol.asyncIterator]()
+    const ownerNext = nextItem(ownerIterator, 5000)
+    const joinedNext = nextItem(joinedIterator, 5000)
+    await harness.opened.at(-1).stageScanTerminated(true, 'joined source ended')
+    expect(await ownerNext).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: { platform: { safeMessage: 'joined source ended' } }
+    })
+    expect(await joinedNext).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: { platform: { safeMessage: 'joined source ended' } }
+    })
+    await ownerIterator.next()
+    await joinedIterator.next()
+    await owner.stop()
+    await joined.stop()
+    const reserves = harness.calls.filter(([name]) => name === 'reserveTerminalEvidence').map(([, args]) => args[0])
+    expect(reserves).toHaveLength(2)
+    expect(reserves[0].scope).not.toEqual(reserves[1].scope)
+    const recipient = harness.calls.find(([name]) => name === 'bindTerminalEvidenceRecipient')[1][1]
+    const rows = await recoverAfterSourceRelease(harness.opened.at(-1), recipient, 'joined-test-recovery', 2)
+    expect(rows).toHaveLength(2)
+    expect(rows.map(row => decodeTerminalEvidence(Uint8Array.from(row.canonicalBytes)).scope)).toEqual(
+      expect.arrayContaining(reserves.map(request => request.scope))
+    )
+    await harness.opened.at(-1).releaseTerminalEvidenceRecoveryLease('joined-test-recovery')
+  } finally {
+    await manager.destroy()
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test.each(['joined', 'owner'])('node manager %s stop publishes scoped native evidence', async stopped => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-joined-stop-'))
+  const harness = realBinding('bluez')
+  const now = () => performance.now()
+  const provider = createTestDesktopRustCoreBackendProvider({
+    platform: 'bluez',
+    owner: `joined-stop-${stopped}`,
+    now,
+    radio: 'synthetic',
+    binding: harness.binding,
+    hostPlatform: 'linux',
+    terminalEvidenceStore: { directory, maxBytes: '4096' }
+  })
+  const manager = await createNodeBleManagerFromProvider(provider, DESKTOP_RUST_CORE_PROFILES.bluez.compatibility, {
+    now,
+    terminalEvidence: { maximumCanonicalBytes: 1024, maximumDurableBytes: 4096 }
+  })
+  try {
+    const owner = await manager.scan(scanOptions({ sharing: { mode: 'owner', allowSharing: true } }))
+    const joined = await manager.scan(
+      scanOptions({ sharing: { mode: 'join', sharedLeaseId: owner.leaseId, token: owner.shareToken } })
+    )
+    const joinedIterator = joined.observations[Symbol.asyncIterator]()
+    const ownerIterator = owner.observations[Symbol.asyncIterator]()
+    const joinedNext = nextItem(joinedIterator, 5000)
+    const ownerNext = nextItem(ownerIterator, 5000)
+    await expect((stopped === 'owner' ? owner : joined).stop()).resolves.toMatchObject({ state: 'released' })
+    expect(await joinedNext).toMatchObject({ kind: 'terminal', reason: 'owner-released' })
+    await joinedIterator.next()
+    if (stopped === 'joined') {
+      expect(harness.opened.at(-1).operationalScanId()).not.toBeNull()
+      await owner.stop()
+    }
+    expect(await ownerNext).toMatchObject({ kind: 'terminal', reason: 'owner-released' })
+    await ownerIterator.next()
+    const reserves = harness.calls.filter(([name]) => name === 'reserveTerminalEvidence').map(([, args]) => args[0])
+    const recipient = harness.calls.find(([name]) => name === 'bindTerminalEvidenceRecipient')[1][1]
+    const rows = await recoverAfterSourceRelease(harness.opened.at(-1), recipient, `stop-recovery-${stopped}`, 2)
+    expect(rows).toHaveLength(2)
+    expect(rows.map(row => decodeTerminalEvidence(Uint8Array.from(row.canonicalBytes)).scope)).toEqual(
+      expect.arrayContaining(reserves.map(request => request.scope))
+    )
+    await harness.opened.at(-1).releaseTerminalEvidenceRecoveryLease(`stop-recovery-${stopped}`)
+  } finally {
+    await manager.destroy()
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 const PLATFORMS = ['bluez', 'corebluetooth', 'winrt']
+
+test('one joined stage failure preserves its source debt while the owner commits its own terminal', async () => {
+  await withLedger('bluez', async ({ backend, stage, harness }) => {
+    const ownerScope = scalarScope('failure-owner')
+    const joinedScope = scalarScope('failure-joined')
+    const ownerReservation = await backend.scanner.reserveTerminalEvidence({
+      producer: 'scan',
+      maximumBytes: 1024,
+      formatVersion: 1,
+      scope: ownerScope
+    })
+    const joinedReservation = await backend.scanner.reserveTerminalEvidence({
+      producer: 'scan',
+      maximumBytes: 1024,
+      formatVersion: 1,
+      scope: joinedScope
+    })
+    const owner = await backend.scanner.start(
+      scanOptions({ terminalEvidenceScope: ownerScope, sharing: { mode: 'owner', allowSharing: true } })
+    )
+    const joined = await backend.scanner.join(owner.leaseId, owner.shareToken, undefined, joinedScope)
+    const binds = harness.calls.filter(([name]) => name === 'bindTerminalEvidenceRecipient')
+    const [reservationId, recipient] = binds[1][1]
+    await stage.stageTerminalEvidence(reservationId, recipient, Uint8Array.from([1, 2, 3]))
+    const ownerNext = nextItem(owner.observations[Symbol.asyncIterator](), 5000)
+    const joinedNext = nextItem(joined.observations[Symbol.asyncIterator](), 5000)
+    await stage.stageScanTerminated(true, 'original sibling terminal')
+    expect(await ownerNext).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: { platform: { safeMessage: 'original sibling terminal' } },
+      evidence: { producer: 'scan', scope: ownerScope }
+    })
+    expect(await joinedNext).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed',
+      error: { code: 'argument.invalid' }
+    })
+    await ownerReservation.release()
+    const partial = await backend.recoverTerminalEvidenceForHostWithStatus('partial-scan-recovery')
+    expect(partial.busyProducers).toContain('scan')
+    expect(partial.records).toHaveLength(1)
+    const recovered = await backend.readRecoveredTerminalEvidence(partial.records[0].reference, 1024)
+    expect(decodeTerminalEvidence(recovered.canonicalBytes)).toMatchObject({
+      scope: ownerScope,
+      terminal: { error: { platform: { safeMessage: 'original sibling terminal' } } }
+    })
+    await backend.releaseTerminalEvidenceRecoveryLease('partial-scan-recovery')
+    await expect(joinedReservation.release()).rejects.toThrow()
+    const retained = await stage.takeScanTerminalEvent()
+    expect(retained).toMatchObject({
+      detail: 'original sibling terminal',
+      joinedTerminalEvidence: [{ reservationId, stageFailure: expect.any(String) }]
+    })
+  })
+})
+
+test.each(['joined', 'owner'])(
+  '%s error overflow commits its exact native terminal before publishing',
+  async target => {
+    await withLedger('bluez', async ({ backend, stage, harness }) => {
+      const scope = scalarScope('joined-overflow')
+      const reservation = await backend.scanner.reserveTerminalEvidence({
+        producer: 'scan',
+        maximumBytes: 1024,
+        formatVersion: 1,
+        scope
+      })
+      const owner = await backend.scanner.start(
+        scanOptions({
+          ...(target === 'owner' ? { terminalEvidenceScope: scope } : {}),
+          delivery: { itemCapacity: 1, byteCapacity: 4096, reservedControlCapacity: 1024, overflowPolicy: 'error' },
+          sharing: { mode: 'owner', allowSharing: true }
+        })
+      )
+      const joined = await backend.scanner.join(
+        owner.leaseId,
+        owner.shareToken,
+        undefined,
+        target === 'joined' ? scope : undefined
+      )
+      await stage.stageAdvertisement({ peerId: 'overflow-a', rssi: -50 })
+      await stage.stageAdvertisement({ peerId: 'overflow-b', rssi: -51 })
+      for (
+        let attempt = 0;
+        attempt < 100 && !harness.calls.some(([name]) => name === 'detachJoinedScanEvidence');
+        attempt += 1
+      )
+        await new Promise(resolve => setTimeout(resolve, 10))
+      expect(harness.calls.some(([name]) => name === 'detachJoinedScanEvidence')).toBe(true)
+      const iterator = (target === 'joined' ? joined : owner).observations[Symbol.asyncIterator]()
+      const first = await nextItem(iterator, 5000)
+      const terminal = first.kind === 'terminal' ? first : await nextItem(iterator, 5000)
+      expect(terminal).toMatchObject({
+        kind: 'terminal',
+        reason: 'overflow',
+        droppedItems: 1,
+        droppedBytes: 512,
+        evidence: { producer: 'scan', scope }
+      })
+      const read = await backend.scanner.readTerminalEvidence(terminal.evidence.ref, 1024)
+      expect(decodeTerminalEvidence(read.canonicalBytes)).toMatchObject({
+        scope,
+        terminal: { reason: 'overflow', droppedItems: 1, droppedBytes: 512, replacedItems: 0 }
+      })
+      expect(stage.operationalScanId()).not.toBeNull()
+      await joined.stop()
+      await reservation.release()
+      await owner.stop()
+    })
+  }
+)
 
 function canonicalTerminal(prefix, detail) {
   return Object.freeze({
@@ -223,33 +513,40 @@ test.each(PLATFORMS)('%s preserves unpaired UTF-16 scope units in native canonic
       scanTerminal = await stage.takeScanTerminalEvent()
     } while (scanTerminal === null)
     await stage.releaseTerminalEvidence(reservation.reservationId)
-    const recovered = await stage.recoverTerminalEvidence({ producer: 'scan', recipient, leaseId: `unpaired-${prefix}` })
+    const recovered = await stage.recoverTerminalEvidence({
+      producer: 'scan',
+      recipient,
+      leaseId: `unpaired-${prefix}`
+    })
     expect(recovered).toHaveLength(1)
     expect(Uint8Array.from(recovered[0].canonicalBytes)).toEqual(canonicalBytes)
     expect(Uint8Array.from(recovered[0].scopeUtf16le)).toEqual(rawScope)
   })
 })
 
-test.each(PLATFORMS)('%s provider sends the exact unpaired UTF-16 scope sidecar to reserve and start', async platform => {
-  await withLedger(platform, async ({ backend, harness }) => {
-    const prefix = DESKTOP_RUST_CORE_PROFILES[platform].operationPrefix
-    const evidenceScope = unpairedScope(prefix)
-    const expectedRawScope = scopeUtf16le('scan', evidenceScope)
-    const reservation = await backend.scanner.reserveTerminalEvidence({
-      producer: 'scan',
-      maximumBytes: 512,
-      formatVersion: 1,
-      scope: evidenceScope
+test.each(PLATFORMS)(
+  '%s provider sends the exact unpaired UTF-16 scope sidecar to reserve and start',
+  async platform => {
+    await withLedger(platform, async ({ backend, harness }) => {
+      const prefix = DESKTOP_RUST_CORE_PROFILES[platform].operationPrefix
+      const evidenceScope = unpairedScope(prefix)
+      const expectedRawScope = scopeUtf16le('scan', evidenceScope)
+      const reservation = await backend.scanner.reserveTerminalEvidence({
+        producer: 'scan',
+        maximumBytes: 512,
+        formatVersion: 1,
+        scope: evidenceScope
+      })
+      const lease = await backend.scanner.start(scanOptions({ terminalEvidenceScope: evidenceScope }))
+      const reserve = harness.calls.find(([name]) => name === 'reserveTerminalEvidence')[1][0]
+      const start = harness.calls.find(([name]) => name === 'startScan')[1][0]
+      expect(Uint8Array.from(reserve.scopeUtf16le)).toEqual(expectedRawScope)
+      expect(Uint8Array.from(start.terminalEvidenceScopeUtf16le)).toEqual(expectedRawScope)
+      await lease.stop()
+      await reservation.release()
     })
-    const lease = await backend.scanner.start(scanOptions({ terminalEvidenceScope: evidenceScope }))
-    const reserve = harness.calls.find(([name]) => name === 'reserveTerminalEvidence')[1][0]
-    const start = harness.calls.find(([name]) => name === 'startScan')[1][0]
-    expect(Uint8Array.from(reserve.scopeUtf16le)).toEqual(expectedRawScope)
-    expect(Uint8Array.from(start.terminalEvidenceScopeUtf16le)).toEqual(expectedRawScope)
-    await lease.stop()
-    await reservation.release()
-  })
-})
+  }
+)
 
 test.each(PLATFORMS)('%s public manager preserves the exact scan terminal staging conflict', async platform => {
   await withPublicLedger(platform, async ({ manager, stage, harness }) => {
@@ -270,19 +567,12 @@ test.each(PLATFORMS)('%s public manager preserves the exact scan terminal stagin
       error: { code: 'argument.invalid', operation: `${prefix}.scan.terminal-evidence-stage` }
     })
 
-    await stage.releaseTerminalEvidence(reservationId)
-    const leaseId = `conflict-lease-${prefix}`
-    const recovered = await stage.recoverTerminalEvidence({
-      producer: 'scan',
-      recipient,
-      leaseId
-    })
-    try {
-      expect(recovered).toHaveLength(1)
-      expect(Uint8Array.from(recovered[0].canonicalBytes)).toEqual(earlier)
-    } finally {
-      await stage.releaseTerminalEvidenceRecoveryLease(leaseId)
-    }
+    // The original source terminal still needs staging. Releasing its only
+    // reservation here would erase the unresolved native recovery debt.
+    await expect(stage.releaseTerminalEvidence(reservationId)).rejects.toThrow()
+    expect(stage.retryFailedScanEvidence(recipient).failures).toHaveLength(1)
+    const retained = await stage.takeScanTerminalEvent()
+    expect(retained).toMatchObject({ kind: 'stage-failed', detail: 'conflicting stage must remain visible' })
     await scan.stop()
   })
 })

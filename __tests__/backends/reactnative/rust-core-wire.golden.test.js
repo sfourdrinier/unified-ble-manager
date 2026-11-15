@@ -57,6 +57,30 @@ describe('ubm-mobile-wire/3 golden vectors (Rust-generated)', () => {
     }
   })
 
+  it('pins joined scan scope binding, overflow detach, and refusal envelopes', () => {
+    const byName = Object.fromEntries(golden.invokes.map(vector => [vector.name, vector]))
+    const scope = { managerId: 'golden', operationId: 'joined-scan', incarnation: '1' }
+    for (const name of ['attach joined scan evidence', 'detach joined scan evidence']) {
+      expect(byName[name]).toMatchObject({ expect: 'value' })
+      expect(JSON.parse(byName[name].args)).toMatchObject({
+        membership: expect.any(String),
+        operationId: expect.any(String),
+        terminalEvidenceScope: scope
+      })
+      expect(JSON.parse(byName[name].envelope)).toMatchObject({ ok: true, value: {} })
+    }
+    expect(JSON.parse(byName['detach joined scan evidence'].args).terminal).toEqual({
+      reason: 'overflow',
+      droppedItems: 1,
+      droppedBytes: 42,
+      replacedItems: 0
+    })
+    for (const name of ['refuse duplicate joined scan evidence', 'refuse absent joined scan evidence']) {
+      expect(byName[name]).toMatchObject({ expect: 'failure' })
+      expect(JSON.parse(byName[name].envelope)).toMatchObject({ ok: false, error: { code: 'lifecycle.invalid-state' } })
+    }
+  })
+
   const known = golden.invokes.filter(vector => wire.WIRE_OPS.includes(vector.op))
   it.each(known.map(vector => [vector.name, vector]))('parses invoke: %s', (_name, vector) => {
     const envelope = ok(wire.parseInvokeEnvelope(vector.envelope, vector.op), `${vector.name} envelope`)

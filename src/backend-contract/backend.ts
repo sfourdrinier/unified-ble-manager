@@ -174,7 +174,9 @@ export interface ScannerBackend<Attachment extends string> extends Partial<Termi
   join(
     sharedLeaseId: LeaseId<Attachment, string>,
     shareToken: ScanShareToken<Attachment, string>,
-    clientId: ClientId<Attachment, string>
+    clientId: ClientId<Attachment, string>,
+    /** Bind this lease's reserved scope before admitting it to the native source. */
+    terminalEvidenceScope?: OwnerScanOptions<Attachment, string>['terminalEvidenceScope']
   ): Promise<ScanLease<Attachment, string>>
 }
 /**

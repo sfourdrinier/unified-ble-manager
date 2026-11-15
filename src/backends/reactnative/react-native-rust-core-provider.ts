@@ -233,7 +233,9 @@ import {
   planReactNativeAndroidScan,
   planReactNativeAppleScan
 } from './react-native-scan-planner'
-import { terminalEvidenceScopeForNative } from './terminal-evidence-scope-utf16'
+import { terminalEvidenceScopeForNative, terminalEvidenceScopeFromNative } from './terminal-evidence-scope-utf16'
+import { decodeNativeTerminalEvidence } from './native-terminal-evidence'
+import { markTerminalEvidenceStageFailure } from '../../core/terminal-evidence-stage-failure'
 import {
   checkWriteReceipt,
   decodeBase64,
@@ -907,6 +909,13 @@ interface ScanConsumer {
   readonly filter: ScanFilter
   readonly stream: OwnedCoreBoundedStream<AdvertisementObservation<string>>
   readonly seenPeers: Set<string>
+  sourceTerminalCommitted: boolean
+  bindingReleased: boolean
+  pendingLocalTerminal: import('../../backend-contract/streams').StreamTerminalNotice | null
+  pendingSourceLoss: import('../../backend-contract/streams').StreamSourceLossNotice | null
+  stopAttempt: Promise<CleanupRecord> | null
+  readonly terminalSignal: Promise<void>
+  readonly signalTerminal: () => void
 }
 
 interface PendingScanStart {
@@ -914,10 +923,12 @@ interface PendingScanStart {
   readonly delivery: ScanDelivery
   observedMembership: string | null
   terminal: Extract<WireDrainRecord, { t: 'scan-end' }> | null
+  stageFailures: Extract<WireDrainRecord, { t: 'scan-evidence-stage-failure' }>[]
   ambiguous: boolean
 }
 
 interface ScanDelivery {
+  lossPreparation: Promise<void> | null
   readonly scanSessionId: ScanSessionId<string, string>
   readonly consumers: Map<string, ScanConsumer>
   readonly evidence: ScanEvidenceSession
@@ -1155,13 +1166,19 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       reserveTerminalEvidence: (request: TerminalEvidenceReservationRequest) => this.reserveTerminalEvidence(request),
       readTerminalEvidence: (reference: string, maximumBytes: number) =>
         this.readTerminalEvidence(reference, maximumBytes),
+      decodeTerminalEvidence: (
+        bytes: Readonly<Uint8Array>,
+        receipt: import('../../backend-contract/terminal-evidence').TerminalEvidenceCommit,
+        notice: import('../../backend-contract/streams').StreamTerminalNotice
+      ) => decodeNativeTerminalEvidence(bytes, receipt, record => this.scanFailure(record), notice),
       start: (options: OwnerScanOptions<string, string>, clientId: ClientId<string, string>) =>
         this.startScan(options, clientId),
       join: (
         leaseId: LeaseId<string, string>,
         token: ScanShareToken<string, string>,
-        clientId: ClientId<string, string>
-      ) => this.joinScan(leaseId, token, clientId)
+        clientId: ClientId<string, string>,
+        scope?: OwnerScanOptions<string, string>['terminalEvidenceScope']
+      ) => this.joinScan(leaseId, token, clientId, scope)
     })
     this.connections = Object.freeze({
       connect: (peerId: PeerId<string>, clientId: ClientId<string, string>, options: ConnectionOptions) =>
@@ -1214,6 +1231,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       reserveTerminalEvidence: (request: TerminalEvidenceReservationRequest) => this.reserveTerminalEvidence(request),
       readTerminalEvidence: (reference: string, maximumBytes: number) =>
         this.readTerminalEvidence(reference, maximumBytes),
+      decodeTerminalEvidence: (
+        bytes: Readonly<Uint8Array>,
+        receipt: import('../../backend-contract/terminal-evidence').TerminalEvidenceCommit,
+        notice: import('../../backend-contract/streams').StreamTerminalNotice
+      ) => decodeNativeTerminalEvidence(bytes, receipt, record => this.scanFailure(record), notice),
       discover: (connection: BackendConnection<string, string>, options: PublicOperationOptions) =>
         this.discover(connection, options),
       read: <Operation extends string>(
@@ -2466,6 +2488,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const delivery: ScanDelivery = {
       scanSessionId: this.identifiers.scanSessionId(`${resourcePrefixFor(this.platform)}-scan-session-${ordinal}`),
       consumers: new Map(),
+      lossPreparation: null,
       evidence: new ScanEvidenceSession()
     }
     const ownerLeaseId = this.identifiers.leaseId(`${resourcePrefixFor(this.platform)}-scan-lease-${ordinal}`)
@@ -2475,6 +2498,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       delivery,
       observedMembership: null,
       terminal: null,
+      stageFailures: [],
       ambiguous: false
     }
     this.pendingScanStart = pending
@@ -2518,6 +2542,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       throw contractError('protocol.violation', 'scan', `${operation}.early-terminal-ambiguity`)
     }
     if (pending.terminal !== null) this.onScanEnd(pending.terminal)
+    for (const failure of pending.stageFailures) this.onScanEvidenceStageFailure(failure)
+    if (owner.pendingLocalTerminal !== null && group.state === 'active') this.startScanOverflowCleanup(group, owner)
     // Native lifetime owns duration even while JS timers are suspended.
     // The signal still requests explicit membership release.
     const end = (): void => {
@@ -2603,12 +2629,23 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const stream: OwnedCoreBoundedStream<AdvertisementObservation<string>> = new OwnedCoreBoundedStream<
       AdvertisementObservation<string>
     >(options.delivery, options.delivery.overflowPolicy, () => undefined)
+    let signalTerminal = (): void => undefined
+    const terminalSignal = new Promise<void>(resolve => {
+      signalTerminal = resolve
+    })
     const consumer: ScanConsumer = {
       leaseId,
       options,
       filter: options.filter,
       stream,
-      seenPeers: new Set()
+      seenPeers: new Set(),
+      sourceTerminalCommitted: false,
+      bindingReleased: false,
+      pendingLocalTerminal: null,
+      pendingSourceLoss: null,
+      stopAttempt: null,
+      terminalSignal,
+      signalTerminal
     }
     group.consumers.set(String(leaseId), consumer)
     return consumer
@@ -2627,7 +2664,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private async joinScan(
     leaseId: LeaseId<string, string>,
     token: ScanShareToken<string, string>,
-    _clientId: ClientId<string, string>
+    _clientId: ClientId<string, string>,
+    scope?: OwnerScanOptions<string, string>['terminalEvidenceScope']
   ): Promise<ScanLease<string, string>> {
     this.assertOperational(`${SCOPE}.scan.join`)
     const group = [...this.scanGroups.values()].find(
@@ -2642,16 +2680,108 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const joined = this.addScanConsumer(
       group,
       this.identifiers.leaseId(`${resourcePrefixFor(this.platform)}-scan-lease-${ordinal}`),
-      owner.options
+      { ...owner.options, terminalEvidenceScope: scope }
     )
+    if (scope !== undefined) {
+      try {
+        await this.invoke('scan.evidence.attach', {
+          operationId: this.mintOperationId('scan-evidence-attach'),
+          membership: group.membership,
+          terminalEvidenceScope: terminalEvidenceScopeForNative('scan', scope)
+        })
+      } catch (error) {
+        group.consumers.delete(String(joined.leaseId))
+        if (
+          group.state === 'released' &&
+          [...group.consumers.values()].every(
+            consumer =>
+              consumer.stream.isTerminal() &&
+              (consumer.options.terminalEvidenceScope === undefined ||
+                consumer.sourceTerminalCommitted ||
+                consumer.bindingReleased)
+          ) &&
+          this.scanGroups.get(group.membership) === group
+        ) {
+          this.scanGroups.delete(group.membership)
+        }
+        throw error
+      }
+    }
     return this.scanLease(group, joined)
   }
 
   private async stopScanConsumer(group: ScanGroup, consumer: ScanConsumer): Promise<CleanupRecord> {
+    if (group.lossPreparation !== null) await group.lossPreparation
     if (consumer.leaseId !== group.ownerLeaseId) {
-      group.consumers.delete(String(consumer.leaseId))
-      if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
-      return RELEASED
+      if (consumer.stopAttempt !== null) return consumer.stopAttempt
+      const attempt = (async (): Promise<CleanupRecord> => {
+        if (
+          consumer.options.terminalEvidenceScope !== undefined &&
+          !consumer.sourceTerminalCommitted &&
+          !consumer.bindingReleased
+        ) {
+          try {
+            await this.invoke('scan.evidence.detach', {
+              operationId: this.mintOperationId('scan-evidence-detach'),
+              membership: group.membership,
+              terminalEvidenceScope: terminalEvidenceScopeForNative('scan', consumer.options.terminalEvidenceScope),
+              ...(consumer.pendingLocalTerminal === null
+                ? {}
+                : { terminal: scanLocalTerminalWire(consumer.pendingLocalTerminal, consumer.pendingSourceLoss) })
+            })
+            await consumer.terminalSignal
+            if (!consumer.sourceTerminalCommitted) {
+              return {
+                state: 'release-failed',
+                failures: [
+                  cleanupFailure(
+                    'scan',
+                    contractError('lifecycle.invalid-state', 'scan', `${SCOPE}.scan.evidence.pending`),
+                    `${SCOPE}.scan.evidence.detach`
+                  )
+                ]
+              }
+            }
+          } catch (error) {
+            // Counters is the native owner's existing explicit debt-retry boundary.
+            // A later drain may deliver the committed receipt; until then retain the binding.
+            try {
+              await this.refreshCounters()
+            } catch (retryError) {
+              return {
+                state: 'release-failed',
+                failures: [cleanupFailure('scan', retryError, `${SCOPE}.scan.evidence.retry`)]
+              }
+            }
+            if (!consumer.sourceTerminalCommitted && !consumer.bindingReleased) {
+              return {
+                state: 'release-failed',
+                failures: [cleanupFailure('scan', error, `${SCOPE}.scan.evidence.detach`)]
+              }
+            }
+          }
+        }
+        group.consumers.delete(String(consumer.leaseId))
+        if (!consumer.stream.isTerminal()) consumer.stream.finishWithReason('owner-released')
+        if (
+          group.state === 'released' &&
+          [...group.consumers.values()].every(
+            item =>
+              item.stream.isTerminal() &&
+              (item.options.terminalEvidenceScope === undefined || item.sourceTerminalCommitted || item.bindingReleased)
+          ) &&
+          this.scanGroups.get(group.membership) === group
+        ) {
+          this.scanGroups.delete(group.membership)
+        }
+        return RELEASED
+      })()
+      consumer.stopAttempt = attempt
+      try {
+        return await attempt
+      } finally {
+        if (consumer.stopAttempt === attempt) consumer.stopAttempt = null
+      }
     }
     // The core may cancel after this backend has returned but before it adopts
     // the lease. In that race only compensating stop reaches this owner.
@@ -2669,7 +2799,67 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    * same identity (PR210-09). Concurrent stops share one attempt.
    */
   private stopScanGroup(group: ScanGroup): Promise<CleanupRecord> {
-    if (group.state === 'released') return Promise.resolve(RELEASED)
+    if (group.lossPreparation !== null) return group.lossPreparation.then(() => this.stopScanGroup(group))
+    if (group.stopping !== null) return group.stopping
+    const joined = [...group.consumers.values()].filter(
+      consumer =>
+        consumer.leaseId !== group.ownerLeaseId &&
+        consumer.pendingSourceLoss !== null &&
+        consumer.options.terminalEvidenceScope !== undefined &&
+        !consumer.sourceTerminalCommitted
+    )
+    if (!group.nativeReleaseConfirmed && joined.length > 0) {
+      const coordination = (async (): Promise<CleanupRecord> => {
+        for (const consumer of joined) {
+          const result = await this.stopScanConsumer(group, consumer)
+          if (result.state !== 'released') return result
+          if (group.nativeReleaseConfirmed) break
+        }
+        group.stopping = null
+        return this.stopScanGroupPhysical(group)
+      })()
+      group.stopping = coordination
+      coordination.then(
+        () => {
+          if (group.stopping === coordination) group.stopping = null
+        },
+        () => {
+          if (group.stopping === coordination) group.stopping = null
+        }
+      )
+      return coordination
+    }
+    return this.stopScanGroupPhysical(group)
+  }
+
+  private stopScanGroupPhysical(group: ScanGroup): Promise<CleanupRecord> {
+    const terminalPending = (): boolean =>
+      [...group.consumers.values()].some(
+        consumer =>
+          consumer.options.terminalEvidenceScope !== undefined &&
+          !consumer.sourceTerminalCommitted &&
+          !consumer.bindingReleased
+      )
+    const pendingCleanup = (): CleanupRecord => ({
+      state: 'release-failed',
+      failures: [
+        cleanupFailure(
+          'scan',
+          contractError('lifecycle.invalid-state', 'scan', `${SCOPE}.scan.evidence.pending`),
+          `${SCOPE}.scan.stop`
+        )
+      ]
+    })
+    if (group.state === 'released') {
+      if (!terminalPending()) return Promise.resolve(RELEASED)
+      return this.refreshCounters().then(
+        () => (terminalPending() ? pendingCleanup() : RELEASED),
+        error => ({
+          state: 'release-failed',
+          failures: [cleanupFailure('scan', error, `${SCOPE}.scan.evidence.retry`)]
+        })
+      )
+    }
     if (group.stopping !== null) return group.stopping
     group.removeAbort?.()
     group.removeAbort = null
@@ -2677,7 +2867,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const stopping = (async (): Promise<CleanupRecord> => {
       let record: CleanupRecord
       try {
-        record = cleanupRecordFrom(await this.invoke('scan.stop', { operationId: group.membership }))
+        const owner = group.consumers.get(String(group.ownerLeaseId))
+        if (
+          owner?.pendingLocalTerminal != null &&
+          owner.options.terminalEvidenceScope === undefined &&
+          !owner.stream.isTerminal()
+        ) {
+          owner.stream.finishWithReason(owner.pendingLocalTerminal.reason, owner.pendingLocalTerminal.error ?? null)
+        }
+        record = cleanupRecordFrom(
+          await this.invoke('scan.stop', {
+            operationId: group.membership,
+            ...(owner?.pendingLocalTerminal == null || owner.options.terminalEvidenceScope === undefined
+              ? {}
+              : { terminal: scanLocalTerminalWire(owner.pendingLocalTerminal, owner.pendingSourceLoss) })
+          })
+        )
       } catch (error) {
         record = { state: 'release-failed', failures: [cleanupFailure('scan', error, `${SCOPE}.scan.stop`)] }
       }
@@ -2686,7 +2891,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           await this.rereadAfterControlLoss()
           // Native expiry can precede delivery of its terminal event. A fresh
           // snapshot confirming this exact absence settles normal cleanup.
-          if (group.nativeReleaseConfirmed) return RELEASED
+          if (group.nativeReleaseConfirmed) return terminalPending() ? pendingCleanup() : RELEASED
         } catch (error) {
           record = mergeCleanup([
             record,
@@ -2714,7 +2919,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
             })
           })
         }
-        return RELEASED
+        return terminalPending() ? pendingCleanup() : RELEASED
       }
       if (record.state === 'released') {
         group.nativeReleaseConfirmed = true
@@ -2722,6 +2927,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         // A successful native stop is the terminal fence for this membership.
         // Finish only now, after every advertisement accepted before the stop
         // response; a failed stop must leave the source live for its retry.
+        if (terminalPending()) {
+          // The native owner commits each scoped terminal independently. Its
+          // receipt, not the successful stop response, settles each binding.
+          return pendingCleanup()
+        }
+        for (const consumer of group.consumers.values()) consumer.bindingReleased = true
         this.endScanDelivery(group, 'owner-released', null)
         this.scanGroups.delete(group.membership)
         await this.refreshCounters()
@@ -2763,7 +2974,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): void {
     group.removeAbort?.()
     group.removeAbort = null
-    for (const consumer of group.consumers.values()) consumer.stream.finishWithReason(reason, error, evidence)
+    for (const consumer of group.consumers.values()) {
+      consumer.signalTerminal()
+      consumer.stream.finishWithReason(reason, error, evidence)
+    }
   }
 
   private observation(
@@ -2866,7 +3080,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.nextIngressOrdinal += 1
     const observation = this.observation(record, group.scanSessionId, receivedAt, ingressOrdinal)
     for (const consumer of group.consumers.values()) {
-      if (consumer.stream.isTerminal()) continue
+      if (consumer.stream.isTerminal() || consumer.pendingLocalTerminal !== null) continue
       const matched = group.evidence.matchAdvertisement(observation, candidate =>
         advertisementMatchesFilter(consumer.filter, candidate)
       )
@@ -2875,8 +3089,54 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         if (consumer.seenPeers.has(record.peerId)) continue
         consumer.seenPeers.add(record.peerId)
       }
+      if (consumer.options.terminalEvidenceScope !== undefined) {
+        const terminal = consumer.stream.prepareErrorOverflow(bytes)
+        if (terminal !== null) {
+          consumer.pendingLocalTerminal = terminal
+          const activeGroup = this.scanGroups.get(record.operationId)
+          if (activeGroup !== undefined && activeGroup === group) this.startScanOverflowCleanup(activeGroup, consumer)
+          continue
+        }
+      }
       consumer.stream.emitPreservingAccepted(matched, bytes, record.peerId, bytes - RECORD_BYTES)
     }
+  }
+
+  private startScanOverflowCleanup(group: ScanGroup, consumer: ScanConsumer): void {
+    this.stopScanConsumer(group, consumer).then(
+      cleanup => {
+        if (cleanup.state !== 'released') this.reportScanCleanup(group, cleanup)
+      },
+      error =>
+        this.reportScanCleanup(group, {
+          state: 'release-failed',
+          failures: [cleanupFailure('scan', error, `${SCOPE}.scan.overflow`)]
+        })
+    )
+  }
+
+  private onScanEvidenceStageFailure(record: Extract<WireDrainRecord, { t: 'scan-evidence-stage-failure' }>): void {
+    const group = this.scanGroups.get(record.operationId)
+    if (group === undefined) {
+      this.pendingScanStart?.stageFailures.push(record)
+      return
+    }
+    const scope = terminalEvidenceScopeFromNative('scan', record.scope, `${SCOPE}.scan.evidence.failure`)
+    const consumer = [...group.consumers.values()].find(
+      item =>
+        item.options.terminalEvidenceScope !== undefined &&
+        sameTerminalEvidenceScope(item.options.terminalEvidenceScope, scope)
+    )
+    if (consumer === undefined) return
+    if (!record.bindingOnly) {
+      group.nativeReleaseConfirmed = true
+      group.state = 'released'
+    }
+    consumer.signalTerminal()
+    consumer.stream.finishWithReason(
+      'source-failed',
+      markTerminalEvidenceStageFailure(remoteFailureError(record.error).normalized)
+    )
   }
 
   private onScanEnd(record: Extract<WireDrainRecord, { t: 'scan-end' }>): void {
@@ -2903,15 +3163,36 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     // The owner released the membership itself: nothing remains to stop.
     const error = 'version' in record ? this.scanFailure(record) : null
     if ('version' in record) group.admissionFailure = record
-    if (error !== null && group.state !== 'active') {
+    if (error !== null && group.state !== 'active' && !group.nativeReleaseConfirmed) {
       this.reportUnmatchedScanEnd(record)
       group.admissionFailureReported = true
     }
     // A committed evidence receipt is the authoritative terminal payload.
     // Keep the wire failure for admission diagnostics, but do not duplicate a
     // potentially large error into the bounded stream before hydration.
-    this.endScanGroup(group, record.reason, record.evidence === undefined ? error : null, record.evidence)
-    this.scanGroups.delete(record.operationId)
+    group.nativeReleaseConfirmed = true
+    group.state = 'released'
+    group.removeAbort?.()
+    group.removeAbort = null
+    for (const consumer of group.consumers.values()) {
+      const scope = consumer.options.terminalEvidenceScope
+      if (scope === undefined) consumer.stream.finishWithReason(record.reason, error)
+      else if (record.evidence !== undefined && sameTerminalEvidenceScope(record.evidence.scope, scope)) {
+        consumer.sourceTerminalCommitted = true
+        consumer.signalTerminal()
+        consumer.stream.finishWithReason(record.reason, null, record.evidence)
+      }
+    }
+    if (
+      [...group.consumers.values()].every(
+        consumer =>
+          consumer.stream.isTerminal() &&
+          (consumer.options.terminalEvidenceScope === undefined ||
+            consumer.sourceTerminalCommitted ||
+            consumer.bindingReleased)
+      )
+    )
+      this.scanGroups.delete(record.operationId)
   }
 
   private reportUnmatchedScanEnd(record: Extract<WireDrainRecord, { t: 'scan-end' }>): void {
@@ -4779,6 +5060,42 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       case 'adv':
         this.onAdvertisement(record)
         break
+      case 'scan-evidence-stage-failure':
+        this.onScanEvidenceStageFailure(record)
+        break
+      case 'scan-evidence-local-end': {
+        const group = this.scanGroups.get(record.operationId)
+        if (group === undefined) break
+        const consumer = [...group.consumers.values()].find(
+          item =>
+            item.options.terminalEvidenceScope !== undefined &&
+            sameTerminalEvidenceScope(item.options.terminalEvidenceScope, record.evidence.scope)
+        )
+        if (consumer === undefined) break
+        if (!record.bindingOnly) {
+          group.nativeReleaseConfirmed = true
+          group.state = 'released'
+        }
+        consumer.sourceTerminalCommitted = true
+        consumer.signalTerminal()
+        consumer.stream.finishWithReason('source-failed', null, record.evidence)
+        break
+      }
+      case 'scan-evidence-detached': {
+        const group = this.scanGroups.get(record.operationId)
+        const evidence = record.evidence
+        if (group === undefined || evidence === undefined) break
+        const consumer = [...group.consumers.values()].find(
+          item =>
+            item.options.terminalEvidenceScope !== undefined &&
+            sameTerminalEvidenceScope(item.options.terminalEvidenceScope, evidence.scope)
+        )
+        if (consumer === undefined) break
+        consumer.sourceTerminalCommitted = true
+        consumer.signalTerminal()
+        consumer.stream.finishWithReason(record.reason, null, evidence)
+        break
+      }
       case 'scan-end':
         this.onScanEnd(record)
         break
@@ -4874,18 +5191,65 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private onIngressDrop(record: Extract<WireDrainRecord, { t: 'ingress-drop' }>): void {
     if (record.class === 'advertisement') {
       for (const group of this.scanDeliveries()) {
-        for (const consumer of group.consumers.values()) {
-          consumer.stream.observeSourceLoss({
-            kind: 'source-loss',
-            scope: 'host-global',
-            source: 'advertisement-ingress',
-            lostRecords: resourceCount(record.count)
-          })
-          // The loss notice remains available to loss-aware consumers, while
-          // the legacy iterator fails closed. `finish` retains any accepted
-          // FIFO prefix and lets the successful physical stop preserve this
-          // authoritative overflow terminal.
-          consumer.stream.finishWithReason('overflow')
+        const loss: import('../../backend-contract/streams').StreamSourceLossNotice = {
+          kind: 'source-loss',
+          scope: 'host-global',
+          source: 'advertisement-ingress',
+          lostRecords: resourceCount(record.count)
+        }
+        const hasScopedConsumer = [...group.consumers.values()].some(
+          consumer => consumer.options.terminalEvidenceScope !== undefined
+        )
+        if (!hasScopedConsumer) {
+          for (const consumer of group.consumers.values()) {
+            if (consumer.pendingLocalTerminal !== null) continue
+            consumer.stream.observeSourceLoss(loss)
+            consumer.stream.finishWithReason('overflow')
+          }
+          continue
+        }
+        let releasePreparation = (): void => undefined
+        group.lossPreparation = new Promise<void>(resolve => {
+          releasePreparation = resolve
+        })
+        let prepared = false
+        try {
+          for (const consumer of group.consumers.values()) {
+            if (consumer.pendingLocalTerminal !== null || consumer.stream.isTerminal()) continue
+            const terminal = consumer.stream.prepareSourceLossTerminal(loss)
+            if (terminal === null) continue
+            consumer.pendingLocalTerminal = terminal
+            consumer.pendingSourceLoss = loss
+            prepared = true
+          }
+          // Joined unscoped leases do not own a native evidence reservation.
+          // The unscoped owner remains fenced until scoped joined proofs settle.
+          const active = [...this.scanGroups.values()].find(candidate => candidate === group)
+          if (active !== undefined) {
+            for (const consumer of group.consumers.values()) {
+              if (
+                consumer.leaseId !== active.ownerLeaseId &&
+                consumer.options.terminalEvidenceScope === undefined &&
+                consumer.pendingSourceLoss !== null &&
+                !consumer.stream.isTerminal()
+              ) {
+                consumer.stream.finishWithReason(
+                  consumer.pendingLocalTerminal?.reason ?? 'overflow',
+                  consumer.pendingLocalTerminal?.error ?? null
+                )
+              }
+            }
+          }
+        } finally {
+          group.lossPreparation = null
+          releasePreparation()
+        }
+        if (prepared) {
+          const active = [...this.scanGroups.values()].find(candidate => candidate === group)
+          if (active !== undefined) {
+            const owner = active.consumers.get(String(active.ownerLeaseId))
+            if (owner !== undefined) this.startScanOverflowCleanup(active, owner)
+          }
         }
       }
     } else if (record.class === 'notification') {
@@ -4954,6 +5318,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    * One re-read runs at a time; drops during it schedule one more.
    */
   private reconcileControlLoss(): void {
+    // A detach can have succeeded while its receipt was lost. Unblock its
+    // waiter without treating the missing receipt as native release proof.
+    for (const group of this.scanGroups.values()) {
+      for (const consumer of group.consumers.values()) consumer.signalTerminal()
+    }
     for (const entry of this.subscriptions.values()) {
       if (entry.state !== 'ended' && entry.recordingId !== null)
         entry.changed?.emit({ recordingId: entry.recordingId }, 0, entry.recordingId)
@@ -5029,8 +5398,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       if (group.nativeReleaseConfirmed || this.scanGroups.get(membership) !== group || membership === snapshot.scan) {
         continue
       }
-      this.endScanGroup(group, 'source-failed', null)
-      this.scanGroups.delete(membership)
+      group.nativeReleaseConfirmed = true
+      group.state = 'released'
+      for (const consumer of group.consumers.values()) {
+        if (consumer.options.terminalEvidenceScope === undefined)
+          consumer.stream.finishWithReason('source-failed', null)
+      }
+      if (
+        [...group.consumers.values()].every(
+          consumer =>
+            consumer.stream.isTerminal() &&
+            (consumer.options.terminalEvidenceScope === undefined ||
+              consumer.sourceTerminalCommitted ||
+              consumer.bindingReleased)
+        )
+      )
+        this.scanGroups.delete(membership)
     }
   }
 
@@ -5563,6 +5946,32 @@ function advertisementBytes(record: Extract<WireDrainRecord, { t: 'adv' }>): num
   for (const entry of record.manufacturerData ?? []) bytes += 2 + entry.payload.byteLength
   if (record.rawRecord !== null) bytes += record.rawRecord.byteLength
   return bytes
+}
+
+function scanLocalTerminalWire(
+  terminal: import('../../backend-contract/streams').StreamTerminalNotice,
+  sourceLoss: import('../../backend-contract/streams').StreamSourceLossNotice | null
+): WireJsonObject {
+  return {
+    reason: terminal.reason,
+    droppedItems: terminal.droppedItems,
+    droppedBytes: terminal.droppedBytes,
+    replacedItems: terminal.replacedItems,
+    ...(sourceLoss === null
+      ? {}
+      : { sourceLoss: { scope: sourceLoss.scope, source: sourceLoss.source, lostRecords: sourceLoss.lostRecords } }),
+    ...(terminal.error == null
+      ? {}
+      : {
+          error: {
+            code: terminal.error.code,
+            domain: terminal.error.domain,
+            operation: terminal.error.operation,
+            retryability: terminal.error.retryability,
+            platform: null
+          }
+        })
+  }
 }
 
 function sameTerminalEvidenceScope(

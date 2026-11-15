@@ -63,7 +63,9 @@ const ARG_SCHEMAS = Object.freeze({
     ['serviceUuids', 'duplicatePolicy', 'operationId'],
     ['deviceAddresses', 'platform', 'budgetMs', 'lifetimeMs', 'terminalEvidenceScope']
   ],
-  'scan.stop': [['operationId'], ['budgetMs']],
+  'scan.stop': [['operationId'], ['budgetMs', 'terminal']],
+  'scan.evidence.attach': [['operationId', 'membership', 'terminalEvidenceScope'], []],
+  'scan.evidence.detach': [['operationId', 'membership', 'terminalEvidenceScope'], ['terminal']],
   'connection.connect': [
     ['peerId', 'lease', 'operationId'],
     ['budgetMs', 'intent', 'transport', 'preferredPhy']
@@ -455,7 +457,8 @@ class DeterministicRustCoreNative {
       }
       args = op.startsWith('gatt.ordered.')
         ? JSON.parse(argsJson, (_key, value, context) =>
-          typeof value === 'number' && /[.eE]/.test(context.source) ? Number.NaN : value)
+            typeof value === 'number' && /[.eE]/.test(context.source) ? Number.NaN : value
+          )
         : JSON.parse(argsJson)
     } catch (error) {
       if (error instanceof WireFault) return this.failure(op, error)
@@ -1181,7 +1184,8 @@ class DeterministicRustCoreNative {
       }
       case 'terminal-evidence.commit': {
         const reservation = this.terminalEvidenceReservations.get(args.reservationId)
-        if (reservation === undefined || reservation.released) throw new WireFault('lifecycle.invalid-state', 'stream', op)
+        if (reservation === undefined || reservation.released)
+          throw new WireFault('lifecycle.invalid-state', 'stream', op)
         if (typeof args.canonicalBytesBase64 !== 'string') throw invalid('args.canonicalBytesBase64')
         const canonicalBytes = new Uint8Array(NodeBuffer.from(args.canonicalBytesBase64, 'base64'))
         if (canonicalBytes.byteLength > reservation.maximumBytes) throw new WireFault('bytes.too-large', 'stream', op)
@@ -1189,10 +1193,21 @@ class DeterministicRustCoreNative {
         const digest = createHash('sha256').update(canonicalBytes).digest('hex')
         if (digest !== args.digest) throw invalid('args.digest')
         if (reservation.committed !== null) {
-          if (reservation.committed.digest !== digest || !NodeBuffer.from(reservation.committed.canonicalBytes).equals(NodeBuffer.from(canonicalBytes))) throw invalid('args.reservationId')
+          if (
+            reservation.committed.digest !== digest ||
+            !NodeBuffer.from(reservation.committed.canonicalBytes).equals(NodeBuffer.from(canonicalBytes))
+          )
+            throw invalid('args.reservationId')
           return reservation.committed.receipt
         }
-        const receipt = Object.freeze({ kind: 'committed', ref: `terminal-evidence-ref-${args.reservationId}`, byteLength: canonicalBytes.byteLength, digest, formatVersion: 1, durability: 'committed' })
+        const receipt = Object.freeze({
+          kind: 'committed',
+          ref: `terminal-evidence-ref-${args.reservationId}`,
+          byteLength: canonicalBytes.byteLength,
+          digest,
+          formatVersion: 1,
+          durability: 'committed'
+        })
         reservation.committed = Object.freeze({ canonicalBytes, digest, receipt })
         this.terminalEvidenceCommitted.set(receipt.ref, reservation.committed)
         return receipt
@@ -1201,12 +1216,17 @@ class DeterministicRustCoreNative {
         if (!Number.isSafeInteger(args.maximumBytes) || args.maximumBytes < 0) throw invalid('args.maximumBytes')
         const committed = this.terminalEvidenceCommitted.get(args.ref)
         if (committed === undefined) throw new WireFault('lifecycle.invalid-state', 'stream', op)
-        if (committed.canonicalBytes.byteLength > args.maximumBytes) throw new WireFault('bytes.too-large', 'stream', op)
-        return { canonicalBytesBase64: NodeBuffer.from(committed.canonicalBytes).toString('base64'), digest: committed.digest }
+        if (committed.canonicalBytes.byteLength > args.maximumBytes)
+          throw new WireFault('bytes.too-large', 'stream', op)
+        return {
+          canonicalBytesBase64: NodeBuffer.from(committed.canonicalBytes).toString('base64'),
+          digest: committed.digest
+        }
       }
       case 'terminal-evidence.release': {
         const reservation = this.terminalEvidenceReservations.get(args.reservationId)
-        if (reservation === undefined || reservation.released) throw new WireFault('lifecycle.invalid-state', 'stream', op)
+        if (reservation === undefined || reservation.released)
+          throw new WireFault('lifecycle.invalid-state', 'stream', op)
         reservation.released = true
         if (reservation.committed === null) this.terminalEvidenceReservations.delete(args.reservationId)
         return { released: true, retainedForRecovery: reservation.committed !== null }
@@ -1289,14 +1309,101 @@ class DeterministicRustCoreNative {
         if (args.platform !== undefined)
           exact(args.platform, [], ['mode', 'callbackType', 'legacy', 'reportDelayMs', 'phy'], 'args.platform')
         const membership = `s${session.id}-scan-${session.nextScan++}`
-        session.scans.set(membership, args)
+        session.scans.set(membership, { ...args, joinedEvidenceScopes: [] })
         return { operationId: membership }
       }
-      case 'scan.stop':
-        if (!session.scans.delete(args.operationId)) {
-          throw new WireFault('lifecycle.invalid-state', 'scan', op, 'scan-not-active')
+      case 'scan.evidence.attach':
+      case 'scan.evidence.detach': {
+        const scan = session.scans.get(args.membership)
+        if (scan === undefined) throw new WireFault('lifecycle.invalid-state', 'scan', op, 'scan-not-active')
+        const scope = terminalEvidenceScope(args.terminalEvidenceScope)
+        const key = JSON.stringify(scope)
+        const index = scan.joinedEvidenceScopes.findIndex(item => JSON.stringify(item) === key)
+        if (op === 'scan.evidence.attach') {
+          if (
+            index !== -1 ||
+            ![...this.terminalEvidenceReservations.values()].some(
+              item => item.producer === 'scan' && !item.released && JSON.stringify(item.scope) === key
+            )
+          )
+            throw new WireFault('lifecycle.invalid-state', 'scan', op)
+          scan.joinedEvidenceScopes.push(scope)
+        } else {
+          if (index === -1) throw new WireFault('lifecycle.invalid-state', 'scan', op)
+          scan.joinedEvidenceScopes.splice(index, 1)
+          const entry = [...this.terminalEvidenceReservations.entries()].find(
+            ([, item]) => item.producer === 'scan' && !item.released && JSON.stringify(item.scope) === key
+          )
+          if (entry === undefined) throw new WireFault('lifecycle.invalid-state', 'stream', op)
+          const [reservationId, reservation] = entry
+          const terminal = {
+            t: 'scan-end',
+            operationId: args.membership,
+            ...(args.terminal ?? { reason: 'owner-released' })
+          }
+          const canonicalBytes = new Uint8Array(NodeBuffer.from(JSON.stringify(terminal)))
+          const digest = createHash('sha256').update(canonicalBytes).digest('hex')
+          const receipt = {
+            kind: 'committed',
+            ref: `terminal-evidence-ref-${reservationId}`,
+            byteLength: canonicalBytes.byteLength,
+            digest,
+            formatVersion: 1,
+            durability: 'committed'
+          }
+          reservation.committed = { canonicalBytes, digest, receipt }
+          this.terminalEvidenceCommitted.set(receipt.ref, reservation.committed)
+          this.push(session, {
+            t: terminal.reason === 'source-failed' ? 'scan-evidence-local-end' : 'scan-evidence-detached',
+            operationId: args.membership,
+            reason: terminal.reason,
+            ...(terminal.reason === 'source-failed' ? { bindingOnly: true } : {}),
+            evidence: { producer: 'scan', ...receipt, scope }
+          })
+        }
+        return {}
+      }
+      case 'scan.stop': {
+        const scan = session.scans.get(args.operationId)
+        if (scan === undefined) throw new WireFault('lifecycle.invalid-state', 'scan', op, 'scan-not-active')
+        session.scans.delete(args.operationId)
+        const scopes = [scan.terminalEvidenceScope, ...scan.joinedEvidenceScopes].filter(scope => scope !== undefined)
+        if (scopes.length > 0) {
+          const terminal = { t: 'scan-end', operationId: args.operationId, reason: 'owner-released' }
+          if (scan.terminalEvidenceScope === undefined) this.push(session, terminal)
+          for (const scope of scopes) {
+            const entry = [...this.terminalEvidenceReservations.entries()].find(
+              ([, item]) =>
+                item.producer === 'scan' && !item.released && JSON.stringify(item.scope) === JSON.stringify(scope)
+            )
+            if (entry === undefined) throw new WireFault('lifecycle.invalid-state', 'stream', op)
+            const [reservationId, reservation] = entry
+            const localTerminal =
+              args.terminal !== undefined && JSON.stringify(scope) === JSON.stringify(scan.terminalEvidenceScope)
+                ? { ...terminal, ...args.terminal }
+                : terminal
+            const canonicalBytes = new Uint8Array(NodeBuffer.from(JSON.stringify(localTerminal)))
+            const digest = createHash('sha256').update(canonicalBytes).digest('hex')
+            const receipt = {
+              kind: 'committed',
+              ref: `terminal-evidence-ref-${reservationId}`,
+              byteLength: canonicalBytes.byteLength,
+              digest,
+              formatVersion: 1,
+              durability: 'committed'
+            }
+            reservation.committed = { canonicalBytes, digest, receipt }
+            this.terminalEvidenceCommitted.set(receipt.ref, reservation.committed)
+            this.push(session, {
+              ...terminal,
+              ...(localTerminal.reason === 'source-failed' ? { t: 'scan-evidence-local-end', bindingOnly: false } : {}),
+              reason: localTerminal.reason,
+              evidence: { producer: 'scan', ...receipt, scope }
+            })
+          }
         }
         return { state: 'released', failures: [] }
+      }
       case 'connection.connect': {
         const peripheral = this.peripheral(args.peerId)
         if (args.intent !== 'direct' && args.intent !== 'when-available') throw invalid('args.intent')
@@ -1579,7 +1686,12 @@ class DeterministicRustCoreNative {
       }
       default:
         if (op.startsWith('gatt.ordered.marker.')) {
-          throw new WireFault('capability.unsupported', 'capability', 'gatt.ordered.marker', 'ordered marker writes are unavailable')
+          throw new WireFault(
+            'capability.unsupported',
+            'capability',
+            'gatt.ordered.marker',
+            'ordered marker writes are unavailable'
+          )
         }
         if (op.startsWith('gatt.ordered.recording-reclaim.')) {
           throw new WireFault('capability.unsupported', 'gatt', 'gatt.ordered.recording-reclaim')
@@ -1588,11 +1700,18 @@ class DeterministicRustCoreNative {
           if (![...session.leases.values()].some(lease => lease.peerId === args.peerId && lease.connected)) {
             throw new WireFault('ownership.denied', 'connection', op)
           }
-          throw new WireFault('capability.unsupported', 'capability', op, 'ordered radio is unavailable in the deterministic double')
+          throw new WireFault(
+            'capability.unsupported',
+            'capability',
+            op,
+            'ordered radio is unavailable in the deterministic double'
+          )
         }
         if (op.startsWith('gatt.ordered.')) {
-          const operation = op === 'gatt.ordered.reclaim' || op === 'gatt.ordered.open' || op === 'gatt.ordered.forget-group'
-            ? op : 'gatt.ordered.owner'
+          const operation =
+            op === 'gatt.ordered.reclaim' || op === 'gatt.ordered.open' || op === 'gatt.ordered.forget-group'
+              ? op
+              : 'gatt.ordered.owner'
           const domain = op === 'gatt.ordered.forget-group' ? 'cleanup' : 'gatt'
           throw new WireFault('ownership.denied', domain, operation)
         }

@@ -8,6 +8,12 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.2.3] - 2026-11-14
 
+- Bind joined scan leases to their own native terminal-evidence reservations,
+  preserving the source terminal and each lease's exact recovery scope.
+  Install desktop owner bindings before source activation as well.
+- Preserve independently scoped stop, local overflow and mobile advertisement
+  ingress-loss evidence, including failed-stage cleanup and partial recovery.
+  Decode retained React Native terminal payloads without rewriting their bytes.
 - Report an absent native recording journal as `storage.not-found` on lookup
   after validating its configured directory, without creating a journal.
 

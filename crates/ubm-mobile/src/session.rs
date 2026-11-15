@@ -1,3 +1,4 @@
+// crates/ubm-mobile/src/session.rs
 //! [`MobileSession`]: one RN manager's lease on the process owner.
 //!
 //! `invoke` parses and validates synchronously (every rejection happens
@@ -48,6 +49,52 @@ use crate::radio::{
 };
 use crate::wire::{self, Args, object, opt_text};
 
+fn local_scan_terminal(args: &Args) -> Result<Option<Value>, DesktopError> {
+    let Some(terminal) = args.opt_object("terminal")? else {
+        return Ok(None);
+    };
+    terminal.exact(
+        &["reason", "droppedItems", "droppedBytes", "replacedItems"],
+        &["sourceLoss", "error"],
+    )?;
+    let reason = terminal.one_of("reason", &["overflow", "source-failed"])?;
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    let source_loss = terminal.opt_object("sourceLoss")?.map(|loss| {
+        loss.exact(&["scope", "source", "lostRecords"], &[])?;
+        loss.one_of("scope", &["host-global"])?;
+        loss.one_of("source", &["advertisement-ingress"])?;
+        Ok::<Value, DesktopError>(serde_json::json!({"scope":"host-global", "source":"advertisement-ingress", "lostRecords":loss.integer("lostRecords", MAX_SAFE_INTEGER)?}))
+    }).transpose()?;
+    let error = terminal.opt_object("error")?.map(|cause| {
+        cause.exact(&["code", "domain", "operation", "retryability", "platform"], &[])?;
+        cause.one_of("code", &["stream.quota"])?;
+        cause.one_of("domain", &["stream"])?;
+        cause.one_of("operation", &["bounded-stream.source-loss-control"])?;
+        cause.one_of("retryability", &["never"])?;
+        if cause.get_raw("platform") != Some(&Value::Null) { return Err(wire::invalid("args.terminal.error.platform")); }
+        Ok::<Value, DesktopError>(serde_json::json!({"code":"stream.quota", "domain":"stream", "operation":"bounded-stream.source-loss-control", "retryability":"never", "platform":null}))
+    }).transpose()?;
+    if (terminal.get_raw("sourceLoss").is_some() && source_loss.is_none())
+        || (terminal.get_raw("error").is_some() && error.is_none())
+        || (reason == "source-failed") != error.is_some()
+        || (error.is_some() && source_loss.is_none())
+    {
+        return Err(wire::invalid("args.terminal"));
+    }
+    let mut value = serde_json::json!({
+        "reason":reason, "droppedItems":terminal.integer("droppedItems", MAX_SAFE_INTEGER)?,
+        "droppedBytes":terminal.integer("droppedBytes", MAX_SAFE_INTEGER)?,
+        "replacedItems":terminal.integer("replacedItems", MAX_SAFE_INTEGER)?,
+    });
+    if let Some(loss) = source_loss {
+        value["sourceLoss"] = loss;
+    }
+    if let Some(error) = error {
+        value["error"] = error;
+    }
+    Ok(Some(value))
+}
+
 /// Completion callback: called exactly once with the envelope text.
 pub type Completion = Box<dyn FnOnce(String) + Send + 'static>;
 
@@ -64,6 +111,8 @@ pub const OPS: &[&str] = &[
     "terminal-evidence.release",
     "scan.start",
     "scan.stop",
+    "scan.evidence.attach",
+    "scan.evidence.detach",
     "peers.resolve",
     "peers.known",
     "peers.connected",
@@ -1805,10 +1854,49 @@ impl MobileSession {
                     admission_budget,
                 )
             }
-            "scan.stop" => {
-                args.exact(&["operationId"], &["budgetMs"])?;
+            "scan.evidence.attach" | "scan.evidence.detach" => {
+                args.exact(
+                    &["membership", "terminalEvidenceScope", "operationId"],
+                    &["terminal"],
+                )?;
+                let local_terminal = local_scan_terminal(args)?;
+                if op == "scan.evidence.attach" && local_terminal.is_some() {
+                    return Err(wire::invalid("args.terminal"));
+                }
+                let scope = args.object("terminalEvidenceScope")?;
+                scope.exact(
+                    &["managerId", "operationId", "incarnation"],
+                    &["scopeUtf16leBase64"],
+                )?;
+                let parsed = ScanTerminalEvidenceScope {
+                    manager_id: scope.string("managerId")?,
+                    operation_id: scope.string("operationId")?,
+                    incarnation: scope.string("incarnation")?,
+                    scope_utf16le: scope
+                        .opt_string("scopeUtf16leBase64")?
+                        .map(|text| {
+                            wire::decode_base64(
+                                &text,
+                                "args.terminalEvidenceScope.scopeUtf16leBase64",
+                            )
+                        })
+                        .transpose()?,
+                };
                 (
-                    Body::ScanStop(args.string("operationId")?),
+                    Body::ScanEvidenceBinding {
+                        membership: args.string("membership")?,
+                        scope: parsed,
+                        attach: op == "scan.evidence.attach",
+                        local_terminal,
+                    },
+                    id_required(args)?,
+                    budget(args, received)?,
+                )
+            }
+            "scan.stop" => {
+                args.exact(&["operationId"], &["budgetMs", "terminal"])?;
+                (
+                    Body::ScanStop(args.string("operationId")?, local_scan_terminal(args)?),
                     None,
                     budget(args, received)?,
                 )
@@ -3857,6 +3945,8 @@ impl MobileSession {
                     service_uuids,
                     device_addresses,
                     terminal_evidence_scope,
+                    joined_terminal_evidence_scopes: Vec::new(),
+                    evidence_binding_only: false,
                     deadline,
                     expiry_cancel: OpTicket::new(),
                 };
@@ -3980,7 +4070,22 @@ impl MobileSession {
                 self.host.arm_scan_deadline(self.state.id, &membership);
                 Ok(object(vec![("operationId", Value::from(membership))]))
             }
-            Body::ScanStop(membership) => {
+            Body::ScanEvidenceBinding {
+                membership,
+                scope,
+                attach,
+                local_terminal,
+            } => {
+                host.bind_joined_scan_evidence(
+                    self.state.id,
+                    &membership,
+                    scope,
+                    attach,
+                    local_terminal,
+                )?;
+                Ok(object(Vec::new()))
+            }
+            Body::ScanStop(membership, local_terminal) => {
                 // Only an `Active` membership stops: a `Starting` one is
                 // still inside its start (stop after it completes), and any
                 // other value was never ours.
@@ -3996,7 +4101,8 @@ impl MobileSession {
                     )
                     .with_detail("scan-not-active: no such scan in this session"));
                 }
-                host.leave_scan(self.state.id, &membership, ctl).await?;
+                host.leave_scan_with_terminal(self.state.id, &membership, ctl, local_terminal)
+                    .await?;
                 self.state.clear_scan(&membership);
                 Ok(cleanup_record(Vec::new()))
             }
@@ -6864,7 +6970,13 @@ enum Body {
         terminal_evidence_scope: Option<ScanTerminalEvidenceScope>,
         deadline: Option<tokio::time::Instant>,
     },
-    ScanStop(String),
+    ScanStop(String, Option<Value>),
+    ScanEvidenceBinding {
+        membership: String,
+        scope: ScanTerminalEvidenceScope,
+        attach: bool,
+        local_terminal: Option<Value>,
+    },
     PeersResolve(String),
     PeersKnown,
     PeersConnected(Vec<String>),
@@ -10623,7 +10735,7 @@ mod scan_stop_race_tests {
         let membership = started["value"]["operationId"].as_str().unwrap().to_owned();
         let scan_lock = host.inner.scan.lock().await;
         let mut stop = Box::pin(session.execute(
-            Body::ScanStop(membership.clone()),
+            Body::ScanStop(membership.clone(), None),
             OpControl::unbounded(),
             0,
         ));

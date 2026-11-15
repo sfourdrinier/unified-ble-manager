@@ -1,9 +1,75 @@
+// __tests__/core/terminal-evidence-codec.test.js
+
 const {
   encodeTerminalEvidence,
   decodeTerminalEvidence,
   decodeTerminalEvidenceError,
   hydrateTerminalEvidence
 } = require('../../src/core/terminal-evidence-codec')
+
+test('decodes native producer bytes without replacing live loss counts or rewriting the receipt', async () => {
+  const scope = { managerId: 'manager', operationId: 'operation', incarnation: '1' }
+  const bytes = new Uint8Array([1, 2])
+  const evidence = {
+    producer: 'scan',
+    ref: 'native',
+    byteLength: 2,
+    digest: 'digest',
+    formatVersion: 1,
+    durability: 'committed',
+    scope
+  }
+  const notice = { kind: 'terminal', reason: 'overflow', droppedItems: 3, droppedBytes: 15, replacedItems: 0, evidence }
+  const error = {
+    code: 'platform.failure',
+    domain: 'scan',
+    operation: 'native.source',
+    retryability: 'never',
+    platform: null
+  }
+  const decode = jest.fn(() => ({ scope, terminal: { ...notice, error } }))
+  const result = await hydrateTerminalEvidence(
+    {
+      readTerminalEvidence: async () => ({ kind: 'committed', canonicalBytes: bytes, digest: 'digest' }),
+      decodeTerminalEvidence: decode
+    },
+    notice,
+    20
+  )
+  expect(decode).toHaveBeenCalledWith(bytes, evidence, notice)
+  expect(result).toEqual({ ...notice, error })
+  expect(bytes).toEqual(new Uint8Array([1, 2]))
+})
+
+test.each(['receipt', 'scope'])('producer decoder retains central %s validation', async mismatch => {
+  const scope = { managerId: 'manager', operationId: 'operation', incarnation: '1' }
+  const evidence = {
+    producer: 'scan',
+    ref: 'native',
+    byteLength: 2,
+    digest: 'digest',
+    formatVersion: 1,
+    durability: 'committed',
+    scope
+  }
+  const notice = { kind: 'terminal', reason: 'closed', droppedItems: 0, droppedBytes: 0, replacedItems: 0, evidence }
+  const decode = jest.fn(() => ({ scope: { ...scope, incarnation: 'another' }, terminal: notice }))
+  await expect(
+    hydrateTerminalEvidence(
+      {
+        readTerminalEvidence: async () => ({
+          kind: 'committed',
+          canonicalBytes: new Uint8Array([1, 2]),
+          digest: mismatch === 'receipt' ? 'wrong' : 'digest'
+        }),
+        decodeTerminalEvidence: decode
+      },
+      notice,
+      20
+    )
+  ).rejects.toMatchObject({ normalized: { code: 'protocol.violation', operation: `terminal-evidence.${mismatch}` } })
+  if (mismatch === 'receipt') expect(decode).not.toHaveBeenCalled()
+})
 test('canonical terminal evidence roundtrips nested metadata and bytes', () => {
   const terminal = {
     kind: 'terminal',

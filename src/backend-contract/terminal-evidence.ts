@@ -1,4 +1,7 @@
+// src/backend-contract/terminal-evidence.ts
+
 import type { SerializableRecord } from './primitives'
+import type { StreamTerminalNotice } from './streams'
 
 /** Versioned, source-native durable terminal evidence contract. */
 export type TerminalEvidenceProducer = 'scan' | 'subscription'
@@ -48,6 +51,15 @@ export interface TerminalEvidenceSource {
     | { readonly kind: 'committed'; readonly canonicalBytes: TerminalEvidenceBytes; readonly digest: string }
     | { readonly kind: 'missing' | 'unresolved' }
   >
+  /** Decode this producer's exact native payload without changing its stored bytes or receipt. */
+  decodeTerminalEvidence?(
+    bytes: TerminalEvidenceBytes,
+    receipt: TerminalEvidenceCommit,
+    notice: StreamTerminalNotice
+  ): {
+    readonly scope: TerminalEvidenceCommit['scope']
+    readonly terminal: StreamTerminalNotice
+  }
   /**
    * Explicit authenticated recovery acknowledgement: the sole durable
    * retirement path. Hosts must retain a failed acknowledgement for retry.

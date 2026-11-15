@@ -110,7 +110,36 @@ export type WireScanEndV2 = {
   }
   readonly evidence?: import('../../backend-contract/terminal-evidence').TerminalEvidenceCommit
 }
-export type WireDrainRecord = SharedDrainRecord | WireScanEndV2
+export type WireScanEvidenceStageFailure = {
+  readonly t: 'scan-evidence-stage-failure'
+  readonly ordinal: number
+  readonly operationId: string
+  readonly bindingOnly: boolean
+  readonly scope: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+    readonly scopeUtf16leBase64?: string
+  }
+  readonly error: WireRemoteFailure
+}
+export type WireScanEvidenceDetached = Omit<Extract<SharedDrainRecord, { t: 'scan-end' }>, 't'> & {
+  readonly t: 'scan-evidence-detached'
+}
+export type WireScanEvidenceLocalEnd = {
+  readonly t: 'scan-evidence-local-end'
+  readonly ordinal: number
+  readonly operationId: string
+  readonly reason: 'source-failed'
+  readonly bindingOnly: boolean
+  readonly evidence: import('../../backend-contract/terminal-evidence').TerminalEvidenceCommit
+}
+export type WireDrainRecord =
+  | WireScanEvidenceLocalEnd
+  | SharedDrainRecord
+  | WireScanEndV2
+  | WireScanEvidenceStageFailure
+  | WireScanEvidenceDetached
 export interface WireDrainBatch {
   readonly more: boolean
   readonly records: readonly WireDrainRecord[]
@@ -136,14 +165,89 @@ export function parseDrainText(
   return capture(() => {
     if (scanEndVersion !== 1 && scanEndVersion !== 2) throw malformed('drain.scan-end.version')
     const value = parseWireTextOrThrow(text, 'drain')
-    if (scanEndVersion === 1) return drainBatchOrThrow(value, lastOrdinal, 'drain')
     const fields = exactObject(value, ['more', 'records', 'controlLost'], 'drain')
     const records = arrayOf(fields.get('records'), 'drain.records', (entry, path): WireDrainRecord => {
+      if (
+        typeof entry === 'object' &&
+        entry !== null &&
+        !Array.isArray(entry) &&
+        Reflect.get(entry, 't') === 'scan-evidence-local-end'
+      ) {
+        const f = exactObject(entry, ['t', 'ordinal', 'operationId', 'reason', 'bindingOnly', 'evidence'], path)
+        if (f.get('reason') !== 'source-failed' || typeof f.get('bindingOnly') !== 'boolean') throw malformed(path)
+        return Object.freeze({
+          t: 'scan-evidence-local-end',
+          ordinal: integerOrThrow(f.get('ordinal'), NON_NEGATIVE, `${path}.ordinal`),
+          operationId: stringOrThrow(f.get('operationId'), `${path}.operationId`),
+          reason: 'source-failed',
+          bindingOnly: f.get('bindingOnly') === true,
+          evidence: terminalEvidenceOrThrow(f.get('evidence'), `${path}.evidence`)
+        })
+      }
+      if (
+        typeof entry === 'object' &&
+        entry !== null &&
+        !Array.isArray(entry) &&
+        Reflect.get(entry, 't') === 'scan-evidence-detached'
+      ) {
+        const parsed = drainRecordOrThrow({ ...entry, t: 'scan-end' }, path)
+        if (
+          parsed.t !== 'scan-end' ||
+          parsed.evidence === undefined ||
+          (parsed.reason !== 'owner-released' && parsed.reason !== 'overflow')
+        )
+          throw malformed(path)
+        return Object.freeze({ ...parsed, t: 'scan-evidence-detached' })
+      }
+      if (
+        typeof entry === 'object' &&
+        entry !== null &&
+        !Array.isArray(entry) &&
+        Reflect.get(entry, 't') === 'scan-evidence-stage-failure'
+      ) {
+        const f = exactObject(entry, ['t', 'ordinal', 'operationId', 'scope', 'error', 'bindingOnly'], path)
+        const rawScope = f.get('scope')
+        const hasSidecar =
+          typeof rawScope === 'object' &&
+          rawScope !== null &&
+          !Array.isArray(rawScope) &&
+          Object.hasOwn(rawScope, 'scopeUtf16leBase64')
+        const scope = exactObject(
+          rawScope,
+          ['managerId', 'operationId', 'incarnation', ...(hasSidecar ? ['scopeUtf16leBase64'] : [])],
+          `${path}.scope`
+        )
+        return Object.freeze({
+          t: 'scan-evidence-stage-failure',
+          ordinal: integerOrThrow(f.get('ordinal'), NON_NEGATIVE, `${path}.ordinal`),
+          operationId: stringOrThrow(f.get('operationId'), `${path}.operationId`),
+          bindingOnly:
+            f.get('bindingOnly') === true
+              ? true
+              : f.get('bindingOnly') === false
+                ? false
+                : (() => {
+                    throw malformed(`${path}.bindingOnly`)
+                  })(),
+          scope: Object.freeze({
+            managerId: stringOrThrow(scope.get('managerId'), `${path}.scope.managerId`),
+            operationId: stringOrThrow(scope.get('operationId'), `${path}.scope.operationId`),
+            incarnation: stringOrThrow(scope.get('incarnation'), `${path}.scope.incarnation`),
+            ...(hasSidecar
+              ? {
+                  scopeUtf16leBase64: stringOrThrow(scope.get('scopeUtf16leBase64'), `${path}.scope.scopeUtf16leBase64`)
+                }
+              : {})
+          }),
+          error: remoteFailureOrThrow(f.get('error'), `${path}.error`)
+        })
+      }
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry) || !Object.hasOwn(entry, 'version')) {
         const legacy = drainRecordOrThrow(entry, path)
-        if (legacy.t === 'scan-end' && legacy.reason === 'source-failed') throw malformed(path)
+        if (scanEndVersion === 2 && legacy.t === 'scan-end' && legacy.reason === 'source-failed') throw malformed(path)
         return legacy
       }
+      if (scanEndVersion === 1) throw malformed(path)
       const hasEvidence = typeof entry === 'object' && entry !== null && Object.hasOwn(entry, 'evidence')
       const f = exactObject(
         entry,
@@ -230,6 +334,8 @@ export const WIRE_OPS = Object.freeze([
   'terminal-evidence.release',
   'scan.start',
   'scan.stop',
+  'scan.evidence.attach',
+  'scan.evidence.detach',
   'peers.resolve',
   'peers.known',
   'peers.connected',
@@ -595,6 +701,8 @@ export interface WireOpResults {
   readonly 'terminal-evidence.release': { readonly released: true; readonly retainedForRecovery: boolean }
   readonly 'scan.start': { readonly operationId: string }
   readonly 'scan.stop': WireCleanupRecord
+  readonly 'scan.evidence.attach': Record<string, never>
+  readonly 'scan.evidence.detach': Record<string, never>
   readonly 'peers.resolve': WirePeerRecord | null
   readonly 'peers.known': readonly WirePeerRecord[]
   readonly 'peers.connected': readonly WirePeerRecord[]
@@ -1395,6 +1503,14 @@ const OP_PARSERS: OpParsers = Object.freeze({
     return Object.freeze({ operationId: stringOrThrow(fields.get('operationId'), `${path}.operationId`) })
   },
   'scan.stop': cleanupRecordOrThrow,
+  'scan.evidence.attach': (value: unknown, path: string) => {
+    exactObject(value, [], path)
+    return Object.freeze({})
+  },
+  'scan.evidence.detach': (value: unknown, path: string) => {
+    exactObject(value, [], path)
+    return Object.freeze({})
+  },
   'peers.resolve': (value: unknown, path: string) => nullable(value, path, peerRecordOrThrow),
   'peers.known': (value: unknown, path: string) => arrayOf(value, path, peerRecordOrThrow),
   'peers.connected': (value: unknown, path: string) => arrayOf(value, path, peerRecordOrThrow),

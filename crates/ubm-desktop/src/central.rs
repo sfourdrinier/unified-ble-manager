@@ -1,3 +1,4 @@
+// crates/ubm-desktop/src/central.rs
 //! Host-neutral desktop central adapter (HOST-DESKTOP).
 //!
 //! [`DesktopCentral`] drives the real [`ubm_core::central::Central`] over a
@@ -5405,6 +5406,31 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         })
     }
 
+    /// Run admission while the named scan's source ownership cannot change.
+    /// The callback must not re-enter this central or acquire its scan slot.
+    pub fn with_operational_scan<T>(&self, id: &str, admit: impl FnOnce() -> T) -> Option<T> {
+        let slot = self.inner.scan_slot();
+        let active = slot.as_ref()?;
+        if active.id.as_str() != id
+            || !matches!(active.phase, ScanPhase::Active)
+            || self.inner.pending_adapter_reset.load(Ordering::SeqCst) != 0
+        {
+            return None;
+        }
+        Some(admit())
+    }
+
+    /// Fence detachment after a successful physical stop against reset and replacement.
+    pub fn with_stopped_scan<T>(&self, id: &str, detach: impl FnOnce() -> T) -> Option<T> {
+        let slot = self.inner.scan_slot();
+        if slot.as_ref().is_some_and(|active| active.id.as_str() == id)
+            || self.inner.pending_adapter_reset.load(Ordering::SeqCst) != 0
+        {
+            return None;
+        }
+        Some(detach())
+    }
+
     /// Core session peer key for a radio peripheral id, if resolved.
     pub async fn peer_key_for(&self, peer_id: &str) -> Option<String> {
         self.inner.peers.lock().await.get(peer_id).cloned()
@@ -5750,6 +5776,32 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         windows: Option<crate::boundary::WindowsScanOptions>,
         ctl: OpControl,
     ) -> Result<ScanSession, DesktopError> {
+        self.start_scan_platform_with_admission(
+            owner,
+            service_uuids,
+            duplicates,
+            name_prefix,
+            windows,
+            ctl,
+            |_| Ok(()),
+        )
+        .await
+    }
+
+    /// Bind host-owned source state to the allocated scan before ingress is armed.
+    pub async fn start_scan_platform_with_admission<F>(
+        &self,
+        owner: &str,
+        service_uuids: &[&str],
+        duplicates: ScanDuplicatePolicy,
+        name_prefix: Option<&str>,
+        windows: Option<crate::boundary::WindowsScanOptions>,
+        ctl: OpControl,
+        admit: F,
+    ) -> Result<ScanSession, DesktopError>
+    where
+        F: FnOnce(&OperationId) -> Result<(), DesktopError> + Send,
+    {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "scan.start")?;
         if windows.is_some() {
@@ -5850,7 +5902,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // successful old stop is not admission for a replacement operation.
         self.precheck(&ctl, "scan.start")?;
         let ingress_epoch = self.inner.scan_ingress_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-        let id = {
+        let (id, admission) = {
             let mut core = self.inner.core.lock().await;
             if let Some(occupant) = self.inner.scan_slot().as_ref() {
                 return Err(DesktopError::new(
@@ -5900,8 +5952,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 start_refused: false,
                 unpublished_cleanup: false,
             });
-            id
+            let admission = admit(&id);
+            (id, admission)
         };
+        if let Err(error) = admission {
+            self.fail_scan_start(&id).await;
+            return Err(error);
+        }
         // Finding 121: a new scan starts from an empty queue; nothing an
         // earlier scan saw is delivered as this scan's observation.
         self.inner.advertisements.lock().await.clear();
@@ -13899,23 +13956,17 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                             // the next boundary event. Do not await it from
                             // the only event consumer, or its marker would
                             // deadlock behind this branch.
-                            let cleanup_inner = Arc::clone(&inner);
-                            let cleanup_id = id.clone();
-                            tokio::spawn(async move {
-                                settle_os_ended_scan(
-                                    &cleanup_inner,
-                                    &cleanup_id,
-                                    ContenderKind::Success,
-                                    flight,
-                                )
-                                .await;
-                            });
                             parity::publish_scan_terminal(
                                 &inner,
                                 &id,
                                 true,
                                 "the OS event source closed",
                             );
+                            let cleanup_inner = Arc::clone(&inner);
+                            let cleanup_id = id.clone();
+                            tokio::spawn(async move {
+                                settle_os_ended_scan(&cleanup_inner, &cleanup_id, ContenderKind::Success, flight).await;
+                            });
                         }
                         break;
                     }
@@ -13943,12 +13994,12 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                             };
                             // Keep the event consumer free to carry a
                             // callback-ingress fence marker.
+                            parity::publish_scan_terminal(&inner, &id, aborted, &detail);
                             let cleanup_inner = Arc::clone(&inner);
                             let cleanup_id = id.clone();
                             tokio::spawn(async move {
                                 settle_os_ended_scan(&cleanup_inner, &cleanup_id, contender, flight).await;
                             });
-                            parity::publish_scan_terminal(&inner, &id, aborted, &detail);
                         }
                     }
                     Some(RadioEvent::ScanIngressSourceClosedFailed(error)) => {
@@ -18473,6 +18524,42 @@ mod adapter_tests {
             epoch,
             value,
         }
+    }
+
+    #[tokio::test]
+    async fn scan_admission_refusal_releases_slot_without_arming_source() {
+        let central = open().await;
+        let result = central
+            .start_scan_platform_with_admission(
+                "owner-a",
+                &[],
+                ubm_core::central::ScanDuplicatePolicy::All,
+                None,
+                None,
+                OpControl::budget_ms(5000),
+                |_| {
+                    Err(DesktopError::new(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Scan,
+                        "test.admission",
+                    ))
+                },
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(!central.has_active_scan().await);
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "start_scan")
+        );
+        central
+            .start_scan("owner-b", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("replacement scan");
+        stop_owned_scan(&central).await.expect("stop scan");
     }
 
     #[tokio::test]
