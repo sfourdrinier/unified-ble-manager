@@ -84,10 +84,14 @@ test('deadline bounds a pending native start and requests cancellation of the re
   }
 })
 
-test('abort settles a stalled native start with its cancellation result', async () => {
+test('abort bounds a pending native reservation and cancels the late handle', async () => {
+  let finishReserve
+  const reserved = new Promise(resolve => {
+    finishReserve = resolve
+  })
   const actual = { state: 'not-admitted', error: null }
   const invoke = jest.fn(op => {
-    if (op === 'gatt.ordered.marker.reserve') return Promise.resolve({ handle: '8' })
+    if (op === 'gatt.ordered.marker.reserve') return reserved
     if (op === 'gatt.ordered.marker.start') return new Promise(() => {})
     if (op === 'gatt.ordered.marker.cancel' || op === 'gatt.ordered.marker.status') return Promise.resolve(actual)
     return Promise.resolve(null)
@@ -101,10 +105,13 @@ test('abort settles a stalled native start with its cancellation result', async 
     () => 'key'
   )()
   const controller = new AbortController()
-  const pending = marker.start({}, Uint8Array.from([1]), 'with-response', { signal: controller.signal, deadline: null })
-  for (let i = 0; i < 6; i++) await Promise.resolve()
+  const pending = marker.start({}, Uint8Array.of(1), 'with-response', { signal: controller.signal, deadline: null })
+  const rejected = expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
   controller.abort()
-  expect(await pending).toEqual(actual)
+  await rejected
+  expect(invoke.mock.calls.some(([op]) => op === 'gatt.ordered.marker.start')).toBe(false)
+  finishReserve({ handle: '8' })
   expect(await marker.status()).toEqual(actual)
+  expect(invoke).toHaveBeenCalledWith('gatt.ordered.marker.cancel', expect.objectContaining({ handle: '8' }))
   await marker.forget()
 })

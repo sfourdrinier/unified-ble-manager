@@ -124,10 +124,10 @@ export function createOrderedMarkerReservations<Target, Selector>(
         }
         const currentRequest = request
         const deadline = controls.deadline
-        let expired = false
+        let interruption: 'operation.aborted' | 'operation.timed-out' | null = null
         const run = async () => {
           const id = await reserve()
-          if (expired) throw contractError('operation.timed-out', 'gatt', 'ordered.marker')
+          if (interruption !== null) throw contractError(interruption, 'gatt', 'ordered.marker')
           if (cancellationRequested) return cancelResult()
           if (watchedSignal?.aborted || (controls.deadline !== null && controls.deadline <= now()))
             return cancelResult()
@@ -137,6 +137,7 @@ export function createOrderedMarkerReservations<Target, Selector>(
             currentRequest.value,
             currentRequest.mode === 'with-response'
           )
+          if (interruption !== null) throw contractError(interruption, 'gatt', 'ordered.marker')
           if (watchedSignal?.aborted) return cancelResult()
           return result
         }
@@ -148,7 +149,10 @@ export function createOrderedMarkerReservations<Target, Selector>(
             if (timer !== null) clearTimeout(timer)
           }
           const onAbort = () => {
+            interruption = 'operation.aborted'
             requestCancel()
+            cleanup()
+            rejectStart(contractError('operation.aborted', 'gatt', 'ordered.marker'))
           }
           const onCancel = (task: NonNullable<typeof cancelTask>) => {
             task.then(result => {
@@ -164,7 +168,7 @@ export function createOrderedMarkerReservations<Target, Selector>(
           if (deadline !== null) {
             timer = setTimeout(
               () => {
-                expired = true
+                interruption = 'operation.timed-out'
                 requestCancel()
                 cleanup()
                 rejectStart(contractError('operation.timed-out', 'gatt', 'ordered.marker'))

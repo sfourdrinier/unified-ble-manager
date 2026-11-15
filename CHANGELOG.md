@@ -7,8 +7,9 @@ All notable changes to `unified-ble-manager` are documented here.
 ## [5.2.3] - 2026-11-14
 
 - Bound native and IPC marker startup and public retry waits by caller controls
-  while retaining exact reservation and cancellation ownership. Settle native starts from actual
-  cancellation results, and allow Electron to retry after a lost startup response.
+  while retaining exact reservation and cancellation ownership. Live abort rejects
+  without waiting for native replies; explicit cancellation retains actual source
+  results. Allow Electron to retry after a lost startup response.
 
 - Preserve pending native quiescence as a retryable continuation lifecycle state;
   retain records and claim state until the native cutoff is sealed.
