@@ -6,7 +6,7 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [5.2.3] - 2026-11-13
+## [5.2.3] - 2026-11-14
 
 - Report an absent native recording journal as `storage.not-found` on lookup
   after validating its configured directory, without creating a journal.
