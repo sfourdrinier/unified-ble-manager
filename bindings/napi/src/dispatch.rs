@@ -16351,8 +16351,8 @@ mod tests {
         std::fs::remove_dir_all(directory).expect("remove evidence directory");
     }
 
-    #[tokio::test]
-    async fn conflicting_source_terminal_stage_is_reported_and_does_not_overwrite_evidence() {
+    #[test]
+    fn conflicting_source_terminal_stage_is_reported_and_does_not_overwrite_evidence() {
         let directory = std::env::temp_dir().join(format!(
             "ubm-napi-scan-terminal-stage-failure-{}",
             std::time::SystemTime::now()
@@ -16361,6 +16361,18 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&directory).expect("test evidence directory");
+        // Failed retention deliberately leaves native tasks holding the ledger.
+        // Shut down this fixture's runtime before unlinking its files on Windows.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("fixture runtime");
+        runtime.block_on(conflicting_source_terminal_stage_scenario(&directory));
+        drop(runtime);
+        std::fs::remove_dir_all(directory).expect("remove evidence directory");
+    }
+
+    async fn conflicting_source_terminal_stage_scenario(directory: &std::path::Path) {
         let central = UbmCentral::open_synthetic(
             "scan-stage-failure".to_owned(),
             Some(SyntheticOptions {
@@ -16487,7 +16499,6 @@ mod tests {
         );
         assert!(central.terminal_evidence().is_some());
         drop(central);
-        std::fs::remove_dir_all(directory).expect("remove evidence directory");
     }
 }
 

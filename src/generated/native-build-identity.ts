@@ -25,8 +25,8 @@ export const EXPECTED_NATIVE_BUILD_IDENTITY: ExpectedNativeBuildIdentity = Objec
   contractRevision: 'C-UBM.0.1.2-DRAFT',
   bindings: Object.freeze({
     napi: Object.freeze({
-      sourceDigest: '813280d2a9099a8472288b63d664e642b75a5829f3a874ca7b68f65b28d55e14',
-      bindingSchema: '0ec64f58d1cb75498a4ce72eff5ee2214b8f4600bb6f5931c9b291da4f431ceb',
+      sourceDigest: '7201ceb9471fbe73ea00246af74bbabca9e03154aee186d9b2f4fd8a9b7f833a',
+      bindingSchema: '54b1e44b66033039c2247eccfe8006f047beb942e8ea086135d93e281e1902b4',
       targets: Object.freeze([
         'aarch64-apple-darwin',
         'aarch64-pc-windows-msvc',
