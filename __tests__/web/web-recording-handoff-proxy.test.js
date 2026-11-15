@@ -1,3 +1,5 @@
+// __tests__/web/web-recording-handoff-proxy.test.js
+
 const { webcrypto } = require('crypto')
 const { createWebRecordingHandoffOwner, importWebRecordingHandoff } = require('../../src/web/web-recording-handoff')
 
@@ -303,15 +305,26 @@ test('lost confirmation and confirmation acknowledgement reconcile without a sec
 })
 
 test('owner expires an acceptance when endpoint setup outlives the importer timeout', async () => {
+  jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'nextTick', 'setImmediate', 'performance'] })
   const network = bus()
   let resume
+  let setupStarted
+  let closed
+  let now = 0
   const gate = new Promise(resolve => {
     resume = resolve
+  })
+  const entered = new Promise(resolve => {
+    setupStarted = resolve
+  })
+  const reconciled = new Promise(resolve => {
+    closed = resolve
   })
   const subtle = new Proxy(webcrypto.subtle, {
     get(target, key) {
       if (key === 'deriveKey')
         return async (...args) => {
+          setupStarted()
           await gate
           return target.deriveKey(...args)
         }
@@ -320,22 +333,34 @@ test('owner expires an acceptance when endpoint setup outlives the importer time
     }
   })
   const ownerCrypto = { getRandomValues: webcrypto.getRandomValues.bind(webcrypto), subtle }
-  const onClose = jest.fn()
+  const onClose = jest.fn(() => closed())
   const owner = await handoffOwner({
     crypto: ownerCrypto,
     channel: network.channel(),
     lifetimeMs: 100,
+    now: () => now,
     execute: async x => x,
     onClose
   })
-  await expect(
-    importWebRecordingHandoff({ crypto: webcrypto, channel: network.channel(), ticket: owner.ticket, timeoutMs: 50 })
-  ).rejects.toMatchObject({ code: 'timeout' })
-  await new Promise(resolve => setTimeout(resolve, 80))
-  resume()
-  await tick()
-  expect(onClose).toHaveBeenCalledTimes(1)
-  owner.close()
+  try {
+    const rejected = expect(
+      importWebRecordingHandoff({ crypto: webcrypto, channel: network.channel(), ticket: owner.ticket, timeoutMs: 50 })
+    ).rejects.toMatchObject({ code: 'timeout' })
+    // Prove setup is pending before expiring either peer, independently of
+    // platform crypto latency. The late endpoint must still close exactly once.
+    await entered
+    await jest.advanceTimersByTimeAsync(50)
+    await rejected
+    now = 101
+    await jest.advanceTimersByTimeAsync(51)
+    resume()
+    await reconciled
+    expect(onClose).toHaveBeenCalledTimes(1)
+  } finally {
+    resume()
+    owner.close()
+    jest.useRealTimers()
+  }
 })
 
 test('handshake sheds unauthenticated flood and still admits a valid importer', async () => {
