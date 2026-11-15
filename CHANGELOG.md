@@ -6,8 +6,8 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.2.3] - 2026-11-14
 
-- Bound React Native ordered-recording startup across negotiation, reservation
-  and dispatch while retaining late receipts and exact reservation ownership.
+- Bound React Native and Electron ordered-recording startup across negotiation,
+  reservation and dispatch while retaining late receipts and exact ownership.
 
 - Enumerate desktop evidence producer lanes sequentially to avoid contending
   with the recovery request's own native authority gate.

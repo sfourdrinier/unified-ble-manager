@@ -1,4 +1,5 @@
 // src/ipc/manager.ts
+import { awaitWithOperationAdmission } from '../core/unified-ble-core-helpers'
 import { parseOrderedRecordingFailure } from '../core/ordered-recording'
 import {
   isTerminalEvidenceStageFailure,
@@ -55,6 +56,7 @@ import type {
 import {
   byteLimit,
   capacity,
+  deadline as controlDeadline,
   ownBytes,
   resourceCount,
   type SerializableRecord,
@@ -3115,6 +3117,9 @@ export class IpcGattDatabase {
       ) => {
         if (retired || retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.ordered-recording.retired')
         const controls = toIpcOptions(options)
+        if (options.signal?.aborted) throw contractError('operation.aborted', 'gatt', 'ipc.ordered-recording.start')
+        if (options.deadline !== null && options.deadline <= this.monotonicNow())
+          throw contractError('operation.timed-out', 'gatt', 'ipc.ordered-recording.start')
         const selected = members.map(member => ({
           memberId: member.memberId,
           characteristicHandle: this.characteristicForPath(member.path).handle,
@@ -3124,39 +3129,59 @@ export class IpcGattDatabase {
         if (request !== null && request.fingerprint !== fingerprint)
           throw contractError('argument.invalid', 'gatt', 'ipc.ordered-recording.retry')
         request = { id: options.recording.id, count: members.length, fingerprint }
-        const startHandle = await ensureReservation()
-        if (retiring) throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.ordered-recording.retired')
-        if (controls.signal?.aborted) throw contractError('operation.aborted', 'gatt', 'ipc.ordered-recording.start')
-        const result = await this.route(
-          'gatt.ordered-recording.start',
-          {
-            startHandle,
-            members: selected,
-            recording: {
-              id: options.recording.id,
-              maxBytes: options.recording.maxBytes,
-              maxRecords: options.recording.maxRecords
+        let activeWait = true
+        const run = async () => {
+          const startHandle = await ensureReservation()
+          if (!activeWait || options.signal?.aborted)
+            throw contractError('operation.aborted', 'gatt', 'ipc.ordered-recording.start')
+          if (options.deadline !== null && options.deadline <= this.monotonicNow())
+            throw contractError('operation.timed-out', 'gatt', 'ipc.ordered-recording.start')
+          if (retired || retiring)
+            throw contractError('lifecycle.invalid-state', 'gatt', 'ipc.ordered-recording.retired')
+          const result = await this.route(
+            'gatt.ordered-recording.start',
+            {
+              startHandle,
+              members: selected,
+              recording: {
+                id: options.recording.id,
+                maxBytes: options.recording.maxBytes,
+                maxRecords: options.recording.maxRecords
+              },
+              deadline: operationDeadline(controls),
+              streamItemCapacity: options.delivery.itemCapacity,
+              streamByteCapacity: options.delivery.byteCapacity,
+              streamReservedControlCapacity: options.delivery.reservedControlCapacity
             },
-            deadline: operationDeadline(controls),
-            streamItemCapacity: options.delivery.itemCapacity,
-            streamByteCapacity: options.delivery.byteCapacity,
-            streamReservedControlCapacity: options.delivery.reservedControlCapacity
-          },
-          null,
-          controls.signal
-        )
-        return captureRecovery(
-          parseOrderedRecordingStartResult(
-            result,
-            options.recording.id,
-            members.length,
-            // IPC v9 introduced the ordered failure-observation receipt.
-            // The Electron router rejects ordered routes below v9, while a
-            // retained pre-v9 host legitimately emits the v1 receipt.
-            this.manager.bootstrap.versions.ipcProtocol.selected.value >= 9 ? 2 : 1
-          ),
-          options.recording.id
-        )
+            null,
+            controls.signal
+          )
+          return captureRecovery(
+            parseOrderedRecordingStartResult(
+              result,
+              options.recording.id,
+              members.length,
+              // IPC v9 introduced the ordered failure-observation receipt.
+              // The Electron router rejects ordered routes below v9, while a
+              // retained pre-v9 host legitimately emits the v1 receipt.
+              this.manager.bootstrap.versions.ipcProtocol.selected.value >= 9 ? 2 : 1
+            ),
+            options.recording.id
+          )
+        }
+        const pending = run()
+        try {
+          return await awaitWithOperationAdmission(
+            pending,
+            { signal: options.signal, deadline: options.deadline === null ? null : controlDeadline(options.deadline) },
+            () => this.monotonicNow(),
+            'ipc.ordered-recording.start'
+          )
+        } finally {
+          activeWait = false
+          // Initial admission can reject before it attaches an observer to pending.
+          pending.catch(() => undefined)
+        }
       },
       status: async () => {
         if (retired) return { state: 'retired' as const }
