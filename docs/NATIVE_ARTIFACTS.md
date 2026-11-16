@@ -137,3 +137,12 @@ and verifies its identity and hash chain before packing the release tarball.
 Clean checkouts (CI fresh clones, `preflight.sh` worktrees) have no
 gitignored stagings by design, so those gates check only what can be there:
 the committed Android tree, or the artifacts the job just assembled.
+
+## Opt-in Apple connection diagnostics
+
+For a development-signed Apple app, launching with `UBM_NATIVE_DIAGNOSTICS=1`
+records connection admission, dispatch, cancellation, callbacks and cleanup
+state in the OS console. Output contains only fixed event labels, the native
+state enum, counts and boolean ownership/pending-work flags. It contains no
+peer identifiers, payloads, paths or native message bodies. It is disabled
+when the variable is absent; remove it after the diagnostic session.

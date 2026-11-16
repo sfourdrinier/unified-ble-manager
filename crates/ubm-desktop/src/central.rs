@@ -7167,19 +7167,27 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 settled
             }
             Wait::Done(Err(error)) => {
+                let not_dispatched = error.commit() == Some(CommitState::NotDispatched);
                 // Settle under the lock, then drop the guard before awaiting
                 // the compensating radio disconnect (F24): a stuck cleanup
                 // must never block unrelated peers behind the core lock.
                 {
                     let mut core = self.inner.core.lock().await;
-                    let same = self.retain_half_open_cleanup(
-                        &core,
-                        peer_id,
-                        &peer_key,
-                        &connection_generation,
-                        adapter_epoch,
-                        release_serial,
-                    );
+                    let same = if not_dispatched {
+                        let current = core.connection_generation(&peer_key);
+                        (current.is_none() || current == connection_generation)
+                            && self.inner.resets.load(Ordering::SeqCst) == adapter_epoch
+                            && confirmed_release_count(&self.inner, peer_id) == release_serial
+                    } else {
+                        self.retain_half_open_cleanup(
+                            &core,
+                            peer_id,
+                            &peer_key,
+                            &connection_generation,
+                            adapter_epoch,
+                            release_serial,
+                        )
+                    };
                     let mut out = batch();
                     if same {
                         let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
@@ -7196,8 +7204,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
                 // Partial-failure cleanup: a half-opened OS link must not
                 // linger without an owner (L5).
-                self.compensate_half_open(peer_id, &connection_generation)
-                    .await;
+                if !not_dispatched {
+                    self.compensate_half_open(peer_id, &connection_generation)
+                        .await;
+                }
                 Err(error)
             }
             Wait::Expired => {

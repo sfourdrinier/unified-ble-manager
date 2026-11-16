@@ -10166,6 +10166,11 @@ impl ContinuationJournal {
     // Called only on a cold registry open after exclusive sidecar acquisition,
     // while the process-global authorities mutex excludes live registration.
     fn recover_cold_ordered_owner(&self) -> Result<()> {
+        // Released v1 journals cannot have an ordered owner and must retain
+        // their original schema for ordinary recording readers and writers.
+        if self.uses_released_v1_schema() {
+            return Ok(());
+        }
         let retained = {
             let connection = self.connection()?;
             connection.query_row(
@@ -20723,14 +20728,13 @@ mod authority_tests {
             std::env::temp_dir().join(format!("ubm-ordered-upgrade-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("upgrade.sqlite");
-        let quota = JournalQuota {
-            max_bytes: 1 << 20,
-            max_records: 10,
-        };
         let database = Connection::open(&path).unwrap();
         database.execute_batch("PRAGMA page_size=4096; PRAGMA journal_mode=DELETE; PRAGMA application_id=1430408522; PRAGMA user_version=1; CREATE TABLE journal(id INTEGER PRIMARY KEY CHECK(id=1), recording_id TEXT NOT NULL, declaration TEXT NOT NULL, max_bytes INTEGER NOT NULL, max_records INTEGER NOT NULL, phase TEXT NOT NULL, next_ordinal INTEGER NOT NULL, next_token INTEGER NOT NULL, lost INTEGER NOT NULL, pending_token TEXT, pending_last INTEGER, pending_more INTEGER, last_ack_token TEXT, last_ack_receipt TEXT, retained_records INTEGER NOT NULL, retained_bytes INTEGER NOT NULL, collection_failure TEXT); CREATE TABLE records(ordinal INTEGER PRIMARY KEY, body TEXT NOT NULL, bytes INTEGER NOT NULL); INSERT INTO journal VALUES(1,'upgrade','{}',1048576,10,'recording',2,2,0,NULL,NULL,NULL,NULL,NULL,1,15,NULL); INSERT INTO records VALUES(1,'{\"legacy\":true}',15);").unwrap();
         drop(database);
-        let journal = ContinuationJournal::open(&path, "upgrade", &json!({}), quota).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&directory).unwrap();
+        let journal = registry.get("upgrade").unwrap();
+        assert_eq!(journal.status().unwrap()["records"], 1);
         let prepared = journal.prepare(10, 4096).unwrap();
         assert_eq!(prepared["records"][0]["legacy"], true);
         journal
@@ -20758,6 +20762,7 @@ mod authority_tests {
             )
             .unwrap();
         drop(database);
+        registry.release_idle_after_host_shutdown().unwrap();
         remove_idle_fixture_directory(&directory);
     }
 
@@ -20777,7 +20782,9 @@ mod authority_tests {
         let database = Connection::open(&path).unwrap();
         database.execute_batch("PRAGMA page_size=4096; PRAGMA journal_mode=DELETE; PRAGMA application_id=1430408522; PRAGMA user_version=1; CREATE TABLE journal(id INTEGER PRIMARY KEY CHECK(id=1), recording_id TEXT NOT NULL, declaration TEXT NOT NULL, max_bytes INTEGER NOT NULL, max_records INTEGER NOT NULL, phase TEXT NOT NULL, next_ordinal INTEGER NOT NULL, next_token INTEGER NOT NULL, lost INTEGER NOT NULL, pending_token TEXT, pending_last INTEGER, pending_more INTEGER, last_ack_token TEXT, last_ack_receipt TEXT, retained_records INTEGER NOT NULL, retained_bytes INTEGER NOT NULL, collection_failure TEXT); CREATE TABLE records(ordinal INTEGER PRIMARY KEY, body TEXT NOT NULL, bytes INTEGER NOT NULL); INSERT INTO journal VALUES(1,'pending','{}',1048576,10,'recording',2,2,0,'pending:1',1,0,NULL,NULL,1,7,NULL); INSERT INTO records VALUES(1,'{\"v\":1}',7);").unwrap();
         drop(database);
-        let journal = ContinuationJournal::open(&path, "pending", &json!({}), quota).unwrap();
+        let registry = JournalRegistry::default();
+        registry.configure_directory(&directory).unwrap();
+        let journal = registry.open("pending", &json!({}), quota).unwrap();
         let page = journal.prepare(10, 4096).unwrap();
         assert_eq!(page["token"], "pending:1");
         assert_eq!(page["records"], json!([{"v":1}]));
@@ -20801,6 +20808,7 @@ mod authority_tests {
             3
         );
         drop(database);
+        registry.release_idle_after_host_shutdown().unwrap();
         remove_idle_fixture_directory(&directory);
     }
 

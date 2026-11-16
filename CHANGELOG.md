@@ -4,6 +4,19 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.2.4] - 2026-11-15
+
+- Re-arm iOS-restored pending connections after registering borrower ownership,
+  preserving the released 5.2.2 request behavior and native callback fencing.
+
+- Avoid retaining physical connection cleanup when the native owner confirms
+  that a failed connect was never dispatched.
+
+- Recover cold registries from released v1 journals without ordered-owner
+  lookup, preserving schema, raw records and pending cursors.
+- Allow retry after an Apple connection failure has already released its native
+  claim; retain cleanup failures while connection or notification work is pending.
+
 ## [5.2.3] - 2026-11-14
 
 - Bound React Native and Electron ordered-recording startup across negotiation,

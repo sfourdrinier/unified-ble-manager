@@ -276,6 +276,18 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
+## Releasing 5.2.4
+
+The planned 5.2.4 patch repairs cold registry recovery for released v1
+journals by skipping ordered-owner lookup while preserving the journal schema,
+raw records and pending cursors. This version change does not alter backend
+support labels or qualification claims.
+
+Qualify the frozen release commit through the required local checks, review,
+sealed-package checks and hosted cross-platform CI before the normal
+tag-driven trusted-publisher release. Verify publication with the post-release
+checks below.
+
 ## Releasing 5.2.3
 
 The planned 5.2.3 release follows the separate 5.2.2 publication and adds ordered notification collection and recording
@@ -1292,7 +1304,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.2.3
+version=5.2.4
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1313,8 +1325,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.2.3` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.2.3` after
+  `unified-ble-manager@5.2.4` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.2.4` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's
