@@ -419,8 +419,8 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       retrieve: { central.retrievePeripherals(withIdentifiers: [$0]) }, identifierOf: { $0.identifier }) else {
       completion(error(code: 1005, message: "The requested CoreBluetooth peripheral is unknown")); return
     }
-    // iOS restores pending OS connects without a borrower waiter. Join that same
-    // operation; never dispatch a second physical connect for the handoff.
+    // Register local waiters before reissuing the restored OS request, as 5.2.2 did.
+    // Joined borrowers share this request and its native terminal callback.
     if restoredPeerIdentifiers.contains(peerIdentifier), cached === peripheral, peripheral.state == .connecting,
        (connectionClaims[peerIdentifier]?.isEmpty ?? true), pendingConnect[peerIdentifier] == nil,
        (releasingConnectionClaims[peerIdentifier]?.isEmpty ?? true),
@@ -436,6 +436,8 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       pendingConnect[peerIdentifier] = PendingVoid(operationIdentifier: "connect-physical-\(UUID().uuidString)") { [weak self] failure in
         self?.settleConnectionClaims(peerIdentifier, failure: failure)
       }
+      traceConnectionState("restored-connect-rearmed", peer: peerIdentifier)
+      central.connect(peripheral, options: nil)
       return
     }
     guard connectionGenerationAvailable(peerIdentifier, isConnected: peripheral.state == .connected) else {

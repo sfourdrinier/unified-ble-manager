@@ -6,8 +6,8 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.2.4] - 2026-11-15
 
-- Adopt iOS-restored pending connections into borrower ownership and await
-  their real native result instead of refusing reconnect or duplicating it.
+- Re-arm iOS-restored pending connections after registering borrower ownership,
+  preserving the released 5.2.2 request behavior and native callback fencing.
 
 - Avoid retaining physical connection cleanup when the native owner confirms
   that a failed connect was never dispatched.

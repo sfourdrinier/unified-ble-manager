@@ -1969,7 +1969,7 @@ private final class LegacyFailureBorrower: NSObject, OwnedCoreBluetoothProtocolR
         radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "retry") { error in
           precondition(error == nil); firstCalls += 1
         }
-        precondition(startedConnections == 1, "terminal callback permits one new connect")
+        precondition(startedConnections == 2, "terminal callback permits one new connect")
         connectionState = .connected
         radio.centralManager(central, didConnect: peripheral)
         precondition(firstCalls == 1)
@@ -1998,8 +1998,8 @@ private final class LegacyFailureBorrower: NSObject, OwnedCoreBluetoothProtocolR
         radio.connectOnQueue(owner: second, route: second, peerIdentifier: peer, operationIdentifier: "second") { error in
           secondAnswers.append(error?.code ?? 0)
         }
-        precondition(startedConnections == 0 && firstAnswers.isEmpty && secondAnswers.isEmpty,
-          "restored operation must be joined without a second connect or early completion")
+        precondition(startedConnections == 1 && firstAnswers.isEmpty && secondAnswers.isEmpty,
+          "restored operation must be re-armed once from this process without early completion")
         if CommandLine.arguments.contains("--restored-connecting-failure") {
           connectionState = .disconnected
           radio.centralManager(central, didFailToConnect: peripheral, error: NSError(domain: "fixture", code: 33))
