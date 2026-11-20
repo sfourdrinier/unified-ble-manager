@@ -394,17 +394,23 @@ test('Electron refuses the same renderer reservation for the wrong producer befo
   }
 })
 
-test('renderer teardown stops a live scan before abandoning its evidence reservation', async () => {
+test('renderer teardown hands off the terminal of a live scan to the next renderer', async () => {
   const current = await open()
   try {
     await current.publicManager.scan()
+    const callsBeforeTeardown = current.harness.calls.length
     await expect(current.publicManager.destroy()).resolves.toMatchObject({ state: 'released' })
-    const calls = current.harness.calls.map(([name]) => name)
+    const calls = current.harness.calls.slice(callsBeforeTeardown).map(([name]) => name)
     const stop = calls.indexOf('stopScan')
-    const abandon = calls.indexOf('releaseTerminalEvidence')
     expect(stop).toBeGreaterThanOrEqual(0)
-    if (abandon === -1) expect(calls).toContain('commitTerminalEvidence')
-    else expect(abandon).toBeGreaterThan(stop)
+    expect(calls.indexOf('releaseTerminalEvidence')).toBeGreaterThan(stop)
+    const replacement = await current.reload()
+    const [record] = await replacement.terminalEvidenceRecovery.list()
+    expect(record).toMatchObject({ producer: 'scan' })
+    const evidence = await replacement.terminalEvidenceRecovery.read(record.handle, record.byteLength)
+    expect(decodeTerminalEvidence(evidence.canonicalBytes)).toMatchObject({ terminal: { kind: 'terminal' } })
+    await replacement.terminalEvidenceRecovery.acknowledge(record.handle)
+    await expect(replacement.terminalEvidenceRecovery.list()).resolves.toEqual([])
   } finally {
     await current.close()
   }

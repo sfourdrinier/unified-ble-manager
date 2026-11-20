@@ -293,3 +293,26 @@ test('Electron renderer teardown relinquishes its private native recovery lease 
   await router.releaseRenderer(firstSender, reloaded.boot.rendererLease)
   expect(released).toHaveLength(2)
 })
+
+test('releasing one renderer lease preserves another lease reservation for the same authenticated owner', async () => {
+  const { router, releases } = fixture()
+  const owner = sender('shared-owner')
+  const first = await route(router, owner)
+  const second = await route(router, owner)
+  const reservation = await first.route('terminalEvidence.reserve', {
+    version: 1,
+    producer: 'scan',
+    maximumBytes: 32,
+    formatVersion: 1,
+    scope: { managerId: 'manager', operationId: 'operation', incarnation: '1' }
+  })
+
+  expect(first.boot.rendererLease).not.toEqual(second.boot.rendererLease)
+  await expect(router.releaseRenderer(owner, second.boot.rendererLease)).resolves.toMatchObject({ state: 'released' })
+  expect(releases).toEqual([])
+  await expect(first.route('terminalEvidence.release', {
+    version: 1, reservationId: reservation.reservationId
+  })).resolves.toEqual({ kind: 'released' })
+  expect(releases).toEqual(['reservation-1'])
+  await expect(router.releaseRenderer(owner, first.boot.rendererLease)).resolves.toMatchObject({ state: 'released' })
+})

@@ -312,6 +312,8 @@ interface ElectronTerminalEvidenceEntry {
   readonly ownerKey: string
   /** Private recovery-controller authority; never derived from renderer identity. */
   recoveryLeaseId: string | null
+  readonly reservationLeaseId: string | null
+  reservationReleased: boolean
   readonly producer: 'scan' | 'subscription'
   readonly scope: TerminalEvidenceReservationRequest['scope'] | null
   readonly source: ElectronTerminalEvidenceSource
@@ -2917,27 +2919,16 @@ export class ElectronMainBleRouter {
     const failures: CleanupFailure[] = []
     for (const [handle, entry] of this.terminalEvidence.entries) {
       if (
-        entry.ownerKey !== resources.ownerKey ||
-        entry.recoverable ||
+        entry.reservationLeaseId !== resources.terminalEvidenceRecoveryLeaseId ||
+        entry.reservationReleased ||
         this.terminalEvidenceSourceActive(resources, entry)
       )
         continue
-      if (entry.ref !== null) {
-        // Commit retains the reservation's runtime authority until abandon.
-        // Release it at renderer teardown so a same-process renderer reload
-        // can recover the committed bytes (and create a later reservation),
-        // while the durable ledger row remains for explicit recovery ACK.
-        try {
-          await entry.reservation.release()
-          entry.recoverable = true
-        } catch (error) {
-          failures.push({ resourceKind: 'terminal-evidence', error: normalizedCleanupError(error) })
-        }
-        continue
-      }
       try {
         await entry.reservation.release()
-        this.terminalEvidence.entries.delete(handle)
+        entry.reservationReleased = true
+        if (entry.ref === null) this.terminalEvidence.entries.delete(handle)
+        else entry.recoverable = true
       } catch (error) {
         failures.push({ resourceKind: 'terminal-evidence', error: normalizedCleanupError(error) })
       }
@@ -3765,6 +3756,8 @@ export class ElectronMainBleRouter {
       this.terminalEvidence.entries.set(reservationId, {
         ownerKey: resources.ownerKey,
         recoveryLeaseId: null,
+        reservationLeaseId: resources.terminalEvidenceRecoveryLeaseId,
+        reservationReleased: false,
         producer: request.producer,
         scope: request.scope,
         source,
@@ -3779,7 +3772,11 @@ export class ElectronMainBleRouter {
     }
     if (command === 'terminalEvidence.commit') {
       const request = terminalEvidenceCommitRequest(payload, binaryPayload)
-      const entry = this.terminalEvidenceOwner(resources, request.reservationId, 'electron.terminal-evidence.commit')
+      const entry = this.terminalEvidenceReservationOwner(
+        resources,
+        request.reservationId,
+        'electron.terminal-evidence.commit'
+      )
       if (entry.sourceBinding !== 'idle' || entry.ref !== null)
         throw contractError('lifecycle.invalid-state', 'restoration', 'electron.terminal-evidence.commit')
       entry.sourceBinding = 'mutating'
@@ -3835,7 +3832,12 @@ export class ElectronMainBleRouter {
     if (command === 'terminalEvidence.release') {
       if (binaryPayload !== null) throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.release')
       const reservationId = terminalEvidenceReference(payload, 'electron.terminal-evidence.release')
-      const entry = this.terminalEvidenceOwner(resources, reservationId, 'electron.terminal-evidence.release')
+      const entry = this.terminalEvidenceReservationOwner(
+        resources,
+        reservationId,
+        'electron.terminal-evidence.release'
+      )
+      if (entry.reservationReleased) return Object.freeze({ kind: 'released' })
       if (
         (entry.ref === null && this.terminalEvidenceSourceActive(resources, entry)) ||
         entry.sourceBinding === 'mutating'
@@ -3848,6 +3850,7 @@ export class ElectronMainBleRouter {
       } finally {
         entry.sourceBinding = previousBinding
       }
+      entry.reservationReleased = true
       // Stream drainage abandons only the runtime lease. Exact staged or
       // committed bytes remain owned by recovery and keep their quota until
       // the authenticated recovery ACK below succeeds.
@@ -3993,7 +3996,7 @@ export class ElectronMainBleRouter {
     const matches = new Set<ElectronTerminalEvidenceEntry>()
     for (const entry of this.terminalEvidence.entries.values()) {
       if (
-        entry.ownerKey === resources.ownerKey &&
+        entry.reservationLeaseId === resources.terminalEvidenceRecoveryLeaseId &&
         entry.producer === producer &&
         entry.scope !== null &&
         sameTerminalEvidenceScope(entry.scope, scope)
@@ -4043,7 +4046,7 @@ export class ElectronMainBleRouter {
     }
     const entry = [...this.terminalEvidence.entries.values()].find(
       candidate =>
-        candidate.ownerKey === resources.ownerKey &&
+        candidate.reservationLeaseId === resources.terminalEvidenceRecoveryLeaseId &&
         candidate.producer === producer &&
         candidate.scope !== null &&
         sameTerminalEvidenceScope(candidate.scope, expectedScope)
@@ -4108,6 +4111,8 @@ export class ElectronMainBleRouter {
     this.terminalEvidence.entries.set(`terminal-evidence-recovery-${this.terminalEvidence.nextId++}`, {
       ownerKey: resources.ownerKey,
       recoveryLeaseId: resources.terminalEvidenceRecoveryLeaseId,
+      reservationLeaseId: null,
+      reservationReleased: true,
       producer: record.producer,
       scope: null,
       source,
@@ -4135,6 +4140,17 @@ export class ElectronMainBleRouter {
   ): ElectronTerminalEvidenceEntry {
     const entry = this.terminalEvidence.entries.get(handle)
     if (entry === undefined || entry.ownerKey !== resources.ownerKey)
+      throw contractError('ownership.denied', 'restoration', operation)
+    return entry
+  }
+
+  private terminalEvidenceReservationOwner(
+    resources: RendererResources,
+    handle: string,
+    operation: string
+  ): ElectronTerminalEvidenceEntry {
+    const entry = this.terminalEvidenceOwner(resources, handle, operation)
+    if (entry.reservationLeaseId !== resources.terminalEvidenceRecoveryLeaseId)
       throw contractError('ownership.denied', 'restoration', operation)
     return entry
   }
