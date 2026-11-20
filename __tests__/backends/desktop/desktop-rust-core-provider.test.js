@@ -2708,3 +2708,31 @@ describe('parity table integrity', () => {
 // a jest test: under a process without Bluetooth permission macOS aborts it
 // (TCC SIGABRT). It runs from scripts/ci/napi-clean-tarball-acceptance.js
 // --probe radio in a Bluetooth-authorized terminal (docs/NODE.md).
+
+test('public Node destroy still closes the native central when recovery lease cleanup fails', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-node-recovery-cleanup-'))
+  const platform = process.platform === 'darwin' ? 'corebluetooth' : process.platform === 'win32' ? 'winrt' : 'bluez'
+  const harness = realBinding(platform)
+  const failure = new Error('synthetic recovery lease release failure')
+  const release = jest.spyOn(
+    require('../../../src/backends/desktop/desktop-rust-core-provider').DesktopRustCoreBackend.prototype,
+    'releaseTerminalEvidenceRecoveryLease'
+  ).mockRejectedValueOnce(failure)
+  let manager
+  try {
+    manager = await createDesktopCoreBleManager(platform, {
+      binding: harness.binding,
+      terminalEvidenceStore: { directory, maxBytes: '4096' }
+    })
+    const callsBeforeDestroy = harness.calls.length
+    const result = await manager.destroy().catch(error => error)
+    expect(harness.calls.slice(callsBeforeDestroy).filter(([name]) => name === 'close')).toHaveLength(1)
+    expect(result).toMatchObject({ errors: [failure] })
+    await expect(manager.terminalEvidenceRecovery.list()).rejects.toThrow('lifecycle.destroyed')
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+  } finally {
+    release.mockRestore()
+    await manager?.destroy()
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})

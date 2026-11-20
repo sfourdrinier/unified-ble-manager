@@ -4,6 +4,14 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.2.5] - 2026-11-19
+
+- Attempt native desktop manager shutdown even if terminal-evidence recovery
+  lease cleanup fails, and surface failures from both cleanup steps.
+- Keep Electron terminal-evidence reservations under their source's ownership
+  until scan or subscription cleanup succeeds. Renderer teardown then hands
+  retained evidence to recovery.
+
 ## [5.2.4] - 2026-11-15
 
 - Re-arm iOS-restored pending connections after registering borrower ownership,

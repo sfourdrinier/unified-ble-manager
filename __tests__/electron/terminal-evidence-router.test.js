@@ -28,6 +28,7 @@ function fixture(options = {}) {
   let serial = 0
   const source = {
     reserveTerminalEvidence: async request => {
+      await options.beforeReserve?.()
       if (reservations.size !== 0) throw new Error('runtime reservation remains busy')
       const reservationId = `reservation-${++serial}`
       reservations.set(reservationId, request)
@@ -292,4 +293,58 @@ test('Electron renderer teardown relinquishes its private native recovery lease 
   const reloaded = await route(router, firstSender)
   await router.releaseRenderer(firstSender, reloaded.boot.rendererLease)
   expect(released).toHaveLength(2)
+})
+
+test('releasing one renderer lease preserves another lease reservation for the same authenticated owner', async () => {
+  const { router, releases } = fixture()
+  const owner = sender('shared-owner')
+  const first = await route(router, owner)
+  const second = await route(router, owner)
+  const reservation = await first.route('terminalEvidence.reserve', {
+    version: 1,
+    producer: 'scan',
+    maximumBytes: 32,
+    formatVersion: 1,
+    scope: { managerId: 'manager', operationId: 'operation', incarnation: '1' }
+  })
+
+  expect(first.boot.rendererLease).not.toEqual(second.boot.rendererLease)
+  await expect(router.releaseRenderer(owner, second.boot.rendererLease)).resolves.toMatchObject({ state: 'released' })
+  expect(releases).toEqual([])
+  await expect(first.route('terminalEvidence.release', {
+    version: 1, reservationId: reservation.reservationId
+  })).resolves.toEqual({ kind: 'released' })
+  expect(releases).toEqual(['reservation-1'])
+  await expect(router.releaseRenderer(owner, first.boot.rendererLease)).resolves.toMatchObject({ state: 'released' })
+})
+
+
+test('a renderer cannot reserve the same native evidence scope while another lease owns or is reserving it', async () => {
+  let startReserve
+  let finishReserve
+  const started = new Promise(resolve => { startReserve = resolve })
+  const finish = new Promise(resolve => { finishReserve = resolve })
+  const { router } = fixture({ beforeReserve: () => { startReserve(); return finish } })
+  const owner = sender('shared-evidence-owner')
+  const first = await route(router, owner)
+  const second = await route(router, owner)
+  const request = {
+    version: 1,
+    producer: 'scan',
+    maximumBytes: 32,
+    formatVersion: 1,
+    scope: { managerId: 'manager', operationId: 'operation', incarnation: '1' }
+  }
+  const reservation = first.route('terminalEvidence.reserve', request)
+  await started
+  const duplicateWhilePending = second.route('terminalEvidence.reserve', request)
+  finishReserve()
+  const busy = { normalized: { code: 'lifecycle.invalid-state', operation: 'electron.terminal-evidence.scope-reserved' } }
+  await expect(duplicateWhilePending).rejects.toMatchObject(busy)
+  const receipt = await reservation
+  expect(receipt).toMatchObject({ kind: 'reserved' })
+  await expect(first.route('terminalEvidence.reserve', request)).resolves.toEqual(receipt)
+  await expect(second.route('terminalEvidence.reserve', request)).rejects.toMatchObject(busy)
+  await router.releaseRenderer(owner, second.boot.rendererLease)
+  await router.releaseRenderer(owner, first.boot.rendererLease)
 })

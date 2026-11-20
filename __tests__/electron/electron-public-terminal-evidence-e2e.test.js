@@ -393,3 +393,25 @@ test('Electron refuses the same renderer reservation for the wrong producer befo
     await current.close()
   }
 })
+
+test('renderer teardown hands off the terminal of a live scan to the next renderer', async () => {
+  const current = await open()
+  try {
+    await current.publicManager.scan()
+    const callsBeforeTeardown = current.harness.calls.length
+    await expect(current.publicManager.destroy()).resolves.toMatchObject({ state: 'released' })
+    const calls = current.harness.calls.slice(callsBeforeTeardown).map(([name]) => name)
+    const stop = calls.indexOf('stopScan')
+    expect(stop).toBeGreaterThanOrEqual(0)
+    expect(calls.indexOf('releaseTerminalEvidence')).toBeGreaterThan(stop)
+    const replacement = await current.reload()
+    const [record] = await replacement.terminalEvidenceRecovery.list()
+    expect(record).toMatchObject({ producer: 'scan' })
+    const evidence = await replacement.terminalEvidenceRecovery.read(record.handle, record.byteLength)
+    expect(decodeTerminalEvidence(evidence.canonicalBytes)).toMatchObject({ terminal: { kind: 'terminal' } })
+    await replacement.terminalEvidenceRecovery.acknowledge(record.handle)
+    await expect(replacement.terminalEvidenceRecovery.list()).resolves.toEqual([])
+  } finally {
+    await current.close()
+  }
+})
