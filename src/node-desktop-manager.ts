@@ -13,6 +13,7 @@ import {
 } from './desktop-process-host'
 import { createPublicBleManager } from './public/ble-manager'
 import type { BleManager } from './public/ble-manager'
+import { collectCleanupPhases } from './public/error-bridge'
 import type { AdapterSelection, BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
 import { contractError } from './backend-contract/errors'
 import { desktopRustCoreOperation } from './backends/desktop/desktop-rust-core-binding'
@@ -58,6 +59,7 @@ export interface NodeTerminalEvidenceRecovery {
 
 interface NodeTerminalEvidenceRecoveryController extends NodeTerminalEvidenceRecovery {
   close(): Promise<void>
+  retire(): void
 }
 
 export type DesktopCoreBleManager = BleManager & {
@@ -225,11 +227,37 @@ export async function createDesktopCoreBleManager(
   const manager = await createPublicBleManager(internal, now)
   const recovery = createNodeTerminalEvidenceRecovery(desktopBackend)
   const destroy = manager.destroy.bind(manager)
+  let destruction: ReturnType<BleManager['destroy']> | null = null
+  const destroyWithRecovery = async () => {
+    const recoveryPhase = await recovery.close().then(
+      () => ({}),
+      error => ({ error })
+    )
+    const managerPhase = await destroy().then(
+      cleanup => ({ cleanup }),
+      error => ({ error })
+    )
+    // Native shutdown drops the ledger, so retrying lease release after
+    // successful shutdown would address a store that no longer exists.
+    if ('cleanup' in managerPhase && managerPhase.cleanup.state === 'released') recovery.retire()
+    return collectCleanupPhases([recoveryPhase, managerPhase])
+  }
   return Object.assign(manager, {
     terminalEvidenceRecovery: recovery,
-    destroy: async () => {
-      await recovery.close()
-      return destroy()
+    destroy: () => {
+      if (destruction === null) {
+        destruction = destroyWithRecovery().then(
+          result => {
+            if (result.state === 'release-failed') destruction = null
+            return result
+          },
+          error => {
+            destruction = null
+            throw error
+          }
+        )
+      }
+      return destruction
     }
   })
 }
@@ -261,6 +289,10 @@ function createNodeTerminalEvidenceRecovery(backend: DesktopRustCoreBackend): No
     if (!Number.isSafeInteger(value) || value < 1)
       throw contractError('argument.invalid', 'restoration', `${operation}.read.maximum-bytes`)
     return value
+  }
+  const retire = () => {
+    closed = true
+    entries.clear()
   }
   return Object.freeze({
     async list() {
@@ -359,15 +391,10 @@ function createNodeTerminalEvidenceRecovery(backend: DesktopRustCoreBackend): No
     },
     async close() {
       if (closed) return
-      if (!backend.hasTerminalEvidenceRecovery()) {
-        closed = true
-        entries.clear()
-        return
-      }
-      await backend.releaseTerminalEvidenceRecoveryLease(leaseId)
-      closed = true
-      entries.clear()
-    }
+      if (backend.hasTerminalEvidenceRecovery()) await backend.releaseTerminalEvidenceRecoveryLease(leaseId)
+      retire()
+    },
+    retire
   })
 }
 

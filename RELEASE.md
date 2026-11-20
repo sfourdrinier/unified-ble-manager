@@ -276,6 +276,13 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
+## Releasing 5.2.5
+
+This patch fixes native desktop cleanup after a terminal-evidence recovery
+error and preserves source-owned evidence through Electron renderer teardown.
+Qualify the frozen candidate under the standard cross-platform release gates
+before tagging current `main`.
+
 ## Releasing 5.2.4
 
 The planned 5.2.4 patch repairs cold registry recovery for released v1

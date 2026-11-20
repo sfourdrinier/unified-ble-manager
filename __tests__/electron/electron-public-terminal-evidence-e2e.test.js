@@ -393,3 +393,19 @@ test('Electron refuses the same renderer reservation for the wrong producer befo
     await current.close()
   }
 })
+
+test('renderer teardown stops a live scan before abandoning its evidence reservation', async () => {
+  const current = await open()
+  try {
+    await current.publicManager.scan()
+    await expect(current.publicManager.destroy()).resolves.toMatchObject({ state: 'released' })
+    const calls = current.harness.calls.map(([name]) => name)
+    const stop = calls.indexOf('stopScan')
+    const abandon = calls.indexOf('releaseTerminalEvidence')
+    expect(stop).toBeGreaterThanOrEqual(0)
+    if (abandon === -1) expect(calls).toContain('commitTerminalEvidence')
+    else expect(abandon).toBeGreaterThan(stop)
+  } finally {
+    await current.close()
+  }
+})

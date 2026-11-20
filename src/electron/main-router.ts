@@ -316,7 +316,7 @@ interface ElectronTerminalEvidenceEntry {
   readonly scope: TerminalEvidenceReservationRequest['scope'] | null
   readonly source: ElectronTerminalEvidenceSource
   readonly reservation: TerminalEvidenceReservation
-  sourceBinding: 'idle' | 'binding' | 'bound'
+  sourceBinding: 'idle' | 'binding' | 'mutating' | { readonly handle: string }
   ref: string | null
   digest: string | null
   byteLength: number | null
@@ -1107,15 +1107,15 @@ export class ElectronMainBleRouter {
     } satisfies ScanOptions<string, string>
     const evidence = this.bindTerminalEvidenceSource(resources, envelope.payload, 'scan')
     if (evidence !== null) bindTrustedTerminalEvidenceScope(options, evidence.scope)
+    const handle = this.allocateHandle('scan')
     let scan: Awaited<ReturnType<BleManager<string, import('../backend-contract').BackendIdentity<string>>['scan']>>
     try {
       scan = await this.manager.scan(options)
-      evidence?.commit()
+      evidence?.commit(handle)
     } catch (error) {
       evidence?.rollback()
       throw error
     }
-    const handle = this.allocateHandle('scan')
     this.streams.registerScan(resources, envelope.rendererLease, handle, scan, terminalEvidence =>
       this.receiveTerminalEvidence(resources, 'scan', evidence?.scope ?? null, terminalEvidence)
     )
@@ -2024,12 +2024,13 @@ export class ElectronMainBleRouter {
     } satisfies SubscriptionOptions
     const evidence = this.bindTerminalEvidenceSource(resources, envelope.payload, 'subscription')
     if (evidence !== null) bindTrustedTerminalEvidenceScope(options, evidence.scope)
+    const handle = this.allocateHandle('subscription')
     let notifications
     let ordinary
     try {
       notifications = acquired ? await database.database.acquireNotifications(path, options) : null
       ordinary = notifications === null ? await database.database.subscribe(path, options) : null
-      evidence?.commit()
+      evidence?.commit(handle)
     } catch (error) {
       evidence?.rollback()
       throw error
@@ -2038,7 +2039,6 @@ export class ElectronMainBleRouter {
       notifications === null ? ordinary : { values: notifications.values, remove: () => notifications.close() }
     if (subscription === null)
       throw contractError('lifecycle.invariant-violation', 'gatt', 'electron.gatt.subscription-admission')
-    const handle = this.allocateHandle('subscription')
     this.streams.registerSubscription(
       resources,
       envelope.rendererLease,
@@ -2836,8 +2836,6 @@ export class ElectronMainBleRouter {
       await operation.settled
     }
     const failures: CleanupFailure[] = []
-    failures.push(...(await this.retainTerminalEvidenceForRecovery(resources)))
-    failures.push(...(await this.releaseTerminalEvidenceRecoveryLease(resources)))
     this.orderedRecordings.retireUnused(resources.ownerKey, this.recordingLease(resources))
     this.orderedMarkers.retireUnusedForLease(this.recordingLease(resources))
     this.orderedRecovery.releaseLease(this.recordingLease(resources))
@@ -2875,6 +2873,8 @@ export class ElectronMainBleRouter {
         failures.push(...cleanup.failures)
       }
     }
+    failures.push(...(await this.retainTerminalEvidenceForRecovery(resources)))
+    failures.push(...(await this.releaseTerminalEvidenceRecoveryLease(resources)))
     for (const [handle, connection] of resources.connections) {
       if (this.hasDependentResourcesForConnection(resources, handle)) {
         continue
@@ -2916,7 +2916,12 @@ export class ElectronMainBleRouter {
   private async retainTerminalEvidenceForRecovery(resources: RendererResources): Promise<readonly CleanupFailure[]> {
     const failures: CleanupFailure[] = []
     for (const [handle, entry] of this.terminalEvidence.entries) {
-      if (entry.ownerKey !== resources.ownerKey || entry.recoverable) continue
+      if (
+        entry.ownerKey !== resources.ownerKey ||
+        entry.recoverable ||
+        this.terminalEvidenceSourceActive(resources, entry)
+      )
+        continue
       if (entry.ref !== null) {
         // Commit retains the reservation's runtime authority until abandon.
         // Release it at renderer teardown so a same-process renderer reload
@@ -3775,31 +3780,39 @@ export class ElectronMainBleRouter {
     if (command === 'terminalEvidence.commit') {
       const request = terminalEvidenceCommitRequest(payload, binaryPayload)
       const entry = this.terminalEvidenceOwner(resources, request.reservationId, 'electron.terminal-evidence.commit')
-      if (entry.ref !== null)
+      if (entry.sourceBinding !== 'idle' || entry.ref !== null)
         throw contractError('lifecycle.invalid-state', 'restoration', 'electron.terminal-evidence.commit')
-      const backend = this.manager.attachedBackend.backend
-      if (backend instanceof DesktopRustCoreBackend) {
-        await backend.stageTerminalEvidenceForRecovery(
-          entry.producer,
-          entry.scope,
-          resources.ownerKey,
-          request.canonicalBytes
-        )
+      entry.sourceBinding = 'mutating'
+      try {
+        const backend = this.manager.attachedBackend.backend
+        if (backend instanceof DesktopRustCoreBackend) {
+          await backend.stageTerminalEvidenceForRecovery(
+            entry.producer,
+            entry.scope,
+            resources.ownerKey,
+            request.canonicalBytes
+          )
+        }
+        const result = await entry.reservation.commit({
+          canonicalBytes: request.canonicalBytes,
+          digest: request.digest
+        })
+        if ('kind' in result) return Object.freeze({ kind: 'refused', reason: result.reason })
+        entry.ref = result.ref
+        entry.digest = result.digest
+        entry.byteLength = result.byteLength
+        this.terminalEvidence.entries.set(result.ref, entry)
+        return Object.freeze({
+          kind: 'committed',
+          ref: result.ref,
+          byteLength: String(result.byteLength),
+          digest: result.digest,
+          formatVersion: 1,
+          durability: 'committed'
+        })
+      } finally {
+        entry.sourceBinding = 'idle'
       }
-      const result = await entry.reservation.commit({ canonicalBytes: request.canonicalBytes, digest: request.digest })
-      if ('kind' in result) return Object.freeze({ kind: 'refused', reason: result.reason })
-      entry.ref = result.ref
-      entry.digest = result.digest
-      entry.byteLength = result.byteLength
-      this.terminalEvidence.entries.set(result.ref, entry)
-      return Object.freeze({
-        kind: 'committed',
-        ref: result.ref,
-        byteLength: String(result.byteLength),
-        digest: result.digest,
-        formatVersion: 1,
-        durability: 'committed'
-      })
     }
     if (command === 'terminalEvidence.read') {
       if (binaryPayload !== null) throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.read')
@@ -3823,7 +3836,18 @@ export class ElectronMainBleRouter {
       if (binaryPayload !== null) throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.release')
       const reservationId = terminalEvidenceReference(payload, 'electron.terminal-evidence.release')
       const entry = this.terminalEvidenceOwner(resources, reservationId, 'electron.terminal-evidence.release')
-      await entry.reservation.release()
+      if (
+        (entry.ref === null && this.terminalEvidenceSourceActive(resources, entry)) ||
+        entry.sourceBinding === 'mutating'
+      )
+        throw contractError('lifecycle.invalid-state', 'restoration', 'electron.terminal-evidence.release')
+      const previousBinding = entry.sourceBinding
+      entry.sourceBinding = 'mutating'
+      try {
+        await entry.reservation.release()
+      } finally {
+        entry.sourceBinding = previousBinding
+      }
       // Stream drainage abandons only the runtime lease. Exact staged or
       // committed bytes remain owned by recovery and keep their quota until
       // the authenticated recovery ACK below succeeds.
@@ -3948,13 +3972,20 @@ export class ElectronMainBleRouter {
     })
   }
 
+  private terminalEvidenceSourceActive(resources: RendererResources, entry: ElectronTerminalEvidenceEntry): boolean {
+    const binding = entry.sourceBinding
+    if (binding === 'binding') return true
+    if (typeof binding !== 'object') return false
+    return entry.producer === 'scan' ? resources.scans.has(binding.handle) : resources.subscriptions.has(binding.handle)
+  }
+
   private bindTerminalEvidenceSource(
     resources: RendererResources,
     payload: SerializableRecord,
     producer: 'scan' | 'subscription'
   ): {
     readonly scope: TrustedTerminalEvidenceScope
-    commit(): void
+    commit(handle: string): void
     rollback(): void
   } | null {
     const scope = terminalEvidenceScopeFromSourcePayload(payload, `electron.${producer}.terminal-evidence-scope`)
@@ -3979,7 +4010,7 @@ export class ElectronMainBleRouter {
         'restoration',
         `electron.${producer}.terminal-evidence-scope-owner`
       )
-    if (entry.sourceBinding !== 'idle')
+    if (entry.sourceBinding !== 'idle' || entry.ref !== null)
       throw contractError(
         'lifecycle.invalid-state',
         'restoration',
@@ -3988,8 +4019,8 @@ export class ElectronMainBleRouter {
     entry.sourceBinding = 'binding'
     return Object.freeze({
       scope,
-      commit: () => {
-        entry.sourceBinding = 'bound'
+      commit: handle => {
+        entry.sourceBinding = { handle }
       },
       rollback: () => {
         if (entry.sourceBinding === 'binding') entry.sourceBinding = 'idle'
@@ -4017,7 +4048,7 @@ export class ElectronMainBleRouter {
         candidate.scope !== null &&
         sameTerminalEvidenceScope(candidate.scope, expectedScope)
     )
-    if (entry === undefined || entry.sourceBinding !== 'bound' || entry.ref !== null)
+    if (entry === undefined || typeof entry.sourceBinding !== 'object' || entry.ref !== null)
       throw contractError('protocol.violation', 'restoration', `electron.${producer}.terminal-evidence-receipt`)
     entry.ref = evidence.ref
     entry.digest = evidence.digest
@@ -4081,7 +4112,7 @@ export class ElectronMainBleRouter {
       scope: null,
       source,
       reservation,
-      sourceBinding: 'bound',
+      sourceBinding: 'idle',
       ref: record.reference,
       digest: record.digest,
       byteLength: record.byteLength,
