@@ -3728,12 +3728,23 @@ export class ElectronMainBleRouter {
       const request = terminalEvidenceReservationRequest(payload)
       const { producer, scope } = request
       const key = JSON.stringify([producer, scope.managerId, scope.operationId, scope.incarnation])
-      if (
-        this.terminalEvidence.pendingScopes.has(key) ||
-        [...this.terminalEvidence.entries.values()].some(
-          entry => entry.producer === producer && entry.scope !== null && sameTerminalEvidenceScope(entry.scope, scope)
-        )
+      const existing = [...this.terminalEvidence.entries].find(
+        ([, entry]) =>
+          entry.producer === producer && entry.scope !== null && sameTerminalEvidenceScope(entry.scope, scope)
       )
+      if (existing !== undefined) {
+        const [reservationId, entry] = existing
+        // Retry a lost response using the original handle and authority.
+        if (
+          entry.reservationLeaseId === resources.terminalEvidenceRecoveryLeaseId &&
+          entry.sourceBinding === 'idle' &&
+          !entry.reservationReleased &&
+          entry.ref === null &&
+          entry.reservation.maximumBytes === request.maximumBytes
+        )
+          return Object.freeze({ kind: 'reserved', reservationId, maximumBytes: entry.reservation.maximumBytes })
+      }
+      if (existing !== undefined || this.terminalEvidence.pendingScopes.has(key))
         throw contractError('lifecycle.invalid-state', 'restoration', 'electron.terminal-evidence.scope-reserved')
       // Native reserve is idempotent for the same scope. Claim it before
       // crossing that boundary so two leases cannot receive aliased handles.

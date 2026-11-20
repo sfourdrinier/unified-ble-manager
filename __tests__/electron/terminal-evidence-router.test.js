@@ -341,7 +341,9 @@ test('a renderer cannot reserve the same native evidence scope while another lea
   finishReserve()
   const busy = { normalized: { code: 'lifecycle.invalid-state', operation: 'electron.terminal-evidence.scope-reserved' } }
   await expect(duplicateWhilePending).rejects.toMatchObject(busy)
-  await expect(reservation).resolves.toMatchObject({ kind: 'reserved' })
+  const receipt = await reservation
+  expect(receipt).toMatchObject({ kind: 'reserved' })
+  await expect(first.route('terminalEvidence.reserve', request)).resolves.toEqual(receipt)
   await expect(second.route('terminalEvidence.reserve', request)).rejects.toMatchObject(busy)
   await router.releaseRenderer(owner, second.boot.rendererLease)
   await router.releaseRenderer(owner, first.boot.rendererLease)
