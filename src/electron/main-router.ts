@@ -332,6 +332,7 @@ interface ElectronTerminalEvidenceSource extends TerminalEvidenceSource {
 
 interface ProcessTerminalEvidenceOwners {
   readonly entries: Map<string, ElectronTerminalEvidenceEntry>
+  readonly pendingScopes: Set<string>
   nextId: number
 }
 
@@ -424,7 +425,7 @@ export class ElectronMainBleRouter {
     const persistentTerminalOwner = terminalOwner !== null && typeof terminalOwner === 'object'
     let terminalEvidence = persistentTerminalOwner ? processTerminalEvidenceOwners.get(terminalOwner) : undefined
     if (terminalEvidence === undefined) {
-      terminalEvidence = { entries: new Map(), nextId: 1 }
+      terminalEvidence = { entries: new Map(), pendingScopes: new Set(), nextId: 1 }
       if (persistentTerminalOwner) processTerminalEvidenceOwners.set(terminalOwner, terminalEvidence)
     }
     this.terminalEvidence = terminalEvidence
@@ -3725,50 +3726,66 @@ export class ElectronMainBleRouter {
     if (command === 'terminalEvidence.reserve') {
       if (binaryPayload !== null) throw contractError('protocol.malformed', 'ipc', 'electron.terminal-evidence.reserve')
       const request = terminalEvidenceReservationRequest(payload)
-      const source = this.terminalEvidenceSource(request.producer)
-      const reservation = await source.reserveTerminalEvidence(request)
-      const releaseRevokedReservation = async (): Promise<never> => {
-        await reservation.release()
-        throw contractError('ownership.denied', 'restoration', 'electron.terminal-evidence.reserve.revoked')
-      }
-      if (resources.lifecycle !== 'active') await releaseRevokedReservation()
-      const backend = this.manager.attachedBackend.backend
-      if (backend instanceof DesktopRustCoreBackend) {
-        try {
-          await backend.bindTerminalEvidenceRecipientForRecovery(request.producer, request.scope, resources.ownerKey)
-        } catch (bindingError) {
-          try {
-            await reservation.release()
-          } catch (releaseError) {
-            throw new AggregateError(
-              [bindingError, releaseError],
-              'Electron terminal-evidence recipient binding and reservation release both failed'
-            )
-          }
-          throw bindingError
+      const { producer, scope } = request
+      const key = JSON.stringify([producer, scope.managerId, scope.operationId, scope.incarnation])
+      if (
+        this.terminalEvidence.pendingScopes.has(key) ||
+        [...this.terminalEvidence.entries.values()].some(
+          entry => entry.producer === producer && entry.scope !== null && sameTerminalEvidenceScope(entry.scope, scope)
+        )
+      )
+        throw contractError('lifecycle.invalid-state', 'restoration', 'electron.terminal-evidence.scope-reserved')
+      // Native reserve is idempotent for the same scope. Claim it before
+      // crossing that boundary so two leases cannot receive aliased handles.
+      this.terminalEvidence.pendingScopes.add(key)
+      try {
+        const source = this.terminalEvidenceSource(request.producer)
+        const reservation = await source.reserveTerminalEvidence(request)
+        const releaseRevokedReservation = async (): Promise<never> => {
+          await reservation.release()
+          throw contractError('ownership.denied', 'restoration', 'electron.terminal-evidence.reserve.revoked')
         }
+        if (resources.lifecycle !== 'active') await releaseRevokedReservation()
+        const backend = this.manager.attachedBackend.backend
+        if (backend instanceof DesktopRustCoreBackend) {
+          try {
+            await backend.bindTerminalEvidenceRecipientForRecovery(request.producer, request.scope, resources.ownerKey)
+          } catch (bindingError) {
+            try {
+              await reservation.release()
+            } catch (releaseError) {
+              throw new AggregateError(
+                [bindingError, releaseError],
+                'Electron terminal-evidence recipient binding and reservation release both failed'
+              )
+            }
+            throw bindingError
+          }
+        }
+        // Binding crosses an asynchronous native boundary. Renderer teardown can
+        // complete while it awaits, before this provisional reservation reaches
+        // the process registry; never publish such an orphaned row.
+        if (resources.lifecycle !== 'active') await releaseRevokedReservation()
+        const reservationId = `terminal-evidence-${this.terminalEvidence.nextId++}`
+        this.terminalEvidence.entries.set(reservationId, {
+          ownerKey: resources.ownerKey,
+          recoveryLeaseId: null,
+          reservationLeaseId: resources.terminalEvidenceRecoveryLeaseId,
+          reservationReleased: false,
+          producer: request.producer,
+          scope: request.scope,
+          source,
+          reservation,
+          sourceBinding: 'idle',
+          ref: null,
+          digest: null,
+          byteLength: null,
+          recoverable: false
+        })
+        return Object.freeze({ kind: 'reserved', reservationId, maximumBytes: reservation.maximumBytes })
+      } finally {
+        this.terminalEvidence.pendingScopes.delete(key)
       }
-      // Binding crosses an asynchronous native boundary. Renderer teardown can
-      // complete while it awaits, before this provisional reservation reaches
-      // the process registry; never publish such an orphaned row.
-      if (resources.lifecycle !== 'active') await releaseRevokedReservation()
-      const reservationId = `terminal-evidence-${this.terminalEvidence.nextId++}`
-      this.terminalEvidence.entries.set(reservationId, {
-        ownerKey: resources.ownerKey,
-        recoveryLeaseId: null,
-        reservationLeaseId: resources.terminalEvidenceRecoveryLeaseId,
-        reservationReleased: false,
-        producer: request.producer,
-        scope: request.scope,
-        source,
-        reservation,
-        sourceBinding: 'idle',
-        ref: null,
-        digest: null,
-        byteLength: null,
-        recoverable: false
-      })
-      return Object.freeze({ kind: 'reserved', reservationId, maximumBytes: reservation.maximumBytes })
     }
     if (command === 'terminalEvidence.commit') {
       const request = terminalEvidenceCommitRequest(payload, binaryPayload)

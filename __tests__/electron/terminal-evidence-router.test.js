@@ -28,6 +28,7 @@ function fixture(options = {}) {
   let serial = 0
   const source = {
     reserveTerminalEvidence: async request => {
+      await options.beforeReserve?.()
       if (reservations.size !== 0) throw new Error('runtime reservation remains busy')
       const reservationId = `reservation-${++serial}`
       reservations.set(reservationId, request)
@@ -315,4 +316,33 @@ test('releasing one renderer lease preserves another lease reservation for the s
   })).resolves.toEqual({ kind: 'released' })
   expect(releases).toEqual(['reservation-1'])
   await expect(router.releaseRenderer(owner, first.boot.rendererLease)).resolves.toMatchObject({ state: 'released' })
+})
+
+
+test('a renderer cannot reserve the same native evidence scope while another lease owns or is reserving it', async () => {
+  let startReserve
+  let finishReserve
+  const started = new Promise(resolve => { startReserve = resolve })
+  const finish = new Promise(resolve => { finishReserve = resolve })
+  const { router } = fixture({ beforeReserve: () => { startReserve(); return finish } })
+  const owner = sender('shared-evidence-owner')
+  const first = await route(router, owner)
+  const second = await route(router, owner)
+  const request = {
+    version: 1,
+    producer: 'scan',
+    maximumBytes: 32,
+    formatVersion: 1,
+    scope: { managerId: 'manager', operationId: 'operation', incarnation: '1' }
+  }
+  const reservation = first.route('terminalEvidence.reserve', request)
+  await started
+  const duplicateWhilePending = second.route('terminalEvidence.reserve', request)
+  finishReserve()
+  const busy = { normalized: { code: 'lifecycle.invalid-state', operation: 'electron.terminal-evidence.scope-reserved' } }
+  await expect(duplicateWhilePending).rejects.toMatchObject(busy)
+  await expect(reservation).resolves.toMatchObject({ kind: 'reserved' })
+  await expect(second.route('terminalEvidence.reserve', request)).rejects.toMatchObject(busy)
+  await router.releaseRenderer(owner, second.boot.rendererLease)
+  await router.releaseRenderer(owner, first.boot.rendererLease)
 })
