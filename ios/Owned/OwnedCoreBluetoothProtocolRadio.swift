@@ -112,6 +112,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   var releasingConnectionClaims: [String: Set<ObjectIdentifier>] = [:]
   var releasingConnectionOperations: [String: [ObjectIdentifier: String]] = [:]
   var releasingConnectionTickets: [String: [ObjectIdentifier: UUID]] = [:]
+  var poweredOffReleaseTickets = Set<UUID>()
   var disconnectOwners: [String: (owner: AnyObject, operation: String)] = [:]
   struct ConnectionCancellation {
     let owner: AnyObject
@@ -550,6 +551,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     let releaseTicket = UUID()
     releasingConnectionTickets[peerIdentifier, default: [:]][key] = releaseTicket
     retireConnectionNotifications(owner: owner, peer: peerIdentifier) { failure in
+      let poweredOff = self.poweredOffReleaseTickets.remove(releaseTicket) != nil
       guard self.releasingConnectionTickets[peerIdentifier]?[key] == releaseTicket else {
         completion(self.error(code: 1016, message: "Connection cleanup was superseded")); return
       }
@@ -559,9 +561,9 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       self.releasingConnectionOperations[peerIdentifier]?.removeValue(forKey: key)
       if self.releasingConnectionOperations[peerIdentifier]?.isEmpty == true { self.releasingConnectionOperations.removeValue(forKey: peerIdentifier) }
       if self.releasingConnectionClaims[peerIdentifier]?.isEmpty == true { self.releasingConnectionClaims.removeValue(forKey: peerIdentifier) }
-      if self.powerOffRetirementSnapshot != nil {
-        // The exact claim's physical link ended with the powered-off central.
-        // Its ordered reset also owns the notification cleanup.
+      if poweredOff {
+        // The physical link ended even if the notification cleanup callback
+        // arrived after the power-off barrier and central replacement.
         completion(nil); return
       }
       guard self.connectionClaims[peerIdentifier]?[key]?.identity == claim.identity else {
@@ -1089,6 +1091,9 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       // Power-off ends the physical links. Retire their callback source as
       // well, since CoreBluetooth may omit the per-peer disconnect callback.
       powerOffRetirementSnapshot = snapshot
+      for tickets in releasingConnectionTickets.values {
+        poweredOffReleaseTickets.formUnion(tickets.values)
+      }
       central.delegate = nil
     }
     routeCentralState(state, snapshot: snapshot)

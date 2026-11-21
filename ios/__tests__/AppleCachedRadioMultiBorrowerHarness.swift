@@ -2239,6 +2239,44 @@ private final class LegacyFailureBorrower: NSObject, OwnedCoreBluetoothProtocolR
       print("Power-off central retirement and fresh connection passed")
       return
     }
+    if CommandLine.arguments.contains("--connection-power-off-during-notification-release") {
+      guard let central = class_createInstance(ScanCentral.self, 0) as? ScanCentral,
+            let peripheral = class_createInstance(Peripheral.self, 0) as? Peripheral else { fatalError("fixture") }
+      _ = Unmanaged.passRetained(central); _ = Unmanaged.passRetained(peripheral)
+      let peer = peerID.uuidString
+      let characteristic = Characteristic(type: CBUUID(string: "2A37"), properties: [.notify], value: nil, permissions: [])
+      let service = CBMutableService(type: CBUUID(string: "180D"), primary: true)
+      service.characteristics = [characteristic]
+      fixtureService = service
+      let address = CharacteristicAddress(peerIdentifier: peer,
+        serviceUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID("180D"), serviceOccurrence: 0,
+        characteristicUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID("2A37"), characteristicOccurrence: 0)
+      let done = DispatchSemaphore(value: 0)
+      var answer: NSError?
+      radio.queue.sync {
+        radio.central = central
+        radio.peripheralByIdentifier[peer] = peripheral
+        radio.servicesByPeer[peer] = [service]
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "old") {
+          precondition($0 == nil)
+        }
+        precondition(radio.installNotificationRoute("old", borrower: first))
+        radio.subscriptions[address] = "old"
+        notifying[ObjectIdentifier(characteristic)] = true
+        radio.disconnectOnQueue(owner: first, peerIdentifier: peer, operationIdentifier: "release") {
+          answer = $0; done.signal()
+        }
+        precondition(!radio.releasingConnectionTickets.isEmpty && radio.pendingDisconnect[peer] == nil)
+        scanState = .poweredOff
+        radio.centralDelegate.centralManagerDidUpdateState(central)
+        precondition(radio.powerOffRetirementSnapshot == nil && radio.connectionClaims[peer] == nil)
+        radio.central = central
+      }
+      precondition(done.wait(timeout: .now() + 2) == .success && answer == nil,
+        "a queued release must acknowledge the exact link retired by power-off")
+      print("Power-off settles disconnect during notification cleanup")
+      return
+    }
     if CommandLine.arguments.contains("--connection-final-release") {
       guard let central = class_createInstance(ScanCentral.self, 0) as? ScanCentral,
             let peripheral = class_createInstance(Peripheral.self, 0) as? Peripheral else { fatalError("fixture") }

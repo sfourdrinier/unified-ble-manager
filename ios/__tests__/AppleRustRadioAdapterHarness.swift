@@ -2741,7 +2741,7 @@ final class Harness {
     }
   }
 
-  func orderedAdapterWakeChecks() {
+  func orderedAdapterWakeChecks(powerOff: Bool) {
     final class Sink: UnifiedBleRustRadioSink {
       var completions: [UInt64: MobileRadioCompletion] = [:]
       var ingresses: [MobileRadioIngress] = []
@@ -2783,6 +2783,10 @@ final class Harness {
     }
     adapter.submit(request: .connect(id: 74, peerId: "p", autoConnect: false, preferredPhy: [], expectedGeneration: "conn"))
     guard waitForCompletion(74) == .unit else { return check(false, "ordered enable connection") }
+    if powerOff {
+      adapter.submit(request: .enableNotifications(id: 86, instance: instance, epoch: 8, requested: nil, preferred: nil))
+      check(waitForCompletion(86) == .notifyEnabled(delivery: "unknown"), "ordinary subscription before power-off")
+    }
     let activation = MobileOrderedActivation(instance: instance, connectionGeneration: "conn", sourceGeneration: generation, groupId: 77, member: members[0], activationEpoch: 9)
     driver.onQueue { driver.holdSubscribes = true }
     adapter.submit(request: .orderedEnableNotifications(id: 75, activation: activation, requested: nil, preferred: nil))
@@ -2816,7 +2820,13 @@ final class Harness {
       source.admit(route: OrderedNotificationRoute(peer: "p", serviceUUID: "s", serviceOccurrence: 0,
         characteristicUUID: "c", characteristicOccurrence: 0), bytes: Data([9]), provenance: .notification)
     }
-    driver.onQueue { adapter.protocolRadioDidDisconnectPeer("p", error: nil) }
+    driver.onQueue {
+      if powerOff {
+        adapter.protocolRadioDidUpdateAdapterState(["availability": "available", "authorization": "granted", "power": "off"])
+      } else {
+        adapter.protocolRadioDidDisconnectPeer("p", error: nil)
+      }
+    }
     driver.onQueue { driver.subscribeCompletions.removeValue(forKey: driver.subscriptionIdentifier(82))?(nil) }
     guard case .orderedEnableReleased? = waitForCompletion(82) else { return check(false, "late callback after connection retirement") }
     adapter.submit(request: .orderedEnableSettlement(id: 83, activation: retiredActivation))
@@ -2844,6 +2854,12 @@ final class Harness {
     check(waitForCompletion(74) == .unit, "seal wake-failure source")
     adapter.submit(request: .orderedRemove(id: 73, generation: generation, groupId: 77))
     check(waitForCompletion(73) == .unit, "wake-failure group cleanup")
+    if powerOff {
+      adapter.submit(request: .close(id: 87))
+      check(waitForCompletion(87) == .closed(failures: []), "close after power-off must release all notification routes")
+      check(driver.onQueue { !driver.calls.contains("unsubscribe \(driver.subscriptionIdentifier(86))") },
+        "close must not unsubscribe against a powered-off connection")
+    }
   }
 
   func productionOrderedFactoryNoEffectChecks() {
@@ -3114,7 +3130,8 @@ final class Harness {
     })
     check(reentrantInstall.ensureHost() != nil, "scripted install should fail after its reentrant wake")
     orderedDeferredOpenFenceChecks()
-    orderedAdapterWakeChecks()
+    orderedAdapterWakeChecks(powerOff: false)
+    orderedAdapterWakeChecks(powerOff: true)
     productionOrderedFactoryNoEffectChecks()
     orderedTypedRadioChecks()
     orderedVersionedReplacementChecks()

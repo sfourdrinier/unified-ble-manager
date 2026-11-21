@@ -309,6 +309,7 @@ try {
     '--connection-stale-callback',
     '--connection-terminal-fence',
     '--connection-power-off-retirement',
+    '--connection-power-off-during-notification-release',
     '--connection-final-release',
     '--claim-disconnect-routes',
     '--claim-disconnect-physical-cleanup',

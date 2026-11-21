@@ -777,7 +777,10 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
   }
 
   private func forgetSubscription(_ identifier: String) {
-    subscriptionsById.removeValue(forKey: identifier)
+    if let subscription = subscriptionsById.removeValue(forKey: identifier) {
+      let key = SubscriptionKey(instance: InstanceKey(subscription.instance), epoch: subscription.epoch)
+      if subscriptionByInstance[key] == identifier { subscriptionByInstance.removeValue(forKey: key) }
+    }
     (driver as? OwnedCoreBluetoothProtocolRadio)?.removeNotificationRoute(identifier, borrower: self)
     if let route = notificationReceiptRoutes[identifier] {
       route.retired = true
@@ -1774,8 +1777,6 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
           self.releaseOrderedActivations(peer: peerId, connection: generation)
           let retired = self.subscriptionsById.values.filter { $0.instance.peerId == peerId }
           for subscription in retired {
-            let key = SubscriptionKey(instance: InstanceKey(subscription.instance), epoch: subscription.epoch)
-            if self.subscriptionByInstance[key] == subscription.identifier { self.subscriptionByInstance.removeValue(forKey: key) }
             self.forgetSubscription(subscription.identifier)
           }
         }
@@ -2187,6 +2188,9 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
           return self.finish(id, .orderedEnableReleased(kind: "platform", gattStatus: nil, nativeDomain: nil, nativeCode: nil, detail: "connection retired", dispatched: true))
         }
       }
+      guard self.subscriptionsById[subscriptionIdentifier] != nil else {
+        return self.finish(id, Self.failed("path-stale", "connection retired during notification enable", dispatched: true))
+      }
       if let previous, previous != subscriptionIdentifier { self.forgetSubscription(previous) }
       self.subscriptionByInstance[key] = subscriptionIdentifier
       if let activation = self.orderedEnableRequests[id], let state = self.orderedEnableReceipts[activation], case .released = state {} else if let activation = self.orderedEnableRequests[id], self.orderedEnableReceipts[activation] != nil { self.orderedEnableReceipts[activation] = .enabled }
@@ -2215,19 +2219,15 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       characteristicUUID: instance.characteristicUuid, characteristicOccurrence: path.characteristic,
       subscriptionIdentifier: subscriptionIdentifier, operationIdentifier: operationIdentifier
     ) { error in
-      if error == nil {
-        if self.subscriptionByInstance[key] == subscriptionIdentifier {
-          self.subscriptionByInstance.removeValue(forKey: key)
-        }
-        self.forgetSubscription(subscriptionIdentifier)
-        if error == nil {
-          for activation in Array(self.orderedEnableReceipts.keys) where activation.subscription == key {
-            self.orderedEnableReceipts[activation] = .released
-          }
-        }
-        return completion(nil)
+      guard self.subscriptionsById[subscriptionIdentifier] != nil else { return completion(nil) }
+      if let error {
+        return completion(Self.failure(error, verb: .disableNotifications))
       }
-      completion(error.map { Self.failure($0, verb: .disableNotifications) })
+      self.forgetSubscription(subscriptionIdentifier)
+      for activation in Array(self.orderedEnableReceipts.keys) where activation.subscription == key {
+        self.orderedEnableReceipts[activation] = .released
+      }
+      completion(nil)
     }
   }
 
@@ -2238,16 +2238,18 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     var remaining = subscriptionsById.values.filter { subscriptionByInstance[SubscriptionKey(instance: InstanceKey($0.instance), epoch: $0.epoch)] == $0.identifier }
     var failures = [MobileCloseFailure]()
     func next() {
-      guard let subscription = remaining.popLast() else {
-        guard self.inFlight[id] == operationIdentifier else { return }
-        return finish(id, .closed(failures: failures))
-      }
-      disable(subscription.instance, epoch: subscription.epoch, operationIdentifier: self.newOperationIdentifier(id)) { failure in
-        if case let .failed(kind, _, _, _, detail, _)? = failure {
-          failures.append(MobileCloseFailure(instance: subscription.instance, detail: "\(kind): \(detail)"))
+      while let subscription = remaining.popLast() {
+        guard self.subscriptionsById[subscription.identifier] != nil else { continue }
+        disable(subscription.instance, epoch: subscription.epoch, operationIdentifier: self.newOperationIdentifier(id)) { failure in
+          if case let .failed(kind, _, _, _, detail, _)? = failure {
+            failures.append(MobileCloseFailure(instance: subscription.instance, detail: "\(kind): \(detail)"))
+          }
+          next()
         }
-        next()
+        return
       }
+      guard self.inFlight[id] == operationIdentifier else { return }
+      finish(id, .closed(failures: failures))
     }
     next()
   }
@@ -2334,6 +2336,15 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
 
   func protocolRadioDidUpdateAdapterState(_ snapshot: NSDictionary) {
     let adapter = Self.adapterSnapshot(snapshot)
+    if adapter.power == "off" {
+      // Power-off ends the native connections. Retire notifications before
+      // forgetting their generations, while captured failure receipts drain.
+      for (peer, generation) in establishedGenerations {
+        orderedGroups?.disconnectGroups(peer: peer)
+        releaseOrderedActivations(peer: peer, connection: generation)
+      }
+      for identifier in Array(subscriptionsById.keys) { forgetSubscription(identifier) }
+    }
     if adapter.power != "on" {
       establishedGenerations.removeAll()
       establishedNativeClaims.removeAll()
