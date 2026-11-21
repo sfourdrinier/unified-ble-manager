@@ -276,6 +276,17 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
+## Releasing 5.2.6
+
+This patch releases adapter-reset connection claims using the normal cleanup
+budget. On Apple, a confirmed Bluetooth power-off retires the old
+CoreBluetooth callback owner and preserves the restoration configuration.
+The previous owner cannot affect a replacement connection.
+
+A signed development build recovered a bonded Oura Ring on iPhone after
+Bluetooth was cycled in Settings and received fresh heart rate and IBI.
+The hosted release gates verify the packaged artifacts and backend tests.
+
 ## Releasing 5.2.5
 
 This patch fixes native desktop cleanup after a terminal-evidence recovery

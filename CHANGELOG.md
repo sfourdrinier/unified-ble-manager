@@ -4,7 +4,7 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [Unreleased]
+## [5.2.6] - 2026-11-21
 
 - On Apple, retire the CoreBluetooth callback owner when powering off with
   active links, so saved devices can reconnect if a disconnect callback is
