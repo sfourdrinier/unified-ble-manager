@@ -7480,6 +7480,91 @@ mod scan_stop_race_tests {
         assert_eq!(cleanup["state"], "release-failed");
     }
 
+    #[tokio::test]
+    async fn ios_reset_awaits_native_disconnect_before_reconnecting() {
+        use crate::test_common::*;
+        use serde_json::json;
+        use std::time::Duration;
+
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Apple).await;
+        let session = host.open_session("ios-reset-release").unwrap();
+        let other = "A0:9E:1A:00:00:02";
+        for peer in [POLAR, other] {
+            host.ingest(crate::RadioIngress::Advertisement(crate::Advertisement {
+                peer_id: peer.into(),
+                ..Default::default()
+            }));
+            ok(&call(
+                &session,
+                "connection.connect",
+                &json!({"peerId":peer,"lease":"old","operationId":format!("connect-{peer}")})
+                    .to_string(),
+            )
+            .await);
+        }
+        radio.set_responder(Box::new(|request| match request {
+            crate::RadioRequest::Disconnect { .. } => Reply::Hold,
+            request => polar_responder(request),
+        }));
+        let mut resets = host.inner.central.adapter_reset_events();
+        let mut off = adapter_on();
+        off.power = crate::AdapterPower::Off;
+        host.ingest(crate::RadioIngress::AdapterState(off));
+        let held = tokio::time::timeout(Duration::from_millis(750), async {
+            loop {
+                let ids = radio.held_of(crate::RequestKind::Disconnect);
+                if ids.len() == 2 {
+                    break ids;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both links must start releasing before either completes");
+        radio.answer(held[0], crate::RadioCompletion::Unit);
+        // CoreBluetooth can confirm a release after the ordinary background
+        // compensation window. Power-on can arrive while that release waits.
+        host.ingest(crate::RadioIngress::AdapterState(adapter_on()));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1250), resets.recv())
+                .await
+                .is_err(),
+            "reset published a cleanup failure before the native release answered"
+        );
+        radio.answer(held[1], crate::RadioCompletion::Unit);
+        let reset = tokio::time::timeout(Duration::from_secs(3), resets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reset.link_release_failures.is_empty());
+        for peer in [POLAR, other] {
+            let cleanup = ok(&call(
+                &session,
+                "connection.disconnect",
+                &json!({"peerId":peer,"lease":"old","operationId":format!("release-{peer}")})
+                    .to_string(),
+            )
+            .await);
+            assert_eq!(cleanup["state"], "released");
+        }
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while host.inner.central.adapter_status().lost {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        radio.set_responder(Box::new(polar_responder));
+        ok(&call(
+            &session,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"new","operationId":"reconnect"}).to_string(),
+        )
+        .await);
+        host.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn reset_disconnect_failure_is_not_reported_released() {
         use crate::test_common::*;

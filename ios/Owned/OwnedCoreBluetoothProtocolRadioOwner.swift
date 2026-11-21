@@ -593,20 +593,20 @@ extension OwnedCoreBluetoothProtocolRadio {
     if let pending = pendingDiscovery[peer] { failDiscovery(peer, pending: pending, error: failure) }
   }
 
-  /// A central state below poweredOff invalidates every previously obtained
-  /// peripheral object and its callback debts without a disconnect callback.
-  func recoverAfterAdapterInvalidation(_ peer: String) {
+  /// Retire cached objects and callback debts invalidated by the adapter or
+  /// by replacing the callback owner after an observed power-off.
+  func recoverAfterAdapterInvalidation(_ peer: String, physicalLinkEnded: Bool = false) {
     orderedOverflowDisconnectPending.remove(peer)
     let failure = error(code: 1016, message: "CoreBluetooth adapter invalidated the previous connection")
     pendingConnect.removeValue(forKey: peer)?.completion(failure)
-    pendingDisconnect.removeValue(forKey: peer)?.completion(failure)
+    pendingDisconnect.removeValue(forKey: peer)?.completion(physicalLinkEnded ? nil : failure)
     disconnectOwners.removeValue(forKey: peer)
     connectionEpochs.removeValue(forKey: peer)
     pendingConnectionTerminals.removeValue(forKey: peer)
     if let claims = connectionClaims.removeValue(forKey: peer) {
       for claim in claims.values {
         if let pending = claim.pending { pending.completion(failure) }
-        else { claim.route?.protocolRadioDidDisconnectPeer(peer, error: failure) }
+        else if !physicalLinkEnded { claim.route?.protocolRadioDidDisconnectPeer(peer, error: failure) }
       }
     }
     if let pending = pendingDiscovery.removeValue(forKey: peer), !pending.cancelled && !pending.completionDelivered {

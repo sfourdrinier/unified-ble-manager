@@ -15,8 +15,13 @@ class OwnedCoreBluetoothCentralDelegate: NSObject, CBCentralManagerDelegate {
     super.init()
   }
 
+  fileprivate func currentRadio(_ central: CBCentralManager) -> OwnedCoreBluetoothProtocolRadio? {
+    guard let radio, radio.central === central, radio.powerOffRetirementSnapshot == nil else { return nil }
+    return radio
+  }
+
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
-    radio?.centralManagerDidUpdateState(central)
+    currentRadio(central)?.centralManagerDidUpdateState(central)
   }
 
   func centralManager(
@@ -25,7 +30,7 @@ class OwnedCoreBluetoothCentralDelegate: NSObject, CBCentralManagerDelegate {
     advertisementData: [String: Any],
     rssi RSSI: NSNumber
   ) {
-    radio?.centralManager(
+    currentRadio(central)?.centralManager(
       central,
       didDiscover: peripheral,
       advertisementData: advertisementData,
@@ -34,15 +39,15 @@ class OwnedCoreBluetoothCentralDelegate: NSObject, CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-    radio?.centralManager(central, didConnect: peripheral)
+    currentRadio(central)?.centralManager(central, didConnect: peripheral)
   }
 
   func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-    radio?.centralManager(central, didFailToConnect: peripheral, error: error)
+    currentRadio(central)?.centralManager(central, didFailToConnect: peripheral, error: error)
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-    radio?.centralManager(central, didDisconnectPeripheral: peripheral, error: error)
+    currentRadio(central)?.centralManager(central, didDisconnectPeripheral: peripheral, error: error)
   }
 }
 
@@ -50,7 +55,7 @@ class OwnedCoreBluetoothCentralDelegate: NSObject, CBCentralManagerDelegate {
 /** Adds the optional restoration callback only when the central has a restoration identifier. */
 final class OwnedCoreBluetoothRestoringCentralDelegate: OwnedCoreBluetoothCentralDelegate {
   func centralManager(_ central: CBCentralManager, willRestoreState dictionary: [String: Any]) {
-    radio?.centralManager(central, willRestoreState: dictionary)
+    currentRadio(central)?.centralManager(central, willRestoreState: dictionary)
   }
 }
 #endif

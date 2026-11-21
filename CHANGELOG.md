@@ -4,6 +4,16 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [Unreleased]
+
+- On Apple, retire the CoreBluetooth callback owner when powering off with
+  active links, so saved devices can reconnect if a disconnect callback is
+  omitted. Callbacks from the old central cannot affect the replacement.
+
+- Await native connection cleanup during adapter reset with the regular
+  disconnect budget so a slower CoreBluetooth confirmation can release
+  the old session and allow reconnection.
+
 ## [5.2.5] - 2026-11-19
 
 - Attempt native desktop manager shutdown even if terminal-evidence recovery

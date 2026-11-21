@@ -14719,13 +14719,25 @@ async fn adapter_reset<B: RadioBoundary>(
             }
         }
     }
-    for (peer_id, _, generation) in &links {
-        match tokio::time::timeout(
-            COMPENSATION_TIMEOUT,
-            inner.boundary.disconnect_with_observation(peer_id),
-        )
-        .await
-        {
+    // Give each native owner its normal disconnect window. Start independent
+    // link releases together so one unresolved peer cannot delay dispatch
+    // for the others while the adapter transition is fenced.
+    let mut releases = tokio::task::JoinSet::new();
+    for (index, (peer_id, _, _)) in links.iter().enumerate() {
+        let inner = Arc::clone(inner);
+        let peer_id = peer_id.clone();
+        releases.spawn(async move {
+            let result = tokio::time::timeout(
+                LIVENESS_CLEANUP,
+                inner.boundary.disconnect_with_observation(&peer_id),
+            )
+            .await;
+            (index, result)
+        });
+    }
+    for (index, result) in releases.join_all().await {
+        let (peer_id, _, generation) = &links[index];
+        match result {
             // The adapter took the peer with it: nothing is left to release.
             Ok(Ok(observation)) => {
                 note_confirmed_release(inner, peer_id);

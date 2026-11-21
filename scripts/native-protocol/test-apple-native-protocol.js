@@ -308,6 +308,7 @@ try {
     '--connection-failure-retry',
     '--connection-stale-callback',
     '--connection-terminal-fence',
+    '--connection-power-off-retirement',
     '--connection-final-release',
     '--claim-disconnect-routes',
     '--claim-disconnect-physical-cleanup',
