@@ -284,6 +284,7 @@ extension OwnedCoreBluetoothProtocolRadio {
   /// queue. Reading state never prompts: before the radio exists, power is
   /// unknown and the reason says the radio is created on request.
   func snapshotOnQueue() -> NSDictionary {
+    if let powerOffRetirementSnapshot { return powerOffRetirementSnapshot }
     if central == nil && (
       OwnedCoreBluetoothProtocolRadioSupport.currentAuthorizationWord() == "notDetermined" ||
       OwnedCoreBluetoothProtocolRadioSupport.accessorySetupConfigured(info: Bundle.main.infoDictionary ?? [:])

@@ -22,6 +22,7 @@ private var writeReady = true
 private var characteristicReads = 0
 private final class ScanCentral: CBCentralManager {
   override var state: CBManagerState { scanState }
+  override var delegate: CBCentralManagerDelegate? { get { nil } set {} }
   override var isScanning: Bool { restoredScanActive }
   override func scanForPeripherals(withServices serviceUUIDs: [CBUUID]?, options: [String: Any]? = nil) { scanStarts.append(serviceUUIDs?.map { $0.uuidString }.sorted()) }
   override func stopScan() { scanStops += 1 }
@@ -2163,6 +2164,117 @@ private final class LegacyFailureBorrower: NSObject, OwnedCoreBluetoothProtocolR
         precondition(completed)
       }
       print("Connection terminal callback fence passed")
+      return
+    }
+    if CommandLine.arguments.contains("--connection-power-off-retirement") {
+      guard let central = class_createInstance(ScanCentral.self, 0) as? ScanCentral,
+            let replacement = class_createInstance(ScanCentral.self, 0) as? ScanCentral,
+            let peripheral = class_createInstance(Peripheral.self, 0) as? Peripheral,
+            let releasingPeripheral = class_createInstance(OtherPeripheral.self, 0) as? OtherPeripheral else { fatalError("fixture") }
+      _ = Unmanaged.passRetained(central); _ = Unmanaged.passRetained(replacement)
+      _ = Unmanaged.passRetained(peripheral); _ = Unmanaged.passRetained(releasingPeripheral)
+      let peer = peerID.uuidString
+      let releasingPeer = otherPeerID.uuidString
+      radio.queue.sync {
+        radio.central = central
+        radio.delegate = first
+        radio.peripheralByIdentifier[peer] = peripheral
+        radio.peripheralByIdentifier[releasingPeer] = releasingPeripheral
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "old") {
+          precondition($0 == nil)
+        }
+        radio.connectOnQueue(owner: second, route: second, peerIdentifier: releasingPeer, operationIdentifier: "old-other") {
+          precondition($0 == nil)
+        }
+        var released = false
+        radio.disconnectOnQueue(owner: second, peerIdentifier: releasingPeer, operationIdentifier: "release") {
+          precondition($0 == nil); released = true
+        }
+        precondition(!released && cancelledConnections == 1)
+        let gate = radio.orderedGraphGate(peer: peer)
+        let secondGate = radio.orderedGraphGate(peer: releasingPeer)
+        let snapshot = OwnedGattSnapshotIdentity(owner: "fixture", attachment: 1, revision: 1)
+        let key = OwnedOrderedGraphPermitGate.Key(peer: peer, connection: "old", snapshot: snapshot, id: 1)
+        let secondKey = OwnedOrderedGraphPermitGate.Key(peer: releasingPeer, connection: "old-other", snapshot: snapshot, id: 2)
+        precondition(gate.acquire(key, valid: true) == .acquired)
+        precondition(secondGate.acquire(secondKey, valid: true) == .acquired)
+        scanState = .poweredOff
+        radio.centralDelegate.centralManagerDidUpdateState(central)
+        precondition(radio.central === central && !released && first.states == 0)
+        precondition(gate.release(key) == .released)
+        precondition(radio.peripheralByIdentifier[peer] == nil && radio.peripheralByIdentifier[releasingPeer] != nil)
+        var refused = false
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "too-soon") {
+          refused = $0?.code == 1003
+        }
+        precondition(refused, "admission stays closed until the adapter retirement is published")
+        precondition(secondGate.release(secondKey) == .released)
+        precondition(radio.central == nil && released, "power-off must retire the old callback owner and settle the release")
+        precondition(first.states == 1 && first.disconnects.isEmpty)
+        radio.disconnectOnQueue(owner: first, peerIdentifier: peer, operationIdentifier: "reset-release") {
+          precondition($0?.code == 1007, "the old central's peer must be gone")
+        }
+        // The assertion runs before the asynchronously scheduled central allocation.
+        radio.central = replacement
+        scanState = .poweredOn
+        radio.centralDelegate.centralManagerDidUpdateState(replacement)
+        radio.peripheralByIdentifier[peer] = peripheral
+        connectionState = .disconnected
+        var connected = false
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "new") {
+          precondition($0 == nil); connected = true
+        }
+        radio.centralDelegate.centralManager(central, didDisconnectPeripheral: peripheral, error: nil)
+        radio.centralDelegate.centralManager(central, didFailToConnect: peripheral, error: nil)
+        precondition(!connected && radio.pendingConnect[peer] != nil, "old callbacks may not settle the fresh attempt")
+        connectionState = .connected
+        radio.centralDelegate.centralManager(replacement, didConnect: peripheral)
+        precondition(connected)
+        radio.centralDelegate.centralManager(central, didDisconnectPeripheral: peripheral, error: nil)
+        precondition(first.disconnects.isEmpty)
+        connectionState = .disconnected
+        radio.centralDelegate.centralManager(replacement, didDisconnectPeripheral: peripheral, error: nil)
+        precondition(first.disconnects == [peer], "a real loss on the new central must still reach the borrower")
+      }
+      print("Power-off central retirement and fresh connection passed")
+      return
+    }
+    if CommandLine.arguments.contains("--connection-power-off-during-notification-release") {
+      guard let central = class_createInstance(ScanCentral.self, 0) as? ScanCentral,
+            let peripheral = class_createInstance(Peripheral.self, 0) as? Peripheral else { fatalError("fixture") }
+      _ = Unmanaged.passRetained(central); _ = Unmanaged.passRetained(peripheral)
+      let peer = peerID.uuidString
+      let characteristic = Characteristic(type: CBUUID(string: "2A37"), properties: [.notify], value: nil, permissions: [])
+      let service = CBMutableService(type: CBUUID(string: "180D"), primary: true)
+      service.characteristics = [characteristic]
+      fixtureService = service
+      let address = CharacteristicAddress(peerIdentifier: peer,
+        serviceUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID("180D"), serviceOccurrence: 0,
+        characteristicUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID("2A37"), characteristicOccurrence: 0)
+      let done = DispatchSemaphore(value: 0)
+      var answer: NSError?
+      radio.queue.sync {
+        radio.central = central
+        radio.peripheralByIdentifier[peer] = peripheral
+        radio.servicesByPeer[peer] = [service]
+        radio.connectOnQueue(owner: first, route: first, peerIdentifier: peer, operationIdentifier: "old") {
+          precondition($0 == nil)
+        }
+        precondition(radio.installNotificationRoute("old", borrower: first))
+        radio.subscriptions[address] = "old"
+        notifying[ObjectIdentifier(characteristic)] = true
+        radio.disconnectOnQueue(owner: first, peerIdentifier: peer, operationIdentifier: "release") {
+          answer = $0; done.signal()
+        }
+        precondition(!radio.releasingConnectionTickets.isEmpty && radio.pendingDisconnect[peer] == nil)
+        scanState = .poweredOff
+        radio.centralDelegate.centralManagerDidUpdateState(central)
+        precondition(radio.powerOffRetirementSnapshot == nil && radio.connectionClaims[peer] == nil)
+        radio.central = central
+      }
+      precondition(done.wait(timeout: .now() + 2) == .success && answer == nil,
+        "a queued release must acknowledge the exact link retired by power-off")
+      print("Power-off settles disconnect during notification cleanup")
       return
     }
     if CommandLine.arguments.contains("--connection-final-release") {

@@ -276,6 +276,17 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
+## Releasing 5.2.6
+
+This patch releases adapter-reset connection claims using the normal cleanup
+budget. On Apple, a confirmed Bluetooth power-off retires the old
+CoreBluetooth callback owner and preserves the restoration configuration.
+The previous owner cannot affect a replacement connection.
+
+A signed development build recovered a bonded Oura Ring on iPhone after
+Bluetooth was cycled in Settings and received fresh heart rate and IBI.
+The hosted release gates verify the packaged artifacts and backend tests.
+
 ## Releasing 5.2.5
 
 This patch fixes native desktop cleanup after a terminal-evidence recovery
@@ -1311,7 +1322,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.2.5
+version=5.2.6
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1332,8 +1343,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.2.5` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.2.5` after
+  `unified-ble-manager@5.2.6` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.2.6` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

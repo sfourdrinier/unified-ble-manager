@@ -17,9 +17,11 @@ mod common;
 
 use common::*;
 use serde_json::{Value, json};
+use std::time::Duration;
 use ubm_mobile::{
     AdapterAuthorization, AdapterAvailability, AdapterPower, AdapterSnapshot, Advertisement,
-    MobilePlatform, MobileSession, RadioIngress,
+    CompletionStatus, MobilePlatform, MobileSession, RadioCompletion, RadioIngress, RadioRequest,
+    RequestKind,
 };
 
 fn advertisement() -> RadioIngress {
@@ -187,7 +189,28 @@ async fn a_lost_adapter_ends_live_work_and_advances_the_generations_once_per_epi
         .await);
         settle(&session).await;
 
+        radio.set_responder(Box::new(|request| match request {
+            RadioRequest::Disconnect { .. } => Reply::Hold,
+            _ => polar_responder(request),
+        }));
         host.ingest(off());
+        let disconnect = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(id) = radio.held_of(RequestKind::Disconnect).first() {
+                    break *id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("native disconnect request");
+        tokio::time::sleep(Duration::from_millis(1250)).await;
+        assert_eq!(
+            radio.answer(disconnect, RadioCompletion::Unit),
+            CompletionStatus::Delivered,
+            "{platform:?}: reset cancelled the native release before confirmation"
+        );
+        radio.set_responder(Box::new(polar_responder));
         let records = drain_until(&session, |r| has_generation(r, "2")).await;
         assert_eq!(
             adapter_records(&records),
@@ -206,6 +229,13 @@ async fn a_lost_adapter_ends_live_work_and_advances_the_generations_once_per_epi
         assert_eq!(links[0]["reason"], "adapter");
         assert_eq!(of_type(&records, "stream-end").len(), 1, "{records:#?}");
         assert_eq!(generation(&session).await, (json!("2"), json!("2")));
+        let released = ok(&call(
+            &session,
+            "connection.disconnect",
+            &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "release-1"}).to_string(),
+        )
+        .await);
+        assert_eq!(released["state"], "released", "{platform:?}");
 
         // The same episode: nothing advances.
         host.ingest(snapshot(

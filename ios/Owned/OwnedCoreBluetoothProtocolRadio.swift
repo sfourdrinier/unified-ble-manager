@@ -81,6 +81,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   /// ASK explicit operations use accessory-scoped authorization. Never deallocated.
   var central: CBCentralManager?
   var centralDelegate: OwnedCoreBluetoothCentralDelegate!
+  var powerOffRetirementSnapshot: NSDictionary?
   let restoreIdentifierKey: String?
   let showPowerAlert: NSNumber?
   /// The Apple permission request; its exchange stays single-flight across
@@ -111,6 +112,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   var releasingConnectionClaims: [String: Set<ObjectIdentifier>] = [:]
   var releasingConnectionOperations: [String: [ObjectIdentifier: String]] = [:]
   var releasingConnectionTickets: [String: [ObjectIdentifier: UUID]] = [:]
+  var poweredOffReleaseTickets = Set<UUID>()
   var disconnectOwners: [String: (owner: AnyObject, operation: String)] = [:]
   struct ConnectionCancellation {
     let owner: AnyObject
@@ -387,6 +389,9 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
                       operationIdentifier: String, completion: @escaping (NSError?) -> Void) {
     traceConnectionState("connect-admission", peer: peerIdentifier)
     guard requireUsable(completion) else { return }
+    guard powerOffRetirementSnapshot == nil else {
+      completion(error(code: 1003, message: "Bluetooth powered off")); return
+    }
     guard let identifier = OwnedCoreBluetoothKnownPeerLookup.identifier(peerIdentifier) else {
       completion(error(code: 1005, message: "The requested CoreBluetooth peripheral is unknown")); return
     }
@@ -546,6 +551,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     let releaseTicket = UUID()
     releasingConnectionTickets[peerIdentifier, default: [:]][key] = releaseTicket
     retireConnectionNotifications(owner: owner, peer: peerIdentifier) { failure in
+      let poweredOff = self.poweredOffReleaseTickets.remove(releaseTicket) != nil
       guard self.releasingConnectionTickets[peerIdentifier]?[key] == releaseTicket else {
         completion(self.error(code: 1016, message: "Connection cleanup was superseded")); return
       }
@@ -555,6 +561,11 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       self.releasingConnectionOperations[peerIdentifier]?.removeValue(forKey: key)
       if self.releasingConnectionOperations[peerIdentifier]?.isEmpty == true { self.releasingConnectionOperations.removeValue(forKey: peerIdentifier) }
       if self.releasingConnectionClaims[peerIdentifier]?.isEmpty == true { self.releasingConnectionClaims.removeValue(forKey: peerIdentifier) }
+      if poweredOff {
+        // The physical link ended even if the notification cleanup callback
+        // arrived after the power-off barrier and central replacement.
+        completion(nil); return
+      }
       guard self.connectionClaims[peerIdentifier]?[key]?.identity == claim.identity else {
         completion(self.error(code: 1016, message: "Connection claim changed during cleanup")); return
       }
@@ -1076,13 +1087,30 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   public func centralManagerDidUpdateState(_ central: CBCentralManager) {
     let state = central.state
     let snapshot = OwnedCoreBluetoothProtocolRadioSupport.adapterSnapshotDictionary(central: central)
+    if state == .poweredOff && !unfencedConnections.isEmpty {
+      // Power-off ends the physical links. Retire their callback source as
+      // well, since CoreBluetooth may omit the per-peer disconnect callback.
+      powerOffRetirementSnapshot = snapshot
+      for tickets in releasingConnectionTickets.values {
+        poweredOffReleaseTickets.formUnion(tickets.values)
+      }
+      central.delegate = nil
+    }
     routeCentralState(state, snapshot: snapshot)
   }
 
   func routeCentralState(_ state: CBManagerState, snapshot: NSDictionary) {
     let claimRoutes = connectionClaimRoutes()
     let apply = { self.applyCentralState(state, snapshot: snapshot, capturedClaims: claimRoutes) }
-    let event = PendingOverflowCentralState(apply: apply)
+    let event = PendingOverflowCentralState {
+      if state == .poweredOff && self.powerOffRetirementSnapshot != nil {
+        // Overflow drains every affected gate before this fallback runs.
+        for peer in Array(self.peripheralByIdentifier.keys) {
+          self.retirePoweredOffPeer(peer)
+        }
+      }
+      apply()
+    }
     // Only ingress advances the pending state. An older accepted barrier may
     // finish after a newer event has already overflowed.
     if pendingOverflowCentralState != nil { pendingOverflowCentralState = event }
@@ -1105,7 +1133,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         self.recoverAfterAdapterInvalidation(peer)
       }, onFailure: fail, operation: complete)
     case .poweredOff:
-      performOrderedGlobalBarrier(peerOperation: { self.resetOrderedPeer($0, cause: .adapterLost) }, onFailure: fail, operation: complete)
+      performOrderedGlobalBarrier(peerOperation: { peer in
+        if self.powerOffRetirementSnapshot != nil { self.retirePoweredOffPeer(peer) }
+        else { self.resetOrderedPeer(peer, cause: .adapterLost) }
+      }, onFailure: fail, operation: complete)
     case .poweredOn:
       performOrderedGlobalBarrier(invalidating: false, onFailure: fail, operation: complete)
     @unknown default:
@@ -1113,8 +1144,19 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     }
   }
 
+  private func retirePoweredOffPeer(_ peer: String) {
+    resetOrderedPeer(peer, cause: .adapterLost)
+    clearTerminalCallbackDebts(for: peer)
+    recoverAfterAdapterInvalidation(peer, physicalLinkEnded: true)
+  }
+
   private func applyCentralState(_ state: CBManagerState, snapshot: NSDictionary, capturedClaims: [ObjectIdentifier: OwnedCoreBluetoothProtocolRadioDelegate]) {
     scanAdapterStateChanged(state)
+    let retireCentral = state == .poweredOff && powerOffRetirementSnapshot != nil
+    if retireCentral {
+      restoredPeerIdentifiers.removeAll()
+      central = nil
+    }
     // Capture routes before calling out: a receiver may synchronously change
     // its scan claim. The legacy delegate can also own a scan, but must see
     // each state transition only once.
@@ -1130,6 +1172,15 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       radioPreparation.failAll(failure)
     } else {
       radioPreparation.update(snapshot)
+    }
+    if retireCentral {
+      powerOffRetirementSnapshot = nil
+      // Allocate after the old central's delegate callback has returned.
+      // Keep the existing restoration configuration for the replacement.
+      queue.async { [weak self] in
+        guard let self, !self.destroyed else { return }
+        _ = self.ensureCentral()
+      }
     }
   }
 
@@ -1288,8 +1339,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       let matched = lease.services.isEmpty || !lease.services.isDisjoint(with: advertised)
       // Buffered values precede the overflow control; they are still eligible
       // for delivery. Rust ingress refusal is separately counted as loss.
-      peripheralByIdentifier[peer] = peripheral
-      peripheral.delegate = self
+      if powerOffRetirementSnapshot == nil {
+        peripheralByIdentifier[peer] = peripheral
+        peripheral.delegate = self
+      }
       let accepted: Bool
       if let receiver = route as? OwnedScanAdvertisementReceiver {
         scanDeliveringOwners.insert(key)
